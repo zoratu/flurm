@@ -2,8 +2,8 @@
   "version": 1,
   "project": "flurm",
   "created": "2026-01-08T21:00:00Z",
-  "last_updated": "2026-01-08T23:15:00Z",
-  "current_phase": "phase2_nodes",
+  "last_updated": "2026-01-08T23:35:00Z",
+  "current_phase": "phase4_hot_reload",
   "phases": {
     "phase0_setup": {
       "name": "Project Setup",
@@ -34,17 +34,19 @@
         {"id": "controller_acceptor", "status": "completed", "desc": "Ranch TCP acceptor"},
         {"id": "controller_handler", "status": "completed", "desc": "RPC handler"},
         {"id": "tla_specs", "status": "completed", "desc": "TLA+ specifications"},
-        {"id": "unit_tests", "status": "completed", "desc": "Unit tests (66 passing)"}
+        {"id": "unit_tests", "status": "completed", "desc": "Unit tests"}
       ]
     },
     "phase2_nodes": {
       "name": "Node Management",
-      "status": "pending",
+      "status": "completed",
       "tasks": [
-        {"id": "flurmnd_daemon", "status": "pending", "desc": "Node daemon implementation"},
-        {"id": "node_registration", "status": "pending", "desc": "Node auto-registration"},
-        {"id": "heartbeat", "status": "pending", "desc": "Heartbeat mechanism"},
-        {"id": "cgroup_integration", "status": "pending", "desc": "Linux cgroup integration"}
+        {"id": "flurmnd_api", "status": "completed", "desc": "Node daemon API module"},
+        {"id": "controller_connector", "status": "completed", "desc": "Enhanced controller connector with reconnection"},
+        {"id": "system_monitor", "status": "completed", "desc": "System monitor with /proc support"},
+        {"id": "job_executor", "status": "completed", "desc": "Job executor with cgroups"},
+        {"id": "protocol_messages", "status": "completed", "desc": "Node daemon protocol messages"},
+        {"id": "node_daemon_tests", "status": "completed", "desc": "Node daemon tests (9 passing)"}
       ]
     },
     "phase3_fault_tolerance": {
@@ -53,11 +55,31 @@
       "tasks": [
         {"id": "ra_integration", "status": "completed", "desc": "Ra consensus integration"},
         {"id": "ra_machine", "status": "completed", "desc": "Ra state machine for controller"},
-        {"id": "multi_controller", "status": "completed", "desc": "Multi-controller support (cluster.erl)"},
+        {"id": "multi_controller", "status": "completed", "desc": "Multi-controller support"},
         {"id": "failover", "status": "completed", "desc": "Automatic failover handling"},
         {"id": "db_ra", "status": "completed", "desc": "Database Ra machine"},
         {"id": "db_cluster", "status": "completed", "desc": "Database cluster management"},
         {"id": "cluster_tests", "status": "completed", "desc": "Cluster unit tests"}
+      ]
+    },
+    "phase4_hot_reload": {
+      "name": "Hot Reload & Configuration",
+      "status": "pending",
+      "tasks": [
+        {"id": "config_parser", "status": "pending", "desc": "slurm.conf parser"},
+        {"id": "config_server", "status": "pending", "desc": "Hot-reloadable config server"},
+        {"id": "scontrol_reconfigure", "status": "pending", "desc": "scontrol reconfigure support"},
+        {"id": "dynamic_node_add", "status": "pending", "desc": "Dynamic node add/remove"}
+      ]
+    },
+    "phase5_scheduling": {
+      "name": "Advanced Scheduling",
+      "status": "pending",
+      "tasks": [
+        {"id": "backfill", "status": "pending", "desc": "Backfill scheduler"},
+        {"id": "priority", "status": "pending", "desc": "Multi-factor job priority"},
+        {"id": "fairshare", "status": "pending", "desc": "Fair-share scheduling"},
+        {"id": "preemption", "status": "pending", "desc": "Job preemption"}
       ]
     }
   },
@@ -78,6 +100,7 @@
     "tla/FlurmFailover.tla",
     "tla/README.md",
     "apps/flurm_protocol/include/flurm_protocol.hrl",
+    "apps/flurm_protocol/src/flurm_protocol.erl",
     "apps/flurm_protocol/src/flurm_protocol_header.erl",
     "apps/flurm_protocol/src/flurm_protocol_codec.erl",
     "apps/flurm_protocol/src/flurm_protocol_pack.erl",
@@ -100,6 +123,11 @@
     "apps/flurm_controller/src/flurm_controller_ra_machine.erl",
     "apps/flurm_controller/test/flurm_controller_acceptor_tests.erl",
     "apps/flurm_controller/test/flurm_controller_cluster_tests.erl",
+    "apps/flurm_node_daemon/src/flurm_node_daemon.erl",
+    "apps/flurm_node_daemon/src/flurm_controller_connector.erl",
+    "apps/flurm_node_daemon/src/flurm_system_monitor.erl",
+    "apps/flurm_node_daemon/src/flurm_job_executor.erl",
+    "apps/flurm_node_daemon/test/flurm_node_daemon_tests.erl",
     "apps/flurm_db/src/flurm_db_ra.erl",
     "apps/flurm_db/src/flurm_db_cluster.erl",
     "apps/flurm_db/src/flurm_db_ra_effects.erl",
@@ -148,21 +176,32 @@
       "topic": "Failover architecture",
       "decision": "Active-active controllers with Ra leader election",
       "rationale": "No single point of failure, automatic failover"
+    },
+    {
+      "topic": "Resource isolation",
+      "decision": "Linux cgroups v1/v2 with fallback",
+      "rationale": "Standard Linux isolation, v2 preferred when available"
+    },
+    {
+      "topic": "System metrics",
+      "decision": "/proc filesystem with platform fallbacks",
+      "rationale": "Accurate on Linux, graceful degradation on macOS"
     }
   ],
   "blockers": [],
   "next_actions": [
-    "Implement flurmnd (node daemon) for Phase 2",
-    "Add node registration protocol",
-    "Implement heartbeat mechanism",
-    "Create property-based tests with PropEr"
+    "Implement slurm.conf parser (flurm_config)",
+    "Add hot-reloadable config server",
+    "Implement scontrol reconfigure support",
+    "Add property-based tests with PropEr"
   ],
   "test_results": {
-    "unit_tests": "63 passed (core tests), Ra tests require running cluster",
+    "unit_tests": "66 passed (protocol + core + node daemon), Ra tests require cluster",
     "compilation": "All 6 apps compile successfully with no warnings"
   },
   "git_commits": [
     {"hash": "72f0c37", "message": "Initial commit: FLURM project structure and Phase 1 foundation"},
-    {"hash": "pending", "message": "Phase 3: Ra consensus integration for fault tolerance"}
+    {"hash": "f226ba1", "message": "Phase 3: Ra consensus integration for fault tolerance"},
+    {"hash": "e99812b", "message": "Phase 2: Node daemon implementation (flurmnd)"}
   ]
 }
