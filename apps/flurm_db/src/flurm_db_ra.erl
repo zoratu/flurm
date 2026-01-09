@@ -377,23 +377,35 @@ delete_partition(PartName) when is_binary(PartName) ->
 %% @doc Get a job by ID (local read, may be stale).
 -spec get_job(job_id()) -> {ok, #ra_job{}} | {error, not_found}.
 get_job(JobId) when is_integer(JobId) ->
-    ra_local_query(fun(State) ->
+    case ra_local_query(fun(State) ->
         maps:find(JobId, State#ra_state.jobs)
-    end).
+    end) of
+        {ok, Job} -> {ok, Job};
+        error -> {error, not_found};
+        Other -> Other
+    end.
 
 %% @doc Get a node by name (local read, may be stale).
 -spec get_node(node_name()) -> {ok, #ra_node{}} | {error, not_found}.
 get_node(NodeName) when is_binary(NodeName) ->
-    ra_local_query(fun(State) ->
+    case ra_local_query(fun(State) ->
         maps:find(NodeName, State#ra_state.nodes)
-    end).
+    end) of
+        {ok, Node} -> {ok, Node};
+        error -> {error, not_found};
+        Other -> Other
+    end.
 
 %% @doc Get a partition by name (local read, may be stale).
 -spec get_partition(partition_name()) -> {ok, #ra_partition{}} | {error, not_found}.
 get_partition(PartName) when is_binary(PartName) ->
-    ra_local_query(fun(State) ->
+    case ra_local_query(fun(State) ->
         maps:find(PartName, State#ra_state.partitions)
-    end).
+    end) of
+        {ok, Partition} -> {ok, Partition};
+        error -> {error, not_found};
+        Other -> Other
+    end.
 
 %% @doc List all jobs (local read, may be stale).
 -spec list_jobs() -> {ok, [#ra_job{}]}.

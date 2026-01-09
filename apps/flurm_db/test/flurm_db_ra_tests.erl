@@ -26,6 +26,24 @@
 %% @doc Setup for single-node Ra cluster tests.
 %% Creates a temporary data directory and starts the Ra application.
 setup() ->
+    %% Start Erlang distribution if not already running
+    %% Ra requires the node to have distribution enabled (not nonode@nohost)
+    case node() of
+        nonode@nohost ->
+            %% Generate a unique short node name for testing
+            %% Use shortnames (no dots in hostname) for local testing
+            NodeName = list_to_atom("flurm_test_" ++
+                integer_to_list(erlang:system_time(millisecond))),
+            case net_kernel:start([NodeName, shortnames]) of
+                {ok, _} -> ok;
+                {error, {already_started, _}} -> ok;
+                {error, Reason} ->
+                    error_logger:warning_msg("Could not start distribution: ~p~n", [Reason])
+            end;
+        _ ->
+            ok
+    end,
+
     %% Create a unique temporary directory for this test run
     TmpDir = "/tmp/flurm_db_test_" ++ integer_to_list(erlang:system_time(millisecond)),
     ok = filelib:ensure_dir(TmpDir ++ "/"),
@@ -36,6 +54,15 @@ setup() ->
 
     %% Start required applications
     {ok, _} = application:ensure_all_started(ra),
+
+    %% Ensure the Ra default system is started
+    %% This is required for Ra 2.x before starting clusters
+    case ra_system:start_default() of
+        {ok, _} -> ok;
+        {error, {already_started, _}} -> ok;
+        {error, RaReason} ->
+            error_logger:error_msg("Failed to start Ra default system: ~p~n", [RaReason])
+    end,
 
     %% Return cleanup context
     #{data_dir => TmpDir}.
