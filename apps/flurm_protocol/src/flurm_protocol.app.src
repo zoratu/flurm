@@ -13,6 +13,6 @@
         flurm_protocol_pack,
         flurm_protocol_codec
     ]},
-    {licenses, ["Apache-2.0"]},
+    {licenses, ["GPL-3.0"]},
     {links, []}
 ]}.

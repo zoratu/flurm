@@ -16,6 +16,6 @@
         {heartbeat_interval, 10000}
     ]},
     {modules, []},
-    {licenses, ["Apache-2.0"]},
+    {licenses, ["GPL-3.0"]},
     {links, []}
 ]}.

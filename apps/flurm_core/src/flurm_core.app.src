@@ -17,6 +17,6 @@
         flurm_job_sup,
         flurm_job_registry
     ]},
-    {licenses, ["Apache-2.0"]},
+    {licenses, ["GPL-3.0"]},
     {links, []}
 ]}.

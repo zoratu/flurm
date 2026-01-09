@@ -24,6 +24,6 @@
         flurm_db_ra_starter,
         flurm_db_cluster
     ]},
-    {licenses, ["Apache-2.0"]},
+    {licenses, ["GPL-3.0"]},
     {links, []}
 ]}.
