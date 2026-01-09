@@ -2,7 +2,10 @@
 %%% @doc FLURM System Monitor
 %%%
 %%% Collects system metrics from the compute node including CPU load,
-%%% memory usage, and running processes.
+%%% memory usage, disk space, GPUs, and running processes.
+%%%
+%%% On Linux, reads from /proc filesystem for accurate metrics.
+%%% Falls back to Erlang VM metrics on other platforms.
 %%% @end
 %%%-------------------------------------------------------------------
 -module(flurm_system_monitor).
@@ -10,7 +13,7 @@
 -behaviour(gen_server).
 
 -export([start_link/0]).
--export([get_metrics/0, get_hostname/0]).
+-export([get_metrics/0, get_hostname/0, get_gpus/0, get_disk_usage/0]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
 -define(COLLECT_INTERVAL, 5000). % 5 seconds
@@ -20,7 +23,14 @@
     cpus :: pos_integer(),
     total_memory_mb :: pos_integer(),
     load_avg :: float(),
-    free_memory_mb :: non_neg_integer()
+    load_avg_5 :: float(),
+    load_avg_15 :: float(),
+    free_memory_mb :: non_neg_integer(),
+    cached_memory_mb :: non_neg_integer(),
+    available_memory_mb :: non_neg_integer(),
+    gpus :: list(),
+    disk_usage :: map(),
+    platform :: linux | darwin | other
 }).
 
 %%====================================================================
@@ -40,17 +50,33 @@ get_metrics() ->
 get_hostname() ->
     gen_server:call(?MODULE, get_hostname).
 
+%% @doc Get GPU information
+-spec get_gpus() -> list().
+get_gpus() ->
+    gen_server:call(?MODULE, get_gpus).
+
+%% @doc Get disk usage information
+-spec get_disk_usage() -> map().
+get_disk_usage() ->
+    gen_server:call(?MODULE, get_disk_usage).
+
 %%====================================================================
 %% gen_server callbacks
 %%====================================================================
 
 init([]) ->
-    lager:info("System Monitor started"),
+    lager:info("System Monitor starting"),
+
+    Platform = detect_platform(),
 
     %% Get static system info
-    Hostname = list_to_binary(net_adm:localhost()),
-    Cpus = erlang:system_info(logical_processors),
-    TotalMemoryMB = get_total_memory_mb(),
+    Hostname = get_system_hostname(),
+    Cpus = get_cpu_count(),
+    TotalMemoryMB = get_total_memory(Platform),
+    GPUs = detect_gpus(),
+
+    lager:info("Detected: ~s, ~p CPUs, ~p MB RAM, ~p GPUs",
+               [Hostname, Cpus, TotalMemoryMB, length(GPUs)]),
 
     %% Start periodic collection
     erlang:send_after(?COLLECT_INTERVAL, self(), collect),
@@ -60,7 +86,14 @@ init([]) ->
         cpus = Cpus,
         total_memory_mb = TotalMemoryMB,
         load_avg = 0.0,
-        free_memory_mb = TotalMemoryMB
+        load_avg_5 = 0.0,
+        load_avg_15 = 0.0,
+        free_memory_mb = TotalMemoryMB,
+        cached_memory_mb = 0,
+        available_memory_mb = TotalMemoryMB,
+        gpus = GPUs,
+        disk_usage = #{},
+        platform = Platform
     }}.
 
 handle_call(get_metrics, _From, State) ->
@@ -68,13 +101,24 @@ handle_call(get_metrics, _From, State) ->
         hostname => State#state.hostname,
         cpus => State#state.cpus,
         total_memory_mb => State#state.total_memory_mb,
+        free_memory_mb => State#state.free_memory_mb,
+        available_memory_mb => State#state.available_memory_mb,
+        cached_memory_mb => State#state.cached_memory_mb,
         load_avg => State#state.load_avg,
-        free_memory_mb => State#state.free_memory_mb
+        load_avg_5 => State#state.load_avg_5,
+        load_avg_15 => State#state.load_avg_15,
+        gpu_count => length(State#state.gpus)
     },
     {reply, Metrics, State};
 
 handle_call(get_hostname, _From, State) ->
     {reply, State#state.hostname, State};
+
+handle_call(get_gpus, _From, State) ->
+    {reply, State#state.gpus, State};
+
+handle_call(get_disk_usage, _From, State) ->
+    {reply, State#state.disk_usage, State};
 
 handle_call(_Request, _From, State) ->
     {reply, {error, unknown_request}, State}.
@@ -82,15 +126,21 @@ handle_call(_Request, _From, State) ->
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
-handle_info(collect, State) ->
-    LoadAvg = get_load_average(),
-    FreeMemoryMB = get_free_memory_mb(),
+handle_info(collect, #state{platform = Platform} = State) ->
+    {LoadAvg, LoadAvg5, LoadAvg15} = get_load_average(Platform),
+    {FreeMem, CachedMem, AvailMem} = get_memory_info(Platform),
+    DiskUsage = get_disk_info(),
 
     erlang:send_after(?COLLECT_INTERVAL, self(), collect),
 
     {noreply, State#state{
         load_avg = LoadAvg,
-        free_memory_mb = FreeMemoryMB
+        load_avg_5 = LoadAvg5,
+        load_avg_15 = LoadAvg15,
+        free_memory_mb = FreeMem,
+        cached_memory_mb = CachedMem,
+        available_memory_mb = AvailMem,
+        disk_usage = DiskUsage
     }};
 
 handle_info(_Info, State) ->
@@ -100,33 +150,288 @@ terminate(_Reason, _State) ->
     ok.
 
 %%====================================================================
-%% Internal functions
+%% Internal functions - Platform Detection
 %%====================================================================
 
-get_total_memory_mb() ->
-    case erlang:system_info(allocated_areas) of
-        Areas when is_list(Areas) ->
-            %% Rough estimate from Erlang VM
-            erlang:memory(total) div (1024 * 1024);
-        _ ->
-            1024 % Default to 1GB
+detect_platform() ->
+    case os:type() of
+        {unix, linux} -> linux;
+        {unix, darwin} -> darwin;
+        _ -> other
     end.
 
-get_free_memory_mb() ->
-    %% Use Erlang memory as a rough proxy
-    %% In a real implementation, we would read from /proc/meminfo on Linux
-    TotalErlangMem = erlang:memory(total),
-    ProcessMem = erlang:memory(processes),
-    (TotalErlangMem - ProcessMem) div (1024 * 1024).
-
-get_load_average() ->
-    %% Placeholder - in a real implementation, read from /proc/loadavg
-    %% For now, use scheduler utilization as a proxy
-    case erlang:statistics(scheduler_wall_time) of
-        undefined ->
-            0.0;
+get_system_hostname() ->
+    case inet:gethostname() of
+        {ok, Hostname} ->
+            list_to_binary(Hostname);
         _ ->
-            %% Simple approximation
-            RunQueue = erlang:statistics(run_queue),
-            float(RunQueue)
+            list_to_binary(net_adm:localhost())
+    end.
+
+get_cpu_count() ->
+    case erlang:system_info(logical_processors_available) of
+        unknown -> erlang:system_info(logical_processors);
+        N -> N
+    end.
+
+%%====================================================================
+%% Internal functions - Memory
+%%====================================================================
+
+get_total_memory(linux) ->
+    case file:read_file("/proc/meminfo") of
+        {ok, Content} ->
+            parse_meminfo_field(Content, <<"MemTotal:">>) div 1024;
+        _ ->
+            erlang_memory_fallback()
+    end;
+get_total_memory(darwin) ->
+    %% Use sysctl on macOS
+    case os:cmd("sysctl -n hw.memsize 2>/dev/null") of
+        Result when is_list(Result) ->
+            try
+                list_to_integer(string:trim(Result)) div (1024 * 1024)
+            catch
+                _:_ -> erlang_memory_fallback()
+            end;
+        _ ->
+            erlang_memory_fallback()
+    end;
+get_total_memory(_) ->
+    erlang_memory_fallback().
+
+get_memory_info(linux) ->
+    case file:read_file("/proc/meminfo") of
+        {ok, Content} ->
+            FreeMem = parse_meminfo_field(Content, <<"MemFree:">>) div 1024,
+            Cached = parse_meminfo_field(Content, <<"Cached:">>) div 1024,
+            Buffers = parse_meminfo_field(Content, <<"Buffers:">>) div 1024,
+            %% Available memory (kernel 3.14+) or estimate
+            AvailMem = case parse_meminfo_field(Content, <<"MemAvailable:">>) of
+                0 -> FreeMem + Cached + Buffers;  % Estimate if not available
+                N -> N div 1024
+            end,
+            {FreeMem, Cached + Buffers, AvailMem};
+        _ ->
+            {0, 0, 0}
+    end;
+get_memory_info(darwin) ->
+    %% Use vm_stat on macOS
+    case os:cmd("vm_stat 2>/dev/null") of
+        Result when is_list(Result) ->
+            PageSize = 4096,  % Usually 4KB on macOS
+            Lines = string:split(Result, "\n", all),
+            Free = parse_vm_stat_line(Lines, "Pages free") * PageSize div (1024 * 1024),
+            Inactive = parse_vm_stat_line(Lines, "Pages inactive") * PageSize div (1024 * 1024),
+            {Free, Inactive, Free + Inactive};
+        _ ->
+            {0, 0, 0}
+    end;
+get_memory_info(_) ->
+    {0, 0, 0}.
+
+parse_meminfo_field(Content, Field) ->
+    case binary:match(Content, Field) of
+        {Start, Len} ->
+            %% Find the value after the field name
+            RestStart = Start + Len,
+            Rest = binary:part(Content, RestStart, byte_size(Content) - RestStart),
+            %% Extract the number (skip whitespace, read digits)
+            case re:run(Rest, <<"\\s*(\\d+)">>, [{capture, [1], binary}]) of
+                {match, [NumBin]} ->
+                    binary_to_integer(NumBin);
+                _ ->
+                    0
+            end;
+        nomatch ->
+            0
+    end.
+
+parse_vm_stat_line(Lines, Field) ->
+    case [L || L <- Lines, string:find(L, Field) =/= nomatch] of
+        [Line | _] ->
+            case re:run(Line, "(\\d+)", [{capture, [1], list}]) of
+                {match, [NumStr]} -> list_to_integer(NumStr);
+                _ -> 0
+            end;
+        [] ->
+            0
+    end.
+
+erlang_memory_fallback() ->
+    %% Very rough estimate from Erlang VM
+    erlang:memory(total) div (1024 * 1024) * 10.  % Multiply by 10 as estimate
+
+%%====================================================================
+%% Internal functions - Load Average
+%%====================================================================
+
+get_load_average(linux) ->
+    case file:read_file("/proc/loadavg") of
+        {ok, Content} ->
+            case binary:split(Content, <<" ">>, [global]) of
+                [L1, L5, L15 | _] ->
+                    {binary_to_float_safe(L1),
+                     binary_to_float_safe(L5),
+                     binary_to_float_safe(L15)};
+                _ ->
+                    {0.0, 0.0, 0.0}
+            end;
+        _ ->
+            {0.0, 0.0, 0.0}
+    end;
+get_load_average(darwin) ->
+    case os:cmd("sysctl -n vm.loadavg 2>/dev/null") of
+        Result when is_list(Result) ->
+            %% Result is like "{ 1.23 1.45 1.67 }"
+            case re:run(Result, "([\\d.]+)\\s+([\\d.]+)\\s+([\\d.]+)",
+                       [{capture, [1,2,3], list}]) of
+                {match, [L1, L5, L15]} ->
+                    {list_to_float_safe(L1),
+                     list_to_float_safe(L5),
+                     list_to_float_safe(L15)};
+                _ ->
+                    {0.0, 0.0, 0.0}
+            end;
+        _ ->
+            {0.0, 0.0, 0.0}
+    end;
+get_load_average(_) ->
+    %% Fallback using Erlang run queue
+    RunQueue = erlang:statistics(run_queue),
+    Load = float(RunQueue),
+    {Load, Load, Load}.
+
+binary_to_float_safe(Bin) ->
+    Str = binary_to_list(Bin),
+    list_to_float_safe(Str).
+
+list_to_float_safe(Str) ->
+    Trimmed = string:trim(Str),
+    try
+        list_to_float(Trimmed)
+    catch
+        error:badarg ->
+            try
+                float(list_to_integer(Trimmed))
+            catch
+                _:_ -> 0.0
+            end
+    end.
+
+%%====================================================================
+%% Internal functions - GPU Detection
+%%====================================================================
+
+detect_gpus() ->
+    NvidiaGPUs = detect_nvidia_gpus(),
+    AMDGPUs = detect_amd_gpus(),
+    NvidiaGPUs ++ AMDGPUs.
+
+detect_nvidia_gpus() ->
+    case os:find_executable("nvidia-smi") of
+        false ->
+            [];
+        _ ->
+            %% Query NVIDIA GPUs using nvidia-smi
+            Cmd = "nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader,nounits 2>/dev/null",
+            case os:cmd(Cmd) of
+                [] ->
+                    [];
+                Result ->
+                    Lines = string:split(Result, "\n", all),
+                    lists:filtermap(fun parse_nvidia_gpu/1, Lines)
+            end
+    end.
+
+parse_nvidia_gpu(Line) ->
+    case string:split(string:trim(Line), ", ", all) of
+        [IdxStr, Name, MemStr] ->
+            try
+                Idx = list_to_integer(string:trim(IdxStr)),
+                MemMB = list_to_integer(string:trim(MemStr)),
+                {true, #{
+                    index => Idx,
+                    name => list_to_binary(string:trim(Name)),
+                    type => nvidia,
+                    memory_mb => MemMB
+                }}
+            catch
+                _:_ -> false
+            end;
+        _ ->
+            false
+    end.
+
+detect_amd_gpus() ->
+    %% Check for AMD GPUs via /sys filesystem
+    case filelib:is_dir("/sys/class/drm") of
+        true ->
+            case filelib:wildcard("/sys/class/drm/card*/device/vendor") of
+                [] -> [];
+                VendorFiles ->
+                    lists:filtermap(fun check_amd_vendor/1, VendorFiles)
+            end;
+        false ->
+            []
+    end.
+
+check_amd_vendor(VendorFile) ->
+    case file:read_file(VendorFile) of
+        {ok, <<"0x1002", _/binary>>} ->  % AMD vendor ID
+            %% Extract card number from path
+            case re:run(VendorFile, "card(\\d+)", [{capture, [1], list}]) of
+                {match, [NumStr]} ->
+                    {true, #{
+                        index => list_to_integer(NumStr),
+                        name => <<"AMD GPU">>,
+                        type => amd,
+                        memory_mb => 0  % Would need rocm-smi for this
+                    }};
+                _ ->
+                    false
+            end;
+        _ ->
+            false
+    end.
+
+%%====================================================================
+%% Internal functions - Disk Usage
+%%====================================================================
+
+get_disk_info() ->
+    %% Get disk usage for common mount points
+    MountPoints = ["/", "/tmp", "/home", "/scratch"],
+    maps:from_list(lists:filtermap(fun get_mount_usage/1, MountPoints)).
+
+get_mount_usage(MountPoint) ->
+    case os:cmd("df -m " ++ MountPoint ++ " 2>/dev/null | tail -1") of
+        [] ->
+            false;
+        Result ->
+            case string:split(string:trim(Result), " ", all) of
+                Parts when length(Parts) >= 4 ->
+                    %% df output: Filesystem Size Used Avail Use% Mounted
+                    NonEmpty = [P || P <- Parts, P =/= []],
+                    case NonEmpty of
+                        [_FS, TotalStr, UsedStr, AvailStr | _] ->
+                            try
+                                Total = list_to_integer(TotalStr),
+                                Used = list_to_integer(UsedStr),
+                                Avail = list_to_integer(AvailStr),
+                                {true, {list_to_binary(MountPoint), #{
+                                    total_mb => Total,
+                                    used_mb => Used,
+                                    available_mb => Avail,
+                                    percent_used => (Used * 100) div max(Total, 1)
+                                }}}
+                            catch
+                                _:_ -> false
+                            end;
+                        _ ->
+                            false
+                    end;
+                _ ->
+                    false
+            end
     end.
