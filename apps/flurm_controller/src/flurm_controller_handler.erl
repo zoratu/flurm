@@ -4,6 +4,11 @@
 %%% Dispatches incoming SLURM protocol messages to appropriate domain
 %%% logic handlers and returns appropriate response records.
 %%%
+%%% In a clustered setup, write operations (job submission, cancellation)
+%%% are forwarded to the leader if this node is not the leader. Read
+%%% operations (job info, node info, partition info) can be served
+%%% locally from any node.
+%%%
 %%% Supported request types:
 %%% - REQUEST_PING (1008) -> responds with PONG (RESPONSE_SLURM_RC)
 %%% - REQUEST_SUBMIT_BATCH_JOB (4003) -> creates job via flurm_job_manager
@@ -19,6 +24,10 @@
 
 -include_lib("flurm_protocol/include/flurm_protocol.hrl").
 -include_lib("flurm_core/include/flurm_core.hrl").
+
+%% SLURM error codes
+-define(ESLURM_CONTROLLER_NOT_FOUND, 1).
+-define(ESLURM_NOT_LEADER, 2).
 
 %%====================================================================
 %% API
@@ -36,11 +45,32 @@ handle(#slurm_header{msg_type = ?REQUEST_PING}, _Body) ->
     {ok, ?RESPONSE_SLURM_RC, Response};
 
 %% REQUEST_SUBMIT_BATCH_JOB (4003) -> RESPONSE_SUBMIT_BATCH_JOB
+%% Write operation - requires leader or forwarding to leader
 handle(#slurm_header{msg_type = ?REQUEST_SUBMIT_BATCH_JOB},
        #batch_job_request{} = Request) ->
     lager:info("Handling batch job submission: ~s", [Request#batch_job_request.name]),
     JobSpec = batch_request_to_job_spec(Request),
-    case flurm_job_manager:submit_job(JobSpec) of
+    Result = case is_cluster_enabled() of
+        true ->
+            %% Cluster mode - check leadership
+            case flurm_controller_cluster:is_leader() of
+                true ->
+                    %% We are leader, process locally
+                    flurm_job_manager:submit_job(JobSpec);
+                false ->
+                    %% Forward to leader
+                    case flurm_controller_cluster:forward_to_leader(submit_job, JobSpec) of
+                        {ok, JobResult} -> JobResult;
+                        {error, no_leader} -> {error, controller_not_found};
+                        {error, cluster_not_ready} -> {error, cluster_not_ready};
+                        {error, Reason} -> {error, Reason}
+                    end
+            end;
+        false ->
+            %% Single node mode
+            flurm_job_manager:submit_job(JobSpec)
+    end,
+    case Result of
         {ok, JobId} ->
             lager:info("Job ~p submitted successfully", [JobId]),
             Response = #batch_job_response{
@@ -50,13 +80,13 @@ handle(#slurm_header{msg_type = ?REQUEST_SUBMIT_BATCH_JOB},
                 job_submit_user_msg = <<"Job submitted successfully">>
             },
             {ok, ?RESPONSE_SUBMIT_BATCH_JOB, Response};
-        {error, Reason} ->
-            lager:warning("Job submission failed: ~p", [Reason]),
+        {error, Reason2} ->
+            lager:warning("Job submission failed: ~p", [Reason2]),
             Response = #batch_job_response{
                 job_id = 0,
                 step_id = 0,
-                error_code = 1,
-                job_submit_user_msg = error_to_binary(Reason)
+                error_code = ?ESLURM_CONTROLLER_NOT_FOUND,
+                job_submit_user_msg = error_to_binary(Reason2)
             },
             {ok, ?RESPONSE_SUBMIT_BATCH_JOB, Response}
     end;
@@ -90,10 +120,31 @@ handle(#slurm_header{msg_type = ?REQUEST_JOB_INFO_SINGLE}, Body) ->
     handle(#slurm_header{msg_type = ?REQUEST_JOB_INFO}, Body);
 
 %% REQUEST_CANCEL_JOB (4006) -> RESPONSE_SLURM_RC
+%% Write operation - requires leader or forwarding to leader
 handle(#slurm_header{msg_type = ?REQUEST_CANCEL_JOB},
        #cancel_job_request{job_id = JobId}) ->
     lager:info("Handling cancel job request for job_id=~p", [JobId]),
-    case flurm_job_manager:cancel_job(JobId) of
+    Result = case is_cluster_enabled() of
+        true ->
+            %% Cluster mode - check leadership
+            case flurm_controller_cluster:is_leader() of
+                true ->
+                    %% We are leader, process locally
+                    flurm_job_manager:cancel_job(JobId);
+                false ->
+                    %% Forward to leader
+                    case flurm_controller_cluster:forward_to_leader(cancel_job, JobId) of
+                        {ok, CancelResult} -> CancelResult;
+                        {error, no_leader} -> {error, controller_not_found};
+                        {error, cluster_not_ready} -> {error, cluster_not_ready};
+                        {error, Reason} -> {error, Reason}
+                    end
+            end;
+        false ->
+            %% Single node mode
+            flurm_job_manager:cancel_job(JobId)
+    end,
+    case Result of
         ok ->
             lager:info("Job ~p cancelled successfully", [JobId]),
             Response = #slurm_rc_response{return_code = 0},
@@ -102,8 +153,8 @@ handle(#slurm_header{msg_type = ?REQUEST_CANCEL_JOB},
             lager:warning("Cancel failed: job ~p not found", [JobId]),
             Response = #slurm_rc_response{return_code = -1},
             {ok, ?RESPONSE_SLURM_RC, Response};
-        {error, Reason} ->
-            lager:warning("Cancel failed for job ~p: ~p", [JobId, Reason]),
+        {error, Reason2} ->
+            lager:warning("Cancel failed for job ~p: ~p", [JobId, Reason2]),
             Response = #slurm_rc_response{return_code = -1},
             {ok, ?RESPONSE_SLURM_RC, Response}
     end;
@@ -341,3 +392,22 @@ format_partitions(Partitions) ->
 format_node_list([]) -> <<>>;
 format_node_list(Nodes) ->
     iolist_to_binary(lists:join(<<",">>, Nodes)).
+
+%%====================================================================
+%% Internal Functions - Cluster Helpers
+%%====================================================================
+
+%% @doc Check if cluster mode is enabled.
+%% Cluster mode is enabled when there are multiple nodes configured.
+-spec is_cluster_enabled() -> boolean().
+is_cluster_enabled() ->
+    case application:get_env(flurm_controller, cluster_nodes) of
+        {ok, Nodes} when is_list(Nodes), length(Nodes) > 1 ->
+            true;
+        _ ->
+            %% Also check if the cluster process is running
+            case whereis(flurm_controller_cluster) of
+                undefined -> false;
+                _Pid -> true
+            end
+    end.

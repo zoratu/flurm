@@ -114,7 +114,8 @@ init([]) ->
         period => 10
     },
 
-    Children = [
+    %% Base children - always started
+    BaseChildren = [
         %% Job Manager - handles job lifecycle
         #{
             id => flurm_job_manager,
@@ -153,7 +154,44 @@ init([]) ->
         }
     ],
 
+    %% Add cluster-related children if cluster mode is enabled
+    ClusterChildren = case is_cluster_enabled() of
+        true ->
+            [
+                %% Cluster Coordinator - handles leader election and forwarding
+                #{
+                    id => flurm_controller_cluster,
+                    start => {flurm_controller_cluster, start_link, []},
+                    restart => permanent,
+                    shutdown => 5000,
+                    type => worker,
+                    modules => [flurm_controller_cluster]
+                },
+                %% Failover Handler - handles failover scenarios
+                #{
+                    id => flurm_controller_failover,
+                    start => {flurm_controller_failover, start_link, []},
+                    restart => permanent,
+                    shutdown => 5000,
+                    type => worker,
+                    modules => [flurm_controller_failover]
+                }
+            ];
+        false ->
+            []
+    end,
+
+    Children = BaseChildren ++ ClusterChildren,
     {ok, {SupFlags, Children}}.
+
+%% @doc Check if cluster mode is enabled.
+is_cluster_enabled() ->
+    case application:get_env(flurm_controller, cluster_nodes) of
+        {ok, Nodes} when is_list(Nodes), length(Nodes) > 1 ->
+            true;
+        _ ->
+            false
+    end.
 
 %%====================================================================
 %% Internal functions

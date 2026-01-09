@@ -2,8 +2,8 @@
   "version": 1,
   "project": "flurm",
   "created": "2026-01-08T21:00:00Z",
-  "last_updated": "2026-01-08T21:30:00Z",
-  "current_phase": "phase1_foundation",
+  "last_updated": "2026-01-08T23:15:00Z",
+  "current_phase": "phase2_nodes",
   "phases": {
     "phase0_setup": {
       "name": "Project Setup",
@@ -49,12 +49,15 @@
     },
     "phase3_fault_tolerance": {
       "name": "Fault Tolerance",
-      "status": "pending",
+      "status": "completed",
       "tasks": [
-        {"id": "ra_integration", "status": "pending", "desc": "Ra consensus integration"},
-        {"id": "multi_controller", "status": "pending", "desc": "Multi-controller support"},
-        {"id": "failover", "status": "pending", "desc": "Automatic failover"},
-        {"id": "state_persistence", "status": "pending", "desc": "State persistence"}
+        {"id": "ra_integration", "status": "completed", "desc": "Ra consensus integration"},
+        {"id": "ra_machine", "status": "completed", "desc": "Ra state machine for controller"},
+        {"id": "multi_controller", "status": "completed", "desc": "Multi-controller support (cluster.erl)"},
+        {"id": "failover", "status": "completed", "desc": "Automatic failover handling"},
+        {"id": "db_ra", "status": "completed", "desc": "Database Ra machine"},
+        {"id": "db_cluster", "status": "completed", "desc": "Database cluster management"},
+        {"id": "cluster_tests", "status": "completed", "desc": "Cluster unit tests"}
       ]
     }
   },
@@ -92,7 +95,18 @@
     "apps/flurm_core/test/flurm_scheduler_tests.erl",
     "apps/flurm_controller/src/flurm_controller_acceptor.erl",
     "apps/flurm_controller/src/flurm_controller_handler.erl",
-    "apps/flurm_controller/test/flurm_controller_acceptor_tests.erl"
+    "apps/flurm_controller/src/flurm_controller_cluster.erl",
+    "apps/flurm_controller/src/flurm_controller_failover.erl",
+    "apps/flurm_controller/src/flurm_controller_ra_machine.erl",
+    "apps/flurm_controller/test/flurm_controller_acceptor_tests.erl",
+    "apps/flurm_controller/test/flurm_controller_cluster_tests.erl",
+    "apps/flurm_db/src/flurm_db_ra.erl",
+    "apps/flurm_db/src/flurm_db_cluster.erl",
+    "apps/flurm_db/src/flurm_db_ra_effects.erl",
+    "apps/flurm_db/src/flurm_db_ra_starter.erl",
+    "apps/flurm_db/src/flurm_db_app.erl",
+    "apps/flurm_db/src/flurm_db_sup.erl",
+    "apps/flurm_db/test/flurm_db_ra_tests.erl"
   ],
   "decisions": [
     {
@@ -124,17 +138,31 @@
       "topic": "TCP handling",
       "decision": "Ranch acceptor pool",
       "rationale": "Battle-tested, used by RabbitMQ and Cowboy"
+    },
+    {
+      "topic": "Consensus",
+      "decision": "Ra (Raft) for distributed state machine",
+      "rationale": "Battle-tested by RabbitMQ, multi-Raft support, Erlang-native"
+    },
+    {
+      "topic": "Failover architecture",
+      "decision": "Active-active controllers with Ra leader election",
+      "rationale": "No single point of failure, automatic failover"
     }
   ],
   "blockers": [],
   "next_actions": [
-    "Initialize git repository and create initial commit",
     "Implement flurmnd (node daemon) for Phase 2",
-    "Add Ra consensus integration for Phase 3",
+    "Add node registration protocol",
+    "Implement heartbeat mechanism",
     "Create property-based tests with PropEr"
   ],
   "test_results": {
-    "unit_tests": "66 passed, 0 failed, 6 cancelled (shutdown cleanup)",
-    "compilation": "All 6 apps compile successfully"
-  }
+    "unit_tests": "63 passed (core tests), Ra tests require running cluster",
+    "compilation": "All 6 apps compile successfully with no warnings"
+  },
+  "git_commits": [
+    {"hash": "72f0c37", "message": "Initial commit: FLURM project structure and Phase 1 foundation"},
+    {"hash": "pending", "message": "Phase 3: Ra consensus integration for fault tolerance"}
+  ]
 }

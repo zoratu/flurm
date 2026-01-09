@@ -1,7 +1,8 @@
 {application, flurm_db, [
     {description, "FLURM Database - Persistence layer using Raft consensus"},
     {vsn, "0.1.0"},
-    {registered, []},
+    {registered, [flurm_db_sup]},
+    {mod, {flurm_db_app, []}},
     {applications, [
         kernel,
         stdlib,
@@ -10,8 +11,19 @@
     {env, [
         {data_dir, "/var/lib/flurm/db"},
         {cluster_name, flurm_cluster}
+        %% Optional: specify cluster nodes or join_node
+        %% {cluster_nodes, ['flurm@node1', 'flurm@node2', 'flurm@node3']}
+        %% {join_node, 'flurm@node1'}
     ]},
-    {modules, []},
+    {modules, [
+        flurm_db,
+        flurm_db_app,
+        flurm_db_sup,
+        flurm_db_ra,
+        flurm_db_ra_effects,
+        flurm_db_ra_starter,
+        flurm_db_cluster
+    ]},
     {licenses, ["Apache-2.0"]},
     {links, []}
 ]}.
