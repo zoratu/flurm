@@ -1,13 +1,15 @@
 {application, flurm_config, [
-    {description, "FLURM Configuration - Configuration management"},
+    {description, "FLURM Configuration - Configuration management with hot reload"},
     {vsn, "0.1.0"},
-    {registered, []},
+    {registered, [flurm_config_sup, flurm_config_server]},
+    {mod, {flurm_config_app, []}},
     {applications, [
         kernel,
-        stdlib
+        stdlib,
+        lager
     ]},
     {env, [
-        {config_file, "/etc/flurm/flurm.conf"}
+        {config_file, undefined}
     ]},
     {modules, []},
     {licenses, ["GPL-3.0"]},
