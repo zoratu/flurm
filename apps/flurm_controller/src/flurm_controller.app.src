@@ -1,0 +1,23 @@
+{application, flurm_controller, [
+    {description, "FLURM Controller - flurmctld daemon (central controller)"},
+    {vsn, "0.1.0"},
+    {registered, [flurm_controller_sup]},
+    {mod, {flurm_controller_app, []}},
+    {applications, [
+        kernel,
+        stdlib,
+        ranch,
+        lager,
+        flurm_protocol,
+        flurm_core,
+        flurm_db,
+        flurm_config
+    ]},
+    {env, [
+        {listen_port, 6817},
+        {listen_address, "0.0.0.0"}
+    ]},
+    {modules, []},
+    {licenses, ["Apache-2.0"]},
+    {links, []}
+]}.

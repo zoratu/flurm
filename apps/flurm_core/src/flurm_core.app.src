@@ -1,0 +1,22 @@
+{application, flurm_core, [
+    {description, "FLURM Core - Domain logic for jobs, nodes, and partitions"},
+    {vsn, "0.1.0"},
+    {registered, [
+        flurm_job_registry,
+        flurm_job_sup
+    ]},
+    {applications, [
+        kernel,
+        stdlib,
+        flurm_config
+    ]},
+    {env, []},
+    {modules, [
+        flurm_core,
+        flurm_job,
+        flurm_job_sup,
+        flurm_job_registry
+    ]},
+    {licenses, ["Apache-2.0"]},
+    {links, []}
+]}.

@@ -1,0 +1,17 @@
+{application, flurm_db, [
+    {description, "FLURM Database - Persistence layer using Raft consensus"},
+    {vsn, "0.1.0"},
+    {registered, []},
+    {applications, [
+        kernel,
+        stdlib,
+        ra
+    ]},
+    {env, [
+        {data_dir, "/var/lib/flurm/db"},
+        {cluster_name, flurm_cluster}
+    ]},
+    {modules, []},
+    {licenses, ["Apache-2.0"]},
+    {links, []}
+]}.

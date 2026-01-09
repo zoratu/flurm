@@ -1,0 +1,18 @@
+{application, flurm_protocol, [
+    {description, "FLURM Protocol - SLURM binary protocol codec"},
+    {vsn, "0.1.0"},
+    {registered, []},
+    {applications, [
+        kernel,
+        stdlib
+    ]},
+    {env, []},
+    {modules, [
+        flurm_protocol,
+        flurm_protocol_header,
+        flurm_protocol_pack,
+        flurm_protocol_codec
+    ]},
+    {licenses, ["Apache-2.0"]},
+    {links, []}
+]}.

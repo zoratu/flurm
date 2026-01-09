@@ -1,0 +1,21 @@
+{application, flurm_node_daemon, [
+    {description, "FLURM Node Daemon - flurmnd (compute node daemon)"},
+    {vsn, "0.1.0"},
+    {registered, [flurm_node_daemon_sup]},
+    {mod, {flurm_node_daemon_app, []}},
+    {applications, [
+        kernel,
+        stdlib,
+        lager,
+        flurm_protocol,
+        flurm_core
+    ]},
+    {env, [
+        {controller_host, "localhost"},
+        {controller_port, 6817},
+        {heartbeat_interval, 10000}
+    ]},
+    {modules, []},
+    {licenses, ["Apache-2.0"]},
+    {links, []}
+]}.

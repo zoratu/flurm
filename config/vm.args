@@ -1,0 +1,55 @@
+## FLURM VM Arguments
+## These arguments are passed to the Erlang VM at startup
+
+## Node name - use -name for fully qualified, -sname for short names
+## For the controller daemon:
+-sname flurmctld
+
+## Cookie for distributed Erlang - all nodes must share the same cookie
+-setcookie flurm_cluster_cookie
+
+## Enable kernel poll (epoll on Linux, kqueue on BSD/macOS)
++K true
+
+## Enable SMP (symmetric multi-processing)
+-smp auto
+
+## Set the number of async threads (for file I/O, etc.)
++A 64
+
+## Set the process limit - SLURM may need many processes
++P 1048576
+
+## Set the port limit
++Q 65536
+
+## Enable scheduler bind type
+## Options: u (unbound), ns (no spread), ts (thread spread),
+##          ps (processor spread), s (spread), nnts (no node thread spread),
+##          nnps (no node processor spread), tnnps (thread no node processor spread),
+##          db (default bind)
++sbt db
+
+## Set scheduler wake cleanup threshold
++swct very_lazy
+
+## Set the heap size for new processes (in words)
++hms 233
+
+## Enable the heart program for node monitoring
+## -heart
+
+## Increase the distribution buffer busy limit (for large clusters)
++zdbbl 32768
+
+## Enable time warp mode for better time handling
++C multi_time_warp
+
+## Set the maximum number of ETS tables
+-env ERL_MAX_ETS_TABLES 50000
+
+## Crash dump location
+-env ERL_CRASH_DUMP /var/log/flurm/erl_crash.dump
+
+## Enable shell history
+-kernel shell_history enabled

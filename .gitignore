@@ -1,0 +1,39 @@
+# Erlang/OTP
+_build/
+deps/
+*.beam
+*.ez
+erl_crash.dump
+*.plt
+.rebar3/
+rebar.lock
+
+# IDE
+.idea/
+*.iml
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+log/
+logs/
+*.log
+
+# Test artifacts
+.eunit/
+.ct/
+cover/
+_checkouts/
+
+# Dialyzer
+.dialyzer_plt
+
+# Editor backup files
+\#*\#
+.\#*

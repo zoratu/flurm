@@ -1,0 +1,140 @@
+{
+  "version": 1,
+  "project": "flurm",
+  "created": "2026-01-08T21:00:00Z",
+  "last_updated": "2026-01-08T21:30:00Z",
+  "current_phase": "phase1_foundation",
+  "phases": {
+    "phase0_setup": {
+      "name": "Project Setup",
+      "status": "completed",
+      "tasks": [
+        {"id": "create_umbrella", "status": "completed", "desc": "Create rebar3 umbrella project"},
+        {"id": "create_apps", "status": "completed", "desc": "Create app skeletons"},
+        {"id": "add_deps", "status": "completed", "desc": "Add ranch, ra, proper dependencies"},
+        {"id": "create_docs", "status": "completed", "desc": "Create documentation"},
+        {"id": "create_checkpoint", "status": "completed", "desc": "Initialize checkpoint system"},
+        {"id": "verify_compile", "status": "completed", "desc": "Verify project compiles"}
+      ]
+    },
+    "phase1_foundation": {
+      "name": "Foundation - Protocol & Core",
+      "status": "completed",
+      "tasks": [
+        {"id": "protocol_hrl", "status": "completed", "desc": "Protocol message type macros"},
+        {"id": "protocol_header", "status": "completed", "desc": "Header encode/decode"},
+        {"id": "protocol_codec", "status": "completed", "desc": "Core codec functions"},
+        {"id": "protocol_pack", "status": "completed", "desc": "Low-level packing utilities"},
+        {"id": "job_statem", "status": "completed", "desc": "Job state machine (gen_statem)"},
+        {"id": "job_registry", "status": "completed", "desc": "Job registry with ETS"},
+        {"id": "node_genserver", "status": "completed", "desc": "Node process (gen_server)"},
+        {"id": "node_registry", "status": "completed", "desc": "Node registry with ETS"},
+        {"id": "scheduler", "status": "completed", "desc": "FIFO scheduler"},
+        {"id": "partition", "status": "completed", "desc": "Partition process"},
+        {"id": "controller_acceptor", "status": "completed", "desc": "Ranch TCP acceptor"},
+        {"id": "controller_handler", "status": "completed", "desc": "RPC handler"},
+        {"id": "tla_specs", "status": "completed", "desc": "TLA+ specifications"},
+        {"id": "unit_tests", "status": "completed", "desc": "Unit tests (66 passing)"}
+      ]
+    },
+    "phase2_nodes": {
+      "name": "Node Management",
+      "status": "pending",
+      "tasks": [
+        {"id": "flurmnd_daemon", "status": "pending", "desc": "Node daemon implementation"},
+        {"id": "node_registration", "status": "pending", "desc": "Node auto-registration"},
+        {"id": "heartbeat", "status": "pending", "desc": "Heartbeat mechanism"},
+        {"id": "cgroup_integration", "status": "pending", "desc": "Linux cgroup integration"}
+      ]
+    },
+    "phase3_fault_tolerance": {
+      "name": "Fault Tolerance",
+      "status": "pending",
+      "tasks": [
+        {"id": "ra_integration", "status": "pending", "desc": "Ra consensus integration"},
+        {"id": "multi_controller", "status": "pending", "desc": "Multi-controller support"},
+        {"id": "failover", "status": "pending", "desc": "Automatic failover"},
+        {"id": "state_persistence", "status": "pending", "desc": "State persistence"}
+      ]
+    }
+  },
+  "files_created": [
+    "README.md",
+    "rebar.config",
+    "config/sys.config",
+    "config/vm.args",
+    "docs/architecture.md",
+    "docs/protocol.md",
+    "docs/testing.md",
+    "docs/deployment.md",
+    "docs/development.md",
+    "docs/AGENT_GUIDE.md",
+    "tla/FlurmScheduler.tla",
+    "tla/FlurmJobLifecycle.tla",
+    "tla/FlurmConsensus.tla",
+    "tla/FlurmFailover.tla",
+    "tla/README.md",
+    "apps/flurm_protocol/include/flurm_protocol.hrl",
+    "apps/flurm_protocol/src/flurm_protocol_header.erl",
+    "apps/flurm_protocol/src/flurm_protocol_codec.erl",
+    "apps/flurm_protocol/src/flurm_protocol_pack.erl",
+    "apps/flurm_protocol/test/flurm_protocol_codec_tests.erl",
+    "apps/flurm_core/include/flurm_core.hrl",
+    "apps/flurm_core/src/flurm_job.erl",
+    "apps/flurm_core/src/flurm_job_sup.erl",
+    "apps/flurm_core/src/flurm_job_registry.erl",
+    "apps/flurm_core/src/flurm_node.erl",
+    "apps/flurm_core/src/flurm_node_sup.erl",
+    "apps/flurm_core/src/flurm_node_registry.erl",
+    "apps/flurm_core/src/flurm_scheduler.erl",
+    "apps/flurm_core/src/flurm_partition.erl",
+    "apps/flurm_core/test/flurm_job_tests.erl",
+    "apps/flurm_core/test/flurm_scheduler_tests.erl",
+    "apps/flurm_controller/src/flurm_controller_acceptor.erl",
+    "apps/flurm_controller/src/flurm_controller_handler.erl",
+    "apps/flurm_controller/test/flurm_controller_acceptor_tests.erl"
+  ],
+  "decisions": [
+    {
+      "topic": "Project structure",
+      "decision": "Rebar3 umbrella with 6 apps",
+      "rationale": "Clean separation of concerns, independent compilation"
+    },
+    {
+      "topic": "Binary protocol parsing",
+      "decision": "Erlang binary pattern matching with big-endian",
+      "rationale": "Zero-copy, native performance, matches SLURM wire format"
+    },
+    {
+      "topic": "Job lifecycle",
+      "decision": "gen_statem with 9 states",
+      "rationale": "Clean state machine semantics, built-in timeouts"
+    },
+    {
+      "topic": "Resource tracking",
+      "decision": "ETS tables with multiple indexes",
+      "rationale": "Fast concurrent reads, process monitors for cleanup"
+    },
+    {
+      "topic": "Scheduling algorithm",
+      "decision": "FIFO with periodic scheduling cycles",
+      "rationale": "Simple initial implementation, can add backfill later"
+    },
+    {
+      "topic": "TCP handling",
+      "decision": "Ranch acceptor pool",
+      "rationale": "Battle-tested, used by RabbitMQ and Cowboy"
+    }
+  ],
+  "blockers": [],
+  "next_actions": [
+    "Initialize git repository and create initial commit",
+    "Implement flurmnd (node daemon) for Phase 2",
+    "Add Ra consensus integration for Phase 3",
+    "Create property-based tests with PropEr"
+  ],
+  "test_results": {
+    "unit_tests": "66 passed, 0 failed, 6 cancelled (shutdown cleanup)",
+    "compilation": "All 6 apps compile successfully"
+  }
+}
