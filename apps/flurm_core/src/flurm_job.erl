@@ -33,7 +33,11 @@
     signal_job_complete/2,
     signal_cleanup_complete/1,
     signal_node_failure/2,
-    get_state/1
+    get_state/1,
+    preempt/3,
+    suspend/1,
+    resume/1,
+    set_priority/2
 ]).
 
 %% gen_statem callbacks
@@ -49,6 +53,7 @@
     pending/3,
     configuring/3,
     running/3,
+    suspended/3,
     completing/3,
     completed/3,
     cancelled/3,
@@ -156,6 +161,48 @@ get_state(Pid) when is_pid(Pid) ->
 get_state(JobId) when is_integer(JobId) ->
     case flurm_job_registry:lookup_job(JobId) of
         {ok, Pid} -> get_state(Pid);
+        {error, not_found} -> {error, job_not_found}
+    end.
+
+%% @doc Preempt a job (for scheduler preemption).
+%% Mode: requeue | cancel | checkpoint
+%% GraceTime: seconds to allow graceful shutdown
+-spec preempt(pid() | job_id(), atom(), pos_integer()) -> ok | {error, term()}.
+preempt(Pid, Mode, GraceTime) when is_pid(Pid) ->
+    gen_statem:call(Pid, {preempt, Mode, GraceTime});
+preempt(JobId, Mode, GraceTime) when is_integer(JobId) ->
+    case flurm_job_registry:lookup_job(JobId) of
+        {ok, Pid} -> preempt(Pid, Mode, GraceTime);
+        {error, not_found} -> {error, job_not_found}
+    end.
+
+%% @doc Suspend a running job.
+-spec suspend(pid() | job_id()) -> ok | {error, term()}.
+suspend(Pid) when is_pid(Pid) ->
+    gen_statem:call(Pid, suspend);
+suspend(JobId) when is_integer(JobId) ->
+    case flurm_job_registry:lookup_job(JobId) of
+        {ok, Pid} -> suspend(Pid);
+        {error, not_found} -> {error, job_not_found}
+    end.
+
+%% @doc Resume a suspended job.
+-spec resume(pid() | job_id()) -> ok | {error, term()}.
+resume(Pid) when is_pid(Pid) ->
+    gen_statem:call(Pid, resume);
+resume(JobId) when is_integer(JobId) ->
+    case flurm_job_registry:lookup_job(JobId) of
+        {ok, Pid} -> resume(Pid);
+        {error, not_found} -> {error, job_not_found}
+    end.
+
+%% @doc Set job priority (for priority adjustments).
+-spec set_priority(pid() | job_id(), integer()) -> ok | {error, term()}.
+set_priority(Pid, Priority) when is_pid(Pid), is_integer(Priority) ->
+    gen_statem:call(Pid, {set_priority, Priority});
+set_priority(JobId, Priority) when is_integer(JobId) ->
+    case flurm_job_registry:lookup_job(JobId) of
+        {ok, Pid} -> set_priority(Pid, Priority);
         {error, not_found} -> {error, job_not_found}
     end.
 
@@ -327,6 +374,37 @@ running({call, From}, cancel, Data) ->
     NewData = Data#job_data{end_time = erlang:timestamp()},
     {next_state, cancelled, NewData, [{reply, From, ok}]};
 
+running({call, From}, {preempt, requeue, _GraceTime}, Data) ->
+    %% Preempt and requeue - return to pending
+    NewData = Data#job_data{
+        allocated_nodes = [],
+        start_time = undefined
+    },
+    {next_state, pending, NewData, [{reply, From, ok}]};
+
+running({call, From}, {preempt, cancel, _GraceTime}, Data) ->
+    %% Preempt and cancel - terminate job
+    NewData = Data#job_data{end_time = erlang:timestamp()},
+    {next_state, cancelled, NewData, [{reply, From, ok}]};
+
+running({call, From}, {preempt, checkpoint, _GraceTime}, Data) ->
+    %% Checkpoint preemption - save state then requeue
+    %% In real implementation, would save checkpoint here
+    NewData = Data#job_data{
+        allocated_nodes = [],
+        start_time = undefined
+    },
+    {next_state, pending, NewData, [{reply, From, ok}]};
+
+running({call, From}, suspend, Data) ->
+    %% Suspend the job
+    {next_state, suspended, Data, [{reply, From, ok}]};
+
+running({call, From}, {set_priority, NewPriority}, Data) ->
+    ClampedPriority = max(?MIN_PRIORITY, min(?MAX_PRIORITY, NewPriority)),
+    NewData = Data#job_data{priority = ClampedPriority},
+    {keep_state, NewData, [{reply, From, ok}]};
+
 running({call, From}, _Msg, Data) ->
     {keep_state, Data, [{reply, From, {error, invalid_operation}}]};
 
@@ -354,6 +432,68 @@ running(state_timeout, job_timeout, Data) ->
     {next_state, timeout, NewData};
 
 running(info, _Msg, Data) ->
+    {keep_state, Data}.
+
+%%====================================================================
+%% State: suspended
+%% Job is paused, resources still allocated
+%%====================================================================
+
+suspended(enter, _OldState, Data) ->
+    notify_state_change(Data#job_data.job_id, suspended),
+    {keep_state, Data};
+
+suspended({call, From}, get_job_id, #job_data{job_id = JobId} = Data) ->
+    {keep_state, Data, [{reply, From, JobId}]};
+
+suspended({call, From}, get_info, Data) ->
+    Info = build_job_info(suspended, Data),
+    {keep_state, Data, [{reply, From, {ok, Info}}]};
+
+suspended({call, From}, get_state, Data) ->
+    {keep_state, Data, [{reply, From, {ok, suspended}}]};
+
+suspended({call, From}, resume, Data) ->
+    %% Resume the job - return to running
+    {next_state, running, Data, [{reply, From, ok}]};
+
+suspended({call, From}, cancel, Data) ->
+    NewData = Data#job_data{end_time = erlang:timestamp()},
+    {next_state, cancelled, NewData, [{reply, From, ok}]};
+
+suspended({call, From}, {preempt, requeue, _GraceTime}, Data) ->
+    %% Preempt suspended job - return to pending
+    NewData = Data#job_data{
+        allocated_nodes = [],
+        start_time = undefined
+    },
+    {next_state, pending, NewData, [{reply, From, ok}]};
+
+suspended({call, From}, {preempt, cancel, _GraceTime}, Data) ->
+    NewData = Data#job_data{end_time = erlang:timestamp()},
+    {next_state, cancelled, NewData, [{reply, From, ok}]};
+
+suspended({call, From}, {set_priority, NewPriority}, Data) ->
+    ClampedPriority = max(?MIN_PRIORITY, min(?MAX_PRIORITY, NewPriority)),
+    NewData = Data#job_data{priority = ClampedPriority},
+    {keep_state, NewData, [{reply, From, ok}]};
+
+suspended({call, From}, _Msg, Data) ->
+    {keep_state, Data, [{reply, From, {error, invalid_operation}}]};
+
+suspended(cast, {node_failure, NodeName}, Data) ->
+    case lists:member(NodeName, Data#job_data.allocated_nodes) of
+        true ->
+            NewData = Data#job_data{end_time = erlang:timestamp()},
+            {next_state, node_fail, NewData};
+        false ->
+            {keep_state, Data}
+    end;
+
+suspended(cast, _Msg, Data) ->
+    {keep_state, Data};
+
+suspended(info, _Msg, Data) ->
     {keep_state, Data}.
 
 %%====================================================================

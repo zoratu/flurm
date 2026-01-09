@@ -27,13 +27,15 @@
     unregister_node/1,
     lookup_node/1,
     list_nodes/0,
+    list_all_nodes/0,
     list_nodes_by_state/1,
     list_nodes_by_partition/1,
     get_available_nodes/1,
     update_state/2,
     update_entry/2,
     get_node_entry/1,
-    count_by_state/0
+    count_by_state/0,
+    count_nodes/0
 ]).
 
 %% gen_server callbacks
@@ -168,6 +170,17 @@ update_entry(NodeName, #node_entry{} = Entry) when is_binary(NodeName) ->
 count_by_state() ->
     States = [up, down, drain, maint],
     maps:from_list([{S, length(list_nodes_by_state(S))} || S <- States]).
+
+%% @doc Get total count of all registered nodes.
+-spec count_nodes() -> non_neg_integer().
+count_nodes() ->
+    ets:info(?NODES_BY_NAME, size).
+
+%% @doc List all registered nodes (alias for list_nodes/0).
+%% Returns a list of {node_name, pid} tuples.
+-spec list_all_nodes() -> [{binary(), pid()}].
+list_all_nodes() ->
+    list_nodes().
 
 %%====================================================================
 %% gen_server callbacks
