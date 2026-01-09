@@ -81,8 +81,9 @@ init(_Config) ->
 
 %% @doc Apply a command to the state machine.
 %% This is called after the command has been replicated to a quorum.
+%% Always returns a 3-tuple for consistency: {State, Result, Effects}
 -spec apply(ra_machine:command_meta_data(), term(), #ra_state{}) ->
-    {#ra_state{}, term()} | {#ra_state{}, term(), ra_machine:effects()}.
+    {#ra_state{}, term(), ra_machine:effects()}.
 
 %% Submit a new job
 apply(_Meta, {submit_job, #ra_job_spec{} = JobSpec}, State) ->
@@ -102,7 +103,7 @@ apply(_Meta, {cancel_job, JobId}, State) ->
         {ok, Job} ->
             case Job#ra_job.state of
                 S when S =:= completed; S =:= cancelled; S =:= failed ->
-                    {State, {error, already_terminal}};
+                    {State, {error, already_terminal}, []};
                 _ ->
                     Now = erlang:system_time(second),
                     UpdatedJob = Job#ra_job{
@@ -116,7 +117,7 @@ apply(_Meta, {cancel_job, JobId}, State) ->
                     {NewState, ok, Effects}
             end;
         error ->
-            {State, {error, not_found}}
+            {State, {error, not_found}, []}
     end;
 
 %% Update job state
@@ -131,7 +132,7 @@ apply(_Meta, {update_job_state, JobId, NewJobState}, State) ->
                        [JobId, Job#ra_job.state, NewJobState]}],
             {NewState, ok, Effects};
         error ->
-            {State, {error, not_found}}
+            {State, {error, not_found}, []}
     end;
 
 %% Allocate nodes to a job
@@ -153,10 +154,10 @@ apply(_Meta, {allocate_job, JobId, Nodes}, State) when is_list(Nodes) ->
                                [UpdatedJob, Nodes]}],
                     {NewState, ok, Effects};
                 Other ->
-                    {State, {error, {invalid_state, Other}}}
+                    {State, {error, {invalid_state, Other}}, []}
             end;
         error ->
-            {State, {error, not_found}}
+            {State, {error, not_found}, []}
     end;
 
 %% Set job exit code
@@ -180,7 +181,7 @@ apply(_Meta, {set_job_exit_code, JobId, ExitCode}, State) ->
                        [UpdatedJob, ExitCode]}],
             {NewState, ok, Effects};
         error ->
-            {State, {error, not_found}}
+            {State, {error, not_found}, []}
     end;
 
 %% Register a node
@@ -220,7 +221,7 @@ apply(_Meta, {update_node_state, NodeName, NewNodeState}, State) ->
                        [NodeName, Node#ra_node.state, NewNodeState]}],
             {NewState, ok, Effects};
         error ->
-            {State, {error, not_found}}
+            {State, {error, not_found}, []}
     end;
 
 %% Unregister a node
@@ -233,7 +234,7 @@ apply(_Meta, {unregister_node, NodeName}, State) ->
             Effects = [{mod_call, flurm_db_ra_effects, node_unregistered, [Node]}],
             {NewState, ok, Effects};
         error ->
-            {State, {error, not_found}}
+            {State, {error, not_found}, []}
     end;
 
 %% Create a partition
@@ -241,7 +242,7 @@ apply(_Meta, {create_partition, #ra_partition_spec{} = PartSpec}, State) ->
     PartName = PartSpec#ra_partition_spec.name,
     case maps:is_key(PartName, State#ra_state.partitions) of
         true ->
-            {State, {error, already_exists}};
+            {State, {error, already_exists}, []};
         false ->
             Partition = make_partition_record(PartSpec),
             NewState = State#ra_state{
@@ -261,12 +262,12 @@ apply(_Meta, {delete_partition, PartName}, State) ->
             Effects = [{mod_call, flurm_db_ra_effects, partition_deleted, [Partition]}],
             {NewState, ok, Effects};
         error ->
-            {State, {error, not_found}}
+            {State, {error, not_found}, []}
     end;
 
 %% Unknown command
 apply(_Meta, Unknown, State) ->
-    {State, {error, {unknown_command, Unknown}}}.
+    {State, {error, {unknown_command, Unknown}}, []}.
 
 %% @doc Called when the Ra server enters a new state (leader, follower, etc.)
 -spec state_enter(ra_server:ra_state() | eol, #ra_state{}) -> ra_machine:effects().
