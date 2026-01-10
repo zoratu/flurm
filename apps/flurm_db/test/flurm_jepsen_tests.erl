@@ -432,11 +432,33 @@ simulate_ra_cas(Key, Expected, New, State) ->
 pick_node(#jepsen_state{nodes = Nodes}) ->
     lists:nth(rand:uniform(length(Nodes)), Nodes).
 
-is_partitioned_from_leader(Node, #jepsen_state{partitions = Partitions}) ->
-    %% Simplified: check if node is in minority partition
+is_partitioned_from_leader(Node, #jepsen_state{nodes = AllNodes, partitions = Partitions}) ->
+    %% Calculate which nodes this node can actually reach
+    TotalNodes = length(AllNodes),
+    ReachableNodes = get_reachable_nodes(Node, AllNodes, Partitions),
+    ReachableCount = length(ReachableNodes),
+
+    %% Need majority (more than half) to form quorum
+    MajorityNeeded = (TotalNodes div 2) + 1,
+
+    %% Node is partitioned if it can't reach a majority
+    ReachableCount < MajorityNeeded.
+
+%% Get all nodes reachable from a given node considering all partitions
+get_reachable_nodes(Node, AllNodes, Partitions) ->
+    %% Start with all nodes reachable
+    %% Then remove nodes that are blocked by partitions
+    lists:filter(fun(OtherNode) ->
+        not is_blocked_by_partition(Node, OtherNode, Partitions)
+    end, AllNodes).
+
+%% Check if communication between two nodes is blocked by any partition
+is_blocked_by_partition(Node1, Node2, Partitions) ->
+    Node1 =/= Node2 andalso
     lists:any(fun({Set1, Set2}) ->
-        (lists:member(Node, Set1) andalso length(Set1) < length(Set2)) orelse
-        (lists:member(Node, Set2) andalso length(Set2) < length(Set1))
+        %% Blocked if nodes are on opposite sides of this partition
+        (lists:member(Node1, Set1) andalso lists:member(Node2, Set2)) orelse
+        (lists:member(Node1, Set2) andalso lists:member(Node2, Set1))
     end, Partitions).
 
 %%====================================================================
@@ -497,7 +519,7 @@ is_eventually_consistent(History) ->
         %% At most one write should succeed per key in same time window
         %% (Simplified check)
         length(Writes) < 10
-    end, KeyWrites).
+    end, maps:to_list(KeyWrites)).
 
 is_write_op({write, _, _}) -> true;
 is_write_op({cas, _, _, _}) -> true;
