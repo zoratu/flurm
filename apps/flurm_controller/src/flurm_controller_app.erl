@@ -39,7 +39,7 @@
 
 %% @doc Start the FLURM controller application.
 %% Initializes configuration, starts supervisor tree, initializes
-%% the Ra cluster (if configured), and launches the Ranch TCP listener.
+%% the Ra cluster (if configured), and launches the Ranch TCP listeners.
 start(_StartType, _StartArgs) ->
     log(info, "========================================"),
     log(info, "Starting FLURM Controller (flurmctld)"),
@@ -54,28 +54,34 @@ start(_StartType, _StartArgs) ->
     %% Start the supervisor
     case flurm_controller_sup:start_link() of
         {ok, Pid} ->
-            %% Start Ranch listener for client connections
+            %% Start Ranch listener for client connections (SLURM protocol)
             case flurm_controller_sup:start_listener() of
                 {ok, _ListenerPid} ->
-                    log_startup_complete(),
-                    {ok, Pid};
+                    ok;
                 {error, Reason} ->
-                    log(error, "Failed to start listener: ~p", [Reason]),
-                    %% Still return ok - the app can run without listener
-                    %% and retry later
-                    {ok, Pid}
-            end;
+                    log(error, "Failed to start client listener: ~p", [Reason])
+            end,
+            %% Start Ranch listener for node daemon connections (internal protocol)
+            case flurm_controller_sup:start_node_listener() of
+                {ok, _NodeListenerPid} ->
+                    ok;
+                {error, NodeReason} ->
+                    log(error, "Failed to start node listener: ~p", [NodeReason])
+            end,
+            log_startup_complete(),
+            {ok, Pid};
         {error, Reason} = Error ->
             log(error, "Failed to start supervisor: ~p", [Reason]),
             Error
     end.
 
 %% @doc Prepare for application stop.
-%% Performs graceful shutdown of listener before supervisor stops.
+%% Performs graceful shutdown of listeners before supervisor stops.
 prep_stop(State) ->
     log(info, "Preparing to stop FLURM Controller..."),
     %% Stop accepting new connections
     _ = flurm_controller_sup:stop_listener(),
+    _ = flurm_controller_sup:stop_node_listener(),
     %% Allow time for in-flight requests to complete
     timer:sleep(1000),
     State.
@@ -98,10 +104,17 @@ status() ->
         Info ->
             Info
     end,
+    NodeListenerInfo = case flurm_controller_sup:node_listener_info() of
+        {error, not_found} ->
+            #{status => stopped};
+        NInfo ->
+            NInfo
+    end,
     #{
         application => flurm_controller,
         status => running,
         listener => ListenerInfo,
+        node_listener => NodeListenerInfo,
         jobs => job_stats(),
         nodes => node_stats(),
         partitions => partition_stats()
@@ -192,11 +205,15 @@ connect_to_cluster_nodes(ClusterNodes) ->
 %% @doc Log startup completion.
 log_startup_complete() ->
     Config = config(),
+    NodePort = get_config(node_listen_port, 6818),
     log(info, "----------------------------------------"),
     log(info, "FLURM Controller ready"),
-    log(info, "Listening on ~s:~p",
+    log(info, "SLURM clients: ~s:~p",
                [maps:get(listen_address, Config),
                 maps:get(listen_port, Config)]),
+    log(info, "Node daemons: ~s:~p",
+               [maps:get(listen_address, Config),
+                NodePort]),
     log(info, "----------------------------------------").
 
 %% @doc Get configuration value with default.

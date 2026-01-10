@@ -312,12 +312,26 @@ try_allocate_job(JobId, JobPid, JobInfo, State) ->
                     NodeNames = [N#node_entry.name || N <- Nodes],
                     case flurm_job:allocate(JobPid, NodeNames) of
                         ok ->
-                            %% Add to running set
-                            NewRunning = sets:add_element(
-                                JobId,
-                                State#scheduler_state.running_jobs
-                            ),
-                            {ok, State#scheduler_state{running_jobs = NewRunning}};
+                            %% Dispatch job to nodes for execution
+                            UpdatedInfo = JobInfo#{allocated_nodes => NodeNames},
+                            case flurm_job_dispatcher:dispatch_job(JobId, UpdatedInfo) of
+                                ok ->
+                                    %% Add to running set
+                                    NewRunning = sets:add_element(
+                                        JobId,
+                                        State#scheduler_state.running_jobs
+                                    ),
+                                    {ok, State#scheduler_state{running_jobs = NewRunning}};
+                                {error, DispatchErr} ->
+                                    %% Failed to dispatch - rollback allocation
+                                    lists:foreach(
+                                        fun(Node) ->
+                                            catch flurm_node:release(Node#node_entry.name, JobId)
+                                        end,
+                                        Nodes
+                                    ),
+                                    {error, {dispatch_failed, DispatchErr}}
+                            end;
                         {error, Reason} ->
                             %% Rollback allocation
                             lists:foreach(
