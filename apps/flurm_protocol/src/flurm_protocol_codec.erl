@@ -5,9 +5,9 @@
 %%% protocol messages. It handles the complete message wire format:
 %%%
 %%% Wire format:
-%%%   <<Length:32/big, Header:10/binary, Body/binary>>
+%%%   <<Length:32/big, Header:12/binary, Body/binary>>
 %%%
-%%% Where Length = byte_size(Header) + byte_size(Body) = 10 + body_size
+%%% Where Length = byte_size(Header) + byte_size(Body) = 12 + body_size
 %%%
 %%% The codec supports the following priority message types:
 %%% Requests:
@@ -48,8 +48,8 @@
 
 %% @doc Decode a complete message from wire format.
 %%
-%% Expects: <<Length:32/big, Header:10/binary, Body:BodySize/binary>>
-%% where Length = 10 + BodySize
+%% Expects: <<Length:32/big, Header:12/binary, Body:BodySize/binary>>
+%% where Length = 12 + BodySize
 %%
 %% Returns {ok, Message, Rest} on success, where Message is a #slurm_msg{}
 %% record with the body decoded to an appropriate record type.

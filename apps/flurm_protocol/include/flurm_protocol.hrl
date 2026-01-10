@@ -18,7 +18,7 @@
 
 %% Protocol header size (length prefix + header)
 -define(SLURM_LENGTH_PREFIX_SIZE, 4).  % 4-byte length prefix
--define(SLURM_HEADER_SIZE, 10).        % 10-byte message header
+-define(SLURM_HEADER_SIZE, 12).        % 12-byte message header (version:16, flags:16, msg_index:16, msg_type:16, body_length:32)
 
 %% Maximum message size (64 MB)
 -define(SLURM_MAX_MESSAGE_SIZE, 67108864).
@@ -203,15 +203,15 @@
 %%% Record Definitions
 %%%===================================================================
 
-%% SLURM message header (10 bytes)
-%% Wire format: version(2) + flags(2) + msg_index(2) + msg_type(2) + body_length(2)
-%% Note: body_length in header is different from length prefix
+%% SLURM message header (12 bytes)
+%% Wire format: version(2) + flags(2) + msg_index(2) + msg_type(2) + body_length(4)
+%% Note: body_length in header is 32-bit to support large messages (up to 64MB)
 -record(slurm_header, {
     version = ?SLURM_PROTOCOL_VERSION :: non_neg_integer(),
     flags = 0 :: non_neg_integer(),
     msg_index = 0 :: non_neg_integer(),
     msg_type = 0 :: non_neg_integer(),
-    body_length = 0 :: non_neg_integer()
+    body_length = 0 :: non_neg_integer()  % 32-bit, not 16-bit
 }).
 
 %% Complete SLURM message

@@ -53,7 +53,7 @@ header_roundtrip_test_() ->
         end},
 
         {"header size is correct", fun() ->
-            ?assertEqual(10, flurm_protocol_header:header_size())
+            ?assertEqual(12, flurm_protocol_header:header_size())
         end}
     ].
 
@@ -62,12 +62,12 @@ header_error_test_() ->
         {"incomplete header", fun() ->
             Binary = <<1, 2, 3, 4, 5>>,  % Only 5 bytes
             Result = flurm_protocol_header:parse_header(Binary),
-            ?assertMatch({error, {incomplete_header, 5, 10}}, Result)
+            ?assertMatch({error, {incomplete_header, 5, 12}}, Result)
         end},
 
         {"empty header", fun() ->
             Result = flurm_protocol_header:parse_header(<<>>),
-            ?assertMatch({error, {incomplete_header, 0, 10}}, Result)
+            ?assertMatch({error, {incomplete_header, 0, 12}}, Result)
         end},
 
         {"invalid header record", fun() ->
