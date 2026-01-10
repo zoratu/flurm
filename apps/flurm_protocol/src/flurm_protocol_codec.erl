@@ -30,6 +30,11 @@
     decode/1,
     encode/2,
 
+    %% Full wire format with extra data (auth credentials)
+    decode_with_extra/1,
+    encode_with_extra/2,
+    encode_with_extra/3,
+
     %% Body encode/decode
     decode_body/2,
     encode_body/2,
@@ -111,6 +116,93 @@ encode(MsgType, Body) ->
             BodyError
     end.
 
+%% @doc Decode a complete message with extra data (auth credentials) from wire format.
+%%
+%% Wire format: <<Length:32/big, Header:12/binary, Body/binary, ExtraData:39/binary>>
+%% where Length = 12 + BodySize + 39
+%%
+%% Returns {ok, Message, ExtraInfo, Rest} on success.
+-spec decode_with_extra(binary()) -> {ok, #slurm_msg{}, map(), binary()} | {error, term()}.
+decode_with_extra(<<Length:32/big, Rest/binary>> = _Data)
+  when byte_size(Rest) >= Length, Length >= ?SLURM_HEADER_SIZE ->
+    ExtraSize = flurm_protocol_auth:extra_size(),
+    <<MsgData:Length/binary, Remaining/binary>> = Rest,
+    <<HeaderBin:?SLURM_HEADER_SIZE/binary, BodyAndExtra/binary>> = MsgData,
+    case flurm_protocol_header:parse_header(HeaderBin) of
+        {ok, Header, <<>>} ->
+            BodyLen = Header#slurm_header.body_length,
+            case BodyAndExtra of
+                <<BodyBin:BodyLen/binary, ExtraData/binary>> when byte_size(ExtraData) >= ExtraSize ->
+                    MsgType = Header#slurm_header.msg_type,
+                    case decode_body(MsgType, BodyBin) of
+                        {ok, Body} ->
+                            {ok, ExtraInfo} = flurm_protocol_auth:decode_extra(ExtraData),
+                            Msg = #slurm_msg{header = Header, body = Body},
+                            {ok, Msg, ExtraInfo, Remaining};
+                        {error, _} = BodyError ->
+                            BodyError
+                    end;
+                <<BodyBin:BodyLen/binary, ExtraData/binary>> ->
+                    %% Extra data shorter than expected - decode what we have
+                    MsgType = Header#slurm_header.msg_type,
+                    case decode_body(MsgType, BodyBin) of
+                        {ok, Body} ->
+                            {ok, ExtraInfo} = flurm_protocol_auth:decode_extra(ExtraData),
+                            Msg = #slurm_msg{header = Header, body = Body},
+                            {ok, Msg, ExtraInfo, Remaining};
+                        {error, _} = BodyError ->
+                            BodyError
+                    end;
+                _ ->
+                    {error, {body_extraction_failed, BodyLen, byte_size(BodyAndExtra)}}
+            end;
+        {error, _} = HeaderError ->
+            HeaderError
+    end;
+decode_with_extra(<<Length:32/big, Rest/binary>>)
+  when byte_size(Rest) < Length ->
+    {error, {incomplete_message, Length, byte_size(Rest)}};
+decode_with_extra(Binary) when byte_size(Binary) < 4 ->
+    {error, {incomplete_length_prefix, byte_size(Binary)}};
+decode_with_extra(_) ->
+    {error, invalid_message_data}.
+
+%% @doc Encode a message with extra data (auth credentials) to wire format.
+%%
+%% Uses default hostname for extra data.
+%% Wire format: <<Length:32/big, Header:12/binary, Body/binary, ExtraData:39/binary>>
+-spec encode_with_extra(non_neg_integer(), term()) -> {ok, binary()} | {error, term()}.
+encode_with_extra(MsgType, Body) ->
+    encode_with_extra(MsgType, Body, flurm_protocol_auth:default_hostname()).
+
+%% @doc Encode a message with extra data (auth credentials) to wire format.
+%%
+%% Takes message type, body, and hostname for extra data.
+%% Wire format: <<Length:32/big, Header:12/binary, Body/binary, ExtraData:39/binary>>
+-spec encode_with_extra(non_neg_integer(), term(), binary()) -> {ok, binary()} | {error, term()}.
+encode_with_extra(MsgType, Body, Hostname) ->
+    case encode_body(MsgType, Body) of
+        {ok, BodyBin} ->
+            Header = #slurm_header{
+                version = flurm_protocol_header:protocol_version(),
+                flags = 0,
+                msg_index = 0,
+                msg_type = MsgType,
+                body_length = byte_size(BodyBin)
+            },
+            case flurm_protocol_header:encode_header(Header) of
+                {ok, HeaderBin} ->
+                    ExtraData = flurm_protocol_auth:encode_extra(MsgType, Hostname),
+                    %% Length includes header + body + extra data
+                    Length = byte_size(HeaderBin) + byte_size(BodyBin) + byte_size(ExtraData),
+                    {ok, <<Length:32/big, HeaderBin/binary, BodyBin/binary, ExtraData/binary>>};
+                {error, _} = HeaderError ->
+                    HeaderError
+            end;
+        {error, _} = BodyError ->
+            BodyError
+    end.
+
 %%%===================================================================
 %%% Body Encoding/Decoding
 %%%===================================================================
@@ -140,6 +232,10 @@ decode_body(?REQUEST_SUBMIT_BATCH_JOB, Binary) ->
 %% REQUEST_CANCEL_JOB (4006)
 decode_body(?REQUEST_CANCEL_JOB, Binary) ->
     decode_cancel_job_request(Binary);
+
+%% REQUEST_KILL_JOB (5032) - used by scancel
+decode_body(?REQUEST_KILL_JOB, Binary) ->
+    decode_kill_job_request(Binary);
 
 %% RESPONSE_SLURM_RC (8001)
 decode_body(?RESPONSE_SLURM_RC, Binary) ->
@@ -179,6 +275,10 @@ encode_body(?REQUEST_SUBMIT_BATCH_JOB, Req) ->
 %% REQUEST_CANCEL_JOB (4006)
 encode_body(?REQUEST_CANCEL_JOB, Req) ->
     encode_cancel_job_request(Req);
+
+%% REQUEST_KILL_JOB (5032)
+encode_body(?REQUEST_KILL_JOB, Req) ->
+    encode_kill_job_request(Req);
 
 %% RESPONSE_SLURM_RC (8001)
 encode_body(?RESPONSE_SLURM_RC, Resp) ->
@@ -242,6 +342,7 @@ message_type_name(?RESPONSE_RESOURCE_ALLOCATION) -> response_resource_allocation
 message_type_name(?REQUEST_SUBMIT_BATCH_JOB) -> request_submit_batch_job;
 message_type_name(?RESPONSE_SUBMIT_BATCH_JOB) -> response_submit_batch_job;
 message_type_name(?REQUEST_CANCEL_JOB) -> request_cancel_job;
+message_type_name(?REQUEST_KILL_JOB) -> request_kill_job;
 message_type_name(?REQUEST_JOB_STEP_CREATE) -> request_job_step_create;
 message_type_name(?RESPONSE_JOB_STEP_CREATE) -> response_job_step_create;
 message_type_name(?RESPONSE_SLURM_RC) -> response_slurm_rc;
@@ -273,6 +374,7 @@ is_request(?REQUEST_STEP_COMPLETE) -> true;
 is_request(?REQUEST_LAUNCH_TASKS) -> true;
 is_request(?REQUEST_SIGNAL_TASKS) -> true;
 is_request(?REQUEST_TERMINATE_TASKS) -> true;
+is_request(?REQUEST_KILL_JOB) -> true;
 %% Fallback: check if it starts with REQUEST_ pattern (1xxx, 2xxx odd, 4xxx, 5xxx)
 is_request(Type) when Type >= 1001, Type =< 1029 -> true;
 is_request(_) -> false.
@@ -435,6 +537,52 @@ decode_cancel_job_request(Binary) ->
             {ok, #cancel_job_request{}};
         _ ->
             {error, invalid_cancel_job_request}
+    end.
+
+%% Decode REQUEST_KILL_JOB (5032)
+%% Based on observed wire format from scancel: 22 bytes body
+decode_kill_job_request(Binary) ->
+    %% Try string-based format first (SLURM 19.05+)
+    case decode_kill_job_string_format(Binary) of
+        {ok, _} = Result -> Result;
+        {error, _} ->
+            %% Fallback: try numeric format
+            decode_kill_job_numeric_format(Binary)
+    end.
+
+decode_kill_job_string_format(Binary) ->
+    case flurm_protocol_pack:unpack_string(Binary) of
+        {ok, JobIdStr, Rest1} when byte_size(Rest1) >= 8 ->
+            <<StepId:32/big-signed, Signal:16/big, Flags:16/big, Rest2/binary>> = Rest1,
+            {ok, Sibling, _Rest3} = flurm_protocol_pack:unpack_string(Rest2),
+            {ok, #kill_job_request{
+                job_id = 0,
+                job_id_str = ensure_binary(JobIdStr),
+                step_id = StepId,
+                signal = Signal,
+                flags = Flags,
+                sibling = ensure_binary(Sibling)
+            }};
+        _ ->
+            {error, not_string_format}
+    end.
+
+decode_kill_job_numeric_format(Binary) ->
+    case Binary of
+        <<JobId:32/big, StepId:32/big-signed, Signal:16/big, Flags:16/big>> ->
+            {ok, #kill_job_request{
+                job_id = JobId,
+                step_id = StepId,
+                signal = Signal,
+                flags = Flags
+            }};
+        <<JobId:32/big, StepId:32/big-signed>> ->
+            {ok, #kill_job_request{
+                job_id = JobId,
+                step_id = StepId
+            }};
+        _ ->
+            {error, invalid_kill_job_request}
     end.
 
 %%%===================================================================
@@ -620,6 +768,21 @@ encode_cancel_job_request(#cancel_job_request{
     Parts = [
         <<JobId:32/big, StepId:32/big, Signal:32/big, Flags:32/big>>,
         flurm_protocol_pack:pack_string(JobIdStr)
+    ],
+    {ok, iolist_to_binary(Parts)}.
+
+%% Encode REQUEST_KILL_JOB (5032)
+encode_kill_job_request(#kill_job_request{
+    job_id_str = JobIdStr,
+    step_id = StepId,
+    signal = Signal,
+    flags = Flags,
+    sibling = Sibling
+}) ->
+    Parts = [
+        flurm_protocol_pack:pack_string(JobIdStr),
+        <<StepId:32/big-signed, Signal:16/big, Flags:16/big>>,
+        flurm_protocol_pack:pack_string(Sibling)
     ],
     {ok, iolist_to_binary(Parts)}.
 

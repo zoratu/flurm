@@ -119,6 +119,49 @@ handle(#slurm_header{msg_type = ?REQUEST_JOB_INFO_SINGLE}, Body) ->
     %% Delegate to standard job info handler
     handle(#slurm_header{msg_type = ?REQUEST_JOB_INFO}, Body);
 
+%% REQUEST_KILL_JOB (5032) -> RESPONSE_SLURM_RC
+%% Used by scancel in SLURM 19.05+
+%% Write operation - requires leader or forwarding to leader
+handle(#slurm_header{msg_type = ?REQUEST_KILL_JOB},
+       #kill_job_request{job_id = JobId, job_id_str = JobIdStr}) ->
+    %% Use job_id if non-zero, otherwise parse from job_id_str
+    EffectiveJobId = case JobId of
+        0 when byte_size(JobIdStr) > 0 ->
+            try binary_to_integer(JobIdStr) catch _:_ -> 0 end;
+        _ ->
+            JobId
+    end,
+    lager:info("Handling kill job request for job_id=~p (str=~p)", [EffectiveJobId, JobIdStr]),
+    Result = case is_cluster_enabled() of
+        true ->
+            case flurm_controller_cluster:is_leader() of
+                true -> flurm_job_manager:cancel_job(EffectiveJobId);
+                false ->
+                    case flurm_controller_cluster:forward_to_leader(cancel_job, EffectiveJobId) of
+                        {ok, CancelResult} -> CancelResult;
+                        {error, no_leader} -> {error, controller_not_found};
+                        {error, cluster_not_ready} -> {error, cluster_not_ready};
+                        {error, Reason} -> {error, Reason}
+                    end
+            end;
+        false ->
+            flurm_job_manager:cancel_job(EffectiveJobId)
+    end,
+    case Result of
+        ok ->
+            lager:info("Job ~p killed successfully", [EffectiveJobId]),
+            Response = #slurm_rc_response{return_code = 0},
+            {ok, ?RESPONSE_SLURM_RC, Response};
+        {error, not_found} ->
+            lager:warning("Kill failed: job ~p not found", [EffectiveJobId]),
+            Response = #slurm_rc_response{return_code = 0},  % SLURM returns 0 even for not found
+            {ok, ?RESPONSE_SLURM_RC, Response};
+        {error, Reason2} ->
+            lager:warning("Kill failed for job ~p: ~p", [EffectiveJobId, Reason2]),
+            Response = #slurm_rc_response{return_code = -1},
+            {ok, ?RESPONSE_SLURM_RC, Response}
+    end;
+
 %% REQUEST_CANCEL_JOB (4006) -> RESPONSE_SLURM_RC
 %% Write operation - requires leader or forwarding to leader
 handle(#slurm_header{msg_type = ?REQUEST_CANCEL_JOB},

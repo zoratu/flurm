@@ -137,15 +137,18 @@ process_buffer(Buffer, State) ->
 %%====================================================================
 
 %% @doc Handle a complete message.
-%% Decodes the message, routes to handler, and sends response.
+%% Decodes the message with extra data (auth credentials), routes to handler,
+%% and sends response with extra data.
 -spec handle_message(binary(), map()) -> {ok, map()} | {error, term()}.
 handle_message(MessageBin, #{socket := Socket, transport := Transport,
                              request_count := Count} = State) ->
-    case flurm_protocol_codec:decode(MessageBin) of
-        {ok, #slurm_msg{header = Header, body = Body}, _Rest} ->
-            lager:debug("Received message type: ~p (~p)",
+    %% Use decode_with_extra to handle SLURM auth credentials
+    case flurm_protocol_codec:decode_with_extra(MessageBin) of
+        {ok, #slurm_msg{header = Header, body = Body}, ExtraInfo, _Rest} ->
+            lager:debug("Received message type: ~p (~p), from: ~p",
                         [Header#slurm_header.msg_type,
-                         flurm_protocol_codec:message_type_name(Header#slurm_header.msg_type)]),
+                         flurm_protocol_codec:message_type_name(Header#slurm_header.msg_type),
+                         maps:get(hostname, ExtraInfo, <<"unknown">>)]),
             %% Route to handler
             case flurm_controller_handler:handle(Header, Body) of
                 {ok, ResponseType, ResponseBody} ->
@@ -170,14 +173,18 @@ handle_message(MessageBin, #{socket := Socket, transport := Transport,
     end.
 
 %% @doc Send a response message back to the client.
+%% Uses encode_with_extra to include auth credentials in the response,
+%% which is required for compatibility with real SLURM clients.
 -spec send_response(inet:socket(), module(), non_neg_integer(), term()) -> ok | {error, term()}.
 send_response(Socket, Transport, MsgType, Body) ->
-    case flurm_protocol_codec:encode(MsgType, Body) of
+    %% Use encode_with_extra to include auth credentials in response
+    case flurm_protocol_codec:encode_with_extra(MsgType, Body) of
         {ok, ResponseBin} ->
             case Transport:send(Socket, ResponseBin) of
                 ok ->
-                    lager:debug("Sent response type: ~p (~p)",
-                                [MsgType, flurm_protocol_codec:message_type_name(MsgType)]),
+                    lager:debug("Sent response type: ~p (~p) with ~p bytes",
+                                [MsgType, flurm_protocol_codec:message_type_name(MsgType),
+                                 byte_size(ResponseBin)]),
                     ok;
                 {error, Reason} ->
                     lager:warning("Failed to send response: ~p", [Reason]),

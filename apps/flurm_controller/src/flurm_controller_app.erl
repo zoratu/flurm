@@ -41,9 +41,9 @@
 %% Initializes configuration, starts supervisor tree, initializes
 %% the Ra cluster (if configured), and launches the Ranch TCP listener.
 start(_StartType, _StartArgs) ->
-    lager:info("========================================"),
-    lager:info("Starting FLURM Controller (flurmctld)"),
-    lager:info("========================================"),
+    log(info, "========================================"),
+    log(info, "Starting FLURM Controller (flurmctld)"),
+    log(info, "========================================"),
 
     %% Log configuration
     log_startup_config(),
@@ -60,20 +60,20 @@ start(_StartType, _StartArgs) ->
                     log_startup_complete(),
                     {ok, Pid};
                 {error, Reason} ->
-                    lager:error("Failed to start listener: ~p", [Reason]),
+                    log(error, "Failed to start listener: ~p", [Reason]),
                     %% Still return ok - the app can run without listener
                     %% and retry later
                     {ok, Pid}
             end;
         {error, Reason} = Error ->
-            lager:error("Failed to start supervisor: ~p", [Reason]),
+            log(error, "Failed to start supervisor: ~p", [Reason]),
             Error
     end.
 
 %% @doc Prepare for application stop.
 %% Performs graceful shutdown of listener before supervisor stops.
 prep_stop(State) ->
-    lager:info("Preparing to stop FLURM Controller..."),
+    log(info, "Preparing to stop FLURM Controller..."),
     %% Stop accepting new connections
     _ = flurm_controller_sup:stop_listener(),
     %% Allow time for in-flight requests to complete
@@ -82,7 +82,7 @@ prep_stop(State) ->
 
 %% @doc Stop the FLURM controller application.
 stop(_State) ->
-    lager:info("FLURM Controller stopped"),
+    log(info, "FLURM Controller stopped"),
     ok.
 
 %%====================================================================
@@ -137,21 +137,21 @@ cluster_status() ->
 %% @doc Log configuration at startup.
 log_startup_config() ->
     Config = config(),
-    lager:info("Configuration:"),
-    lager:info("  Listen address: ~s", [maps:get(listen_address, Config)]),
-    lager:info("  Listen port: ~p", [maps:get(listen_port, Config)]),
-    lager:info("  Acceptors: ~p", [maps:get(num_acceptors, Config)]),
-    lager:info("  Max connections: ~p", [maps:get(max_connections, Config)]),
+    log(info, "Configuration:"),
+    log(info, "  Listen address: ~s", [maps:get(listen_address, Config)]),
+    log(info, "  Listen port: ~p", [maps:get(listen_port, Config)]),
+    log(info, "  Acceptors: ~p", [maps:get(num_acceptors, Config)]),
+    log(info, "  Max connections: ~p", [maps:get(max_connections, Config)]),
     %% Log cluster configuration
     ClusterNodes = maps:get(cluster_nodes, Config),
     case length(ClusterNodes) > 1 of
         true ->
-            lager:info("  Cluster mode: ENABLED"),
-            lager:info("  Cluster name: ~p", [maps:get(cluster_name, Config)]),
-            lager:info("  Cluster nodes: ~p", [ClusterNodes]),
-            lager:info("  Ra data dir: ~s", [maps:get(ra_data_dir, Config)]);
+            log(info, "  Cluster mode: ENABLED"),
+            log(info, "  Cluster name: ~p", [maps:get(cluster_name, Config)]),
+            log(info, "  Cluster nodes: ~p", [ClusterNodes]),
+            log(info, "  Ra data dir: ~s", [maps:get(ra_data_dir, Config)]);
         false ->
-            lager:info("  Cluster mode: DISABLED (single node)")
+            log(info, "  Cluster mode: DISABLED (single node)")
     end.
 
 %% @doc Setup distributed Erlang if cluster mode is enabled.
@@ -159,45 +159,45 @@ maybe_setup_distributed() ->
     ClusterNodes = get_config(cluster_nodes, [node()]),
     case length(ClusterNodes) > 1 of
         true ->
-            lager:info("Setting up distributed Erlang for cluster mode"),
+            log(info, "Setting up distributed Erlang for cluster mode"),
             %% Ensure this node is distributed
             case node() of
                 'nonode@nohost' ->
-                    lager:warning("Node not distributed! Cluster mode requires "
+                    log(warning, "Node not distributed! Cluster mode requires "
                                   "distributed Erlang. Start with -name or -sname");
                 _ ->
                     %% Connect to other cluster nodes
                     connect_to_cluster_nodes(ClusterNodes)
             end;
         false ->
-            lager:info("Single node mode, skipping distributed setup"),
+            log(info, "Single node mode, skipping distributed setup"),
             ok
     end.
 
 %% @doc Connect to other nodes in the cluster.
 connect_to_cluster_nodes(ClusterNodes) ->
     OtherNodes = [N || N <- ClusterNodes, N =/= node()],
-    lager:info("Attempting to connect to cluster nodes: ~p", [OtherNodes]),
+    log(info, "Attempting to connect to cluster nodes: ~p", [OtherNodes]),
     Results = [{N, net_kernel:connect_node(N)} || N <- OtherNodes],
     lists:foreach(
         fun({N, true}) ->
-            lager:info("Connected to cluster node: ~p", [N]);
+            log(info, "Connected to cluster node: ~p", [N]);
            ({N, false}) ->
-            lager:warning("Failed to connect to cluster node: ~p", [N]);
+            log(warning, "Failed to connect to cluster node: ~p", [N]);
            ({N, ignored}) ->
-            lager:debug("Connection to ~p ignored (already connected)", [N])
+            log(debug, "Connection to ~p ignored (already connected)", [N])
         end, Results),
     ok.
 
 %% @doc Log startup completion.
 log_startup_complete() ->
     Config = config(),
-    lager:info("----------------------------------------"),
-    lager:info("FLURM Controller ready"),
-    lager:info("Listening on ~s:~p",
+    log(info, "----------------------------------------"),
+    log(info, "FLURM Controller ready"),
+    log(info, "Listening on ~s:~p",
                [maps:get(listen_address, Config),
                 maps:get(listen_port, Config)]),
-    lager:info("----------------------------------------").
+    log(info, "----------------------------------------").
 
 %% @doc Get configuration value with default.
 get_config(Key, Default) ->
@@ -250,4 +250,20 @@ partition_stats() ->
         }
     catch
         _:_ -> #{error => not_available}
+    end.
+
+%%====================================================================
+%% Logging helpers (avoids lager parse transform dependency)
+%%====================================================================
+
+log(Level, Fmt) ->
+    log(Level, Fmt, []).
+
+log(Level, Fmt, Args) ->
+    Msg = io_lib:format(Fmt, Args),
+    case Level of
+        debug -> ok;  % Skip debug messages
+        info -> error_logger:info_msg("[flurmctld] ~s~n", [Msg]);
+        warning -> error_logger:warning_msg("[flurmctld] ~s~n", [Msg]);
+        error -> error_logger:error_msg("[flurmctld] ~s~n", [Msg])
     end.

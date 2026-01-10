@@ -434,22 +434,14 @@ find_partition(PartName, Partitions) when is_binary(PartName) ->
 %% Safe Logging (works with or without lager)
 %%====================================================================
 
+%% Note: lager:info/2, lager:debug/2 etc. require parse transforms.
+%% Without compile-time transforms, we must use lager:log/4 or error_logger.
+%% For simplicity during startup, we use error_logger consistently.
 log(Level, Fmt, Args) ->
-    case code:is_loaded(lager) of
-        {file, _} ->
-            case Level of
-                debug -> log(debug,Fmt, Args);
-                info -> log(info,Fmt, Args);
-                warning -> log(warning,Fmt, Args);
-                error -> log(error,Fmt, Args)
-            end;
-        false ->
-            %% Fallback to error_logger
-            Msg = io_lib:format(Fmt, Args),
-            case Level of
-                debug -> ok;  % Skip debug without lager
-                info -> error_logger:info_msg("~s~n", [Msg]);
-                warning -> error_logger:warning_msg("~s~n", [Msg]);
-                error -> error_logger:error_msg("~s~n", [Msg])
-            end
+    Msg = io_lib:format(Fmt, Args),
+    case Level of
+        debug -> ok;  % Skip debug for now
+        info -> error_logger:info_msg("[flurm_config] ~s~n", [Msg]);
+        warning -> error_logger:warning_msg("[flurm_config] ~s~n", [Msg]);
+        error -> error_logger:error_msg("[flurm_config] ~s~n", [Msg])
     end.

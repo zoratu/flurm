@@ -143,6 +143,10 @@
 -define(REQUEST_SIGNAL_JOB, 5018).
 -define(REQUEST_COMPLETE_PROLOG, 5019).
 
+%% Additional signal/kill message types (SLURM version specific)
+%% scancel in SLURM 19.05+ uses 5032 for job signal requests
+-define(REQUEST_KILL_JOB, 5032).
+
 %%% Authentication and Credentials (6001-6020)
 -define(REQUEST_JOB_CRED, 6001).
 -define(RESPONSE_JOB_CRED, 6002).
@@ -503,6 +507,17 @@
     step_id = 0 :: non_neg_integer(),
     signal = 0 :: non_neg_integer(),
     flags = 0 :: non_neg_integer()
+}).
+
+%% Kill job request (REQUEST_KILL_JOB - 5032)
+%% Used by scancel in SLURM 19.05+
+-record(kill_job_request, {
+    job_id = 0 :: non_neg_integer(),
+    job_id_str = <<>> :: binary(),
+    step_id = ?SLURM_NO_VAL :: non_neg_integer(),
+    signal = 9 :: non_neg_integer(),  % Default SIGKILL
+    flags = 0 :: non_neg_integer(),
+    sibling = <<>> :: binary()
 }).
 
 %% Generic return code response (RESPONSE_SLURM_RC - 8001)

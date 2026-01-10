@@ -241,9 +241,24 @@ force_election() ->
 %% @doc Initialize the Ra application and data directory.
 -spec init_ra() -> ok | {error, term()}.
 init_ra() ->
-    %% Ensure data directory exists
-    DataDir = application:get_env(flurm_db, data_dir, ?DEFAULT_DATA_DIR),
-    ok = filelib:ensure_dir(DataDir ++ "/"),
+    %% Determine data directory - use configured or fallback to temp for dev
+    ConfiguredDir = application:get_env(flurm_db, data_dir, ?DEFAULT_DATA_DIR),
+    DataDir = case filelib:ensure_dir(ConfiguredDir ++ "/") of
+        ok -> ConfiguredDir;
+        {error, _} ->
+            %% Fall back to temp directory for development
+            TempDir = filename:join(["/tmp", "flurm_db"]),
+            case filelib:ensure_dir(TempDir ++ "/") of
+                ok ->
+                    lager:warning("Using fallback data directory: ~s (configured: ~s)",
+                                  [TempDir, ConfiguredDir]),
+                    TempDir;
+                {error, Reason} ->
+                    lager:error("Cannot create data directory ~s or ~s: ~p",
+                                [ConfiguredDir, TempDir, Reason]),
+                    error({data_dir_error, Reason})
+            end
+    end,
 
     %% Set Ra data dir if not already set
     case application:get_env(ra, data_dir) of
@@ -257,7 +272,7 @@ init_ra() ->
     case application:ensure_all_started(ra) of
         {ok, _} -> ok;
         {error, {already_started, ra}} -> ok;
-        {error, Reason} -> {error, Reason}
+        {error, Reason2} -> {error, Reason2}
     end.
 
 %% @doc Get the server ID for the local node.
