@@ -10,6 +10,8 @@
 
 -behaviour(ranch_protocol).
 
+-include_lib("flurm_core/include/flurm_core.hrl").
+
 -export([start_link/3]).
 -export([init/3]).
 
@@ -159,17 +161,25 @@ handle_message(_Socket, _Transport, #{type := job_failed, payload := Payload}) -
     JobId = maps:get(<<"job_id">>, Payload),
     Reason = maps:get(<<"reason">>, Payload, <<"unknown">>),
 
-    log(warning, "Job ~p failed: ~s", [JobId, Reason]),
+    %% Check if job was already cancelled by the controller
+    case flurm_job_manager:get_job(JobId) of
+        {ok, Job} when Job#job.state =:= cancelled ->
+            %% Job was cancelled, ignore the failed report from node
+            log(info, "Job ~p: ignoring failed report (already cancelled)", [JobId]),
+            ok;
+        _ ->
+            log(warning, "Job ~p failed: ~s", [JobId, Reason]),
 
-    %% Update job state in job_manager
-    flurm_job_manager:update_job(JobId, #{
-        state => failed,
-        exit_code => -1,
-        end_time => erlang:system_time(second)
-    }),
+            %% Update job state in job_manager
+            flurm_job_manager:update_job(JobId, #{
+                state => failed,
+                exit_code => -1,
+                end_time => erlang:system_time(second)
+            }),
 
-    %% Notify scheduler to release resources
-    flurm_scheduler:job_failed(JobId),
+            %% Notify scheduler to release resources
+            flurm_scheduler:job_failed(JobId)
+    end,
     ok;
 
 handle_message(_Socket, _Transport, #{type := Type, payload := _Payload}) ->

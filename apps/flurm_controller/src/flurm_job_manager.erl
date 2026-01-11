@@ -66,9 +66,24 @@ handle_call({submit_job, JobSpec}, _From, #state{jobs = Jobs} = State) ->
 handle_call({cancel_job, JobId}, _From, #state{jobs = Jobs} = State) ->
     case maps:find(JobId, Jobs) of
         {ok, Job} ->
+            %% Get allocated nodes before updating state
+            AllocatedNodes = Job#job.allocated_nodes,
+
+            %% Update job state to cancelled
             UpdatedJob = flurm_core:update_job_state(Job, cancelled),
             NewJobs = maps:put(JobId, UpdatedJob, Jobs),
             lager:info("Job ~p cancelled", [JobId]),
+
+            %% Send cancel to node daemon if job was running
+            case AllocatedNodes of
+                [] -> ok;
+                Nodes ->
+                    flurm_job_dispatcher:cancel_job(JobId, Nodes)
+            end,
+
+            %% Notify scheduler to release resources
+            flurm_scheduler:job_failed(JobId),
+
             {reply, ok, State#state{jobs = NewJobs}};
         error ->
             {reply, {error, not_found}, State}
