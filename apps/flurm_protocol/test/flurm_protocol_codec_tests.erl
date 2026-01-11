@@ -35,13 +35,17 @@ header_roundtrip_test_() ->
             Header = #slurm_header{
                 version = 22050,
                 flags = 16#0003,
-                msg_index = 42,
+                msg_index = 0,  % msg_index is not part of wire format, always 0
                 msg_type = ?REQUEST_SUBMIT_BATCH_JOB,
                 body_length = 1024
             },
             {ok, Binary} = flurm_protocol_header:encode_header(Header),
             {ok, Decoded, <<>>} = flurm_protocol_header:parse_header(Binary),
-            ?assertEqual(Header, Decoded)
+            %% Compare the fields that are actually serialized
+            ?assertEqual(Header#slurm_header.version, Decoded#slurm_header.version),
+            ?assertEqual(Header#slurm_header.flags, Decoded#slurm_header.flags),
+            ?assertEqual(Header#slurm_header.msg_type, Decoded#slurm_header.msg_type),
+            ?assertEqual(Header#slurm_header.body_length, Decoded#slurm_header.body_length)
         end},
 
         {"header with trailing data", fun() ->
@@ -53,7 +57,7 @@ header_roundtrip_test_() ->
         end},
 
         {"header size is correct", fun() ->
-            ?assertEqual(12, flurm_protocol_header:header_size())
+            ?assertEqual(10, flurm_protocol_header:header_size())
         end}
     ].
 
@@ -62,12 +66,12 @@ header_error_test_() ->
         {"incomplete header", fun() ->
             Binary = <<1, 2, 3, 4, 5>>,  % Only 5 bytes
             Result = flurm_protocol_header:parse_header(Binary),
-            ?assertMatch({error, {incomplete_header, 5, 12}}, Result)
+            ?assertMatch({error, {incomplete_header, 5, 10}}, Result)
         end},
 
         {"empty header", fun() ->
             Result = flurm_protocol_header:parse_header(<<>>),
-            ?assertMatch({error, {incomplete_header, 0, 12}}, Result)
+            ?assertMatch({error, {incomplete_header, 0, 10}}, Result)
         end},
 
         {"invalid header record", fun() ->
@@ -419,13 +423,17 @@ edge_case_test_() ->
             Header = #slurm_header{
                 version = 65535,
                 flags = 65535,
-                msg_index = 65535,
+                msg_index = 0,  % msg_index is not serialized
                 msg_type = 65535,
                 body_length = 65535
             },
             {ok, Binary} = flurm_protocol_header:encode_header(Header),
             {ok, Decoded, <<>>} = flurm_protocol_header:parse_header(Binary),
-            ?assertEqual(Header, Decoded)
+            %% Compare only serialized fields
+            ?assertEqual(Header#slurm_header.version, Decoded#slurm_header.version),
+            ?assertEqual(Header#slurm_header.flags, Decoded#slurm_header.flags),
+            ?assertEqual(Header#slurm_header.msg_type, Decoded#slurm_header.msg_type),
+            ?assertEqual(Header#slurm_header.body_length, Decoded#slurm_header.body_length)
         end},
 
         {"zero values in header", fun() ->
