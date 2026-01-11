@@ -137,18 +137,31 @@ process_buffer(Buffer, State) ->
 %%====================================================================
 
 %% @doc Handle a complete message.
-%% Decodes the message with extra data (auth credentials), routes to handler,
-%% and sends response with extra data.
+%% Tries to decode with auth credentials first, falls back to plain decode
+%% for test clients that don't send auth.
 -spec handle_message(binary(), map()) -> {ok, map()} | {error, term()}.
 handle_message(MessageBin, #{socket := Socket, transport := Transport,
                              request_count := Count} = State) ->
-    %% Use decode_with_extra to handle SLURM auth credentials
-    case flurm_protocol_codec:decode_with_extra(MessageBin) of
-        {ok, #slurm_msg{header = Header, body = Body}, ExtraInfo, _Rest} ->
+    %% Try decode with auth first (for real SLURM clients)
+    %% Fall back to plain decode (for test clients)
+    DecodeResult = case flurm_protocol_codec:decode_with_extra(MessageBin) of
+        {ok, Msg, ExtraInfo, Rest} ->
+            {ok, Msg, ExtraInfo, Rest};
+        {error, _AuthErr} ->
+            %% Try plain decode without auth
+            case flurm_protocol_codec:decode(MessageBin) of
+                {ok, Msg, Rest} ->
+                    {ok, Msg, #{}, Rest};
+                PlainErr ->
+                    PlainErr
+            end
+    end,
+    case DecodeResult of
+        {ok, #slurm_msg{header = Header, body = Body}, ExtraInfo2, _Rest} ->
             lager:debug("Received message type: ~p (~p), from: ~p",
                         [Header#slurm_header.msg_type,
                          flurm_protocol_codec:message_type_name(Header#slurm_header.msg_type),
-                         maps:get(hostname, ExtraInfo, <<"unknown">>)]),
+                         maps:get(hostname, ExtraInfo2, <<"unknown">>)]),
             %% Route to handler
             case flurm_controller_handler:handle(Header, Body) of
                 {ok, ResponseType, ResponseBody} ->
@@ -173,12 +186,11 @@ handle_message(MessageBin, #{socket := Socket, transport := Transport,
     end.
 
 %% @doc Send a response message back to the client.
-%% Uses encode_with_extra to include auth credentials in the response,
-%% which is required for compatibility with real SLURM clients.
+%% Uses encode_response which includes auth section at beginning (required by real SLURM clients).
 -spec send_response(inet:socket(), module(), non_neg_integer(), term()) -> ok | {error, term()}.
 send_response(Socket, Transport, MsgType, Body) ->
-    %% Use encode_with_extra to include auth credentials in response
-    case flurm_protocol_codec:encode_with_extra(MsgType, Body) of
+    %% Use encode_response - includes auth section (auth/none) at beginning of body
+    case flurm_protocol_codec:encode_response(MsgType, Body) of
         {ok, ResponseBin} ->
             case Transport:send(Socket, ResponseBin) of
                 ok ->

@@ -1,0 +1,62 @@
+FROM rockylinux:9
+
+# Install Erlang/OTP and build tools
+RUN dnf install -y epel-release && \
+    dnf install -y erlang git munge make iproute iputils && \
+    dnf clean all
+
+# Install rebar3 manually (not in EPEL)
+RUN curl -o /usr/local/bin/rebar3 https://s3.amazonaws.com/rebar3/rebar3 && \
+    chmod +x /usr/local/bin/rebar3
+
+# Create munge directories
+RUN mkdir -p /etc/munge /var/run/munge /var/log/munge && \
+    chown -R munge:munge /etc/munge /var/run/munge /var/log/munge && \
+    chmod 700 /etc/munge
+
+# Create FLURM data directory for Ra
+RUN mkdir -p /var/lib/flurm/ra && chmod 755 /var/lib/flurm
+
+# Copy FLURM source
+WORKDIR /flurm
+COPY . /flurm/
+
+# Build FLURM
+RUN rebar3 compile
+
+# Copy HA startup script
+COPY docker/start_controller_ha.erl /flurm/start_controller_ha.erl
+
+# Create entrypoint for HA controller
+RUN echo '#!/bin/bash' > /entrypoint-ha.sh && \
+    echo 'set -e' >> /entrypoint-ha.sh && \
+    echo '' >> /entrypoint-ha.sh && \
+    echo '# Fix munge ownership' >> /entrypoint-ha.sh && \
+    echo 'chown -R munge:munge /etc/munge /var/run/munge /var/log/munge' >> /entrypoint-ha.sh && \
+    echo 'chmod 700 /etc/munge' >> /entrypoint-ha.sh && \
+    echo '' >> /entrypoint-ha.sh && \
+    echo '# Create munge key if needed' >> /entrypoint-ha.sh && \
+    echo 'if [ ! -f /etc/munge/munge.key ]; then' >> /entrypoint-ha.sh && \
+    echo '  echo "Creating MUNGE key..."' >> /entrypoint-ha.sh && \
+    echo '  dd if=/dev/urandom bs=1 count=1024 > /etc/munge/munge.key 2>/dev/null' >> /entrypoint-ha.sh && \
+    echo 'fi' >> /entrypoint-ha.sh && \
+    echo 'chown munge:munge /etc/munge/munge.key' >> /entrypoint-ha.sh && \
+    echo 'chmod 400 /etc/munge/munge.key' >> /entrypoint-ha.sh && \
+    echo '' >> /entrypoint-ha.sh && \
+    echo '# Start munge' >> /entrypoint-ha.sh && \
+    echo 'echo "Starting munged..."' >> /entrypoint-ha.sh && \
+    echo 'runuser -u munge -- /usr/sbin/munged' >> /entrypoint-ha.sh && \
+    echo 'sleep 1' >> /entrypoint-ha.sh && \
+    echo '' >> /entrypoint-ha.sh && \
+    echo '# Wait for other nodes to be reachable (for cluster formation)' >> /entrypoint-ha.sh && \
+    echo 'echo "Waiting for cluster nodes..."' >> /entrypoint-ha.sh && \
+    echo 'sleep 3' >> /entrypoint-ha.sh && \
+    echo '' >> /entrypoint-ha.sh && \
+    echo '# Start FLURM controller in distributed mode' >> /entrypoint-ha.sh && \
+    echo 'cd /flurm' >> /entrypoint-ha.sh && \
+    echo 'exec escript start_controller_ha.erl' >> /entrypoint-ha.sh && \
+    chmod +x /entrypoint-ha.sh
+
+EXPOSE 6817 6818 4369 9100-9110
+
+CMD ["/entrypoint-ha.sh"]

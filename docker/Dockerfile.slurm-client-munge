@@ -1,0 +1,62 @@
+FROM rockylinux:9
+
+# Install SLURM client tools with MUNGE
+RUN dnf install -y epel-release && \
+    dnf install -y slurm munge && \
+    dnf clean all
+
+# Create slurm.conf pointing to flurm-server
+RUN mkdir -p /etc/slurm && \
+    echo 'ClusterName=flurm' > /etc/slurm/slurm.conf && \
+    echo 'SlurmctldHost=flurm-server' >> /etc/slurm/slurm.conf && \
+    echo 'SlurmctldPort=6817' >> /etc/slurm/slurm.conf && \
+    echo 'AuthType=auth/munge' >> /etc/slurm/slurm.conf && \
+    echo 'MpiDefault=none' >> /etc/slurm/slurm.conf && \
+    echo 'ProctrackType=proctrack/linuxproc' >> /etc/slurm/slurm.conf && \
+    echo 'ReturnToService=1' >> /etc/slurm/slurm.conf && \
+    echo 'SlurmctldPidFile=/var/run/slurmctld.pid' >> /etc/slurm/slurm.conf && \
+    echo 'SlurmdPidFile=/var/run/slurmd.pid' >> /etc/slurm/slurm.conf && \
+    echo 'SlurmdSpoolDir=/var/spool/slurmd' >> /etc/slurm/slurm.conf && \
+    echo 'SlurmUser=root' >> /etc/slurm/slurm.conf && \
+    echo 'StateSaveLocation=/var/spool/slurmctld' >> /etc/slurm/slurm.conf && \
+    echo 'SwitchType=switch/none' >> /etc/slurm/slurm.conf && \
+    echo 'TaskPlugin=task/none' >> /etc/slurm/slurm.conf && \
+    echo 'SchedulerType=sched/backfill' >> /etc/slurm/slurm.conf && \
+    echo 'SelectType=select/cons_tres' >> /etc/slurm/slurm.conf && \
+    echo 'SelectTypeParameters=CR_Core' >> /etc/slurm/slurm.conf && \
+    echo 'SlurmdDebug=info' >> /etc/slurm/slurm.conf && \
+    echo 'SlurmctldDebug=info' >> /etc/slurm/slurm.conf && \
+    echo 'PartitionName=default Nodes=ALL Default=YES MaxTime=INFINITE State=UP' >> /etc/slurm/slurm.conf
+
+# Create munge directories (key will be mounted)
+RUN mkdir -p /var/run/munge /var/log/munge && \
+    chown -R munge:munge /var/run/munge /var/log/munge
+
+# Create test job script
+RUN mkdir -p /jobs && \
+    echo '#!/bin/bash' > /jobs/test_job.sh && \
+    echo '#SBATCH --job-name=flurm_test' >> /jobs/test_job.sh && \
+    echo '#SBATCH --output=test_%j.out' >> /jobs/test_job.sh && \
+    echo '#SBATCH --nodes=1' >> /jobs/test_job.sh && \
+    echo '#SBATCH --ntasks=1' >> /jobs/test_job.sh && \
+    echo '#SBATCH --time=00:05:00' >> /jobs/test_job.sh && \
+    echo '' >> /jobs/test_job.sh && \
+    echo 'echo "Hello from FLURM test job!"' >> /jobs/test_job.sh && \
+    echo 'echo "Job ID: $SLURM_JOB_ID"' >> /jobs/test_job.sh && \
+    echo 'hostname' >> /jobs/test_job.sh && \
+    echo 'date' >> /jobs/test_job.sh && \
+    chmod +x /jobs/test_job.sh
+
+# Create entrypoint that starts munge then runs command
+RUN echo '#!/bin/bash' > /entrypoint.sh && \
+    echo 'chown -R munge:munge /etc/munge 2>/dev/null || true' >> /entrypoint.sh && \
+    echo 'chmod 700 /etc/munge 2>/dev/null || true' >> /entrypoint.sh && \
+    echo 'chmod 400 /etc/munge/munge.key 2>/dev/null || true' >> /entrypoint.sh && \
+    echo 'runuser -u munge -- /usr/sbin/munged' >> /entrypoint.sh && \
+    echo 'sleep 1' >> /entrypoint.sh && \
+    echo 'exec "$@"' >> /entrypoint.sh && \
+    chmod +x /entrypoint.sh
+
+WORKDIR /jobs
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["/bin/bash"]

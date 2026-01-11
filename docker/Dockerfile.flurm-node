@@ -1,0 +1,29 @@
+FROM rockylinux:9
+
+# Install Erlang/OTP and build tools
+RUN dnf install -y epel-release && \
+    dnf install -y erlang git make procps-ng && \
+    dnf clean all
+
+# Install rebar3 manually (not in EPEL)
+RUN curl -o /usr/local/bin/rebar3 https://s3.amazonaws.com/rebar3/rebar3 && \
+    chmod +x /usr/local/bin/rebar3
+
+# Copy FLURM source
+WORKDIR /flurm
+COPY . /flurm/
+
+# Build FLURM
+RUN rebar3 compile
+
+# Create entrypoint for node daemon
+RUN echo '#!/bin/bash' > /entrypoint.sh && \
+    echo 'set -e' >> /entrypoint.sh && \
+    echo 'CONTROLLER_HOST=${FLURM_CONTROLLER_HOST:-flurm-server}' >> /entrypoint.sh && \
+    echo 'CONTROLLER_PORT=${FLURM_CONTROLLER_PORT:-6818}' >> /entrypoint.sh && \
+    echo 'echo "Starting FLURM node daemon..."' >> /entrypoint.sh && \
+    echo 'echo "Connecting to controller at $CONTROLLER_HOST:$CONTROLLER_PORT"' >> /entrypoint.sh && \
+    echo 'cd /flurm && escript start_node.erl $CONTROLLER_HOST' >> /entrypoint.sh && \
+    chmod +x /entrypoint.sh
+
+CMD ["/entrypoint.sh"]

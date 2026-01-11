@@ -374,7 +374,7 @@ try_allocate_job_simple(JobId, JobInfo, State) ->
     NumNodes = maps:get(num_nodes, JobInfo, 1),
     NumCpus = maps:get(num_cpus, JobInfo, 1),
     Partition = maps:get(partition, JobInfo, <<"default">>),
-    MemoryMb = maps:get(memory_mb, JobInfo, 1024),
+    MemoryMb = maps:get(memory_mb, JobInfo, 256),  % Default 256 MB for container compatibility
     lager:debug("try_allocate_job_simple: job ~p needs ~p nodes, ~p cpus, ~p MB, partition ~p",
                [JobId, NumNodes, NumCpus, MemoryMb, Partition]),
 

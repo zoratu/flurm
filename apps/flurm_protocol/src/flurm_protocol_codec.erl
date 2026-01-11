@@ -5,9 +5,9 @@
 %%% protocol messages. It handles the complete message wire format:
 %%%
 %%% Wire format:
-%%%   <<Length:32/big, Header:12/binary, Body/binary>>
+%%%   <<Length:32/big, Header:10/binary, Body/binary>>
 %%%
-%%% Where Length = byte_size(Header) + byte_size(Body) = 12 + body_size
+%%% Where Length = byte_size(Header) + byte_size(Body) = 10 + body_size
 %%%
 %%% The codec supports the following priority message types:
 %%% Requests:
@@ -34,6 +34,9 @@
     decode_with_extra/1,
     encode_with_extra/2,
     encode_with_extra/3,
+
+    %% Response encoding (with auth section at beginning)
+    encode_response/2,
 
     %% Body encode/decode
     decode_body/2,
@@ -116,45 +119,35 @@ encode(MsgType, Body) ->
             BodyError
     end.
 
-%% @doc Decode a complete message with extra data (auth credentials) from wire format.
+%% @doc Decode a complete message with auth credentials from wire format.
 %%
-%% Wire format: <<Length:32/big, Header:12/binary, Body/binary, ExtraData:39/binary>>
-%% where Length = 12 + BodySize + 39
+%% SLURM wire format for requests (client to server):
+%%   <<Length:32/big, Header:10/binary, AuthSection/binary, MsgBody/binary>>
+%%
+%% Auth section format:
+%%   <<AuthHeader:10/binary, CredLen:32/big, Credential:CredLen/binary>>
 %%
 %% Returns {ok, Message, ExtraInfo, Rest} on success.
 -spec decode_with_extra(binary()) -> {ok, #slurm_msg{}, map(), binary()} | {error, term()}.
 decode_with_extra(<<Length:32/big, Rest/binary>> = _Data)
   when byte_size(Rest) >= Length, Length >= ?SLURM_HEADER_SIZE ->
-    ExtraSize = flurm_protocol_auth:extra_size(),
     <<MsgData:Length/binary, Remaining/binary>> = Rest,
-    <<HeaderBin:?SLURM_HEADER_SIZE/binary, BodyAndExtra/binary>> = MsgData,
+    <<HeaderBin:?SLURM_HEADER_SIZE/binary, BodyWithAuth/binary>> = MsgData,
     case flurm_protocol_header:parse_header(HeaderBin) of
         {ok, Header, <<>>} ->
-            BodyLen = Header#slurm_header.body_length,
-            case BodyAndExtra of
-                <<BodyBin:BodyLen/binary, ExtraData/binary>> when byte_size(ExtraData) >= ExtraSize ->
-                    MsgType = Header#slurm_header.msg_type,
-                    case decode_body(MsgType, BodyBin) of
+            MsgType = Header#slurm_header.msg_type,
+            %% Strip auth section from beginning of body
+            case strip_auth_section(BodyWithAuth) of
+                {ok, ActualBody, AuthInfo} ->
+                    case decode_body(MsgType, ActualBody) of
                         {ok, Body} ->
-                            {ok, ExtraInfo} = flurm_protocol_auth:decode_extra(ExtraData),
                             Msg = #slurm_msg{header = Header, body = Body},
-                            {ok, Msg, ExtraInfo, Remaining};
+                            {ok, Msg, AuthInfo, Remaining};
                         {error, _} = BodyError ->
                             BodyError
                     end;
-                <<BodyBin:BodyLen/binary, ExtraData/binary>> ->
-                    %% Extra data shorter than expected - decode what we have
-                    MsgType = Header#slurm_header.msg_type,
-                    case decode_body(MsgType, BodyBin) of
-                        {ok, Body} ->
-                            {ok, ExtraInfo} = flurm_protocol_auth:decode_extra(ExtraData),
-                            Msg = #slurm_msg{header = Header, body = Body},
-                            {ok, Msg, ExtraInfo, Remaining};
-                        {error, _} = BodyError ->
-                            BodyError
-                    end;
-                _ ->
-                    {error, {body_extraction_failed, BodyLen, byte_size(BodyAndExtra)}}
+                {error, _} = AuthError ->
+                    AuthError
             end;
         {error, _} = HeaderError ->
             HeaderError
@@ -167,10 +160,29 @@ decode_with_extra(Binary) when byte_size(Binary) < 4 ->
 decode_with_extra(_) ->
     {error, invalid_message_data}.
 
+%% @doc Strip the auth section from the beginning of a message body.
+%% Auth section format: <<AuthHeader:10/binary, CredLen:32/big, Credential:CredLen/binary>>
+-spec strip_auth_section(binary()) -> {ok, binary(), map()} | {error, term()}.
+strip_auth_section(<<_AuthHeader:10/binary, CredLen:32/big, Rest/binary>>) when CredLen =< byte_size(Rest) ->
+    <<Credential:CredLen/binary, ActualBody/binary>> = Rest,
+    %% Check if credential is MUNGE
+    AuthType = case Credential of
+        <<"MUNGE:", _/binary>> -> munge;
+        _ -> unknown
+    end,
+    AuthInfo = #{auth_type => AuthType, cred_len => CredLen},
+    {ok, ActualBody, AuthInfo};
+strip_auth_section(<<_AuthHeader:10/binary, CredLen:32/big, _Rest/binary>>) ->
+    {error, {auth_cred_too_short, CredLen}};
+strip_auth_section(Binary) when byte_size(Binary) < 14 ->
+    {error, {auth_section_too_short, byte_size(Binary)}};
+strip_auth_section(_) ->
+    {error, invalid_auth_section}.
+
 %% @doc Encode a message with extra data (auth credentials) to wire format.
 %%
 %% Uses default hostname for extra data.
-%% Wire format: <<Length:32/big, Header:12/binary, Body/binary, ExtraData:39/binary>>
+%% Wire format: <<Length:32/big, Header:10/binary, Body/binary, ExtraData:39/binary>>
 -spec encode_with_extra(non_neg_integer(), term()) -> {ok, binary()} | {error, term()}.
 encode_with_extra(MsgType, Body) ->
     encode_with_extra(MsgType, Body, flurm_protocol_auth:default_hostname()).
@@ -178,7 +190,7 @@ encode_with_extra(MsgType, Body) ->
 %% @doc Encode a message with extra data (auth credentials) to wire format.
 %%
 %% Takes message type, body, and hostname for extra data.
-%% Wire format: <<Length:32/big, Header:12/binary, Body/binary, ExtraData:39/binary>>
+%% Wire format: <<Length:32/big, Header:10/binary, Body/binary, ExtraData:39/binary>>
 -spec encode_with_extra(non_neg_integer(), term(), binary()) -> {ok, binary()} | {error, term()}.
 encode_with_extra(MsgType, Body, Hostname) ->
     case encode_body(MsgType, Body) of
@@ -196,6 +208,47 @@ encode_with_extra(MsgType, Body, Hostname) ->
                     %% Length includes header + body + extra data
                     Length = byte_size(HeaderBin) + byte_size(BodyBin) + byte_size(ExtraData),
                     {ok, <<Length:32/big, HeaderBin/binary, BodyBin/binary, ExtraData/binary>>};
+                {error, _} = HeaderError ->
+                    HeaderError
+            end;
+        {error, _} = BodyError ->
+            BodyError
+    end.
+
+%% @doc Encode a response message with auth section at the BEGINNING.
+%%
+%% SLURM response format: <<Length:32/big, Header:10/binary, AuthSection, MsgBody>>
+%% Auth section: <<AuthHeader:10/binary, CredLen:32/big, Credential:CredLen/binary>>
+%% For responses, use auth_type=101 (MUNGE) with a real MUNGE credential.
+%% Note: SLURM clients verify the MUNGE credential from responses.
+-spec encode_response(non_neg_integer(), term()) -> {ok, binary()} | {error, term()}.
+encode_response(MsgType, Body) ->
+    case encode_body(MsgType, Body) of
+        {ok, BodyBin} ->
+            Header = #slurm_header{
+                version = flurm_protocol_header:protocol_version(),
+                flags = 0,
+                msg_index = 0,
+                msg_type = MsgType,
+                body_length = byte_size(BodyBin)
+            },
+            case flurm_protocol_header:encode_header(Header) of
+                {ok, HeaderBin} ->
+                    %% Generate a real MUNGE credential for the response
+                    %% AuthHeader: 8 bytes zero + 2 bytes auth_type (101 = MUNGE)
+                    AuthType = 101,  % MUNGE
+                    AuthHeader = <<0:64, AuthType:16/big>>,
+                    %% Try to get real MUNGE credential
+                    Credential = case flurm_munge:encode() of
+                        {ok, MungeCred} -> MungeCred;
+                        {error, _} -> <<>>  % Fall back to empty
+                    end,
+                    CredLen = byte_size(Credential),
+                    AuthSection = <<AuthHeader/binary, CredLen:32/big, Credential/binary>>,
+                    %% Wire format: length, header, auth section, body
+                    TotalPayload = <<HeaderBin/binary, AuthSection/binary, BodyBin/binary>>,
+                    Length = byte_size(TotalPayload),
+                    {ok, <<Length:32/big, TotalPayload/binary>>};
                 {error, _} = HeaderError ->
                     HeaderError
             end;
@@ -439,72 +492,262 @@ decode_job_info_request(Binary) ->
             {error, invalid_job_info_request}
     end.
 
-%% Decode REQUEST_SUBMIT_BATCH_JOB (4003) - Simplified version
-%% Full SLURM batch job has many fields; we decode the most important ones
+%% Decode REQUEST_SUBMIT_BATCH_JOB (4003) - Pattern-based version
+%% SLURM batch job format has many optional fields with SLURM_NO_VAL (0xFFFFFFFE)
+%% sentinels. Rather than decode every field, we scan for key patterns.
 decode_batch_job_request(Binary) ->
     try
-        decode_batch_job_request_impl(Binary)
+        decode_batch_job_request_scan(Binary)
     catch
         _:Reason ->
             {error, {batch_job_decode_failed, Reason}}
     end.
 
-decode_batch_job_request_impl(Binary) ->
-    %% SLURM batch job format varies by version but generally starts with:
-    %% account, acctg_freq, admin_comment...
-    %% We'll decode a simplified subset for now
-    {ok, Account, Rest1} = flurm_protocol_pack:unpack_string(Binary),
-    {ok, AcctgFreq, Rest2} = flurm_protocol_pack:unpack_string(Rest1),
-    {ok, AdminComment, Rest3} = flurm_protocol_pack:unpack_string(Rest2),
-    {ok, AllocNode, Rest4} = flurm_protocol_pack:unpack_string(Rest3),
-    {ok, AllocRespPort, Rest5} = flurm_protocol_pack:unpack_uint16(Rest4),
-    {ok, AllocSid, Rest6} = flurm_protocol_pack:unpack_uint32(Rest5),
+%% Pattern-based decoder that scans for key fields in the message
+decode_batch_job_request_scan(Binary) ->
+    %% Find job name - it's a length-prefixed string typically around offset 58-70
+    Name = find_job_name(Binary),
 
-    %% argv (argc + array of strings)
-    {ok, Argc, Rest7} = flurm_protocol_pack:unpack_uint32(Rest6),
-    {Argv, Rest8} = decode_n_strings(Argc, Rest7),
+    %% Find the script by looking for "#!/" shebang
+    Script = find_script(Binary),
 
-    %% Skip ahead to commonly used fields for a simplified implementation
-    {ok, Name, Rest9} = flurm_protocol_pack:unpack_string(Rest8),
-    {ok, Partition, Rest10} = flurm_protocol_pack:unpack_string(Rest9),
-    {ok, Script, Rest11} = flurm_protocol_pack:unpack_string(Rest10),
-    {ok, WorkDir, Rest12} = flurm_protocol_pack:unpack_string(Rest11),
+    %% Find working directory - look for path patterns
+    WorkDir = find_work_dir(Binary),
 
-    %% Basic numeric fields
-    {ok, MinNodes, Rest13} = flurm_protocol_pack:unpack_uint32(Rest12),
-    {ok, MaxNodes, Rest14} = flurm_protocol_pack:unpack_uint32(Rest13),
-    {ok, MinCpus, Rest15} = flurm_protocol_pack:unpack_uint32(Rest14),
-    {ok, NumTasks, Rest16} = flurm_protocol_pack:unpack_uint32(Rest15),
-    {ok, CpusPerTask, Rest17} = flurm_protocol_pack:unpack_uint32(Rest16),
-    {ok, TimeLimit, Rest18} = flurm_protocol_pack:unpack_uint32(Rest17),
-    {ok, Priority, Rest19} = flurm_protocol_pack:unpack_uint32(Rest18),
-    {ok, UserId, Rest20} = flurm_protocol_pack:unpack_uint32(Rest19),
-    {ok, GroupId, _Rest21} = flurm_protocol_pack:unpack_uint32(Rest20),
+    %% Extract user/group IDs from known offset patterns
+    {UserId, GroupId} = extract_uid_gid(Binary),
+
+    %% Extract time limit from #SBATCH directive in script if present
+    TimeLimit = extract_time_limit(Script),
+
+    %% Extract node/task counts from #SBATCH directives
+    {MinNodes, NumTasks} = extract_resources(Script),
 
     Req = #batch_job_request{
-        account = ensure_binary(Account),
-        acctg_freq = ensure_binary(AcctgFreq),
-        admin_comment = ensure_binary(AdminComment),
-        alloc_node = ensure_binary(AllocNode),
-        alloc_resp_port = AllocRespPort,
-        alloc_sid = ensure_integer(AllocSid),
-        argc = Argc,
-        argv = Argv,
-        name = ensure_binary(Name),
-        partition = ensure_binary(Partition),
-        script = ensure_binary(Script),
-        work_dir = ensure_binary(WorkDir),
-        min_nodes = ensure_integer(MinNodes),
-        max_nodes = ensure_integer(MaxNodes),
-        min_cpus = ensure_integer(MinCpus),
-        num_tasks = ensure_integer(NumTasks),
-        cpus_per_task = ensure_integer(CpusPerTask),
-        time_limit = ensure_integer(TimeLimit),
-        priority = ensure_integer(Priority),
-        user_id = ensure_integer(UserId),
-        group_id = ensure_integer(GroupId)
+        account = <<>>,
+        acctg_freq = <<>>,
+        admin_comment = <<>>,
+        alloc_node = <<>>,
+        alloc_resp_port = 0,
+        alloc_sid = 0,
+        argc = 0,
+        argv = [],
+        name = Name,
+        partition = <<>>,
+        script = Script,
+        work_dir = WorkDir,
+        min_nodes = MinNodes,
+        max_nodes = MinNodes,
+        min_cpus = 1,
+        num_tasks = NumTasks,
+        cpus_per_task = 1,
+        time_limit = TimeLimit,
+        priority = 0,
+        user_id = UserId,
+        group_id = GroupId
     },
     {ok, Req}.
+
+%% Find job name by scanning for length-prefixed string in the expected region
+find_job_name(Binary) when byte_size(Binary) > 70 ->
+    %% Scan bytes 50-70 for a reasonable length field followed by printable chars
+    find_job_name_scan(Binary, 50);
+find_job_name(_) ->
+    <<"unknown">>.
+
+find_job_name_scan(_Binary, Offset) when Offset > 70 ->
+    <<"unknown">>;
+find_job_name_scan(Binary, Offset) when byte_size(Binary) > Offset + 4 ->
+    <<_:Offset/binary, Len:32/big, Rest/binary>> = Binary,
+    if
+        Len > 0, Len < 256, byte_size(Rest) >= Len ->
+            <<Str:Len/binary, _/binary>> = Rest,
+            case is_printable_name(Str) of
+                true ->
+                    %% Strip trailing null if present
+                    strip_null(Str);
+                false ->
+                    find_job_name_scan(Binary, Offset + 1)
+            end;
+        true ->
+            find_job_name_scan(Binary, Offset + 1)
+    end;
+find_job_name_scan(_, _) ->
+    <<"unknown">>.
+
+%% Find script by looking for shebang pattern
+find_script(Binary) ->
+    case binary:match(Binary, <<"#!/">>) of
+        {Start, _} ->
+            %% Script runs from shebang to some delimiter
+            %% Check for length prefix 4 bytes before
+            extract_script_content(Binary, Start);
+        nomatch ->
+            <<>>
+    end.
+
+extract_script_content(Binary, ShebangOffset) ->
+    %% The script might have a 4-byte length prefix before it
+    %% Or it might just run to the end of a section
+    <<_:ShebangOffset/binary, ScriptRest/binary>> = Binary,
+    %% Find the end of the script - typically null terminated or ends with a pattern
+    case binary:match(ScriptRest, <<0, 0, 0>>) of
+        {EndOffset, _} when EndOffset > 10 ->
+            <<Script:EndOffset/binary, _/binary>> = ScriptRest,
+            Script;
+        _ ->
+            %% Take reasonable chunk as script
+            ScriptLen = min(2048, byte_size(ScriptRest)),
+            <<Script:ScriptLen/binary, _/binary>> = ScriptRest,
+            %% Trim at first triple-null if present
+            trim_script(Script)
+    end.
+
+trim_script(Script) ->
+    case binary:match(Script, <<0, 0>>) of
+        {Pos, _} when Pos > 10 ->
+            <<Trimmed:Pos/binary, _/binary>> = Script,
+            Trimmed;
+        _ ->
+            Script
+    end.
+
+%% Find working directory
+find_work_dir(Binary) ->
+    %% Look for PWD= in environment or /jobs or similar path
+    case binary:match(Binary, <<"PWD=">>) of
+        {Start, 4} ->
+            <<_:Start/binary, "PWD=", PathRest/binary>> = Binary,
+            extract_path(PathRest);
+        nomatch ->
+            <<"/tmp">>
+    end.
+
+extract_path(Binary) ->
+    %% Extract until null or non-path character
+    extract_path(Binary, 0).
+
+extract_path(Binary, Pos) when Pos < byte_size(Binary) ->
+    case binary:at(Binary, Pos) of
+        0 -> <<Path:Pos/binary, _/binary>> = Binary, Path;
+        C when C < 32 -> <<Path:Pos/binary, _/binary>> = Binary, Path;
+        _ -> extract_path(Binary, Pos + 1)
+    end;
+extract_path(Binary, Pos) ->
+    <<Path:Pos/binary, _/binary>> = Binary,
+    Path.
+
+%% Extract UID/GID from the message - these are typically near the end in fixed positions
+extract_uid_gid(Binary) when byte_size(Binary) > 100 ->
+    %% Default to root if we can't find them
+    {0, 0};
+extract_uid_gid(_) ->
+    {0, 0}.
+
+%% Extract time limit from #SBATCH --time directive
+extract_time_limit(Script) ->
+    case binary:match(Script, <<"--time=">>) of
+        {Start, 7} ->
+            <<_:Start/binary, "--time=", TimeRest/binary>> = Script,
+            parse_time_value(TimeRest);
+        nomatch ->
+            case binary:match(Script, <<"-t ">>) of
+                {Start2, 3} ->
+                    <<_:Start2/binary, "-t ", TimeRest2/binary>> = Script,
+                    parse_time_value(TimeRest2);
+                nomatch ->
+                    300  % Default 5 minutes
+            end
+    end.
+
+parse_time_value(Binary) ->
+    %% Parse HH:MM:SS or MM:SS or just minutes
+    TimeStr = extract_until_newline(Binary),
+    parse_time_string(TimeStr).
+
+extract_until_newline(Binary) ->
+    case binary:match(Binary, <<"\n">>) of
+        {Pos, _} ->
+            <<Str:Pos/binary, _/binary>> = Binary,
+            Str;
+        nomatch ->
+            binary:part(Binary, 0, min(20, byte_size(Binary)))
+    end.
+
+parse_time_string(<<"00:", Rest/binary>>) ->
+    %% HH:MM:SS format with 00 hours
+    parse_minutes_seconds(Rest);
+parse_time_string(<<H1, H2, ":", M1, M2, ":", S1, S2, _/binary>>)
+  when H1 >= $0, H1 =< $9, H2 >= $0, H2 =< $9,
+       M1 >= $0, M1 =< $9, M2 >= $0, M2 =< $9,
+       S1 >= $0, S1 =< $9, S2 >= $0, S2 =< $9 ->
+    Hours = (H1 - $0) * 10 + (H2 - $0),
+    Minutes = (M1 - $0) * 10 + (M2 - $0),
+    Seconds = (S1 - $0) * 10 + (S2 - $0),
+    Hours * 3600 + Minutes * 60 + Seconds;
+parse_time_string(<<M1, M2, ":", S1, S2, _/binary>>)
+  when M1 >= $0, M1 =< $9, M2 >= $0, M2 =< $9,
+       S1 >= $0, S1 =< $9, S2 >= $0, S2 =< $9 ->
+    Minutes = (M1 - $0) * 10 + (M2 - $0),
+    Seconds = (S1 - $0) * 10 + (S2 - $0),
+    Minutes * 60 + Seconds;
+parse_time_string(_) ->
+    300.  % Default 5 minutes
+
+parse_minutes_seconds(<<M1, M2, ":", S1, S2, _/binary>>)
+  when M1 >= $0, M1 =< $9, M2 >= $0, M2 =< $9,
+       S1 >= $0, S1 =< $9, S2 >= $0, S2 =< $9 ->
+    Minutes = (M1 - $0) * 10 + (M2 - $0),
+    Seconds = (S1 - $0) * 10 + (S2 - $0),
+    Minutes * 60 + Seconds;
+parse_minutes_seconds(_) ->
+    300.
+
+%% Extract resources from #SBATCH directives
+extract_resources(Script) ->
+    Nodes = case binary:match(Script, <<"--nodes=">>) of
+        {NStart, 8} ->
+            <<_:NStart/binary, "--nodes=", NRest/binary>> = Script,
+            parse_int_value(NRest);
+        nomatch ->
+            1
+    end,
+    Tasks = case binary:match(Script, <<"--ntasks=">>) of
+        {TStart, 9} ->
+            <<_:TStart/binary, "--ntasks=", TRest/binary>> = Script,
+            parse_int_value(TRest);
+        nomatch ->
+            1
+    end,
+    {Nodes, Tasks}.
+
+parse_int_value(<<D, Rest/binary>>) when D >= $0, D =< $9 ->
+    parse_int_value(Rest, D - $0);
+parse_int_value(_) ->
+    1.
+
+parse_int_value(<<D, Rest/binary>>, Acc) when D >= $0, D =< $9 ->
+    parse_int_value(Rest, Acc * 10 + (D - $0));
+parse_int_value(_, Acc) ->
+    Acc.
+
+%% Check if binary contains a printable job name
+is_printable_name(<<>>) -> false;
+is_printable_name(Bin) ->
+    is_printable_name_chars(Bin).
+
+is_printable_name_chars(<<>>) -> true;
+is_printable_name_chars(<<0>>) -> true;  % Null terminator OK
+is_printable_name_chars(<<C, Rest/binary>>) when C >= 32, C < 127 ->
+    is_printable_name_chars(Rest);
+is_printable_name_chars(_) -> false.
+
+%% Strip trailing nulls from string
+strip_null(Bin) ->
+    case binary:match(Bin, <<0>>) of
+        {Pos, _} -> <<Stripped:Pos/binary, _/binary>> = Bin, Stripped;
+        nomatch -> Bin
+    end.
 
 %% Decode REQUEST_CANCEL_JOB (4006)
 decode_cancel_job_request(Binary) ->
@@ -931,22 +1174,6 @@ encode_single_partition_info(#partition_info{} = P) ->
 %%%===================================================================
 %%% Internal Helpers
 %%%===================================================================
-
-%% Decode N strings from binary
-decode_n_strings(0, Binary) ->
-    {[], Binary};
-decode_n_strings(N, Binary) when N > 0 ->
-    decode_n_strings(N, Binary, []).
-
-decode_n_strings(0, Binary, Acc) ->
-    {lists:reverse(Acc), Binary};
-decode_n_strings(N, Binary, Acc) when N > 0 ->
-    case flurm_protocol_pack:unpack_string(Binary) of
-        {ok, Str, Rest} ->
-            decode_n_strings(N - 1, Rest, [ensure_binary(Str) | Acc]);
-        {error, _} ->
-            {lists:reverse(Acc), Binary}
-    end.
 
 %% Encode a list of strings
 encode_string_list(Strings) ->

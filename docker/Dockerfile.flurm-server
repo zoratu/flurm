@@ -1,0 +1,50 @@
+FROM rockylinux:9
+
+# Install Erlang/OTP and build tools
+RUN dnf install -y epel-release && \
+    dnf install -y erlang git munge make && \
+    dnf clean all
+
+# Install rebar3 manually (not in EPEL)
+RUN curl -o /usr/local/bin/rebar3 https://s3.amazonaws.com/rebar3/rebar3 && \
+    chmod +x /usr/local/bin/rebar3
+
+# Create munge directories (key will be created at runtime in shared volume)
+RUN mkdir -p /etc/munge /var/run/munge /var/log/munge && \
+    chown -R munge:munge /etc/munge /var/run/munge /var/log/munge && \
+    chmod 700 /etc/munge
+
+# Copy FLURM source
+WORKDIR /flurm
+COPY . /flurm/
+
+# Build FLURM
+RUN rebar3 compile
+
+# Create entrypoint that creates munge key (if needed), starts munge, and FLURM
+RUN echo '#!/bin/bash' > /entrypoint.sh && \
+    echo 'set -e' >> /entrypoint.sh && \
+    echo '# Always fix ownership (shared volume may have wrong ownership)' >> /entrypoint.sh && \
+    echo 'chown -R munge:munge /etc/munge /var/run/munge /var/log/munge' >> /entrypoint.sh && \
+    echo 'chmod 700 /etc/munge' >> /entrypoint.sh && \
+    echo 'if [ ! -f /etc/munge/munge.key ]; then' >> /entrypoint.sh && \
+    echo '  echo "Creating MUNGE key..."' >> /entrypoint.sh && \
+    echo '  dd if=/dev/urandom bs=1 count=1024 > /etc/munge/munge.key 2>/dev/null' >> /entrypoint.sh && \
+    echo 'fi' >> /entrypoint.sh && \
+    echo 'chown munge:munge /etc/munge/munge.key' >> /entrypoint.sh && \
+    echo 'chmod 400 /etc/munge/munge.key' >> /entrypoint.sh && \
+    echo 'echo "Starting munged..."' >> /entrypoint.sh && \
+    echo 'runuser -u munge -- /usr/sbin/munged' >> /entrypoint.sh && \
+    echo 'sleep 1' >> /entrypoint.sh && \
+    echo '# Verify munge is working' >> /entrypoint.sh && \
+    echo 'if munge -n </dev/null >/dev/null 2>&1; then' >> /entrypoint.sh && \
+    echo '  echo "MUNGE is working"' >> /entrypoint.sh && \
+    echo 'else' >> /entrypoint.sh && \
+    echo '  echo "WARNING: MUNGE test failed"' >> /entrypoint.sh && \
+    echo 'fi' >> /entrypoint.sh && \
+    echo 'cd /flurm && escript start_controller.erl' >> /entrypoint.sh && \
+    chmod +x /entrypoint.sh
+
+EXPOSE 6817 6818
+
+CMD ["/entrypoint.sh"]

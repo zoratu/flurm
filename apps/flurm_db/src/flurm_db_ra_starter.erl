@@ -63,12 +63,15 @@ handle_info(init_cluster, State) ->
     %% Check if we're running in distributed mode
     case node() of
         nonode@nohost ->
-            %% Non-distributed mode - skip Ra cluster initialization
+            %% Non-distributed mode - use ETS fallback for persistence
+            %% ETS tables are already initialized by flurm_db_sup
             lager:warning("[flurm_db] Running in non-distributed mode (nonode@nohost). "
-                          "Ra cluster disabled. Data will not be replicated."),
+                          "Ra cluster disabled. Using ETS fallback for persistence."),
+            lager:info("[flurm_db] ETS fallback tables ready (owned by supervisor)"),
             {stop, normal, State};
         _ ->
-            %% Distributed mode - initialize Ra cluster
+            %% Named node - initialize Ra cluster (works even for single node)
+            lager:info("[flurm_db] Node ~p starting Ra cluster", [node()]),
             init_ra_cluster(Config, State)
     end;
 
@@ -77,6 +80,7 @@ handle_info(_Info, State) ->
 
 %% @private
 %% Initialize the Ra cluster when in distributed mode
+%% On failure, gracefully fall back to ETS (don't crash supervisor)
 init_ra_cluster(Config, State) ->
     case flurm_db_cluster:init_ra() of
         ok ->
@@ -87,33 +91,30 @@ init_ra_cluster(Config, State) ->
                     ClusterNodes = maps:get(cluster_nodes, Config, [node()]),
                     case init_or_join_cluster(ClusterNodes) of
                         ok ->
-                            error_logger:info_msg(
-                                "FLURM DB Ra cluster initialized~n", []),
+                            lager:info("[flurm_db] Ra cluster initialized successfully"),
                             {stop, normal, State};
                         {error, Reason} ->
-                            error_logger:error_msg(
-                                "Failed to initialize FLURM DB cluster: ~p~n",
-                                [Reason]),
-                            {stop, {error, Reason}, State}
+                            lager:warning("[flurm_db] Ra cluster failed (~p), using ETS fallback",
+                                         [Reason]),
+                            %% Stop normally so supervisor doesn't restart us
+                            %% ETS tables already exist from supervisor init
+                            {stop, normal, State}
                     end;
                 JoinNode ->
                     %% Join an existing cluster
                     case flurm_db_cluster:join_cluster(JoinNode) of
                         ok ->
-                            error_logger:info_msg(
-                                "FLURM DB joined cluster via ~p~n",
-                                [JoinNode]),
+                            lager:info("[flurm_db] Joined Ra cluster via ~p", [JoinNode]),
                             {stop, normal, State};
                         {error, Reason} ->
-                            error_logger:error_msg(
-                                "Failed to join cluster via ~p: ~p~n",
-                                [JoinNode, Reason]),
-                            {stop, {error, Reason}, State}
+                            lager:warning("[flurm_db] Failed to join cluster via ~p (~p), using ETS fallback",
+                                         [JoinNode, Reason]),
+                            {stop, normal, State}
                     end
             end;
         {error, Reason} ->
-            error_logger:error_msg("Failed to initialize Ra: ~p~n", [Reason]),
-            {stop, {error, Reason}, State}
+            lager:warning("[flurm_db] Ra initialization failed (~p), using ETS fallback", [Reason]),
+            {stop, normal, State}
     end.
 
 %% @private

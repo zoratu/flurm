@@ -2,7 +2,11 @@
 %%% @doc FLURM Job Manager
 %%%
 %%% Manages job lifecycle including submission, tracking, completion,
-%%% and cancellation.
+%%% and cancellation. Integrates with flurm_db_persist for state
+%%% persistence across controller restarts.
+%%%
+%%% The job manager maintains an in-memory cache for fast lookups,
+%%% while persisting all changes to the underlying storage (Ra or ETS).
 %%% @end
 %%%-------------------------------------------------------------------
 -module(flurm_job_manager).
@@ -16,7 +20,9 @@
 -include_lib("flurm_core/include/flurm_core.hrl").
 
 -record(state, {
-    jobs = #{} :: #{job_id() => #job{}}
+    jobs = #{} :: #{job_id() => #job{}},
+    job_counter = 1 :: pos_integer(),
+    persistence_mode = none :: ra | ets | none
 }).
 
 %%====================================================================
@@ -51,17 +57,28 @@ update_job(JobId, Updates) ->
 %%====================================================================
 
 init([]) ->
-    lager:info("Job Manager started"),
-    {ok, #state{}}.
+    %% Load existing jobs from persistence on startup
+    {Jobs, Counter, Mode} = load_persisted_jobs(),
+    lager:info("Job Manager started (persistence: ~p, loaded ~p jobs)",
+               [Mode, maps:size(Jobs)]),
+    {ok, #state{jobs = Jobs, job_counter = Counter, persistence_mode = Mode}}.
 
-handle_call({submit_job, JobSpec}, _From, #state{jobs = Jobs} = State) ->
-    Job = flurm_core:new_job(JobSpec),
-    JobId = flurm_core:job_id(Job),
+handle_call({submit_job, JobSpec}, _From, #state{jobs = Jobs, job_counter = Counter} = State) ->
+    %% Create the job with the next available ID
+    Job = create_job(Counter, JobSpec),
+    JobId = Job#job.id,
     lager:info("Job ~p submitted: ~p", [JobId, maps:get(name, JobSpec, <<"unnamed">>)]),
+
+    %% Persist the job
+    persist_job(Job),
+
+    %% Update in-memory cache
     NewJobs = maps:put(JobId, Job, Jobs),
+
     %% Notify scheduler about new job
     flurm_scheduler:submit_job(JobId),
-    {reply, {ok, JobId}, State#state{jobs = NewJobs}};
+
+    {reply, {ok, JobId}, State#state{jobs = NewJobs, job_counter = Counter + 1}};
 
 handle_call({cancel_job, JobId}, _From, #state{jobs = Jobs} = State) ->
     case maps:find(JobId, Jobs) of
@@ -73,6 +90,9 @@ handle_call({cancel_job, JobId}, _From, #state{jobs = Jobs} = State) ->
             UpdatedJob = flurm_core:update_job_state(Job, cancelled),
             NewJobs = maps:put(JobId, UpdatedJob, Jobs),
             lager:info("Job ~p cancelled", [JobId]),
+
+            %% Persist the update
+            persist_job_update(JobId, #{state => cancelled}),
 
             %% Send cancel to node daemon if job was running
             case AllocatedNodes of
@@ -105,6 +125,10 @@ handle_call({update_job, JobId, Updates}, _From, #state{jobs = Jobs} = State) ->
         {ok, Job} ->
             UpdatedJob = apply_job_updates(Job, Updates),
             NewJobs = maps:put(JobId, UpdatedJob, Jobs),
+
+            %% Persist the update
+            persist_job_update(JobId, Updates),
+
             {reply, ok, State#state{jobs = NewJobs}};
         error ->
             {reply, {error, not_found}, State}
@@ -125,6 +149,83 @@ terminate(_Reason, _State) ->
 %%====================================================================
 %% Internal functions
 %%====================================================================
+
+%% Load persisted jobs from storage on startup
+load_persisted_jobs() ->
+    %% Wait briefly for persistence layer to initialize
+    timer:sleep(100),
+
+    Mode = flurm_db_persist:persistence_mode(),
+    case Mode of
+        none ->
+            lager:info("No persistence available, starting with empty state"),
+            {#{}, 1, none};
+        _ ->
+            Jobs = flurm_db_persist:list_jobs(),
+            JobMap = lists:foldl(fun(Job, Acc) ->
+                maps:put(Job#job.id, Job, Acc)
+            end, #{}, Jobs),
+
+            %% Calculate next job counter from existing jobs
+            Counter = case Jobs of
+                [] -> 1;
+                _ ->
+                    MaxId = lists:max([J#job.id || J <- Jobs]),
+                    MaxId + 1
+            end,
+
+            lager:info("Loaded ~p jobs from persistence (mode: ~p)",
+                       [length(Jobs), Mode]),
+            {JobMap, Counter, Mode}
+    end.
+
+%% Create a new job record
+create_job(JobId, JobSpec) ->
+    Now = erlang:system_time(second),
+    #job{
+        id = JobId,
+        name = maps:get(name, JobSpec, <<"unnamed">>),
+        user = maps:get(user, JobSpec, <<"unknown">>),
+        partition = maps:get(partition, JobSpec, <<"default">>),
+        state = pending,
+        script = maps:get(script, JobSpec, <<>>),
+        num_nodes = maps:get(num_nodes, JobSpec, 1),
+        num_cpus = maps:get(num_cpus, JobSpec, 1),
+        memory_mb = maps:get(memory_mb, JobSpec, 1024),
+        time_limit = maps:get(time_limit, JobSpec, 3600),
+        priority = maps:get(priority, JobSpec, 100),
+        submit_time = Now,
+        start_time = undefined,
+        end_time = undefined,
+        allocated_nodes = [],
+        exit_code = undefined
+    }.
+
+%% Persist a new job
+persist_job(Job) ->
+    case flurm_db_persist:persistence_mode() of
+        none -> ok;
+        _ ->
+            case flurm_db_persist:store_job(Job) of
+                ok -> ok;
+                {error, Reason} ->
+                    lager:error("Failed to persist job ~p: ~p",
+                               [Job#job.id, Reason])
+            end
+    end.
+
+%% Persist a job update
+persist_job_update(JobId, Updates) ->
+    case flurm_db_persist:persistence_mode() of
+        none -> ok;
+        _ ->
+            case flurm_db_persist:update_job(JobId, Updates) of
+                ok -> ok;
+                {error, Reason} ->
+                    lager:error("Failed to persist job ~p update: ~p",
+                               [JobId, Reason])
+            end
+    end.
 
 %% Apply updates to a job record
 apply_job_updates(Job, Updates) ->

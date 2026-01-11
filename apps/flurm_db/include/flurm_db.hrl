@@ -6,13 +6,15 @@
 -ifndef(FLURM_DB_HRL).
 -define(FLURM_DB_HRL, true).
 
+%% Include flurm_core for job_id() type
+-include_lib("flurm_core/include/flurm_core.hrl").
+
 %% Type definitions
 -type table_name() :: jobs | nodes | partitions | atom().
 -type key() :: term().
 -type value() :: term().
 
-%% Ra-specific types
--type job_id() :: pos_integer().
+%% Ra-specific types (job_id() comes from flurm_core.hrl)
 -type node_name() :: binary().
 -type partition_name() :: binary().
 

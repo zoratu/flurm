@@ -1,0 +1,11 @@
+_build/
+deps/
+.git/
+*.beam
+erl_crash.dump
+rebar3.crashdump
+*.swp
+*.swo
+*~
+.DS_Store
+docker/

@@ -1,0 +1,18 @@
+FROM rockylinux:9
+
+# Install SLURM client tools only (without munge for auth/none)
+RUN dnf install -y epel-release && \
+    dnf install -y slurm && \
+    dnf clean all
+
+# Create minimal slurm.conf pointing to host with auth/none
+RUN mkdir -p /etc/slurm
+COPY slurm.conf /etc/slurm/slurm.conf
+
+# Create test job script
+RUN mkdir -p /jobs
+COPY test_job.sh /jobs/test_job.sh
+RUN chmod +x /jobs/test_job.sh
+
+WORKDIR /jobs
+CMD ["/bin/bash"]

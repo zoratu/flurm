@@ -268,11 +268,37 @@ init_ra() ->
             ok
     end,
 
-    %% Ensure Ra is started
+    %% Ensure Ra application is started
     case application:ensure_all_started(ra) of
-        {ok, _} -> ok;
-        {error, {already_started, ra}} -> ok;
-        {error, Reason2} -> {error, Reason2}
+        {ok, _} ->
+            %% Also start the default Ra system (required for Ra 2.x)
+            start_default_system();
+        {error, {already_started, ra}} ->
+            %% Ra already started, ensure default system is running
+            start_default_system();
+        {error, Reason2} ->
+            {error, Reason2}
+    end.
+
+%% @private
+%% Start the default Ra system if not already running.
+start_default_system() ->
+    case ra_system:fetch(default) of
+        undefined ->
+            %% Default system not started, start it
+            case ra_system:start_default() of
+                {ok, _Pid} ->
+                    lager:info("[flurm_db] Ra default system started"),
+                    ok;
+                {error, {already_started, _}} ->
+                    ok;
+                {error, Reason} ->
+                    lager:error("[flurm_db] Failed to start Ra default system: ~p", [Reason]),
+                    {error, Reason}
+            end;
+        _Config ->
+            %% Default system already running
+            ok
     end.
 
 %% @doc Get the server ID for the local node.

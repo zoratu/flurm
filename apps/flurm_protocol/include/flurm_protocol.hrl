@@ -13,12 +13,12 @@
 %%% Protocol Version Constants
 %%%===================================================================
 
-%% SLURM protocol version (major.minor format as single integer)
--define(SLURM_PROTOCOL_VERSION, 22050).  % 22.05.x
+%% SLURM protocol version (0xMMmm format where MM=major, mm=minor)
+-define(SLURM_PROTOCOL_VERSION, 16#2600).  % SLURM 22.05.x = 0x2600
 
 %% Protocol header size (length prefix + header)
 -define(SLURM_LENGTH_PREFIX_SIZE, 4).  % 4-byte length prefix
--define(SLURM_HEADER_SIZE, 12).        % 12-byte message header (version:16, flags:16, msg_index:16, msg_type:16, body_length:32)
+-define(SLURM_HEADER_SIZE, 10).        % 10-byte message header (version:16, flags:16, msg_type:16, body_length:32)
 
 %% Maximum message size (64 MB)
 -define(SLURM_MAX_MESSAGE_SIZE, 67108864).

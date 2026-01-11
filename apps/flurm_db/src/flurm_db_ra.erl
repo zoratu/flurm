@@ -60,7 +60,7 @@
     make_partition_record/1
 ]).
 
--define(DEFAULT_PRIORITY, 100).
+%% DEFAULT_PRIORITY comes from flurm_core.hrl via flurm_db.hrl
 -define(CLUSTER_NAME, ?RA_CLUSTER_NAME).
 
 %%====================================================================

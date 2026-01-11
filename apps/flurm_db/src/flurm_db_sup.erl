@@ -51,6 +51,11 @@ start_link(Config) when is_map(Config) ->
 
 %% @private
 init(Config) ->
+    %% Create ETS tables for fallback storage (before starting children)
+    %% These are owned by the supervisor process and will persist
+    %% even when flurm_db_ra_starter terminates
+    init_ets_tables(),
+
     %% Set restart strategy
     SupFlags = #{
         strategy => one_for_one,
@@ -72,3 +77,24 @@ init(Config) ->
     ],
 
     {ok, {SupFlags, Children}}.
+
+%% @private
+%% Initialize ETS tables for fallback storage.
+%% Called from the supervisor so tables persist when ra_starter terminates.
+init_ets_tables() ->
+    Tables = [flurm_db_jobs_ets, flurm_db_nodes_ets, flurm_db_partitions_ets,
+              flurm_db_job_counter_ets],
+    lists:foreach(fun(Table) ->
+        case ets:whereis(Table) of
+            undefined ->
+                ets:new(Table, [named_table, public, set, {read_concurrency, true}]);
+            _ ->
+                ok
+        end
+    end, Tables),
+    %% Initialize job counter if not present
+    case ets:lookup(flurm_db_job_counter_ets, counter) of
+        [] -> ets:insert(flurm_db_job_counter_ets, {counter, 0});
+        _ -> ok
+    end,
+    ok.

@@ -1,0 +1,43 @@
+services:
+  flurm-server:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.flurm-server
+    ports:
+      - "6817:6817"
+      - "6818:6818"
+    volumes:
+      - munge-key:/etc/munge
+    networks:
+      - flurm-net
+
+  flurm-node:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.flurm-node
+    depends_on:
+      - flurm-server
+    environment:
+      - FLURM_CONTROLLER_HOST=flurm-server
+      - FLURM_CONTROLLER_PORT=6818
+    networks:
+      - flurm-net
+
+  slurm-client:
+    build:
+      context: .
+      dockerfile: Dockerfile.slurm-client-munge
+    depends_on:
+      - flurm-server
+    volumes:
+      - munge-key:/etc/munge
+    networks:
+      - flurm-net
+    stdin_open: true
+    tty: true
+
+volumes:
+  munge-key:
+
+networks:
+  flurm-net:

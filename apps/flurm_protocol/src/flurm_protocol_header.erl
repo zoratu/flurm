@@ -1,11 +1,10 @@
 %%%-------------------------------------------------------------------
 %%% @doc FLURM Protocol Header - SLURM Message Header Codec
 %%%
-%%% Handles encoding and decoding of the 12-byte SLURM message header.
+%%% Handles encoding and decoding of the 10-byte SLURM message header.
 %%% Wire format (big-endian/network byte order):
 %%%   - version:     2 bytes (uint16)
 %%%   - flags:       2 bytes (uint16)
-%%%   - msg_index:   2 bytes (uint16)
 %%%   - msg_type:    2 bytes (uint16)
 %%%   - body_length: 4 bytes (uint32) - supports messages up to 4GB
 %%%
@@ -45,24 +44,23 @@ protocol_version() ->
 header_size() ->
     ?SLURM_HEADER_SIZE.
 
-%% @doc Parse a 12-byte binary into a slurm_header record
+%% @doc Parse a 10-byte binary into a slurm_header record
 %%
 %% The header format is:
-%%   <<Version:16/big, Flags:16/big, MsgIndex:16/big, MsgType:16/big, BodyLength:32/big>>
+%%   <<Version:16/big, Flags:16/big, MsgType:16/big, BodyLength:32/big>>
 %%
 %% Returns {ok, Header, Rest} on success where Rest is any remaining data,
 %% or {error, Reason} on failure.
 -spec parse_header(binary()) -> {ok, #slurm_header{}, binary()} | {error, term()}.
 parse_header(<<Version:16/big,
                Flags:16/big,
-               MsgIndex:16/big,
                MsgType:16/big,
                BodyLength:32/big,
                Rest/binary>>) ->
     Header = #slurm_header{
         version = Version,
         flags = Flags,
-        msg_index = MsgIndex,
+        msg_index = 0,  % Not used in SLURM protocol, kept for compatibility
         msg_type = MsgType,
         body_length = BodyLength
     },
@@ -72,24 +70,21 @@ parse_header(Binary) when is_binary(Binary), byte_size(Binary) < ?SLURM_HEADER_S
 parse_header(_) ->
     {error, invalid_header_data}.
 
-%% @doc Encode a slurm_header record into a 12-byte binary
+%% @doc Encode a slurm_header record into a 10-byte binary
 %%
 %% Takes a #slurm_header{} record and produces a big-endian binary.
 -spec encode_header(#slurm_header{}) -> {ok, binary()} | {error, term()}.
 encode_header(#slurm_header{
     version = Version,
     flags = Flags,
-    msg_index = MsgIndex,
     msg_type = MsgType,
     body_length = BodyLength
 }) when is_integer(Version), Version >= 0, Version =< 65535,
         is_integer(Flags), Flags >= 0, Flags =< 65535,
-        is_integer(MsgIndex), MsgIndex >= 0, MsgIndex =< 65535,
         is_integer(MsgType), MsgType >= 0, MsgType =< 65535,
         is_integer(BodyLength), BodyLength >= 0, BodyLength =< 4294967295 ->
     Binary = <<Version:16/big,
                Flags:16/big,
-               MsgIndex:16/big,
                MsgType:16/big,
                BodyLength:32/big>>,
     {ok, Binary};
