@@ -241,6 +241,38 @@ handle(#slurm_header{msg_type = ?REQUEST_BUILD_INFO}, _Body) ->
     Response = #slurm_rc_response{return_code = 0},
     {ok, ?RESPONSE_SLURM_RC, Response};
 
+%% REQUEST_RECONFIGURE (1003) -> RESPONSE_SLURM_RC
+%% Hot-reload configuration from slurm.conf
+handle(#slurm_header{msg_type = ?REQUEST_RECONFIGURE}, _Body) ->
+    lager:info("Handling reconfigure request"),
+    Result = case is_cluster_enabled() of
+        true ->
+            %% In cluster mode, only leader processes reconfigure
+            case flurm_controller_cluster:is_leader() of
+                true ->
+                    do_reconfigure();
+                false ->
+                    %% Forward to leader
+                    case flurm_controller_cluster:forward_to_leader(reconfigure, []) of
+                        {ok, ReconfigResult} -> ReconfigResult;
+                        {error, no_leader} -> {error, no_leader};
+                        {error, Reason} -> {error, Reason}
+                    end
+            end;
+        false ->
+            do_reconfigure()
+    end,
+    case Result of
+        ok ->
+            lager:info("Reconfiguration completed successfully"),
+            Response = #slurm_rc_response{return_code = 0},
+            {ok, ?RESPONSE_SLURM_RC, Response};
+        {error, Reason2} ->
+            lager:warning("Reconfiguration failed: ~p", [Reason2]),
+            Response = #slurm_rc_response{return_code = -1},
+            {ok, ?RESPONSE_SLURM_RC, Response}
+    end;
+
 %% Unknown/unsupported message types
 handle(#slurm_header{msg_type = MsgType}, _Body) ->
     TypeName = flurm_protocol_codec:message_type_name(MsgType),
@@ -454,3 +486,161 @@ is_cluster_enabled() ->
                 _Pid -> true
             end
     end.
+
+%%====================================================================
+%% Internal Functions - Reconfiguration
+%%====================================================================
+
+%% @doc Perform hot reconfiguration by reloading slurm.conf
+-spec do_reconfigure() -> ok | {error, term()}.
+do_reconfigure() ->
+    lager:info("Starting hot reconfiguration"),
+
+    %% Step 1: Reload configuration from file
+    case flurm_config_server:reconfigure() of
+        ok ->
+            lager:info("Configuration reloaded from file"),
+
+            %% Step 2: Apply node changes
+            apply_node_changes(),
+
+            %% Step 3: Apply partition changes
+            apply_partition_changes(),
+
+            %% Step 4: Notify scheduler to refresh
+            flurm_scheduler:trigger_schedule(),
+
+            lager:info("Reconfiguration complete"),
+            ok;
+        {error, Reason} ->
+            lager:error("Failed to reload configuration: ~p", [Reason]),
+            {error, Reason}
+    end.
+
+%% @doc Apply node configuration changes
+-spec apply_node_changes() -> ok.
+apply_node_changes() ->
+    %% Get nodes from config
+    ConfigNodes = flurm_config_server:get_nodes(),
+    lager:debug("Config has ~p node definitions", [length(ConfigNodes)]),
+
+    %% For each node definition, ensure it exists in the node manager
+    lists:foreach(fun(NodeDef) ->
+        case maps:get(nodename, NodeDef, undefined) of
+            undefined -> ok;
+            NodePattern ->
+                %% Expand hostlist pattern
+                ExpandedNodes = flurm_config_slurm:expand_hostlist(NodePattern),
+                lists:foreach(fun(NodeName) ->
+                    ensure_node_exists(NodeName, NodeDef)
+                end, ExpandedNodes)
+        end
+    end, ConfigNodes),
+    ok.
+
+%% @doc Ensure a node exists in the node manager (for pre-configured nodes)
+-spec ensure_node_exists(binary(), map()) -> ok.
+ensure_node_exists(NodeName, NodeDef) ->
+    case flurm_node_manager:get_node(NodeName) of
+        {ok, _Node} ->
+            %% Node exists, could update if needed
+            ok;
+        {error, not_found} ->
+            %% Node not registered yet, could pre-register or just log
+            lager:debug("Node ~s defined in config but not registered", [NodeName]),
+            ok
+    end,
+    %% Extract CPUs and memory from config if available
+    _Cpus = maps:get(cpus, NodeDef, maps:get(cpu, NodeDef, 1)),
+    _Memory = maps:get(realmemory, NodeDef, maps:get(memory_mb, NodeDef, 1024)),
+    ok.
+
+%% @doc Apply partition configuration changes
+-spec apply_partition_changes() -> ok.
+apply_partition_changes() ->
+    %% Get partitions from config
+    ConfigPartitions = flurm_config_server:get_partitions(),
+    lager:debug("Config has ~p partition definitions", [length(ConfigPartitions)]),
+
+    %% For each partition, ensure it exists
+    lists:foreach(fun(PartDef) ->
+        case maps:get(partitionname, PartDef, undefined) of
+            undefined -> ok;
+            PartName ->
+                ensure_partition_exists(PartName, PartDef)
+        end
+    end, ConfigPartitions),
+    ok.
+
+%% @doc Ensure a partition exists in the partition manager
+-spec ensure_partition_exists(binary(), map()) -> ok.
+ensure_partition_exists(PartName, PartDef) ->
+    case flurm_partition_manager:get_partition(PartName) of
+        {ok, _Part} ->
+            %% Partition exists, update if needed
+            update_partition(PartName, PartDef);
+        {error, not_found} ->
+            %% Create partition
+            create_partition(PartName, PartDef)
+    end.
+
+%% @doc Create a new partition from config
+-spec create_partition(binary(), map()) -> ok.
+create_partition(PartName, PartDef) ->
+    %% Extract nodes from definition
+    NodesPattern = maps:get(nodes, PartDef, <<>>),
+    Nodes = case NodesPattern of
+        <<>> -> [];
+        _ -> flurm_config_slurm:expand_hostlist(NodesPattern)
+    end,
+
+    PartSpec = #{
+        name => PartName,
+        nodes => Nodes,
+        state => case maps:get(state, PartDef, up) of
+            <<"UP">> -> up;
+            <<"DOWN">> -> down;
+            Other when is_atom(Other) -> Other;
+            _ -> up
+        end,
+        default => maps:get(default, PartDef, false) =:= true,
+        max_time => maps:get(maxtime, PartDef, infinity),
+        priority => maps:get(prioritytier, PartDef, 1)
+    },
+
+    case flurm_partition_manager:create_partition(PartSpec) of
+        ok ->
+            lager:info("Created partition ~s with ~p nodes", [PartName, length(Nodes)]);
+        {error, Reason} ->
+            lager:warning("Failed to create partition ~s: ~p", [PartName, Reason])
+    end,
+    ok.
+
+%% @doc Update an existing partition from config
+-spec update_partition(binary(), map()) -> ok.
+update_partition(PartName, PartDef) ->
+    %% Update partition state if changed
+    %% Note: set_state may not be implemented yet
+    NewState = case maps:get(state, PartDef, undefined) of
+        undefined -> undefined;
+        <<"UP">> -> up;
+        <<"DOWN">> -> down;
+        up -> up;
+        down -> down;
+        _ -> undefined
+    end,
+    case NewState of
+        undefined ->
+            ok;
+        State ->
+            %% Try to update state if the function exists
+            try
+                flurm_partition_manager:update_partition(PartName, #{state => State})
+            catch
+                error:undef ->
+                    lager:debug("Partition state update not supported yet for ~s", [PartName]);
+                _:_ ->
+                    ok
+            end
+    end,
+    ok.

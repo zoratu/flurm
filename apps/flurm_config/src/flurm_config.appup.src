@@ -1,0 +1,21 @@
+%% FLURM Config Application Upgrade File
+%%
+%% Defines upgrade/downgrade instructions for hot code loading.
+%% Format: {NewVsn, [{FromVsn, Instructions}], [{ToVsn, Instructions}]}
+%%
+%% @vsn is replaced by rebar3 with the actual version from app.src
+{"0.1.0",
+ %% Upgrade instructions (from older versions to 0.1.0)
+ [
+  %% From any version matching regex "0\\.0\\..*" - initial releases
+  {"0\\.0\\..*",
+   [{load_module, flurm_config_server},
+    {load_module, flurm_config_slurm}]}
+ ],
+ %% Downgrade instructions (from 0.1.0 to older versions)
+ [
+  {"0\\.0\\..*",
+   [{load_module, flurm_config_server},
+    {load_module, flurm_config_slurm}]}
+ ]
+}.

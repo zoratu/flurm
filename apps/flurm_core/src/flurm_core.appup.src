@@ -1,0 +1,39 @@
+%% FLURM Core Application Upgrade File
+%%
+%% Core modules with gen_server/gen_statem state need careful upgrade handling.
+%% Uses {advanced, Extra} to trigger code_change callbacks for state transformation.
+{"0.1.0",
+ %% Upgrade instructions
+ [
+  {"0\\.0\\..*",
+   [
+    %% Stateful modules requiring state transformation
+    {update, flurm_job, {advanced, []}, brutal_purge, brutal_purge, []},
+    {update, flurm_node, {advanced, []}, brutal_purge, brutal_purge, []},
+    {update, flurm_partition, {advanced, []}, brutal_purge, brutal_purge, []},
+    {update, flurm_scheduler, {advanced, []}, brutal_purge, brutal_purge, []},
+    {update, flurm_job_registry, {advanced, []}, brutal_purge, brutal_purge, []},
+    {update, flurm_node_registry, {advanced, []}, brutal_purge, brutal_purge, []},
+    {update, flurm_partition_registry, {advanced, []}, brutal_purge, brutal_purge, []},
+
+    %% Stateless modules - simple reload
+    {load_module, flurm_core},
+    {load_module, flurm_bitmap}
+   ]}
+ ],
+ %% Downgrade instructions
+ [
+  {"0\\.0\\..*",
+   [
+    {update, flurm_job, {advanced, []}, brutal_purge, brutal_purge, []},
+    {update, flurm_node, {advanced, []}, brutal_purge, brutal_purge, []},
+    {update, flurm_partition, {advanced, []}, brutal_purge, brutal_purge, []},
+    {update, flurm_scheduler, {advanced, []}, brutal_purge, brutal_purge, []},
+    {update, flurm_job_registry, {advanced, []}, brutal_purge, brutal_purge, []},
+    {update, flurm_node_registry, {advanced, []}, brutal_purge, brutal_purge, []},
+    {update, flurm_partition_registry, {advanced, []}, brutal_purge, brutal_purge, []},
+    {load_module, flurm_core},
+    {load_module, flurm_bitmap}
+   ]}
+ ]
+}.

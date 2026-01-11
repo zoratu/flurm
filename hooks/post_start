@@ -1,0 +1,13 @@
+#!/bin/bash
+#
+# FLURM post_start hook
+# Runs after the release starts
+#
+
+RELEASE_ROOT_DIR="${RELEASE_ROOT_DIR:-$(dirname $(dirname $(readlink -f $0)))}"
+LOG_FILE="/var/log/flurm/startup.log"
+
+# Log startup
+echo "$(date '+%Y-%m-%d %H:%M:%S') FLURM started (version: ${REL_VSN:-unknown})" >> "$LOG_FILE" 2>/dev/null || true
+
+exit 0

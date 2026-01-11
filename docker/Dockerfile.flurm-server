@@ -14,6 +14,18 @@ RUN mkdir -p /etc/munge /var/run/munge /var/log/munge && \
     chown -R munge:munge /etc/munge /var/run/munge /var/log/munge && \
     chmod 700 /etc/munge
 
+# Create config directory and default config
+RUN mkdir -p /etc/flurm && \
+    echo '# FLURM Controller Configuration' > /etc/flurm/slurm.conf && \
+    echo 'ClusterName=flurm' >> /etc/flurm/slurm.conf && \
+    echo 'SlurmctldPort=6817' >> /etc/flurm/slurm.conf && \
+    echo 'SlurmdPort=6818' >> /etc/flurm/slurm.conf && \
+    echo 'AuthType=auth/munge' >> /etc/flurm/slurm.conf && \
+    echo 'SchedulerType=sched/builtin' >> /etc/flurm/slurm.conf && \
+    echo 'SlurmctldDebug=info' >> /etc/flurm/slurm.conf && \
+    echo 'PartitionName=default Nodes=ALL Default=YES MaxTime=INFINITE State=UP' >> /etc/flurm/slurm.conf && \
+    echo 'PartitionName=batch Nodes=ALL MaxTime=86400 State=UP' >> /etc/flurm/slurm.conf
+
 # Copy FLURM source
 WORKDIR /flurm
 COPY . /flurm/

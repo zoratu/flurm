@@ -1,0 +1,26 @@
+%% FLURM Node Daemon Application Upgrade File
+%%
+%% Node daemon upgrades must maintain running jobs.
+{"0.1.0",
+ %% Upgrade instructions
+ [
+  {"0\\.0\\..*",
+   [
+    %% Main daemon server with state
+    {update, flurm_node_daemon_server, {advanced, []}, brutal_purge, brutal_purge, []},
+
+    %% Stateless modules
+    {load_module, flurm_node_daemon_app},
+    {load_module, flurm_node_daemon_sup}
+   ]}
+ ],
+ %% Downgrade instructions
+ [
+  {"0\\.0\\..*",
+   [
+    {update, flurm_node_daemon_server, {advanced, []}, brutal_purge, brutal_purge, []},
+    {load_module, flurm_node_daemon_app},
+    {load_module, flurm_node_daemon_sup}
+   ]}
+ ]
+}.

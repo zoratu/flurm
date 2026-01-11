@@ -1,0 +1,35 @@
+%% FLURM Controller Application Upgrade File
+%%
+%% Controller upgrades must maintain active connections.
+%% Ranch handlers are upgraded via module reload.
+{"0.1.0",
+ %% Upgrade instructions
+ [
+  {"0\\.0\\..*",
+   [
+    %% Stateful cluster/failover modules
+    {update, flurm_controller_cluster, {advanced, []}, brutal_purge, brutal_purge, []},
+    {update, flurm_controller_failover, {advanced, []}, brutal_purge, brutal_purge, []},
+
+    %% Connection handlers - stateless per-request
+    {load_module, flurm_controller_handler},
+    {load_module, flurm_controller_connection},
+
+    %% Supervision tree
+    {load_module, flurm_controller_sup},
+    {load_module, flurm_controller_app}
+   ]}
+ ],
+ %% Downgrade instructions
+ [
+  {"0\\.0\\..*",
+   [
+    {update, flurm_controller_cluster, {advanced, []}, brutal_purge, brutal_purge, []},
+    {update, flurm_controller_failover, {advanced, []}, brutal_purge, brutal_purge, []},
+    {load_module, flurm_controller_handler},
+    {load_module, flurm_controller_connection},
+    {load_module, flurm_controller_sup},
+    {load_module, flurm_controller_app}
+   ]}
+ ]
+}.

@@ -1,0 +1,19 @@
+%% FLURM Protocol Application Upgrade File
+%%
+%% Protocol module upgrades are straightforward since they're stateless.
+{"0.1.0",
+ %% Upgrade instructions
+ [
+  {"0\\.0\\..*",
+   [{load_module, flurm_protocol_codec},
+    {load_module, flurm_protocol_header},
+    {load_module, flurm_protocol_auth}]}
+ ],
+ %% Downgrade instructions
+ [
+  {"0\\.0\\..*",
+   [{load_module, flurm_protocol_codec},
+    {load_module, flurm_protocol_header},
+    {load_module, flurm_protocol_auth}]}
+ ]
+}.

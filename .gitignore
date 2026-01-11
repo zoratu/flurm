@@ -37,3 +37,7 @@ _checkouts/
 # Editor backup files
 \#*\#
 .\#*
+
+# Debug/scratch files
+debug_*.erl
+test_*.erl

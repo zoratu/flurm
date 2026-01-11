@@ -1,0 +1,21 @@
+#!/bin/bash
+#
+# FLURM pre_start hook
+# Runs before the release starts
+#
+
+# Ensure log and data directories exist
+mkdir -p /var/log/flurm
+mkdir -p /var/lib/flurm/ra
+mkdir -p /var/lib/flurm/db
+
+# Fix permissions if running as root
+if [ "$(id -u)" = "0" ]; then
+    # Create flurm user if it doesn't exist
+    if ! id -u flurm &>/dev/null; then
+        useradd -r -s /bin/false flurm 2>/dev/null || true
+    fi
+    chown -R flurm:flurm /var/log/flurm /var/lib/flurm 2>/dev/null || true
+fi
+
+exit 0

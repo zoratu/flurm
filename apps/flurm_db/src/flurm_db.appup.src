@@ -1,0 +1,37 @@
+%% FLURM Database Application Upgrade File
+%%
+%% Database/Raft modules require careful upgrade to maintain consensus.
+%% Ra state machine upgrades are handled via Ra's built-in mechanisms.
+{"0.1.0",
+ %% Upgrade instructions
+ [
+  {"0\\.0\\..*",
+   [
+    %% Ra state machine - uses Ra's built-in upgrade mechanism
+    {load_module, flurm_db_ra},
+    {load_module, flurm_db_ra_effects},
+
+    %% Cluster management with state
+    {update, flurm_db_cluster, {advanced, []}, brutal_purge, brutal_purge, []},
+    {update, flurm_db_ra_starter, {advanced, []}, brutal_purge, brutal_purge, []},
+
+    %% Stateless modules
+    {load_module, flurm_db},
+    {load_module, flurm_db_app},
+    {load_module, flurm_db_sup}
+   ]}
+ ],
+ %% Downgrade instructions
+ [
+  {"0\\.0\\..*",
+   [
+    {load_module, flurm_db_ra},
+    {load_module, flurm_db_ra_effects},
+    {update, flurm_db_cluster, {advanced, []}, brutal_purge, brutal_purge, []},
+    {update, flurm_db_ra_starter, {advanced, []}, brutal_purge, brutal_purge, []},
+    {load_module, flurm_db},
+    {load_module, flurm_db_app},
+    {load_module, flurm_db_sup}
+   ]}
+ ]
+}.
