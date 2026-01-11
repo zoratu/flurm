@@ -200,10 +200,40 @@ handle_disconnect(Socket) ->
     case flurm_node_connection_manager:find_by_socket(Socket) of
         {ok, Hostname} ->
             log(info, "Node ~s disconnected", [Hostname]),
+            %% Mark node as down
+            flurm_node_manager:update_node(Hostname, #{state => down}),
+            %% Fail all jobs running on this node
+            fail_jobs_on_node(Hostname),
+            %% Unregister the connection
             flurm_node_connection_manager:unregister_connection(Hostname);
         error ->
             ok
     end.
+
+%% Fail all jobs that were running on a node that went down
+fail_jobs_on_node(Hostname) ->
+    %% Find all jobs that were allocated to this node and are still running
+    AllJobs = flurm_job_manager:list_jobs(),
+    RunningOnNode = lists:filter(fun(Job) ->
+        State = element(6, Job),  % #job.state
+        AllocatedNodes = element(16, Job),  % #job.allocated_nodes
+        (State =:= running orelse State =:= configuring) andalso
+        lists:member(Hostname, AllocatedNodes)
+    end, AllJobs),
+
+    log(info, "Node ~s disconnect: found ~p jobs still running on node",
+        [Hostname, length(RunningOnNode)]),
+
+    lists:foreach(fun(Job) ->
+        JobId = element(2, Job),  % #job.id
+        log(warning, "Job ~p failed due to node ~s failure", [JobId, Hostname]),
+        flurm_job_manager:update_job(JobId, #{
+            state => node_fail,
+            exit_code => -1,
+            end_time => erlang:system_time(second)
+        }),
+        flurm_scheduler:job_failed(JobId)
+    end, RunningOnNode).
 
 send_message(Socket, Transport, Message) ->
     case flurm_protocol:encode(Message) of
