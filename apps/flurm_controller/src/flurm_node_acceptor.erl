@@ -160,6 +160,7 @@ handle_message(_Socket, _Transport, #{type := job_complete, payload := Payload})
 handle_message(_Socket, _Transport, #{type := job_failed, payload := Payload}) ->
     JobId = maps:get(<<"job_id">>, Payload),
     Reason = maps:get(<<"reason">>, Payload, <<"unknown">>),
+    ExitCode = maps:get(<<"exit_code">>, Payload, -1),
 
     %% Check if job was already cancelled by the controller
     case flurm_job_manager:get_job(JobId) of
@@ -168,12 +169,20 @@ handle_message(_Socket, _Transport, #{type := job_failed, payload := Payload}) -
             log(info, "Job ~p: ignoring failed report (already cancelled)", [JobId]),
             ok;
         _ ->
-            log(warning, "Job ~p failed: ~s", [JobId, Reason]),
+            %% Determine job state based on reason
+            State = case Reason of
+                <<"timeout">> ->
+                    log(warning, "Job ~p timed out", [JobId]),
+                    timeout;
+                _ ->
+                    log(warning, "Job ~p failed: ~s", [JobId, Reason]),
+                    failed
+            end,
 
             %% Update job state in job_manager
             flurm_job_manager:update_job(JobId, #{
-                state => failed,
-                exit_code => -1,
+                state => State,
+                exit_code => ExitCode,
                 end_time => erlang:system_time(second)
             }),
 

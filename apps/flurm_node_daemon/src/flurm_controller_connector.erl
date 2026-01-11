@@ -305,7 +305,8 @@ handle_controller_message(#{type := node_heartbeat_ack}, State) ->
 
 handle_controller_message(#{type := job_launch, payload := Payload}, State) ->
     JobId = maps:get(<<"job_id">>, Payload),
-    lager:info("Received job launch request for job ~p", [JobId]),
+    TimeLimit = maps:get(<<"time_limit">>, Payload, undefined),
+    lager:info("Received job launch request for job ~p (time_limit: ~p)", [JobId, TimeLimit]),
 
     JobSpec = #{
         job_id => JobId,
@@ -313,7 +314,8 @@ handle_controller_message(#{type := job_launch, payload := Payload}, State) ->
         working_dir => maps:get(<<"working_dir">>, Payload, <<"/tmp">>),
         environment => maps:get(<<"environment">>, Payload, #{}),
         num_cpus => maps:get(<<"num_cpus">>, Payload, 1),
-        memory_mb => maps:get(<<"memory_mb">>, Payload, 1024)
+        memory_mb => maps:get(<<"memory_mb">>, Payload, 1024),
+        time_limit => TimeLimit
     },
 
     case flurm_job_executor_sup:start_job(JobSpec) of
@@ -379,9 +381,14 @@ handle_job_completion(JobId, ExitCode, Output, Status, #state{running_jobs = Job
 report_job_to_controller(undefined, _JobId, _Status, _ExitCode, _Output) ->
     {error, not_connected};
 report_job_to_controller(Socket, JobId, Status, ExitCode, Output) ->
-    MsgType = case Status of
-        completed -> job_complete;
-        _ -> job_failed
+    {MsgType, Reason} = case Status of
+        completed -> {job_complete, <<"completed">>};
+        {failed, timeout} -> {job_failed, <<"timeout">>};
+        {failed, cancelled} -> {job_failed, <<"cancelled">>};
+        {failed, R} when is_atom(R) -> {job_failed, atom_to_binary(R, utf8)};
+        {failed, R} when is_binary(R) -> {job_failed, R};
+        {failed, R} -> {job_failed, iolist_to_binary(io_lib:format("~p", [R]))};
+        _ -> {job_failed, <<"unknown">>}
     end,
 
     Msg = #{
@@ -390,6 +397,7 @@ report_job_to_controller(Socket, JobId, Status, ExitCode, Output) ->
             job_id => JobId,
             exit_code => ExitCode,
             output => Output,
+            reason => Reason,
             timestamp => erlang:system_time(millisecond)
         }
     },

@@ -27,14 +27,16 @@
     environment :: map(),
     num_cpus :: pos_integer(),
     memory_mb :: pos_integer(),
+    time_limit :: pos_integer() | undefined,  % seconds, undefined = no limit
     port :: port() | undefined,
-    status :: pending | running | completed | failed | cancelled,
+    status :: pending | running | completed | failed | cancelled | timeout,
     exit_code :: integer() | undefined,
     output :: binary(),
     start_time :: integer() | undefined,
     end_time :: integer() | undefined,
     cgroup_path :: string() | undefined,
-    script_path :: string() | undefined
+    script_path :: string() | undefined,
+    timeout_ref :: reference() | undefined
 }).
 
 %%====================================================================
@@ -70,9 +72,10 @@ init(JobSpec) ->
     Environment = maps:get(environment, JobSpec, #{}),
     NumCpus = maps:get(num_cpus, JobSpec, 1),
     MemoryMB = maps:get(memory_mb, JobSpec, 1024),
+    TimeLimit = maps:get(time_limit, JobSpec, undefined),
 
-    lager:info("Job executor ~p started for job ~p (CPUs: ~p, Memory: ~pMB)",
-               [self(), JobId, NumCpus, MemoryMB]),
+    lager:info("Job executor ~p started for job ~p (CPUs: ~p, Memory: ~pMB, TimeLimit: ~p)",
+               [self(), JobId, NumCpus, MemoryMB, TimeLimit]),
 
     %% Start execution asynchronously
     self() ! setup_and_execute,
@@ -84,6 +87,7 @@ init(JobSpec) ->
         environment = Environment,
         num_cpus = NumCpus,
         memory_mb = MemoryMB,
+        time_limit = TimeLimit,
         status = pending,
         output = <<>>
     }}.
@@ -114,9 +118,11 @@ handle_cast(cancel, #state{port = Port, job_id = JobId} = State) ->
             %% Send SIGTERM first, then SIGKILL after timeout
             catch port_close(Port)
     end,
+    %% Cancel timeout timer if set
+    cancel_timeout(State#state.timeout_ref),
     cleanup_job(State),
     report_completion(cancelled, -15, State),
-    {stop, normal, State#state{status = cancelled, end_time = now_ms()}};
+    {stop, normal, State#state{status = cancelled, end_time = now_ms(), timeout_ref = undefined}};
 
 handle_cast(_Msg, State) ->
     {noreply, State}.
@@ -160,6 +166,18 @@ handle_info(setup_and_execute, #state{job_id = JobId} = State) ->
         Port = open_port({spawn_executable, Executable}, [{args, Args} | PortOpts]),
         StartTime = now_ms(),
 
+        %% Set timeout timer if time_limit is specified
+        TimeoutRef = case State#state.time_limit of
+            undefined ->
+                undefined;
+            TimeLimitSecs when is_integer(TimeLimitSecs), TimeLimitSecs > 0 ->
+                %% Convert seconds to milliseconds
+                lager:info("Job ~p will timeout in ~p seconds", [JobId, TimeLimitSecs]),
+                erlang:send_after(TimeLimitSecs * 1000, self(), job_timeout);
+            _ ->
+                undefined
+        end,
+
         lager:info("Job ~p started execution (pid: port)", [JobId]),
 
         {noreply, State#state{
@@ -167,7 +185,8 @@ handle_info(setup_and_execute, #state{job_id = JobId} = State) ->
             status = running,
             start_time = StartTime,
             cgroup_path = CgroupPath,
-            script_path = ScriptPath
+            script_path = ScriptPath,
+            timeout_ref = TimeoutRef
         }}
     catch
         _:Error ->
@@ -205,6 +224,9 @@ handle_info({Port, {exit_status, ExitCode}}, #state{port = Port, job_id = JobId}
     lager:info("Job ~p finished with status ~p (exit code: ~p, duration: ~pms)",
                [JobId, Status, ExitCode, Duration]),
 
+    %% Cancel timeout timer if it was set
+    cancel_timeout(State#state.timeout_ref),
+
     %% Cleanup resources
     cleanup_job(State),
 
@@ -215,7 +237,42 @@ handle_info({Port, {exit_status, ExitCode}}, #state{port = Port, job_id = JobId}
         status = Status,
         exit_code = ExitCode,
         end_time = EndTime,
-        port = undefined
+        port = undefined,
+        timeout_ref = undefined
+    }};
+
+handle_info(job_timeout, #state{port = Port, job_id = JobId} = State) ->
+    lager:warning("Job ~p exceeded time limit (~p seconds), terminating",
+                  [JobId, State#state.time_limit]),
+
+    %% Kill the port/process
+    case Port of
+        undefined ->
+            ok;
+        _ ->
+            catch port_close(Port)
+    end,
+
+    EndTime = now_ms(),
+    Duration = case State#state.start_time of
+        undefined -> 0;
+        ST -> EndTime - ST
+    end,
+
+    lager:info("Job ~p timed out after ~pms", [JobId, Duration]),
+
+    %% Cleanup resources
+    cleanup_job(State),
+
+    %% Report timeout as a special failure
+    report_completion(timeout, -14, State),  % -14 like SIGALRM
+
+    {stop, normal, State#state{
+        status = timeout,
+        exit_code = -14,
+        end_time = EndTime,
+        port = undefined,
+        timeout_ref = undefined
     }};
 
 handle_info(_Info, State) ->
@@ -368,8 +425,22 @@ report_completion(Status, ExitCode, #state{job_id = JobId, output = Output}) ->
             flurm_controller_connector:report_job_complete(JobId, ExitCode, Output);
         cancelled ->
             flurm_controller_connector:report_job_failed(JobId, cancelled, Output);
+        timeout ->
+            flurm_controller_connector:report_job_failed(JobId, timeout, Output);
         failed ->
             flurm_controller_connector:report_job_failed(JobId, {exit_code, ExitCode}, Output)
+    end.
+
+%% Cancel timeout timer if set
+cancel_timeout(undefined) ->
+    ok;
+cancel_timeout(Ref) ->
+    erlang:cancel_timer(Ref),
+    %% Flush any pending timeout message
+    receive
+        job_timeout -> ok
+    after 0 ->
+        ok
     end.
 
 now_ms() ->
