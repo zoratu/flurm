@@ -783,31 +783,48 @@ decode_cancel_job_request(Binary) ->
     end.
 
 %% Decode REQUEST_KILL_JOB (5032)
-%% Based on observed wire format from scancel: 22 bytes body
+%% SLURM 24.x format observed:
+%%   <<StepId:32, StepHetComp:32, ???:32, JobIdStr, ???:32, Signal:16, Flags:16>>
+%% Where StepId/StepHetComp may be SLURM_NO_VAL (0xFFFFFFFE)
 decode_kill_job_request(Binary) ->
-    %% Try string-based format first (SLURM 19.05+)
-    case decode_kill_job_string_format(Binary) of
-        {ok, _} = Result -> Result;
-        {error, _} ->
-            %% Fallback: try numeric format
-            decode_kill_job_numeric_format(Binary)
-    end.
-
-decode_kill_job_string_format(Binary) ->
-    case flurm_protocol_pack:unpack_string(Binary) of
-        {ok, JobIdStr, Rest1} when byte_size(Rest1) >= 8 ->
-            <<StepId:32/big-signed, Signal:16/big, Flags:16/big, Rest2/binary>> = Rest1,
-            {ok, Sibling, _Rest3} = flurm_protocol_pack:unpack_string(Rest2),
-            {ok, #kill_job_request{
-                job_id = 0,
-                job_id_str = ensure_binary(JobIdStr),
-                step_id = StepId,
-                signal = Signal,
-                flags = Flags,
-                sibling = ensure_binary(Sibling)
-            }};
+    case Binary of
+        %% Format with 3 leading uint32 values, then string
+        <<StepId:32/big-signed, _StepHetComp:32/big, _Field3:32/big,
+          Rest1/binary>> when byte_size(Rest1) >= 4 ->
+            case flurm_protocol_pack:unpack_string(Rest1) of
+                {ok, JobIdStr, Rest2} when byte_size(Rest2) >= 8 ->
+                    <<_Field4:32/big, Signal:16/big, Flags:16/big, Rest3/binary>> = Rest2,
+                    {ok, Sibling, _Rest4} = safe_unpack_string(Rest3),
+                    JobId = parse_job_id(JobIdStr),
+                    {ok, #kill_job_request{
+                        job_id = JobId,
+                        job_id_str = ensure_binary(JobIdStr),
+                        step_id = normalize_step_id(StepId),
+                        signal = Signal,
+                        flags = Flags,
+                        sibling = ensure_binary(Sibling)
+                    }};
+                {ok, JobIdStr, Rest2} ->
+                    %% Shorter format - just string and maybe signal
+                    JobId = parse_job_id(JobIdStr),
+                    {Signal, Flags} = case Rest2 of
+                        <<S:16/big, F:16/big, _/binary>> -> {S, F};
+                        _ -> {9, 0}  % Default to SIGKILL
+                    end,
+                    {ok, #kill_job_request{
+                        job_id = JobId,
+                        job_id_str = ensure_binary(JobIdStr),
+                        step_id = normalize_step_id(StepId),
+                        signal = Signal,
+                        flags = Flags
+                    }};
+                _ ->
+                    %% No string found - try numeric format
+                    decode_kill_job_numeric_format(Binary)
+            end;
+        %% Try simpler numeric format
         _ ->
-            {error, not_string_format}
+            decode_kill_job_numeric_format(Binary)
     end.
 
 decode_kill_job_numeric_format(Binary) ->
@@ -815,17 +832,49 @@ decode_kill_job_numeric_format(Binary) ->
         <<JobId:32/big, StepId:32/big-signed, Signal:16/big, Flags:16/big>> ->
             {ok, #kill_job_request{
                 job_id = JobId,
-                step_id = StepId,
+                step_id = normalize_step_id(StepId),
                 signal = Signal,
                 flags = Flags
             }};
         <<JobId:32/big, StepId:32/big-signed>> ->
             {ok, #kill_job_request{
                 job_id = JobId,
-                step_id = StepId
+                step_id = normalize_step_id(StepId)
             }};
         _ ->
             {error, invalid_kill_job_request}
+    end.
+
+%% Parse job ID from string (may contain array indices like "123_4")
+parse_job_id(undefined) -> 0;
+parse_job_id(<<>>) -> 0;
+parse_job_id(JobIdStr) when is_binary(JobIdStr) ->
+    %% Strip null terminator if present
+    Stripped = case binary:match(JobIdStr, <<0>>) of
+        {Pos, _} -> binary:part(JobIdStr, 0, Pos);
+        nomatch -> JobIdStr
+    end,
+    %% Extract numeric part (handle "123_4" format for array jobs)
+    case binary:split(Stripped, <<"_">>) of
+        [BaseId | _] -> safe_binary_to_integer(BaseId);
+        _ -> safe_binary_to_integer(Stripped)
+    end.
+
+safe_binary_to_integer(Bin) ->
+    try binary_to_integer(Bin)
+    catch _:_ -> 0
+    end.
+
+%% Normalize step_id (SLURM_NO_VAL means no specific step)
+normalize_step_id(StepId) when StepId < 0 -> -1;
+normalize_step_id(StepId) when StepId >= 16#FFFFFFFE -> -1;
+normalize_step_id(StepId) -> StepId.
+
+%% Safe string unpack that returns empty binary on failure
+safe_unpack_string(Binary) ->
+    case flurm_protocol_pack:unpack_string(Binary) of
+        {ok, Str, Rest} -> {ok, Str, Rest};
+        _ -> {ok, <<>>, Binary}
     end.
 
 %%%===================================================================
