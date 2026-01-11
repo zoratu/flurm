@@ -85,22 +85,30 @@ handle_message(Socket, Transport, #{type := node_register, payload := Payload}) 
     NodeSpec = #{
         hostname => Hostname,
         cpus => maps:get(<<"cpus">>, Payload, 1),
-        memory => maps:get(<<"memory_mb">>, Payload, 1024),
+        memory_mb => maps:get(<<"memory_mb">>, Payload, 1024),
         state => idle,
-        real_memory => maps:get(<<"memory_mb">>, Payload, 1024),
-        tmp_disk => 10000
+        partitions => [<<"default">>]
     },
+    log(info, "Node ~s calling node_manager:register_node", [Hostname]),
     case flurm_node_manager:register_node(NodeSpec) of
         ok ->
+            log(info, "Node ~s registered with node_manager", [Hostname]),
             %% Register socket with connection manager
-            ok = flurm_node_connection_manager:register_connection(Hostname, self()),
-
-            %% Send acknowledgment
-            AckPayload = #{
-                <<"node_id">> => Hostname,
-                <<"status">> => <<"accepted">>
-            },
-            send_message(Socket, Transport, #{type => node_register_ack, payload => AckPayload});
+            case flurm_node_connection_manager:register_connection(Hostname, self()) of
+                ok ->
+                    log(info, "Node ~s registered with connection_manager", [Hostname]),
+                    %% Send acknowledgment
+                    AckPayload = #{
+                        <<"node_id">> => Hostname,
+                        <<"status">> => <<"accepted">>
+                    },
+                    Result = send_message(Socket, Transport, #{type => node_register_ack, payload => AckPayload}),
+                    log(info, "Node ~s ack send result: ~p", [Hostname, Result]),
+                    Result;
+                ConnErr ->
+                    log(error, "Node ~s connection_manager error: ~p", [Hostname, ConnErr]),
+                    ConnErr
+            end;
         {error, Reason} ->
             log(error, "Failed to register node ~s: ~p", [Hostname, Reason]),
             send_message(Socket, Transport, #{type => error, payload => #{
@@ -129,10 +137,18 @@ handle_message(_Socket, _Transport, #{type := job_complete, payload := Payload})
 
     log(info, "Job ~p completed with exit code ~p", [JobId, ExitCode]),
 
-    %% Signal job completion
-    flurm_job:signal_job_complete(JobId, ExitCode),
+    %% Update job state in job_manager
+    NewState = case ExitCode of
+        0 -> completed;
+        _ -> failed
+    end,
+    flurm_job_manager:update_job(JobId, #{
+        state => NewState,
+        exit_code => ExitCode,
+        end_time => erlang:system_time(second)
+    }),
 
-    %% Notify scheduler
+    %% Notify scheduler to release resources and schedule more jobs
     case ExitCode of
         0 -> flurm_scheduler:job_completed(JobId);
         _ -> flurm_scheduler:job_failed(JobId)
@@ -145,8 +161,14 @@ handle_message(_Socket, _Transport, #{type := job_failed, payload := Payload}) -
 
     log(warning, "Job ~p failed: ~s", [JobId, Reason]),
 
-    %% Signal job failure
-    flurm_job:signal_job_complete(JobId, -1),
+    %% Update job state in job_manager
+    flurm_job_manager:update_job(JobId, #{
+        state => failed,
+        exit_code => -1,
+        end_time => erlang:system_time(second)
+    }),
+
+    %% Notify scheduler to release resources
     flurm_scheduler:job_failed(JobId),
     ok;
 

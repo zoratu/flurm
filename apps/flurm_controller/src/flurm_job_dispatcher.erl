@@ -84,8 +84,7 @@ handle_call({dispatch_job, JobId, JobInfo}, _From, #state{dispatched_jobs = Jobs
             case Failed of
                 [] ->
                     log(info, "Dispatched job ~p to ~p nodes", [JobId, length(Succeeded)]),
-                    %% Signal job that config is complete so it can start running
-                    flurm_job:signal_config_complete(JobId),
+                    %% Job state is updated to 'running' by the scheduler
                     NewJobs = maps:put(JobId, Nodes, Jobs),
                     {reply, ok, State#state{dispatched_jobs = NewJobs}};
                 _ ->
@@ -97,7 +96,6 @@ handle_call({dispatch_job, JobId, JobInfo}, _From, #state{dispatched_jobs = Jobs
                             {reply, {error, all_nodes_failed}, State};
                         _ ->
                             %% At least some nodes got the job
-                            flurm_job:signal_config_complete(JobId),
                             SucceededNodes = [N || {N, _} <- Succeeded],
                             NewJobs = maps:put(JobId, SucceededNodes, Jobs),
                             {reply, ok, State#state{dispatched_jobs = NewJobs}}

@@ -72,7 +72,9 @@
     running_jobs :: [job_id()],
     load_avg :: float(),
     free_memory_mb :: non_neg_integer(),
-    last_heartbeat :: non_neg_integer() | undefined
+    last_heartbeat :: non_neg_integer() | undefined,
+    %% Resource allocation tracking: #{JobId => {CpusAllocated, MemoryAllocated}}
+    allocations = #{} :: #{job_id() => {pos_integer(), pos_integer()}}
 }).
 
 %%====================================================================

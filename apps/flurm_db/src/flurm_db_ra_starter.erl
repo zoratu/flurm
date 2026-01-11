@@ -60,7 +60,24 @@ handle_cast(_Msg, State) ->
 handle_info(init_cluster, State) ->
     Config = State#state.config,
 
-    %% Initialize Ra application
+    %% Check if we're running in distributed mode
+    case node() of
+        nonode@nohost ->
+            %% Non-distributed mode - skip Ra cluster initialization
+            lager:warning("[flurm_db] Running in non-distributed mode (nonode@nohost). "
+                          "Ra cluster disabled. Data will not be replicated."),
+            {stop, normal, State};
+        _ ->
+            %% Distributed mode - initialize Ra cluster
+            init_ra_cluster(Config, State)
+    end;
+
+handle_info(_Info, State) ->
+    {noreply, State}.
+
+%% @private
+%% Initialize the Ra cluster when in distributed mode
+init_ra_cluster(Config, State) ->
     case flurm_db_cluster:init_ra() of
         ok ->
             %% Determine cluster initialization mode
@@ -97,10 +114,7 @@ handle_info(init_cluster, State) ->
         {error, Reason} ->
             error_logger:error_msg("Failed to initialize Ra: ~p~n", [Reason]),
             {stop, {error, Reason}, State}
-    end;
-
-handle_info(_Info, State) ->
-    {noreply, State}.
+    end.
 
 %% @private
 terminate(_Reason, _State) ->

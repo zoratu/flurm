@@ -87,6 +87,10 @@ process_buffer(<<Length:32/big, Rest/binary>>, MsgNum) ->
 analyze_message(MsgNum, Length, MsgData) ->
     io:format("~n--- Message #~p (Length: ~p bytes) ---~n", [MsgNum, Length]),
 
+    %% Show raw header bytes first (first 16 bytes)
+    io:format("Raw header bytes:~n"),
+    show_hex_dump(binary:part(MsgData, 0, min(16, byte_size(MsgData))), 16),
+
     %% Try to parse the header (12 bytes)
     case MsgData of
         <<Version:16/big, Flags:16/big, MsgIndex:16/big, MsgType:16/big,

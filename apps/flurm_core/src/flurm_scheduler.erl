@@ -127,6 +127,7 @@ handle_call(_Request, _From, State) ->
 
 %% @private
 handle_cast({submit_job, JobId}, State) ->
+    lager:info("Scheduler received job ~p for scheduling", [JobId]),
     %% Add job to pending queue
     NewPending = queue:in(JobId, State#scheduler_state.pending_jobs),
     NewState = State#scheduler_state{pending_jobs = NewPending},
@@ -161,6 +162,10 @@ handle_cast(_Msg, State) ->
 
 %% @private
 handle_info(schedule_cycle, State) ->
+    PendingCount = queue:len(State#scheduler_state.pending_jobs),
+    lager:debug("schedule_cycle: ~p pending, ~p running, cycle ~p",
+               [PendingCount, sets:size(State#scheduler_state.running_jobs),
+                State#scheduler_state.schedule_cycles]),
     %% Cancel any existing timer
     case State#scheduler_state.schedule_timer of
         undefined -> ok;
@@ -209,21 +214,16 @@ handle_job_finished(JobId, State) ->
     %% Remove from running set
     NewRunning = sets:del_element(JobId, State#scheduler_state.running_jobs),
 
-    %% Release resources on nodes
-    case flurm_job_registry:lookup_job(JobId) of
-        {ok, Pid} ->
-            case flurm_job:get_info(Pid) of
-                {ok, Info} ->
-                    AllocatedNodes = maps:get(allocated_nodes, Info, []),
-                    lists:foreach(
-                        fun(NodeName) ->
-                            catch flurm_node:release(NodeName, JobId)
-                        end,
-                        AllocatedNodes
-                    );
-                _ ->
-                    ok
-            end;
+    %% Release resources on nodes via node manager
+    case flurm_job_manager:get_job(JobId) of
+        {ok, Job} ->
+            AllocatedNodes = Job#job.allocated_nodes,
+            lists:foreach(
+                fun(NodeName) ->
+                    flurm_node_manager:release_resources(NodeName, JobId)
+                end,
+                AllocatedNodes
+            );
         _ ->
             ok
     end,
@@ -233,6 +233,13 @@ handle_job_finished(JobId, State) ->
 %% @private
 %% Run a scheduling cycle - try to schedule pending jobs
 schedule_cycle(State) ->
+    PendingCount = queue:len(State#scheduler_state.pending_jobs),
+    case PendingCount > 0 of
+        true ->
+            lager:debug("Schedule cycle: ~p pending jobs", [PendingCount]);
+        false ->
+            ok
+    end,
     %% Process pending jobs in FIFO order
     schedule_pending_jobs(State).
 
@@ -271,132 +278,57 @@ schedule_pending_jobs(State) ->
 
 %% @private
 %% Try to schedule a single job
+%% Uses flurm_job_manager to get job info (not flurm_job_registry)
 try_schedule_job(JobId, State) ->
-    case flurm_job_registry:lookup_job(JobId) of
-        {ok, Pid} ->
-            case flurm_job:get_info(Pid) of
-                {ok, Info} ->
-                    %% Check if job is still pending
-                    case maps:get(state, Info) of
-                        pending ->
-                            try_allocate_job(JobId, Pid, Info, State);
-                        _OtherState ->
-                            %% Job is no longer pending
-                            {error, job_not_pending}
-                    end;
-                {error, Reason} ->
-                    {error, Reason}
+    lager:info("Trying to schedule job ~p", [JobId]),
+    case flurm_job_manager:get_job(JobId) of
+        {ok, Job} ->
+            JobState = flurm_core:job_state(Job),
+            lager:debug("Job ~p state: ~p", [JobId, JobState]),
+            case JobState of
+                pending ->
+                    %% Convert job record to info map for allocation
+                    Info = job_to_info(Job),
+                    try_allocate_job_simple(JobId, Info, State);
+                _OtherState ->
+                    %% Job is no longer pending
+                    lager:info("Job ~p not pending, skipping", [JobId]),
+                    {error, job_not_pending}
             end;
         {error, not_found} ->
+            lager:warning("Job ~p not found in job_manager", [JobId]),
             {error, job_not_found}
     end.
 
 %% @private
-%% Try to allocate resources for a job
-try_allocate_job(JobId, JobPid, JobInfo, State) ->
-    NumNodes = maps:get(num_nodes, JobInfo, 1),
-    NumCpus = maps:get(num_cpus, JobInfo, 1),
-    Partition = maps:get(partition, JobInfo, <<"default">>),
-
-    %% Get memory requirement from job_data
-    %% Use a default of 1024 MB if not specified
-    MemoryMb = maps:get(memory_mb, JobInfo, 1024),
-
-    %% Find available nodes
-    case find_nodes_for_job(NumNodes, NumCpus, MemoryMb, Partition) of
-        {ok, Nodes} ->
-            %% Allocate resources on nodes
-            case allocate_job(JobId, Nodes, NumCpus, MemoryMb, 0) of
-                ok ->
-                    %% Notify job of allocation
-                    NodeNames = [N#node_entry.name || N <- Nodes],
-                    case flurm_job:allocate(JobPid, NodeNames) of
-                        ok ->
-                            %% Dispatch job to nodes for execution
-                            UpdatedInfo = JobInfo#{allocated_nodes => NodeNames},
-                            case flurm_job_dispatcher:dispatch_job(JobId, UpdatedInfo) of
-                                ok ->
-                                    %% Add to running set
-                                    NewRunning = sets:add_element(
-                                        JobId,
-                                        State#scheduler_state.running_jobs
-                                    ),
-                                    {ok, State#scheduler_state{running_jobs = NewRunning}};
-                                {error, DispatchErr} ->
-                                    %% Failed to dispatch - rollback allocation
-                                    lists:foreach(
-                                        fun(Node) ->
-                                            catch flurm_node:release(Node#node_entry.name, JobId)
-                                        end,
-                                        Nodes
-                                    ),
-                                    {error, {dispatch_failed, DispatchErr}}
-                            end;
-                        {error, Reason} ->
-                            %% Rollback allocation
-                            lists:foreach(
-                                fun(Node) ->
-                                    catch flurm_node:release(Node#node_entry.name, JobId)
-                                end,
-                                Nodes
-                            ),
-                            {error, Reason}
-                    end;
-                {error, Reason} ->
-                    {error, Reason}
-            end;
-        {wait, Reason} ->
-            {wait, Reason}
-    end.
-
-%% @private
 %% Find nodes that can run a job
+%% Uses flurm_node_manager to find connected compute nodes with available resources
 find_nodes_for_job(NumNodes, NumCpus, MemoryMb, Partition) ->
-    %% Get nodes in the partition with available resources
-    AllNodes = case Partition of
-        <<"default">> ->
-            %% For default partition, get all up nodes
-            flurm_node_registry:get_available_nodes({NumCpus, MemoryMb, 0});
-        _ ->
-            %% Get nodes in specific partition
-            PartitionNodes = flurm_node_registry:list_nodes_by_partition(Partition),
-            %% Filter to available nodes
-            lists:filtermap(
-                fun({Name, _Pid}) ->
-                    case flurm_node_registry:get_node_entry(Name) of
-                        {ok, #node_entry{state = up,
-                                        cpus_avail = CpusAvail,
-                                        memory_avail = MemAvail} = Entry} ->
-                            if
-                                CpusAvail >= NumCpus andalso MemAvail >= MemoryMb ->
-                                    {true, Entry};
-                                true ->
-                                    false
-                            end;
-                        _ ->
-                            false
-                    end
-                end,
-                PartitionNodes
-            )
-    end,
+    %% Get nodes with available resources from node manager
+    AllNodes = flurm_node_manager:get_available_nodes_for_job(NumCpus, MemoryMb, Partition),
+    lager:info("find_nodes_for_job: need ~p nodes with ~p cpus, ~p MB for partition ~p, found ~p nodes",
+                [NumNodes, NumCpus, MemoryMb, Partition, length(AllNodes)]),
 
     %% Check if we have enough nodes
     if
         length(AllNodes) >= NumNodes ->
             %% Take first N nodes (could be improved with better selection)
-            {ok, lists:sublist(AllNodes, NumNodes)};
+            SelectedNodes = lists:sublist(AllNodes, NumNodes),
+            lager:info("Selected nodes: ~p", [[N#node.hostname || N <- SelectedNodes]]),
+            {ok, SelectedNodes};
         true ->
+            lager:warning("Insufficient nodes: need ~p, have ~p", [NumNodes, length(AllNodes)]),
             {wait, insufficient_nodes}
     end.
 
 %% @private
 %% Allocate resources on nodes for a job
-allocate_job(JobId, Nodes, Cpus, Memory, Gpus) ->
+%% Uses flurm_node_manager for connected compute nodes
+allocate_job(JobId, Nodes, Cpus, Memory, _Gpus) ->
     %% Try to allocate on all nodes
     Results = lists:map(
-        fun(#node_entry{name = Name}) ->
-            flurm_node:allocate(Name, JobId, {Cpus, Memory, Gpus})
+        fun(#node{hostname = Hostname}) ->
+            flurm_node_manager:allocate_resources(Hostname, JobId, Cpus, Memory)
         end,
         Nodes
     ),
@@ -408,13 +340,81 @@ allocate_job(JobId, Nodes, Cpus, Memory, Gpus) ->
         false ->
             %% Rollback successful allocations
             lists:foreach(
-                fun({#node_entry{name = Name}, Result}) ->
+                fun({#node{hostname = Hostname}, Result}) ->
                     case Result of
-                        ok -> catch flurm_node:release(Name, JobId);
+                        ok -> flurm_node_manager:release_resources(Hostname, JobId);
                         _ -> ok
                     end
                 end,
                 lists:zip(Nodes, Results)
             ),
             {error, allocation_failed}
+    end.
+
+%% @private
+%% Convert a job record to an info map for scheduling
+job_to_info(#job{} = Job) ->
+    #{
+        job_id => Job#job.id,
+        name => Job#job.name,
+        state => Job#job.state,
+        partition => Job#job.partition,
+        num_nodes => Job#job.num_nodes,
+        num_cpus => Job#job.num_cpus,
+        memory_mb => Job#job.memory_mb,
+        time_limit => Job#job.time_limit,
+        script => Job#job.script,
+        allocated_nodes => Job#job.allocated_nodes
+    }.
+
+%% @private
+%% Simple allocation without flurm_job process
+%% Used when jobs are stored in flurm_job_manager instead of flurm_job_registry
+try_allocate_job_simple(JobId, JobInfo, State) ->
+    NumNodes = maps:get(num_nodes, JobInfo, 1),
+    NumCpus = maps:get(num_cpus, JobInfo, 1),
+    Partition = maps:get(partition, JobInfo, <<"default">>),
+    MemoryMb = maps:get(memory_mb, JobInfo, 1024),
+    lager:debug("try_allocate_job_simple: job ~p needs ~p nodes, ~p cpus, ~p MB, partition ~p",
+               [JobId, NumNodes, NumCpus, MemoryMb, Partition]),
+
+    case find_nodes_for_job(NumNodes, NumCpus, MemoryMb, Partition) of
+        {ok, Nodes} ->
+            case allocate_job(JobId, Nodes, NumCpus, MemoryMb, 0) of
+                ok ->
+                    NodeNames = [N#node.hostname || N <- Nodes],
+                    %% Update job in job manager with allocated nodes
+                    flurm_job_manager:update_job(JobId, #{
+                        state => configuring,
+                        allocated_nodes => NodeNames
+                    }),
+                    %% Dispatch job to nodes
+                    UpdatedInfo = JobInfo#{allocated_nodes => NodeNames},
+                    case flurm_job_dispatcher:dispatch_job(JobId, UpdatedInfo) of
+                        ok ->
+                            %% Mark job as running
+                            flurm_job_manager:update_job(JobId, #{state => running}),
+                            NewRunning = sets:add_element(JobId, State#scheduler_state.running_jobs),
+                            lager:info("Job ~p scheduled on nodes: ~p", [JobId, NodeNames]),
+                            {ok, State#scheduler_state{running_jobs = NewRunning}};
+                        {error, DispatchErr} ->
+                            lager:warning("Job ~p dispatch failed: ~p, will retry", [JobId, DispatchErr]),
+                            lists:foreach(
+                                fun(Node) ->
+                                    flurm_node_manager:release_resources(Node#node.hostname, JobId)
+                                end,
+                                Nodes
+                            ),
+                            flurm_job_manager:update_job(JobId, #{
+                                state => pending,
+                                allocated_nodes => []
+                            }),
+                            %% Return wait so job stays in queue and can retry
+                            {wait, {dispatch_failed, DispatchErr}}
+                    end;
+                {error, Reason} ->
+                    {error, Reason}
+            end;
+        {wait, Reason} ->
+            {wait, Reason}
     end.

@@ -12,6 +12,7 @@
 -export([start_link/0]).
 -export([register_node/1, update_node/2, get_node/1, list_nodes/0]).
 -export([heartbeat/1, get_available_nodes/0]).
+-export([get_available_nodes_for_job/3, allocate_resources/4, release_resources/2]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
 -include_lib("flurm_core/include/flurm_core.hrl").
@@ -52,6 +53,27 @@ heartbeat(HeartbeatData) ->
 -spec get_available_nodes() -> [#node{}].
 get_available_nodes() ->
     gen_server:call(?MODULE, get_available_nodes).
+
+%% @doc Get nodes that can run a job with specified requirements.
+%% Returns nodes with sufficient available resources.
+-spec get_available_nodes_for_job(NumCpus :: pos_integer(),
+                                   MemoryMb :: pos_integer(),
+                                   Partition :: binary()) -> [#node{}].
+get_available_nodes_for_job(NumCpus, MemoryMb, Partition) ->
+    gen_server:call(?MODULE, {get_available_nodes_for_job, NumCpus, MemoryMb, Partition}).
+
+%% @doc Allocate resources on a node for a job.
+-spec allocate_resources(Hostname :: binary(),
+                         JobId :: pos_integer(),
+                         Cpus :: pos_integer(),
+                         MemoryMb :: pos_integer()) -> ok | {error, term()}.
+allocate_resources(Hostname, JobId, Cpus, MemoryMb) ->
+    gen_server:call(?MODULE, {allocate_resources, Hostname, JobId, Cpus, MemoryMb}).
+
+%% @doc Release resources on a node when a job completes.
+-spec release_resources(Hostname :: binary(), JobId :: pos_integer()) -> ok.
+release_resources(Hostname, JobId) ->
+    gen_server:cast(?MODULE, {release_resources, Hostname, JobId}).
 
 %%====================================================================
 %% gen_server callbacks
@@ -99,6 +121,69 @@ handle_call(get_available_nodes, _From, #state{nodes = Nodes} = State) ->
                       flurm_core:node_state(N) =:= mixed],
     {reply, Available, State};
 
+handle_call({get_available_nodes_for_job, NumCpus, MemoryMb, Partition}, _From,
+            #state{nodes = Nodes} = State) ->
+    %% Filter nodes that:
+    %% 1. Are in idle or mixed state
+    %% 2. Have enough available resources
+    %% 3. Are in the requested partition (or default matches any)
+    AllNodes = maps:values(Nodes),
+    lager:debug("get_available_nodes_for_job: checking ~p registered nodes for ~p cpus, ~p MB, partition ~p",
+               [length(AllNodes), NumCpus, MemoryMb, Partition]),
+    Available = lists:filter(
+        fun(Node) ->
+            NodeState = flurm_core:node_state(Node),
+            {CpusAvail, MemAvail} = get_available_resources(Node),
+            InPartition = case Partition of
+                <<"default">> -> true;
+                _ -> lists:member(Partition, Node#node.partitions)
+            end,
+            Eligible = (NodeState =:= idle orelse NodeState =:= mixed) andalso
+                       CpusAvail >= NumCpus andalso
+                       MemAvail >= MemoryMb andalso
+                       InPartition,
+            lager:debug("Node ~s: state=~p, cpus=~p/~p, mem=~p/~p, partition_ok=~p, eligible=~p",
+                       [Node#node.hostname, NodeState, CpusAvail, Node#node.cpus,
+                        MemAvail, Node#node.memory_mb, InPartition, Eligible]),
+            Eligible
+        end,
+        AllNodes
+    ),
+    lager:debug("get_available_nodes_for_job: found ~p available nodes", [length(Available)]),
+    {reply, Available, State};
+
+handle_call({allocate_resources, Hostname, JobId, Cpus, MemoryMb}, _From,
+            #state{nodes = Nodes} = State) ->
+    case maps:find(Hostname, Nodes) of
+        {ok, Node} ->
+            {CpusAvail, MemAvail} = get_available_resources(Node),
+            if
+                CpusAvail >= Cpus andalso MemAvail >= MemoryMb ->
+                    %% Add allocation
+                    NewAllocations = maps:put(JobId, {Cpus, MemoryMb}, Node#node.allocations),
+                    UpdatedNode = Node#node{
+                        allocations = NewAllocations,
+                        running_jobs = [JobId | Node#node.running_jobs]
+                    },
+                    %% Update node state if now fully allocated
+                    {NewCpusAvail, _} = get_available_resources(UpdatedNode),
+                    FinalNode = if
+                        NewCpusAvail =:= 0 ->
+                            flurm_core:update_node_state(UpdatedNode, allocated);
+                        true ->
+                            flurm_core:update_node_state(UpdatedNode, mixed)
+                    end,
+                    NewNodes = maps:put(Hostname, FinalNode, Nodes),
+                    lager:info("Allocated ~p CPUs, ~p MB to job ~p on node ~s",
+                               [Cpus, MemoryMb, JobId, Hostname]),
+                    {reply, ok, State#state{nodes = NewNodes}};
+                true ->
+                    {reply, {error, insufficient_resources}, State}
+            end;
+        error ->
+            {reply, {error, node_not_found}, State}
+    end;
+
 handle_call(_Request, _From, State) ->
     {reply, {error, unknown_request}, State}.
 
@@ -115,6 +200,31 @@ handle_cast({heartbeat, #{hostname := Hostname} = Data}, #state{nodes = Nodes} =
             {noreply, State#state{nodes = NewNodes}};
         error ->
             lager:warning("Heartbeat from unknown node: ~s", [Hostname]),
+            {noreply, State}
+    end;
+
+handle_cast({release_resources, Hostname, JobId}, #state{nodes = Nodes} = State) ->
+    case maps:find(Hostname, Nodes) of
+        {ok, Node} ->
+            %% Remove allocation
+            NewAllocations = maps:remove(JobId, Node#node.allocations),
+            NewRunningJobs = lists:delete(JobId, Node#node.running_jobs),
+            UpdatedNode = Node#node{
+                allocations = NewAllocations,
+                running_jobs = NewRunningJobs
+            },
+            %% Update node state
+            FinalNode = case map_size(NewAllocations) of
+                0 ->
+                    flurm_core:update_node_state(UpdatedNode, idle);
+                _ ->
+                    flurm_core:update_node_state(UpdatedNode, mixed)
+            end,
+            NewNodes = maps:put(Hostname, FinalNode, Nodes),
+            lager:info("Released resources for job ~p on node ~s", [JobId, Hostname]),
+            {noreply, State#state{nodes = NewNodes}};
+        error ->
+            lager:warning("Release resources for unknown node: ~s", [Hostname]),
             {noreply, State}
     end;
 
@@ -156,3 +266,16 @@ apply_node_updates(Node, Updates) ->
         (running_jobs, Value, N) -> N#node{running_jobs = Value};
         (_, _, N) -> N
     end, Node, Updates).
+
+%% @private
+%% Calculate available resources (total - allocated)
+get_available_resources(#node{cpus = TotalCpus, memory_mb = TotalMemory,
+                              allocations = Allocations}) ->
+    {UsedCpus, UsedMemory} = maps:fold(
+        fun(_JobId, {Cpus, Memory}, {AccCpus, AccMem}) ->
+            {AccCpus + Cpus, AccMem + Memory}
+        end,
+        {0, 0},
+        Allocations
+    ),
+    {TotalCpus - UsedCpus, TotalMemory - UsedMemory}.
