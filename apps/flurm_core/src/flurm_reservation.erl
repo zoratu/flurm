@@ -40,7 +40,15 @@
     check_reservation_conflict/1,
     activate_reservation/1,
     deactivate_reservation/1,
-    get_next_available_window/2
+    get_next_available_window/2,
+    %% Job-level reservation API
+    create_reservation/1,
+    confirm_reservation/1,
+    cancel_reservation/1,
+    check_reservation/2,
+    %% Scheduler integration API
+    check_job_reservation/1,
+    get_reserved_nodes/1
 ]).
 
 %% gen_server callbacks
@@ -79,7 +87,10 @@
     state :: inactive | active | expired,
     created_by :: binary(),
     created_time :: non_neg_integer(),
-    purge_time :: non_neg_integer() | undefined  % Auto-delete after
+    purge_time :: non_neg_integer() | undefined,  % Auto-delete after
+    %% Job tracking for reservation usage
+    jobs_using = [] :: [pos_integer()],     % Jobs currently using this reservation
+    confirmed = false :: boolean()          % Has the reservation been confirmed (job started)
 }).
 
 -record(state, {
@@ -193,6 +204,93 @@ deactivate_reservation(Name) ->
 get_next_available_window(ResourceRequest, Duration) ->
     gen_server:call(?SERVER, {next_window, ResourceRequest, Duration}).
 
+%%--------------------------------------------------------------------
+%% Job-level Reservation API
+%%--------------------------------------------------------------------
+
+%% @doc Create a resource reservation for a job
+%% Spec should contain: name, nodes/node_count, start_time, end_time/duration,
+%% user, and optionally account, partition, features, etc.
+-spec create_reservation(map()) -> {ok, binary()} | {error, term()}.
+create_reservation(Spec) ->
+    gen_server:call(?SERVER, {create_reservation, Spec}).
+
+%% @doc Confirm a reservation when a job actually starts using it
+%% This marks the reservation as in-use and prevents expiration while job runs
+-spec confirm_reservation(binary()) -> ok | {error, term()}.
+confirm_reservation(ReservationName) ->
+    gen_server:call(?SERVER, {confirm_reservation, ReservationName}).
+
+%% @doc Cancel a reservation and release its resources
+%% Removes the reservation and frees the nodes for other jobs
+-spec cancel_reservation(binary()) -> ok | {error, term()}.
+cancel_reservation(ReservationName) ->
+    gen_server:call(?SERVER, {cancel_reservation, ReservationName}).
+
+%% @doc Check if a job can use a specific reservation
+%% Verifies user permissions, time window, and resource availability
+-spec check_reservation(pos_integer(), binary()) ->
+    {ok, [binary()]} | {error, term()}.
+check_reservation(JobId, ReservationName) ->
+    gen_server:call(?SERVER, {check_reservation, JobId, ReservationName}).
+
+%%--------------------------------------------------------------------
+%% Scheduler Integration API
+%%--------------------------------------------------------------------
+
+%% @doc Check if a job has a reservation and if it's valid
+%% Called by scheduler during job scheduling
+-spec check_job_reservation(#job{}) ->
+    {ok, use_reservation, [binary()]} |  % Job has valid reservation, use these nodes
+    {ok, no_reservation} |               % Job has no reservation request
+    {error, term()}.                     % Reservation invalid/expired/unauthorized
+check_job_reservation(#job{reservation = <<>>}) ->
+    {ok, no_reservation};
+check_job_reservation(#job{reservation = undefined}) ->
+    {ok, no_reservation};
+check_job_reservation(#job{id = JobId, reservation = ResName, user = User}) ->
+    case ?MODULE:get(ResName) of
+        {ok, #reservation{state = active, users = Users, accounts = Accounts,
+                          nodes = Nodes, end_time = EndTime}} ->
+            Now = erlang:system_time(second),
+            %% Check if reservation is still valid
+            case EndTime > Now of
+                false ->
+                    {error, reservation_expired};
+                true ->
+                    %% Check user authorization
+                    case (Users =:= [] andalso Accounts =:= []) orelse
+                         lists:member(User, Users) orelse
+                         user_in_accounts(User, Accounts) of
+                        true ->
+                            %% Add job to reservation's jobs_using list
+                            gen_server:cast(?SERVER, {add_job_to_reservation, JobId, ResName}),
+                            {ok, use_reservation, Nodes};
+                        false ->
+                            {error, user_not_authorized}
+                    end
+            end;
+        {ok, #reservation{state = inactive}} ->
+            {error, reservation_not_active};
+        {ok, #reservation{state = expired}} ->
+            {error, reservation_expired};
+        {error, not_found} ->
+            {error, reservation_not_found}
+    end.
+
+%% @doc Get reserved nodes for a reservation
+%% Returns the node list allocated to a reservation
+-spec get_reserved_nodes(binary()) -> {ok, [binary()]} | {error, term()}.
+get_reserved_nodes(ReservationName) ->
+    case ?MODULE:get(ReservationName) of
+        {ok, #reservation{nodes = Nodes, state = active}} ->
+            {ok, Nodes};
+        {ok, #reservation{state = State}} ->
+            {error, {invalid_state, State}};
+        Error ->
+            Error
+    end.
+
 %%====================================================================
 %% gen_server callbacks
 %%====================================================================
@@ -236,8 +334,33 @@ handle_call({next_window, ResourceRequest, Duration}, _From, State) ->
     Result = do_find_next_window(ResourceRequest, Duration),
     {reply, Result, State};
 
+%% Job-level reservation handlers
+handle_call({create_reservation, Spec}, _From, State) ->
+    Result = do_create_reservation(Spec),
+    {reply, Result, State};
+
+handle_call({confirm_reservation, ReservationName}, _From, State) ->
+    Result = do_confirm_reservation(ReservationName),
+    {reply, Result, State};
+
+handle_call({cancel_reservation, ReservationName}, _From, State) ->
+    Result = do_cancel_reservation(ReservationName),
+    {reply, Result, State};
+
+handle_call({check_reservation, JobId, ReservationName}, _From, State) ->
+    Result = do_check_reservation(JobId, ReservationName),
+    {reply, Result, State};
+
 handle_call(_Request, _From, State) ->
     {reply, {error, unknown_request}, State}.
+
+handle_cast({add_job_to_reservation, JobId, ReservationName}, State) ->
+    do_add_job_to_reservation(JobId, ReservationName),
+    {noreply, State};
+
+handle_cast({remove_job_from_reservation, JobId, ReservationName}, State) ->
+    do_remove_job_from_reservation(JobId, ReservationName),
+    {noreply, State};
 
 handle_cast(_Msg, State) ->
     {noreply, State}.
@@ -449,6 +572,13 @@ do_check_reservation_states() ->
                         %% Recurring reservation - extend it
                         extend_recurring(Name, Flags);
                     false ->
+                        %% Get the full reservation for notification
+                        case ets:lookup(?RESERVATION_TABLE, Name) of
+                            [FullRes] ->
+                                notify_reservation_expired(FullRes);
+                            [] ->
+                                ok
+                        end,
                         do_set_state(Name, expired)
                 end;
             false ->
@@ -537,3 +667,163 @@ notify_reservation_active(#reservation{name = Name, nodes = Nodes}) ->
 notify_reservation_inactive(#reservation{name = Name}) ->
     error_logger:info_msg("Reservation ~s deactivated~n", [Name]),
     catch flurm_scheduler:reservation_deactivated(Name).
+
+%%--------------------------------------------------------------------
+%% Job-level Reservation Internal Functions
+%%--------------------------------------------------------------------
+
+%% @private
+%% Create a job-specific resource reservation
+%% This is a wrapper around the general create function with job-specific defaults
+do_create_reservation(Spec) ->
+    %% Ensure required fields are present
+    Name = maps:get(name, Spec, generate_reservation_name()),
+    User = maps:get(user, Spec, <<"unknown">>),
+
+    %% Build the full spec with defaults
+    FullSpec = Spec#{
+        name => Name,
+        type => maps:get(type, Spec, user),
+        created_by => User,
+        users => maps:get(users, Spec, [User])  % Default: only requesting user
+    },
+
+    %% Use the existing create logic
+    do_create(FullSpec).
+
+%% @private
+%% Confirm a reservation (job has started using it)
+do_confirm_reservation(ReservationName) ->
+    case ets:lookup(?RESERVATION_TABLE, ReservationName) of
+        [Res = #reservation{state = active}] ->
+            ets:insert(?RESERVATION_TABLE, Res#reservation{confirmed = true}),
+            error_logger:info_msg("Reservation ~s confirmed~n", [ReservationName]),
+            ok;
+        [#reservation{state = State}] ->
+            {error, {invalid_state, State}};
+        [] ->
+            {error, not_found}
+    end.
+
+%% @private
+%% Cancel a reservation and release resources
+do_cancel_reservation(ReservationName) ->
+    case ets:lookup(?RESERVATION_TABLE, ReservationName) of
+        [Res = #reservation{jobs_using = Jobs, nodes = Nodes}] ->
+            %% Notify any jobs that were using this reservation
+            lists:foreach(fun(JobId) ->
+                catch flurm_job_manager:update_job(JobId, #{reservation => <<>>})
+            end, Jobs),
+
+            %% Release the nodes (mark them as available again)
+            release_reservation_nodes(Nodes, ReservationName),
+
+            %% Delete the reservation
+            ets:delete(?RESERVATION_TABLE, ReservationName),
+            error_logger:info_msg("Reservation ~s cancelled, released nodes: ~p~n",
+                                  [ReservationName, Nodes]),
+
+            %% Notify scheduler that resources are available
+            notify_reservation_inactive(Res),
+            ok;
+        [] ->
+            {error, not_found}
+    end.
+
+%% @private
+%% Check if a specific job can use a reservation
+do_check_reservation(JobId, ReservationName) ->
+    case ets:lookup(?RESERVATION_TABLE, ReservationName) of
+        [#reservation{state = active, users = Users, accounts = Accounts,
+                      nodes = Nodes, end_time = EndTime}] ->
+            Now = erlang:system_time(second),
+            %% Get job info to check user authorization
+            case flurm_job_manager:get_job(JobId) of
+                {ok, Job} ->
+                    User = Job#job.user,
+                    Account = Job#job.account,
+
+                    %% Check time validity
+                    case EndTime > Now of
+                        false ->
+                            {error, reservation_expired};
+                        true ->
+                            %% Check user/account authorization
+                            Authorized = (Users =:= [] andalso Accounts =:= []) orelse
+                                         lists:member(User, Users) orelse
+                                         lists:member(Account, Accounts) orelse
+                                         user_in_accounts(User, Accounts),
+                            case Authorized of
+                                true ->
+                                    {ok, Nodes};
+                                false ->
+                                    {error, user_not_authorized}
+                            end
+                    end;
+                {error, _} ->
+                    {error, job_not_found}
+            end;
+        [#reservation{state = State}] ->
+            {error, {invalid_state, State}};
+        [] ->
+            {error, not_found}
+    end.
+
+%% @private
+%% Add a job to a reservation's jobs_using list
+do_add_job_to_reservation(JobId, ReservationName) ->
+    case ets:lookup(?RESERVATION_TABLE, ReservationName) of
+        [Res = #reservation{jobs_using = Jobs}] ->
+            case lists:member(JobId, Jobs) of
+                true ->
+                    ok;  % Already added
+                false ->
+                    ets:insert(?RESERVATION_TABLE,
+                               Res#reservation{jobs_using = [JobId | Jobs]})
+            end;
+        [] ->
+            ok
+    end.
+
+%% @private
+%% Remove a job from a reservation's jobs_using list
+do_remove_job_from_reservation(JobId, ReservationName) ->
+    case ets:lookup(?RESERVATION_TABLE, ReservationName) of
+        [Res = #reservation{jobs_using = Jobs}] ->
+            NewJobs = lists:delete(JobId, Jobs),
+            ets:insert(?RESERVATION_TABLE, Res#reservation{jobs_using = NewJobs});
+        [] ->
+            ok
+    end.
+
+%% @private
+%% Generate a unique reservation name
+generate_reservation_name() ->
+    Timestamp = erlang:system_time(microsecond),
+    Random = rand:uniform(10000),
+    list_to_binary(io_lib:format("res_~p_~p", [Timestamp, Random])).
+
+%% @private
+%% Release nodes from a reservation
+release_reservation_nodes(_Nodes, _ReservationName) ->
+    %% Nodes are virtual allocations - no actual release needed
+    %% The scheduler will see these nodes as available once reservation is deleted
+    ok.
+
+%%--------------------------------------------------------------------
+%% Expiration Handling
+%%--------------------------------------------------------------------
+
+%% The do_check_reservation_states/0 function already handles expiration
+%% by checking end_time and transitioning to expired state.
+%% Enhanced expiration logic is added below to also handle:
+%% - Auto-cancellation of expired reservations with purge_time
+%% - Notification of jobs when their reservation expires
+
+%% Called from do_check_reservation_states when a reservation expires
+notify_reservation_expired(#reservation{name = Name, jobs_using = Jobs}) ->
+    error_logger:info_msg("Reservation ~s expired~n", [Name]),
+    %% Notify any jobs still referencing this reservation
+    lists:foreach(fun(JobId) ->
+        error_logger:warning_msg("Job ~p's reservation ~s has expired~n", [JobId, Name])
+    end, Jobs).

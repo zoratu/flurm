@@ -59,7 +59,12 @@
     %% Output file paths
     work_dir = <<"/tmp">> :: binary(),
     std_out = <<>> :: binary(),        % Empty means slurm-<jobid>.out
-    std_err = <<>> :: binary()         % Empty means stderr goes to stdout
+    std_err = <<>> :: binary(),        % Empty means stderr goes to stdout
+    %% Accounting and QOS fields
+    account = <<>> :: binary(),        % Account for accounting, fairshare, and limits
+    qos = <<"normal">> :: binary(),    % Quality of Service for priority and resource limits
+    %% Reservation fields
+    reservation = <<>> :: binary()     % Reservation name (empty for no reservation)
 }).
 
 %%====================================================================

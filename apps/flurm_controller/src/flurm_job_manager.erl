@@ -323,7 +323,9 @@ create_job(JobId, JobSpec) ->
         exit_code = undefined,
         work_dir = WorkDir,
         std_out = StdOut,
-        std_err = maps:get(std_err, JobSpec, <<>>)  % Empty = merge with stdout
+        std_err = maps:get(std_err, JobSpec, <<>>),  % Empty = merge with stdout
+        account = maps:get(account, JobSpec, <<>>),
+        qos = maps:get(qos, JobSpec, <<"normal">>)
     }.
 
 %% Persist a new job

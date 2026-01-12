@@ -52,7 +52,9 @@ new_job(Props) ->
         start_time = maps:get(start_time, Props, undefined),
         end_time = maps:get(end_time, Props, undefined),
         allocated_nodes = maps:get(allocated_nodes, Props, []),
-        exit_code = maps:get(exit_code, Props, undefined)
+        exit_code = maps:get(exit_code, Props, undefined),
+        account = maps:get(account, Props, <<>>),
+        qos = maps:get(qos, Props, <<"normal">>)
     }.
 
 %% @doc Get job ID

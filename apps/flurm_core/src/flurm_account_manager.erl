@@ -67,6 +67,17 @@
 
 -include_lib("flurm_core/include/flurm_core.hrl").
 
+%% Local copy of usage record from flurm_limits for pattern matching
+%% This record is used by flurm_limits:get_usage/2 return values
+-record(usage, {
+    key :: {user | account, binary()} |
+           {user, binary(), binary()},
+    running_jobs = 0 :: non_neg_integer(),
+    pending_jobs = 0 :: non_neg_integer(),
+    tres_used = #{} :: map(),
+    tres_mins = #{} :: map()
+}).
+
 -record(state, {
     accounts :: ets:tid(),
     users :: ets:tid(),
@@ -518,10 +529,10 @@ handle_call({get_user_association, Username, Account}, _From, State) ->
         [] -> {reply, {error, not_found}, State}
     end;
 
-handle_call({check_limits, _Username, _JobSpec}, _From, State) ->
-    %% TODO: Implement limit checking
-    %% For now, always allow
-    {reply, ok, State};
+handle_call({check_limits, Username, JobSpec}, _From, State) ->
+    %% Check account-based limits for the user
+    Result = do_check_limits(Username, JobSpec, State),
+    {reply, Result, State};
 
 handle_call(_Request, _From, State) ->
     {reply, {error, unknown_request}, State}.
@@ -755,3 +766,505 @@ matches_pattern(Value, Pattern) when is_binary(Value), is_binary(Pattern) ->
             Value =:= Pattern
     end;
 matches_pattern(_, _) -> false.
+
+%%====================================================================
+%% Limit Checking Implementation
+%%====================================================================
+
+%% @doc Check all limits for a user submitting a job
+%% Enforces limits in priority order:
+%% 1. QOS limits (highest priority)
+%% 2. Association limits (user+account+partition specific)
+%% 3. Account limits
+%% 4. User limits
+-spec do_check_limits(binary(), map(), #state{}) -> ok | {error, term()}.
+do_check_limits(Username, JobSpec, State) ->
+    Account = maps:get(account, JobSpec, <<>>),
+    Partition = maps:get(partition, JobSpec, <<>>),
+
+    %% Step 1: Look up the user and their association
+    case find_user_association(Username, Account, Partition, State) of
+        {ok, Association, User} ->
+            %% Step 2: Determine the effective QOS
+            QosName = determine_effective_qos(JobSpec, Association, User, State),
+
+            %% Step 3: Check QOS limits first (highest priority)
+            case check_qos_limits(QosName, Username, JobSpec) of
+                ok ->
+                    %% Step 4: Check association-based limits
+                    case check_association_limits(Association, JobSpec, State) of
+                        ok ->
+                            %% Step 5: Check account limits
+                            case check_account_limits(Account, JobSpec, State) of
+                                ok ->
+                                    %% Step 6: Check user limits
+                                    check_user_limits(User, JobSpec);
+                                Error ->
+                                    Error
+                            end;
+                        Error ->
+                            Error
+                    end;
+                Error ->
+                    Error
+            end;
+        {error, no_association} ->
+            %% No association found - check if we should allow based on config
+            case application:get_env(flurm_core, require_association, false) of
+                true ->
+                    {error, {no_association, Username, Account}};
+                false ->
+                    %% Allow job without association, just check basic QOS limits
+                    DefaultQos = get_default_qos(State),
+                    check_qos_limits(DefaultQos, Username, JobSpec)
+            end
+    end.
+
+%% @doc Find a user's association for the given account and partition
+-spec find_user_association(binary(), binary(), binary(), #state{}) ->
+    {ok, #association{}, #acct_user{}} | {error, no_association}.
+find_user_association(Username, Account, Partition, State) ->
+    %% First, look up the user
+    case ets:lookup(State#state.users, Username) of
+        [User] ->
+            %% Determine which account to use
+            EffectiveAccount = case Account of
+                <<>> -> User#acct_user.default_account;
+                _ -> Account
+            end,
+
+            %% Look for specific user+account+partition association
+            case find_association(Username, EffectiveAccount, Partition, State) of
+                {ok, Assoc} ->
+                    {ok, Assoc, User};
+                {error, not_found} ->
+                    %% Try user+account association (any partition)
+                    case find_association(Username, EffectiveAccount, <<>>, State) of
+                        {ok, Assoc} ->
+                            {ok, Assoc, User};
+                        {error, not_found} ->
+                            %% Try account-level association (no specific user)
+                            case find_association(<<>>, EffectiveAccount, Partition, State) of
+                                {ok, Assoc} ->
+                                    {ok, Assoc, User};
+                                {error, not_found} ->
+                                    {error, no_association}
+                            end
+                    end
+            end;
+        [] ->
+            {error, no_association}
+    end.
+
+%% @doc Find an association matching the given criteria
+-spec find_association(binary(), binary(), binary(), #state{}) ->
+    {ok, #association{}} | {error, not_found}.
+find_association(Username, Account, Partition, State) ->
+    Pattern = #association{
+        user = Username,
+        account = Account,
+        partition = Partition,
+        _ = '_'
+    },
+    case ets:match_object(State#state.associations, Pattern) of
+        [Assoc | _] -> {ok, Assoc};
+        [] -> {error, not_found}
+    end.
+
+%% @doc Determine the effective QOS for a job
+-spec determine_effective_qos(map(), #association{}, #acct_user{}, #state{}) -> binary().
+determine_effective_qos(JobSpec, Association, User, State) ->
+    %% Priority: JobSpec > Association > User > Account > Default
+    case maps:get(qos, JobSpec, <<>>) of
+        <<>> ->
+            %% Check association's default QOS
+            case Association#association.default_qos of
+                <<>> ->
+                    %% Check user's default QOS
+                    case User#acct_user.default_qos of
+                        <<>> ->
+                            %% Check account's default QOS
+                            case ets:lookup(State#state.accounts, Association#association.account) of
+                                [#account{default_qos = <<>>}] ->
+                                    get_default_qos(State);
+                                [#account{default_qos = AccountQos}] ->
+                                    AccountQos;
+                                [] ->
+                                    get_default_qos(State)
+                            end;
+                        UserQos ->
+                            UserQos
+                    end;
+                AssocQos ->
+                    AssocQos
+            end;
+        RequestedQos ->
+            %% Verify user is allowed to use requested QOS
+            AllowedQos = Association#association.qos,
+            case AllowedQos =:= [] orelse lists:member(RequestedQos, AllowedQos) of
+                true -> RequestedQos;
+                false ->
+                    %% Fall back to default if not allowed
+                    lager:warning("User ~s not allowed to use QOS ~s, using default",
+                                 [User#acct_user.name, RequestedQos]),
+                    get_default_qos(State)
+            end
+    end.
+
+%% @doc Get the default QOS name
+-spec get_default_qos(#state{}) -> binary().
+get_default_qos(State) ->
+    case ets:lookup(State#state.qos, <<"normal">>) of
+        [_] -> <<"normal">>;
+        [] ->
+            %% Return first available QOS or empty
+            case ets:first(State#state.qos) of
+                '$end_of_table' -> <<>>;
+                Name -> Name
+            end
+    end.
+
+%% @doc Check QOS-based limits
+-spec check_qos_limits(binary(), binary(), map()) -> ok | {error, term()}.
+check_qos_limits(<<>>, _Username, _JobSpec) ->
+    %% No QOS, allow
+    ok;
+check_qos_limits(QosName, Username, JobSpec) ->
+    %% Check wall time and job count limits via flurm_qos
+    case flurm_qos:check_limits(QosName, JobSpec) of
+        ok ->
+            %% Check TRES limits
+            TresRequest = build_tres_request(JobSpec),
+            flurm_qos:check_tres_limits(QosName, Username, TresRequest);
+        Error ->
+            Error
+    end.
+
+%% @doc Check association-based limits
+-spec check_association_limits(#association{}, map(), #state{}) -> ok | {error, term()}.
+check_association_limits(Association, JobSpec, _State) ->
+    Checks = [
+        %% Check max jobs per association
+        fun() -> check_assoc_max_jobs(Association) end,
+        %% Check max submit per association
+        fun() -> check_assoc_max_submit(Association) end,
+        %% Check max wall time per job
+        fun() -> check_assoc_max_wall(Association, JobSpec) end,
+        %% Check per-job TRES limits
+        fun() -> check_assoc_tres_per_job(Association, JobSpec) end,
+        %% Check per-node TRES limits
+        fun() -> check_assoc_tres_per_node(Association, JobSpec) end,
+        %% Check group TRES limits
+        fun() -> check_assoc_grp_tres(Association, JobSpec) end
+    ],
+    run_checks(Checks).
+
+%% @doc Check account-based limits
+-spec check_account_limits(binary(), map(), #state{}) -> ok | {error, term()}.
+check_account_limits(<<>>, _JobSpec, _State) ->
+    ok;
+check_account_limits(AccountName, JobSpec, State) ->
+    case ets:lookup(State#state.accounts, AccountName) of
+        [Account] ->
+            Checks = [
+                fun() -> check_account_max_jobs(Account) end,
+                fun() -> check_account_max_submit(Account) end,
+                fun() -> check_account_max_wall(Account, JobSpec) end
+            ],
+            run_checks(Checks);
+        [] ->
+            %% Account not found, allow (might be unconfigured)
+            ok
+    end.
+
+%% @doc Check user-level limits
+-spec check_user_limits(#acct_user{}, map()) -> ok | {error, term()}.
+check_user_limits(User, JobSpec) ->
+    Checks = [
+        fun() -> check_user_max_jobs(User) end,
+        fun() -> check_user_max_submit(User) end,
+        fun() -> check_user_max_wall(User, JobSpec) end
+    ],
+    run_checks(Checks).
+
+%% @doc Run a list of check functions, returning first error or ok
+-spec run_checks([fun(() -> ok | {error, term()})]) -> ok | {error, term()}.
+run_checks([]) ->
+    ok;
+run_checks([Check | Rest]) ->
+    case Check() of
+        ok -> run_checks(Rest);
+        Error -> Error
+    end.
+
+%%====================================================================
+%% Association Limit Checks
+%%====================================================================
+
+check_assoc_max_jobs(#association{max_jobs = 0}) ->
+    ok;  % 0 = unlimited
+check_assoc_max_jobs(#association{max_jobs = MaxJobs, user = User, account = Account}) ->
+    %% Get current running job count for this association
+    CurrentJobs = get_running_jobs_count(User, Account),
+    case CurrentJobs >= MaxJobs of
+        true ->
+            {error, {assoc_max_jobs_exceeded, CurrentJobs, MaxJobs}};
+        false ->
+            ok
+    end.
+
+check_assoc_max_submit(#association{max_submit = 0}) ->
+    ok;
+check_assoc_max_submit(#association{max_submit = MaxSubmit, user = User, account = Account}) ->
+    %% Get current total job count (running + pending) for this association
+    TotalJobs = get_total_jobs_count(User, Account),
+    case TotalJobs >= MaxSubmit of
+        true ->
+            {error, {assoc_max_submit_exceeded, TotalJobs, MaxSubmit}};
+        false ->
+            ok
+    end.
+
+check_assoc_max_wall(#association{max_wall_per_job = 0}, _JobSpec) ->
+    ok;
+check_assoc_max_wall(#association{max_wall_per_job = MaxWall}, JobSpec) ->
+    RequestedWall = maps:get(time_limit, JobSpec, 0),
+    case RequestedWall > MaxWall of
+        true ->
+            {error, {assoc_max_wall_exceeded, RequestedWall, MaxWall}};
+        false ->
+            ok
+    end.
+
+check_assoc_tres_per_job(#association{max_tres_per_job = MaxTres}, JobSpec) when map_size(MaxTres) =:= 0 ->
+    _ = JobSpec, % Suppress unused variable warning
+    ok;
+check_assoc_tres_per_job(#association{max_tres_per_job = MaxTres}, JobSpec) ->
+    RequestedTres = build_tres_request(JobSpec),
+    check_tres_limits(RequestedTres, MaxTres, assoc_tres_per_job).
+
+check_assoc_tres_per_node(#association{max_tres_per_node = MaxTres}, JobSpec) when map_size(MaxTres) =:= 0 ->
+    _ = JobSpec, % Suppress unused variable warning
+    ok;
+check_assoc_tres_per_node(#association{max_tres_per_node = MaxTres}, JobSpec) ->
+    %% Calculate per-node resources
+    NumNodes = maps:get(num_nodes, JobSpec, 1),
+    RequestedTres = build_tres_request(JobSpec),
+    PerNodeTres = maps:map(fun(_K, V) -> V div max(1, NumNodes) end, RequestedTres),
+    check_tres_limits(PerNodeTres, MaxTres, assoc_tres_per_node).
+
+check_assoc_grp_tres(#association{grp_tres = GrpTres}, JobSpec) when map_size(GrpTres) =:= 0 ->
+    _ = JobSpec, % Suppress unused variable warning
+    ok;
+check_assoc_grp_tres(#association{grp_tres = GrpTres, user = User, account = Account}, JobSpec) ->
+    %% Check if adding this job would exceed group TRES limits
+    RequestedTres = build_tres_request(JobSpec),
+    CurrentTres = get_current_tres_usage(User, Account),
+    CombinedTres = combine_tres_maps(CurrentTres, RequestedTres),
+    check_tres_limits(CombinedTres, GrpTres, assoc_grp_tres).
+
+%%====================================================================
+%% Account Limit Checks
+%%====================================================================
+
+check_account_max_jobs(#account{max_jobs = 0}) ->
+    ok;
+check_account_max_jobs(#account{max_jobs = MaxJobs, name = AccountName}) ->
+    CurrentJobs = get_account_running_jobs_count(AccountName),
+    case CurrentJobs >= MaxJobs of
+        true ->
+            {error, {account_max_jobs_exceeded, CurrentJobs, MaxJobs}};
+        false ->
+            ok
+    end.
+
+check_account_max_submit(#account{max_submit = 0}) ->
+    ok;
+check_account_max_submit(#account{max_submit = MaxSubmit, name = AccountName}) ->
+    TotalJobs = get_account_total_jobs_count(AccountName),
+    case TotalJobs >= MaxSubmit of
+        true ->
+            {error, {account_max_submit_exceeded, TotalJobs, MaxSubmit}};
+        false ->
+            ok
+    end.
+
+check_account_max_wall(#account{max_wall = 0}, _JobSpec) ->
+    ok;
+check_account_max_wall(#account{max_wall = MaxWall}, JobSpec) ->
+    %% Account max_wall is in minutes, job time_limit is in seconds
+    RequestedWall = maps:get(time_limit, JobSpec, 0),
+    MaxWallSeconds = MaxWall * 60,
+    case RequestedWall > MaxWallSeconds of
+        true ->
+            {error, {account_max_wall_exceeded, RequestedWall, MaxWallSeconds}};
+        false ->
+            ok
+    end.
+
+%%====================================================================
+%% User Limit Checks
+%%====================================================================
+
+check_user_max_jobs(#acct_user{max_jobs = 0}) ->
+    ok;
+check_user_max_jobs(#acct_user{max_jobs = MaxJobs, name = Username}) ->
+    CurrentJobs = get_user_running_jobs_count(Username),
+    case CurrentJobs >= MaxJobs of
+        true ->
+            {error, {user_max_jobs_exceeded, CurrentJobs, MaxJobs}};
+        false ->
+            ok
+    end.
+
+check_user_max_submit(#acct_user{max_submit = 0}) ->
+    ok;
+check_user_max_submit(#acct_user{max_submit = MaxSubmit, name = Username}) ->
+    TotalJobs = get_user_total_jobs_count(Username),
+    case TotalJobs >= MaxSubmit of
+        true ->
+            {error, {user_max_submit_exceeded, TotalJobs, MaxSubmit}};
+        false ->
+            ok
+    end.
+
+check_user_max_wall(#acct_user{max_wall = 0}, _JobSpec) ->
+    ok;
+check_user_max_wall(#acct_user{max_wall = MaxWall}, JobSpec) ->
+    %% User max_wall is in minutes, job time_limit is in seconds
+    RequestedWall = maps:get(time_limit, JobSpec, 0),
+    MaxWallSeconds = MaxWall * 60,
+    case RequestedWall > MaxWallSeconds of
+        true ->
+            {error, {user_max_wall_exceeded, RequestedWall, MaxWallSeconds}};
+        false ->
+            ok
+    end.
+
+%%====================================================================
+%% TRES Helpers
+%%====================================================================
+
+%% @doc Build a TRES request map from a job spec
+-spec build_tres_request(map()) -> map().
+build_tres_request(JobSpec) ->
+    NumNodes = maps:get(num_nodes, JobSpec, 1),
+    NumCpus = maps:get(num_cpus, JobSpec, 1),
+    MemoryMb = maps:get(memory_mb, JobSpec, 0),
+    NumGpus = maps:get(num_gpus, JobSpec, 0),
+
+    %% Build TRES map with standard TRES types
+    Tres = #{
+        <<"cpu">> => NumCpus,
+        <<"mem">> => MemoryMb,
+        <<"node">> => NumNodes
+    },
+
+    %% Add GPU if requested
+    case NumGpus of
+        0 -> Tres;
+        N -> maps:put(<<"gres/gpu">>, N, Tres)
+    end.
+
+%% @doc Check if requested TRES exceeds limits
+-spec check_tres_limits(map(), map(), atom()) -> ok | {error, term()}.
+check_tres_limits(Requested, Limits, LimitType) ->
+    Violations = maps:fold(fun(TresType, RequestedAmount, Acc) ->
+        case maps:get(TresType, Limits, 0) of
+            0 -> Acc;  % 0 = unlimited
+            MaxAmount when RequestedAmount > MaxAmount ->
+                [{TresType, RequestedAmount, MaxAmount} | Acc];
+            _ ->
+                Acc
+        end
+    end, [], Requested),
+
+    case Violations of
+        [] -> ok;
+        _ -> {error, {LimitType, Violations}}
+    end.
+
+%% @doc Combine two TRES maps
+-spec combine_tres_maps(map(), map()) -> map().
+combine_tres_maps(Map1, Map2) ->
+    maps:fold(fun(K, V, Acc) ->
+        maps:update_with(K, fun(Existing) -> Existing + V end, V, Acc)
+    end, Map1, Map2).
+
+%%====================================================================
+%% Usage Query Helpers
+%% These functions query current job/resource usage from flurm_limits
+%%====================================================================
+
+%% @doc Get running jobs count for a user+account association
+-spec get_running_jobs_count(binary(), binary()) -> non_neg_integer().
+get_running_jobs_count(User, Account) ->
+    case catch flurm_limits:get_usage(user, User) of
+        #usage{running_jobs = Count} when is_map(Account) == false, Account =/= <<>> ->
+            %% If we have account-specific tracking, use it
+            Count;
+        #usage{running_jobs = Count} ->
+            Count;
+        _ ->
+            0
+    end.
+
+%% @doc Get total jobs count (running + pending) for a user+account
+-spec get_total_jobs_count(binary(), binary()) -> non_neg_integer().
+get_total_jobs_count(User, _Account) ->
+    case catch flurm_limits:get_usage(user, User) of
+        #usage{running_jobs = Running, pending_jobs = Pending} ->
+            Running + Pending;
+        _ ->
+            0
+    end.
+
+%% @doc Get current TRES usage for a user+account
+-spec get_current_tres_usage(binary(), binary()) -> map().
+get_current_tres_usage(User, _Account) ->
+    case catch flurm_limits:get_usage(user, User) of
+        #usage{tres_used = Tres} ->
+            Tres;
+        _ ->
+            #{}
+    end.
+
+%% @doc Get running jobs count for an account
+-spec get_account_running_jobs_count(binary()) -> non_neg_integer().
+get_account_running_jobs_count(AccountName) ->
+    case catch flurm_limits:get_usage(account, AccountName) of
+        #usage{running_jobs = Count} ->
+            Count;
+        _ ->
+            0
+    end.
+
+%% @doc Get total jobs count for an account
+-spec get_account_total_jobs_count(binary()) -> non_neg_integer().
+get_account_total_jobs_count(AccountName) ->
+    case catch flurm_limits:get_usage(account, AccountName) of
+        #usage{running_jobs = Running, pending_jobs = Pending} ->
+            Running + Pending;
+        _ ->
+            0
+    end.
+
+%% @doc Get running jobs count for a user (across all accounts)
+-spec get_user_running_jobs_count(binary()) -> non_neg_integer().
+get_user_running_jobs_count(Username) ->
+    case catch flurm_limits:get_usage(user, Username) of
+        #usage{running_jobs = Count} ->
+            Count;
+        _ ->
+            0
+    end.
+
+%% @doc Get total jobs count for a user (across all accounts)
+-spec get_user_total_jobs_count(binary()) -> non_neg_integer().
+get_user_total_jobs_count(Username) ->
+    case catch flurm_limits:get_usage(user, Username) of
+        #usage{running_jobs = Running, pending_jobs = Pending} ->
+            Running + Pending;
+        _ ->
+            0
+    end.

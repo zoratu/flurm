@@ -22,8 +22,16 @@
 
 -include("flurm_core.hrl").
 
+%% Suppress warnings for unused functions kept for future use
+-compile({nowarn_unused_function, [estimate_node_free_time/2, estimate_job_end_times/2]}).
+
 %% API
 -export([
+    %% Scheduler integration API
+    run_backfill_cycle/2,
+    get_backfill_candidates/1,
+    is_backfill_enabled/0,
+    %% Core API
     find_backfill_jobs/2,
     can_backfill/3,
     calculate_shadow_time/2,
@@ -301,4 +309,92 @@ reserve_nodes_in_timeline(NodeNames, Job, Timeline) ->
     Timeline#{
         free_nodes => NewFreeNodes,
         node_end_times => NewEndTimes
+    }.
+
+%%====================================================================
+%% Scheduler Integration API
+%%====================================================================
+
+%% @doc Run a complete backfill cycle for the scheduler.
+%% Takes the blocker job (highest priority pending job that can't run) and
+%% a list of candidate jobs (lower priority pending jobs).
+%% Returns a list of {JobId, NodeNames} for jobs that can be backfilled.
+-spec run_backfill_cycle(map() | undefined, [map()]) -> [{pos_integer(), [binary()]}].
+run_backfill_cycle(undefined, _CandidateJobs) ->
+    %% No blocker job - no need for backfill
+    [];
+run_backfill_cycle(_BlockerJob, []) ->
+    %% No candidates to backfill
+    [];
+run_backfill_cycle(BlockerJob, CandidateJobs) ->
+    case is_backfill_enabled() of
+        false ->
+            [];
+        true ->
+            %% Run the backfill algorithm
+            Results = find_backfill_jobs(BlockerJob, CandidateJobs),
+            %% Convert to simplified format for scheduler
+            [{JobId, Nodes} || {JobId, _Pid, Nodes} <- Results]
+    end.
+
+%% @doc Get candidate jobs for backfill from the job manager.
+%% Returns pending jobs sorted by priority (descending).
+-spec get_backfill_candidates([pos_integer()]) -> [map()].
+get_backfill_candidates(JobIds) ->
+    %% Retrieve job info for each pending job ID
+    Jobs = lists:filtermap(
+        fun(JobId) ->
+            case catch flurm_job_manager:get_job(JobId) of
+                {ok, #job{state = pending} = Job} ->
+                    {true, job_record_to_map(Job)};
+                {ok, #job{state = held}} ->
+                    %% Skip held jobs
+                    false;
+                _ ->
+                    false
+            end
+        end,
+        JobIds
+    ),
+    %% Sort by priority (descending)
+    lists:sort(
+        fun(A, B) ->
+            maps:get(priority, A, 0) > maps:get(priority, B, 0)
+        end,
+        Jobs
+    ).
+
+%% @doc Check if backfill scheduling is enabled.
+%% This can be configured via application environment.
+-spec is_backfill_enabled() -> boolean().
+is_backfill_enabled() ->
+    %% Check for scheduler type config
+    case application:get_env(flurm_core, scheduler_type, fifo) of
+        backfill -> true;
+        fifo_backfill -> true;
+        priority_backfill -> true;
+        _ ->
+            %% Also check explicit backfill_enabled flag
+            application:get_env(flurm_core, backfill_enabled, true)
+    end.
+
+%% @private
+%% Convert a job record to a map for backfill processing
+job_record_to_map(#job{} = Job) ->
+    #{
+        job_id => Job#job.id,
+        pid => undefined,
+        name => Job#job.name,
+        user => Job#job.user,
+        partition => Job#job.partition,
+        state => Job#job.state,
+        num_nodes => Job#job.num_nodes,
+        num_cpus => Job#job.num_cpus,
+        memory_mb => Job#job.memory_mb,
+        time_limit => Job#job.time_limit,
+        priority => Job#job.priority,
+        submit_time => Job#job.submit_time,
+        start_time => Job#job.start_time,
+        account => Job#job.account,
+        qos => Job#job.qos
     }.

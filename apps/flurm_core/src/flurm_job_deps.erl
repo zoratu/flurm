@@ -22,15 +22,22 @@
 -export([
     start_link/0,
     add_dependency/3,
+    add_dependencies/2,
     remove_dependency/2,
+    remove_all_dependencies/1,
     get_dependencies/1,
     get_dependents/1,
     check_dependencies/1,
     are_dependencies_satisfied/1,
     on_job_state_change/2,
+    notify_completion/2,
+    release_job/1,
+    hold_for_dependencies/1,
     parse_dependency_spec/1,
     format_dependency_spec/1,
     get_dependency_graph/0,
+    detect_circular_dependency/2,
+    has_circular_dependency/2,
     clear_completed_dependencies/0
 ]).
 
@@ -48,6 +55,7 @@
 -define(DEPS_TABLE, flurm_job_deps).
 -define(DEPENDENTS_TABLE, flurm_job_dependents).
 -define(SINGLETON_TABLE, flurm_singletons).
+-define(GRAPH_TABLE, flurm_dep_graph).  % For circular dependency detection
 
 -type dep_type() :: after_start | afterok | afternotok | afterany |
                     aftercorr | afterburstbuffer | singleton.
@@ -74,14 +82,33 @@ start_link() ->
     gen_server:start_link({local, ?SERVER}, ?MODULE, [], []).
 
 %% @doc Add a dependency for a job
+%% Returns {error, circular_dependency} if adding would create a cycle
 -spec add_dependency(job_id(), dep_type(), job_id() | binary()) -> ok | {error, term()}.
 add_dependency(JobId, DepType, Target) ->
     gen_server:call(?SERVER, {add_dependency, JobId, DepType, Target}).
+
+%% @doc Add multiple dependencies from a parsed dependency spec
+%% Parses the spec string and adds all dependencies, checking for cycles
+-spec add_dependencies(job_id(), binary()) -> ok | {error, term()}.
+add_dependencies(JobId, DepSpec) when is_binary(DepSpec) ->
+    case parse_dependency_spec(DepSpec) of
+        {ok, []} ->
+            ok;
+        {ok, Deps} ->
+            gen_server:call(?SERVER, {add_dependencies, JobId, Deps});
+        {error, _} = Error ->
+            Error
+    end.
 
 %% @doc Remove a specific dependency
 -spec remove_dependency(job_id(), {dep_type(), job_id() | binary()}) -> ok.
 remove_dependency(JobId, {DepType, Target}) ->
     gen_server:call(?SERVER, {remove_dependency, JobId, DepType, Target}).
+
+%% @doc Remove all dependencies for a job (used when job is cancelled/completed)
+-spec remove_all_dependencies(job_id()) -> ok.
+remove_all_dependencies(JobId) ->
+    gen_server:call(?SERVER, {remove_all_dependencies, JobId}).
 
 %% @doc Get all dependencies for a job
 -spec get_dependencies(job_id()) -> [#dependency{}].
@@ -123,6 +150,53 @@ are_dependencies_satisfied(JobId) ->
 on_job_state_change(JobId, NewState) ->
     gen_server:cast(?SERVER, {job_state_change, JobId, NewState}).
 
+%% @doc Notify dependent jobs when a job completes with given result
+%% Result can be: completed, failed, cancelled, timeout
+-spec notify_completion(job_id(), job_state()) -> ok.
+notify_completion(JobId, Result) ->
+    gen_server:cast(?SERVER, {job_completed, JobId, Result}).
+
+%% @doc Release a job for scheduling once dependencies are satisfied
+%% This is called internally when all deps are met, but can also be called manually
+-spec release_job(job_id()) -> ok | {error, term()}.
+release_job(JobId) ->
+    case are_dependencies_satisfied(JobId) of
+        true ->
+            %% Update job state from held to pending
+            case catch flurm_job_manager:release_job(JobId) of
+                ok ->
+                    lager:info("Job ~p released (dependencies satisfied)", [JobId]),
+                    ok;
+                {error, Reason} ->
+                    {error, Reason};
+                {'EXIT', _} ->
+                    {error, job_manager_unavailable}
+            end;
+        false ->
+            {error, dependencies_not_satisfied}
+    end.
+
+%% @doc Hold a job until its dependencies are satisfied
+%% Called during job submission when dependencies are specified
+-spec hold_for_dependencies(job_id()) -> ok | {error, term()}.
+hold_for_dependencies(JobId) ->
+    case check_dependencies(JobId) of
+        {ok, []} ->
+            %% No unsatisfied dependencies, job can run
+            ok;
+        {waiting, _Deps} ->
+            %% Has unsatisfied dependencies, hold the job
+            case catch flurm_job_manager:hold_job(JobId) of
+                ok ->
+                    lager:info("Job ~p held pending dependencies", [JobId]),
+                    ok;
+                {error, Reason} ->
+                    {error, Reason};
+                {'EXIT', _} ->
+                    {error, job_manager_unavailable}
+            end
+    end.
+
 %% @doc Parse dependency specification string
 %% Format: "afterok:123,afterany:456,singleton"
 -spec parse_dependency_spec(binary()) -> {ok, [{dep_type(), job_id() | binary()}]} | {error, term()}.
@@ -146,6 +220,7 @@ format_dependency_spec(Deps) ->
     iolist_to_binary(lists:join(<<",">>, Parts)).
 
 %% @doc Get the full dependency graph
+%% Returns a map of JobId -> [{DepType, TargetJobId}]
 -spec get_dependency_graph() -> map().
 get_dependency_graph() ->
     AllDeps = ets:tab2list(?DEPS_TABLE),
@@ -154,6 +229,31 @@ get_dependency_graph() ->
         Current = maps:get(Key, Acc, []),
         maps:put(Key, [{Type, Target} | Current], Acc)
     end, #{}, AllDeps).
+
+%% @doc Check if adding a dependency would create a circular dependency
+%% Returns {error, circular_dependency, Path} if cycle would be created
+-spec detect_circular_dependency(job_id(), job_id()) -> ok | {error, circular_dependency, [job_id()]}.
+detect_circular_dependency(JobId, TargetJobId) when is_integer(TargetJobId) ->
+    %% Check if TargetJobId (directly or indirectly) depends on JobId
+    %% If so, adding JobId -> TargetJobId would create a cycle
+    case find_path(TargetJobId, JobId, sets:new()) of
+        {ok, Path} ->
+            %% Found a path from Target to Job, adding Job->Target creates cycle
+            {error, circular_dependency, [JobId | Path]};
+        not_found ->
+            ok
+    end;
+detect_circular_dependency(_JobId, _Target) ->
+    %% Non-integer targets (singletons) can't create cycles
+    ok.
+
+%% @doc Check if a dependency from JobId to TargetJobId would be circular
+-spec has_circular_dependency(job_id(), job_id()) -> boolean().
+has_circular_dependency(JobId, TargetJobId) ->
+    case detect_circular_dependency(JobId, TargetJobId) of
+        ok -> false;
+        {error, circular_dependency, _} -> true
+    end.
 
 %% @doc Clean up dependencies for completed jobs
 -spec clear_completed_dependencies() -> non_neg_integer().
@@ -175,14 +275,28 @@ init([]) ->
     ets:new(?SINGLETON_TABLE, [
         named_table, public, set
     ]),
+    %% Graph table for efficient cycle detection
+    %% Stores {JobId, [TargetJobIds]} - direct dependencies only
+    ets:new(?GRAPH_TABLE, [
+        named_table, public, set
+    ]),
     {ok, #state{}}.
 
 handle_call({add_dependency, JobId, DepType, Target}, _From, State) ->
     Result = do_add_dependency(JobId, DepType, Target),
     {reply, Result, State};
 
+handle_call({add_dependencies, JobId, Deps}, _From, State) ->
+    %% Add multiple dependencies, checking for cycles first
+    Result = do_add_dependencies(JobId, Deps),
+    {reply, Result, State};
+
 handle_call({remove_dependency, JobId, DepType, Target}, _From, State) ->
     do_remove_dependency(JobId, DepType, Target),
+    {reply, ok, State};
+
+handle_call({remove_all_dependencies, JobId}, _From, State) ->
+    do_remove_all_dependencies(JobId),
     {reply, ok, State};
 
 handle_call(clear_completed_deps, _From, State) ->
@@ -194,6 +308,11 @@ handle_call(_Request, _From, State) ->
 
 handle_cast({job_state_change, JobId, NewState}, State) ->
     do_handle_state_change(JobId, NewState),
+    {noreply, State};
+
+handle_cast({job_completed, JobId, Result}, State) ->
+    %% Same as state change but explicit completion notification
+    do_handle_state_change(JobId, Result),
     {noreply, State};
 
 handle_cast(_Msg, State) ->
@@ -246,30 +365,74 @@ do_add_dependency(JobId, singleton, Name) ->
     end;
 
 do_add_dependency(JobId, DepType, TargetJobId) when is_integer(TargetJobId) ->
-    Key = {JobId, DepType, TargetJobId},
+    %% First check for circular dependencies
+    case detect_circular_dependency(JobId, TargetJobId) of
+        {error, circular_dependency, Path} ->
+            lager:warning("Circular dependency detected: ~p -> ~p (path: ~p)",
+                         [JobId, TargetJobId, Path]),
+            {error, {circular_dependency, Path}};
+        ok ->
+            Key = {JobId, DepType, TargetJobId},
 
-    %% Check if target job is already in satisfying state
-    Satisfied = check_target_satisfies(DepType, TargetJobId),
+            %% Check if target job is already in satisfying state
+            Satisfied = check_target_satisfies(DepType, TargetJobId),
 
-    Dep = #dependency{
-        id = Key,
-        job_id = JobId,
-        dep_type = DepType,
-        target = TargetJobId,
-        satisfied = Satisfied,
-        satisfied_time = case Satisfied of
-            true -> erlang:system_time(second);
-            false -> undefined
-        end
-    },
-    ets:insert(?DEPS_TABLE, Dep),
+            Dep = #dependency{
+                id = Key,
+                job_id = JobId,
+                dep_type = DepType,
+                target = TargetJobId,
+                satisfied = Satisfied,
+                satisfied_time = case Satisfied of
+                    true -> erlang:system_time(second);
+                    false -> undefined
+                end
+            },
+            ets:insert(?DEPS_TABLE, Dep),
 
-    %% If not satisfied, register as dependent
-    case Satisfied of
-        false -> add_to_dependents(TargetJobId, JobId);
-        true -> ok
-    end,
-    ok.
+            %% Update the graph table for cycle detection
+            add_to_graph(JobId, TargetJobId),
+
+            %% If not satisfied, register as dependent
+            case Satisfied of
+                false -> add_to_dependents(TargetJobId, JobId);
+                true -> ok
+            end,
+            ok
+    end;
+do_add_dependency(JobId, DepType, Targets) when is_list(Targets) ->
+    %% Handle multiple targets (job+job+job syntax)
+    Results = [do_add_dependency(JobId, DepType, T) || T <- Targets],
+    case lists:all(fun(R) -> R =:= ok end, Results) of
+        true -> ok;
+        false ->
+            %% Return first error
+            lists:foldl(fun
+                ({error, _} = E, ok) -> E;
+                (_, Acc) -> Acc
+            end, ok, Results)
+    end.
+
+%% @private Add multiple dependencies with cycle checking
+do_add_dependencies(JobId, Deps) ->
+    %% First check all dependencies for cycles before adding any
+    CycleChecks = [detect_circular_dependency(JobId, T) || {_Type, T} <- Deps, is_integer(T)],
+    case lists:filter(fun(R) -> R =/= ok end, CycleChecks) of
+        [{error, circular_dependency, Path} | _] ->
+            {error, {circular_dependency, Path}};
+        [] ->
+            %% No cycles, add all dependencies
+            Results = [do_add_dependency(JobId, Type, Target) || {Type, Target} <- Deps],
+            case lists:all(fun(R) -> R =:= ok end, Results) of
+                true ->
+                    %% After adding dependencies, check if job should be held
+                    hold_for_dependencies(JobId),
+                    ok;
+                false ->
+                    %% Find first error
+                    hd([E || E <- Results, E =/= ok])
+            end
+    end.
 
 do_remove_dependency(JobId, DepType, Target) ->
     Key = {JobId, DepType, Target},
@@ -277,9 +440,24 @@ do_remove_dependency(JobId, DepType, Target) ->
 
     %% Remove from dependents list
     case is_integer(Target) of
-        true -> remove_from_dependents(Target, JobId);
+        true ->
+            remove_from_dependents(Target, JobId),
+            remove_from_graph(JobId, Target);
         false -> ok
     end.
+
+%% @private Remove all dependencies for a job
+do_remove_all_dependencies(JobId) ->
+    %% Get all dependencies for this job
+    Deps = get_dependencies(JobId),
+
+    %% Remove each one
+    lists:foreach(fun(#dependency{dep_type = Type, target = Target}) ->
+        do_remove_dependency(JobId, Type, Target)
+    end, Deps),
+
+    %% Clean up graph entry
+    ets:delete(?GRAPH_TABLE, JobId).
 
 add_to_dependents(TargetJobId, DependentJobId) ->
     case ets:lookup(?DEPENDENTS_TABLE, TargetJobId) of
@@ -305,6 +483,61 @@ remove_from_dependents(TargetJobId, DependentJobId) ->
             ok
     end.
 
+%% Graph management functions for cycle detection
+add_to_graph(JobId, TargetJobId) when is_integer(TargetJobId) ->
+    case ets:lookup(?GRAPH_TABLE, JobId) of
+        [{JobId, Targets}] ->
+            case lists:member(TargetJobId, Targets) of
+                true -> ok;
+                false ->
+                    ets:insert(?GRAPH_TABLE, {JobId, [TargetJobId | Targets]})
+            end;
+        [] ->
+            ets:insert(?GRAPH_TABLE, {JobId, [TargetJobId]})
+    end;
+add_to_graph(_JobId, _Target) ->
+    ok.
+
+remove_from_graph(JobId, TargetJobId) ->
+    case ets:lookup(?GRAPH_TABLE, JobId) of
+        [{JobId, Targets}] ->
+            NewTargets = lists:delete(TargetJobId, Targets),
+            case NewTargets of
+                [] -> ets:delete(?GRAPH_TABLE, JobId);
+                _ -> ets:insert(?GRAPH_TABLE, {JobId, NewTargets})
+            end;
+        [] ->
+            ok
+    end.
+
+%% Find a path from StartJob to EndJob using BFS
+%% Returns {ok, Path} if path exists, not_found otherwise
+find_path(StartJob, EndJob, _Visited) when StartJob =:= EndJob ->
+    {ok, [EndJob]};
+find_path(StartJob, EndJob, Visited) ->
+    case sets:is_element(StartJob, Visited) of
+        true ->
+            not_found;
+        false ->
+            NewVisited = sets:add_element(StartJob, Visited),
+            %% Get direct dependencies of StartJob
+            Targets = case ets:lookup(?GRAPH_TABLE, StartJob) of
+                [{StartJob, T}] -> T;
+                [] -> []
+            end,
+            find_path_in_targets(Targets, EndJob, NewVisited, StartJob)
+    end.
+
+find_path_in_targets([], _EndJob, _Visited, _CurrentJob) ->
+    not_found;
+find_path_in_targets([Target | Rest], EndJob, Visited, CurrentJob) ->
+    case find_path(Target, EndJob, Visited) of
+        {ok, Path} ->
+            {ok, [CurrentJob | Path]};
+        not_found ->
+            find_path_in_targets(Rest, EndJob, Visited, CurrentJob)
+    end.
+
 check_target_satisfies(DepType, TargetJobId) ->
     case catch get_job_state(TargetJobId) of
         {ok, State} -> state_satisfies(DepType, State);
@@ -326,9 +559,22 @@ state_satisfies(_, _) ->
     false.
 
 get_job_state(JobId) ->
-    case catch flurm_job_registry:get_job_state(JobId) of
-        {ok, State} -> {ok, State};
-        _ -> {error, not_found}
+    %% Try flurm_job_manager first (primary job storage)
+    case catch flurm_job_manager:get_job(JobId) of
+        {ok, Job} when is_tuple(Job) ->
+            %% Job is a #job record, get state field
+            State = element(5, Job),  % state is 5th field in #job record
+            {ok, State};
+        _ ->
+            %% Fallback to job registry if available
+            case catch flurm_job_registry:get_job_entry(JobId) of
+                {ok, Entry} when is_tuple(Entry) ->
+                    %% Entry is a #job_entry record, state is 4th field
+                    State = element(4, Entry),
+                    {ok, State};
+                _ ->
+                    {error, not_found}
+            end
     end.
 
 do_handle_state_change(JobId, NewState) ->
@@ -400,8 +646,25 @@ maybe_notify_scheduler(JobId) ->
     %% Check if all dependencies are now satisfied
     case are_dependencies_satisfied(JobId) of
         true ->
-            %% Notify scheduler that job is ready
-            catch flurm_scheduler:job_deps_satisfied(JobId);
+            %% Release the job from held state and notify scheduler
+            lager:info("All dependencies satisfied for job ~p, releasing", [JobId]),
+            %% Try to release the job (moves from held to pending)
+            case catch flurm_job_manager:release_job(JobId) of
+                ok ->
+                    %% Notify scheduler that job is ready to be scheduled
+                    catch flurm_scheduler:job_deps_satisfied(JobId),
+                    ok;
+                {error, {invalid_state, pending}} ->
+                    %% Job is already pending, just notify scheduler
+                    catch flurm_scheduler:job_deps_satisfied(JobId),
+                    ok;
+                {error, Reason} ->
+                    lager:warning("Failed to release job ~p: ~p", [JobId, Reason]),
+                    ok;
+                {'EXIT', _} ->
+                    %% Job manager not available
+                    ok
+            end;
         false ->
             ok
     end.

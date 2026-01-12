@@ -196,9 +196,16 @@ list_jobs_ra() ->
     end.
 
 next_job_id_ra() ->
-    %% Ra manages job IDs internally, this just returns a placeholder
-    %% The actual ID is assigned when submit_job is called
-    0.
+    %% Allocate a job ID through Ra consensus.
+    %% This ensures unique IDs across the distributed cluster by
+    %% atomically incrementing the job counter in the replicated state.
+    case flurm_db_ra:allocate_job_id() of
+        {ok, JobId} -> JobId;
+        {error, Reason} ->
+            error_logger:error_msg("Failed to allocate job ID via Ra: ~p~n", [Reason]),
+            %% Fallback to ETS if Ra fails (graceful degradation)
+            next_job_id_ets()
+    end.
 
 %% Convert #ra_job to #job
 ra_job_to_job(#ra_job{} = R) ->
@@ -218,7 +225,10 @@ ra_job_to_job(#ra_job{} = R) ->
         start_time = R#ra_job.start_time,
         end_time = R#ra_job.end_time,
         allocated_nodes = R#ra_job.allocated_nodes,
-        exit_code = R#ra_job.exit_code
+        exit_code = R#ra_job.exit_code,
+        %% Account and QOS fields - default values since ra_job does not have these yet
+        account = <<>>,
+        qos = <<"normal">>
     }.
 
 %%====================================================================

@@ -63,11 +63,12 @@
 %% An empty binary, undefined, or null is encoded as <<0:32/big>> (zero length).
 -spec pack_string(binary() | undefined | null) -> binary().
 pack_string(undefined) ->
-    <<0:32/big>>;  % Empty/NULL string - length 0, no data
+    <<0:32/big>>;  % NULL string - length 0, no data (NULL pointer in C)
 pack_string(null) ->
-    <<0:32/big>>;  % Empty/NULL string - length 0, no data
+    <<0:32/big>>;  % NULL string - length 0, no data (NULL pointer in C)
 pack_string(<<>>) ->
-    <<0:32/big>>;  % Empty string - length 0, no data
+    %% Empty string in SLURM: strlen("") + 1 = 1, just the null terminator
+    <<1:32/big, 0:8>>;
 pack_string(Binary) when is_binary(Binary) ->
     %% SLURM includes null terminator in length (strlen+1)
     Length = byte_size(Binary) + 1,
@@ -79,14 +80,20 @@ pack_string(List) when is_list(List) ->
 %%
 %% Returns {ok, String, Rest} where String is the unpacked binary
 %% and Rest is the remaining data.
-%% Returns {ok, undefined, Rest} for NO_VAL encoded strings.
+%% Returns {ok, undefined, Rest} for NO_VAL encoded strings or zero-length strings.
+%% Note: SLURM includes null terminator in length, so we strip it during decode.
 -spec unpack_string(binary()) -> {ok, binary() | undefined, binary()} | {error, term()}.
 unpack_string(<<?SLURM_NO_VAL:32/big, Rest/binary>>) ->
     {ok, undefined, Rest};
 unpack_string(<<0:32/big, Rest/binary>>) ->
-    {ok, <<>>, Rest};
-unpack_string(<<Length:32/big, Data:Length/binary, Rest/binary>>) ->
-    {ok, Data, Rest};
+    %% Zero length means undefined/empty - treat as undefined for roundtrip consistency
+    {ok, undefined, Rest};
+unpack_string(<<Length:32/big, Data:Length/binary, Rest/binary>>) when Length > 0 ->
+    %% Strip the null terminator that SLURM includes in the length
+    %% The null byte is the last byte of Data
+    DataLen = Length - 1,
+    <<StrippedData:DataLen/binary, 0:8>> = Data,
+    {ok, StrippedData, Rest};
 unpack_string(<<Length:32/big, _/binary>>) ->
     {error, {insufficient_string_data, Length}};
 unpack_string(Binary) when byte_size(Binary) < 4 ->

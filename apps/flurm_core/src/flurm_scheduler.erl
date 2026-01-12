@@ -339,34 +339,125 @@ schedule_pending_jobs(State) ->
 
 %% @private
 %% Try to backfill smaller jobs while high-priority job waits
-%% This improves cluster utilization
+%% This improves cluster utilization by using the flurm_backfill module
+%% to find jobs that can complete before the blocked job needs resources.
 try_backfill_jobs(Queue, State) ->
-    %% Get jobs from queue as list for backfill analysis
-    JobsList = queue:to_list(Queue),
-    lager:debug("Backfill: checking ~p jobs", [length(JobsList)]),
+    %% Get the blocker job (first in queue that couldn't be scheduled)
+    case queue:peek(State#scheduler_state.pending_jobs) of
+        empty ->
+            State;
+        {value, BlockerJobId} ->
+            try_backfill_with_blocker(BlockerJobId, Queue, State)
+    end.
 
-    %% Try to schedule smaller jobs that fit
-    {ScheduledJobs, NewState} = backfill_loop(JobsList, State, []),
+%% @private
+%% Try backfill using the blocker job for shadow time calculation
+try_backfill_with_blocker(BlockerJobId, Queue, State) ->
+    %% Get blocker job info
+    BlockerJob = case flurm_job_manager:get_job(BlockerJobId) of
+        {ok, Job} ->
+            job_to_backfill_map(Job);
+        _ ->
+            undefined
+    end,
+
+    case BlockerJob of
+        undefined ->
+            %% No blocker info, use simple backfill
+            simple_backfill(Queue, State);
+        _ ->
+            %% Check if advanced backfill is enabled
+            case flurm_backfill:is_backfill_enabled() of
+                true ->
+                    advanced_backfill(BlockerJob, Queue, State);
+                false ->
+                    simple_backfill(Queue, State)
+            end
+    end.
+
+%% @private
+%% Convert job record to map for backfill processing
+job_to_backfill_map(#job{} = Job) ->
+    #{
+        job_id => Job#job.id,
+        name => Job#job.name,
+        user => Job#job.user,
+        partition => Job#job.partition,
+        state => Job#job.state,
+        num_nodes => Job#job.num_nodes,
+        num_cpus => Job#job.num_cpus,
+        memory_mb => Job#job.memory_mb,
+        time_limit => Job#job.time_limit,
+        priority => Job#job.priority,
+        submit_time => Job#job.submit_time,
+        account => Job#job.account,
+        qos => Job#job.qos
+    }.
+
+%% @private
+%% Advanced backfill using shadow time calculation
+%% Only schedules jobs that won't delay the blocker job
+advanced_backfill(BlockerJob, Queue, State) ->
+    %% Get candidate jobs from queue
+    JobIds = queue:to_list(Queue),
+    CandidateJobs = flurm_backfill:get_backfill_candidates(JobIds),
+
+    lager:debug("Advanced backfill: blocker job ~p, ~p candidates",
+               [maps:get(job_id, BlockerJob), length(CandidateJobs)]),
+
+    %% Run the backfill algorithm
+    BackfillResults = flurm_backfill:run_backfill_cycle(BlockerJob, CandidateJobs),
+
+    %% Schedule the jobs that can backfill
+    {ScheduledJobs, NewState} = schedule_backfill_results(BackfillResults, State, []),
 
     %% Remove scheduled jobs from the pending queue
     NewQueue = remove_jobs_from_queue(ScheduledJobs, State#scheduler_state.pending_jobs),
     NewState#scheduler_state{pending_jobs = NewQueue}.
 
 %% @private
-%% Loop through candidate jobs for backfill
-backfill_loop([], State, ScheduledAcc) ->
+%% Schedule jobs returned by the backfill algorithm
+schedule_backfill_results([], State, ScheduledAcc) ->
     {lists:reverse(ScheduledAcc), State};
-backfill_loop([JobId | Rest], State, ScheduledAcc) ->
+schedule_backfill_results([{JobId, _SuggestedNodes} | Rest], State, ScheduledAcc) ->
+    %% Try to schedule the job
+    %% Note: We use try_schedule_job instead of directly using suggested nodes
+    %% to ensure proper resource allocation and limit checking
     case try_schedule_job(JobId, State) of
         {ok, NewState} ->
-            lager:info("Backfill: scheduled job ~p", [JobId]),
-            %% Record backfill metric
+            lager:info("Advanced backfill: scheduled job ~p", [JobId]),
             catch flurm_metrics:increment(flurm_scheduler_backfill_jobs),
-            %% Continue looking for more backfill candidates
-            backfill_loop(Rest, NewState, [JobId | ScheduledAcc]);
+            schedule_backfill_results(Rest, NewState, [JobId | ScheduledAcc]);
         _ ->
-            %% This job can't be scheduled, try next one
-            backfill_loop(Rest, State, ScheduledAcc)
+            %% Job couldn't be scheduled, skip it
+            lager:debug("Advanced backfill: job ~p couldn't be scheduled", [JobId]),
+            schedule_backfill_results(Rest, State, ScheduledAcc)
+    end.
+
+%% @private
+%% Simple backfill - just try to schedule any job that fits
+%% Used when advanced backfill is disabled or blocker info unavailable
+simple_backfill(Queue, State) ->
+    JobsList = queue:to_list(Queue),
+    lager:debug("Simple backfill: checking ~p jobs", [length(JobsList)]),
+
+    {ScheduledJobs, NewState} = simple_backfill_loop(JobsList, State, []),
+
+    NewQueue = remove_jobs_from_queue(ScheduledJobs, State#scheduler_state.pending_jobs),
+    NewState#scheduler_state{pending_jobs = NewQueue}.
+
+%% @private
+%% Loop through candidate jobs for simple backfill
+simple_backfill_loop([], State, ScheduledAcc) ->
+    {lists:reverse(ScheduledAcc), State};
+simple_backfill_loop([JobId | Rest], State, ScheduledAcc) ->
+    case try_schedule_job(JobId, State) of
+        {ok, NewState} ->
+            lager:info("Simple backfill: scheduled job ~p", [JobId]),
+            catch flurm_metrics:increment(flurm_scheduler_backfill_jobs),
+            simple_backfill_loop(Rest, NewState, [JobId | ScheduledAcc]);
+        _ ->
+            simple_backfill_loop(Rest, State, ScheduledAcc)
     end.
 
 %% @private

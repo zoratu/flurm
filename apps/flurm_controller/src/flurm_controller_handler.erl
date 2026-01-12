@@ -857,7 +857,7 @@ job_to_job_info(#job{} = Job) ->
         cpus_per_task = 1,
         pn_min_cpus = 1,
         %% Default/empty values for remaining fields (MUST be present for protocol)
-        account = <<>>,
+        account = Job#job.account,
         accrue_time = 0,
         admin_comment = <<>>,
         alloc_node = <<>>,
@@ -918,7 +918,7 @@ job_to_job_info(#job{} = Job) ->
         preemptable_time = 0,
         pre_sus_time = 0,
         profile = 0,
-        qos = <<"normal">>,
+        qos = Job#job.qos,
         reboot = 0,
         req_nodes = <<>>,
         req_switch = 0,

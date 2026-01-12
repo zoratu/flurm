@@ -1,24 +1,26 @@
 %%%-------------------------------------------------------------------
 %%% @doc FLURM Power Management
 %%%
-%%% Implements SLURM-compatible power saving features for cluster
-%%% energy efficiency.
+%%% Implements comprehensive power saving features for cluster
+%%% energy efficiency with SLURM-compatible semantics.
 %%%
 %%% Power states:
-%%% - up: Node is powered on and available
-%%% - down: Node is powered off
+%%% - powered_on: Node is powered on and available
+%%% - powered_off: Node is powered off
 %%% - powering_up: Node is booting
 %%% - powering_down: Node is shutting down
-%%% - resume: Node is waking from suspend
-%%% - suspend: Node is in low-power state
+%%% - suspended: Node is in low-power state
 %%%
 %%% Features:
 %%% - Automatic node suspend/resume based on load
-%%% - Configurable idle timeouts
+%%% - Configurable idle timeouts and power policies
 %%% - Wake-on-LAN support
 %%% - IPMI power control
 %%% - Cloud instance start/stop
+%%% - Custom script support
 %%% - Power budgeting and capping
+%%% - Energy tracking per node and job
+%%% - Scheduler integration for power-aware scheduling
 %%%
 %%% @end
 %%%-------------------------------------------------------------------
@@ -27,14 +29,64 @@
 
 -include("flurm_core.hrl").
 
-%% API
+%% Power management infrastructure API
 -export([
     start_link/0,
+    enable/0,
+    disable/0,
+    get_status/0
+]).
+
+%% Node power states API
+-export([
+    set_node_power_state/2,
+    get_node_power_state/1,
+    get_nodes_by_power_state/1
+]).
+
+%% Power control methods API
+-export([
+    execute_power_command/3,
+    configure_node_power/2
+]).
+
+%% Power policies API
+-export([
+    set_policy/1,
+    get_policy/0
+]).
+
+%% Energy tracking API
+-export([
+    record_power_usage/2,
+    get_node_energy/2,
+    get_cluster_energy/1,
+    record_job_energy/3,
+    get_job_energy/1
+]).
+
+%% Scheduler integration API
+-export([
+    request_node_power_on/1,
+    release_node_for_power_off/1,
+    get_available_powered_nodes/0,
+    notify_job_start/2,
+    notify_job_end/1
+]).
+
+%% Power capping API
+-export([
+    set_power_cap/1,
+    get_power_cap/0,
+    get_current_power/0
+]).
+
+%% Legacy API (kept for compatibility)
+-export([
     suspend_node/1,
     resume_node/1,
     power_off_node/1,
     power_on_node/1,
-    get_node_power_state/1,
     set_power_policy/2,
     get_power_policy/1,
     get_power_stats/0,
@@ -58,15 +110,21 @@
 ]).
 
 -define(SERVER, ?MODULE).
--define(POWER_TABLE, flurm_power_state).
+-define(POWER_STATE_TABLE, flurm_power_state).
+-define(ENERGY_TABLE, flurm_energy_metrics).
+-define(JOB_ENERGY_TABLE, flurm_job_energy).
+-define(NODE_RELEASES_TABLE, flurm_node_releases).
 -define(DEFAULT_IDLE_TIMEOUT, 300).      % 5 minutes
 -define(DEFAULT_RESUME_TIMEOUT, 120).    % 2 minutes
 -define(DEFAULT_POWER_CHECK_INTERVAL, 60000).  % 1 minute
+-define(ENERGY_SAMPLE_INTERVAL, 10000).  % 10 seconds
 
--type power_state() :: up | down | powering_up | powering_down |
-                       resume | suspend.
--type power_method() :: wake_on_lan | ipmi | cloud | script.
+%% Power states
+-type power_state() :: powered_on | powered_off | powering_up | powering_down | suspended.
+-type power_method() :: ipmi | wake_on_lan | cloud | script.
+-type power_policy() :: aggressive | balanced | conservative.
 
+%% Node power state record (stored in ETS)
 -record(node_power, {
     name :: binary(),
     state :: power_state(),
@@ -77,600 +135,230 @@
     resume_count :: non_neg_integer(),
     power_watts :: non_neg_integer() | undefined,
     mac_address :: binary() | undefined,
-    ipmi_address :: binary() | undefined
+    ipmi_address :: binary() | undefined,
+    ipmi_user :: binary() | undefined,
+    ipmi_password :: binary() | undefined,
+    cloud_instance_id :: binary() | undefined,
+    cloud_provider :: atom() | undefined,
+    power_script :: binary() | undefined,
+    pending_power_on_requests :: non_neg_integer()
 }).
 
+%% Energy sample record (stored in ETS)
+-record(energy_sample, {
+    key :: {binary(), non_neg_integer()},  % {NodeName, Timestamp}
+    power_watts :: non_neg_integer(),
+    cpu_power :: non_neg_integer() | undefined,
+    memory_power :: non_neg_integer() | undefined,
+    gpu_power :: non_neg_integer() | undefined
+}).
+
+%% Job energy record (stored in ETS)
+-record(job_energy, {
+    job_id :: pos_integer(),
+    start_time :: non_neg_integer(),
+    end_time :: non_neg_integer() | undefined,
+    nodes :: [binary()],
+    total_energy_wh :: float(),
+    samples :: non_neg_integer()
+}).
+
+%% Gen server state
 -record(state, {
-    idle_timeout :: non_neg_integer(),
-    resume_timeout :: non_neg_integer(),
-    power_budget :: non_neg_integer() | undefined,  % Watts
-    power_check_timer :: reference(),
-    enabled :: boolean()
+    enabled :: boolean(),
+    policy :: power_policy(),
+    idle_timeout :: non_neg_integer(),       % seconds before power-down
+    resume_timeout :: non_neg_integer(),     % max time to wait for power-on
+    min_powered_nodes :: non_neg_integer(),  % minimum nodes to keep powered
+    resume_threshold :: non_neg_integer(),   % queue depth triggers power-on
+    power_cap :: non_neg_integer() | undefined,  % cluster power cap in watts
+    power_check_timer :: reference() | undefined,
+    energy_sample_timer :: reference() | undefined,
+    pending_power_requests :: #{binary() => {reference(), pid()}}
 }).
 
--export_type([power_state/0, power_method/0]).
+-export_type([power_state/0, power_method/0, power_policy/0]).
 
 %%====================================================================
-%% API
+%% API - Power Management Infrastructure
 %%====================================================================
 
 -spec start_link() -> {ok, pid()} | ignore | {error, term()}.
 start_link() ->
     gen_server:start_link({local, ?SERVER}, ?MODULE, [], []).
 
-%% @doc Suspend a node (low-power state, quick resume)
--spec suspend_node(binary()) -> ok | {error, term()}.
-suspend_node(NodeName) ->
-    gen_server:call(?SERVER, {suspend, NodeName}).
+%% @doc Enable power management
+-spec enable() -> ok.
+enable() ->
+    gen_server:call(?SERVER, enable).
 
-%% @doc Resume a suspended node
--spec resume_node(binary()) -> ok | {error, term()}.
-resume_node(NodeName) ->
-    gen_server:call(?SERVER, {resume, NodeName}).
+%% @doc Disable power management
+-spec disable() -> ok.
+disable() ->
+    gen_server:call(?SERVER, disable).
 
-%% @doc Power off a node completely
--spec power_off_node(binary()) -> ok | {error, term()}.
-power_off_node(NodeName) ->
-    gen_server:call(?SERVER, {power_off, NodeName}).
+%% @doc Get power management status
+-spec get_status() -> map().
+get_status() ->
+    gen_server:call(?SERVER, get_status).
 
-%% @doc Power on a node
--spec power_on_node(binary()) -> ok | {error, term()}.
-power_on_node(NodeName) ->
-    gen_server:call(?SERVER, {power_on, NodeName}).
+%%====================================================================
+%% API - Node Power States
+%%====================================================================
 
-%% @doc Get power state of a node
+%% @doc Set node power state (on, off, suspend, resume)
+-spec set_node_power_state(binary(), atom()) -> ok | {error, term()}.
+set_node_power_state(NodeName, TargetState) when is_binary(NodeName) ->
+    gen_server:call(?SERVER, {set_node_power_state, NodeName, TargetState}).
+
+%% @doc Get current power state of a node
 -spec get_node_power_state(binary()) -> {ok, power_state()} | {error, not_found}.
 get_node_power_state(NodeName) ->
-    case ets:lookup(?POWER_TABLE, NodeName) of
+    case ets:lookup(?POWER_STATE_TABLE, NodeName) of
         [#node_power{state = State}] -> {ok, State};
         [] -> {error, not_found}
     end.
 
-%% @doc Set power policy for a node
--spec set_power_policy(binary(), map()) -> ok.
+%% @doc List nodes in a specific power state
+-spec get_nodes_by_power_state(power_state()) -> [binary()].
+get_nodes_by_power_state(State) ->
+    MatchSpec = [{#node_power{name = '$1', state = State, _ = '_'}, [], ['$1']}],
+    ets:select(?POWER_STATE_TABLE, MatchSpec).
+
+%%====================================================================
+%% API - Power Control Methods
+%%====================================================================
+
+%% @doc Execute power command on node
+-spec execute_power_command(binary(), atom(), map()) -> ok | {error, term()}.
+execute_power_command(NodeName, Command, Options) ->
+    gen_server:call(?SERVER, {execute_power_command, NodeName, Command, Options}, 30000).
+
+%% @doc Configure power control method for a node
+-spec configure_node_power(binary(), map()) -> ok.
+configure_node_power(NodeName, Config) ->
+    gen_server:call(?SERVER, {configure_node_power, NodeName, Config}).
+
+%%====================================================================
+%% API - Power Policies
+%%====================================================================
+
+%% @doc Set cluster power policy
+-spec set_policy(power_policy()) -> ok.
+set_policy(Policy) when Policy =:= aggressive;
+                        Policy =:= balanced;
+                        Policy =:= conservative ->
+    gen_server:call(?SERVER, {set_policy, Policy}).
+
+%% @doc Get current power policy
+-spec get_policy() -> power_policy().
+get_policy() ->
+    gen_server:call(?SERVER, get_policy).
+
+%%====================================================================
+%% API - Energy Tracking
+%%====================================================================
+
+%% @doc Record power usage for a node
+-spec record_power_usage(binary(), non_neg_integer()) -> ok.
+record_power_usage(NodeName, PowerWatts) ->
+    gen_server:cast(?SERVER, {record_power_usage, NodeName, PowerWatts}).
+
+%% @doc Get energy usage for a node over time range
+-spec get_node_energy(binary(), {non_neg_integer(), non_neg_integer()}) ->
+    {ok, float()} | {error, term()}.
+get_node_energy(NodeName, {StartTime, EndTime}) ->
+    get_energy_for_node(NodeName, StartTime, EndTime).
+
+%% @doc Get total cluster energy usage over time range
+-spec get_cluster_energy({non_neg_integer(), non_neg_integer()}) ->
+    {ok, float()} | {error, term()}.
+get_cluster_energy({StartTime, EndTime}) ->
+    get_total_cluster_energy(StartTime, EndTime).
+
+%% @doc Record energy usage for a job
+-spec record_job_energy(pos_integer(), [binary()], float()) -> ok.
+record_job_energy(JobId, Nodes, EnergyWh) ->
+    gen_server:cast(?SERVER, {record_job_energy, JobId, Nodes, EnergyWh}).
+
+%% @doc Get energy usage for a job
+-spec get_job_energy(pos_integer()) -> {ok, float()} | {error, not_found}.
+get_job_energy(JobId) ->
+    case ets:lookup(?JOB_ENERGY_TABLE, JobId) of
+        [#job_energy{total_energy_wh = Energy}] -> {ok, Energy};
+        [] -> {error, not_found}
+    end.
+
+%%====================================================================
+%% API - Scheduler Integration
+%%====================================================================
+
+%% @doc Request node power-on for scheduling
+-spec request_node_power_on(binary()) -> ok | {error, term()}.
+request_node_power_on(NodeName) ->
+    gen_server:call(?SERVER, {request_power_on, NodeName}).
+
+%% @doc Mark node as available for power-off
+-spec release_node_for_power_off(binary()) -> ok.
+release_node_for_power_off(NodeName) ->
+    gen_server:cast(?SERVER, {release_for_power_off, NodeName}).
+
+%% @doc Get nodes currently powered and available
+-spec get_available_powered_nodes() -> [binary()].
+get_available_powered_nodes() ->
+    MatchSpec = [{#node_power{name = '$1', state = powered_on, _ = '_'}, [], ['$1']}],
+    ets:select(?POWER_STATE_TABLE, MatchSpec).
+
+%% @doc Notify power module when a job starts on nodes
+-spec notify_job_start(pos_integer(), [binary()]) -> ok.
+notify_job_start(JobId, Nodes) ->
+    gen_server:cast(?SERVER, {job_start, JobId, Nodes}).
+
+%% @doc Notify power module when a job ends
+-spec notify_job_end(pos_integer()) -> ok.
+notify_job_end(JobId) ->
+    gen_server:cast(?SERVER, {job_end, JobId}).
+
+%%====================================================================
+%% API - Power Capping
+%%====================================================================
+
+%% @doc Set cluster-wide power cap in watts
+-spec set_power_cap(non_neg_integer()) -> ok.
+set_power_cap(Watts) when is_integer(Watts), Watts > 0 ->
+    gen_server:call(?SERVER, {set_power_cap, Watts}).
+
+%% @doc Get current power cap
+-spec get_power_cap() -> non_neg_integer() | undefined.
+get_power_cap() ->
+    gen_server:call(?SERVER, get_power_cap).
+
+%% @doc Get current cluster power draw
+-spec get_current_power() -> non_neg_integer().
+get_current_power() ->
+    gen_server:call(?SERVER, get_current_power).
+
+%%====================================================================
+%% Legacy API (for compatibility)
+%%====================================================================
+
+suspend_node(NodeName) ->
+    set_node_power_state(NodeName, suspend).
+
+resume_node(NodeName) ->
+    set_node_power_state(NodeName, resume).
+
+power_off_node(NodeName) ->
+    set_node_power_state(NodeName, off).
+
+power_on_node(NodeName) ->
+    set_node_power_state(NodeName, on).
+
 set_power_policy(NodeName, Policy) ->
-    gen_server:call(?SERVER, {set_policy, NodeName, Policy}).
+    configure_node_power(NodeName, Policy).
 
-%% @doc Get power policy for a node
--spec get_power_policy(binary()) -> {ok, map()} | {error, not_found}.
 get_power_policy(NodeName) ->
-    gen_server:call(?SERVER, {get_policy, NodeName}).
-
-%% @doc Get power statistics
--spec get_power_stats() -> map().
-get_power_stats() ->
-    gen_server:call(?SERVER, get_stats).
-
-%% @doc Set the idle timeout before suspending nodes
--spec set_idle_timeout(non_neg_integer()) -> ok.
-set_idle_timeout(Seconds) ->
-    gen_server:call(?SERVER, {set_idle_timeout, Seconds}).
-
-%% @doc Get current idle timeout
--spec get_idle_timeout() -> non_neg_integer().
-get_idle_timeout() ->
-    gen_server:call(?SERVER, get_idle_timeout).
-
-%% @doc Set resume timeout (max time to wait for node to come up)
--spec set_resume_timeout(non_neg_integer()) -> ok.
-set_resume_timeout(Seconds) ->
-    gen_server:call(?SERVER, {set_resume_timeout, Seconds}).
-
-%% @doc Check for idle nodes and suspend them if needed
--spec check_idle_nodes() -> non_neg_integer().
-check_idle_nodes() ->
-    gen_server:call(?SERVER, check_idle).
-
-%% @doc Set cluster power budget in watts
--spec set_power_budget(non_neg_integer()) -> ok.
-set_power_budget(Watts) ->
-    gen_server:call(?SERVER, {set_budget, Watts}).
-
-%% @doc Get power budget
--spec get_power_budget() -> non_neg_integer() | undefined.
-get_power_budget() ->
-    gen_server:call(?SERVER, get_budget).
-
-%% @doc Get current estimated power usage
--spec get_current_power_usage() -> non_neg_integer().
-get_current_power_usage() ->
-    gen_server:call(?SERVER, get_power_usage).
-
-%%====================================================================
-%% gen_server callbacks
-%%====================================================================
-
-init([]) ->
-    ets:new(?POWER_TABLE, [
-        named_table, public, set,
-        {keypos, #node_power.name}
-    ]),
-
-    %% Start power check timer
-    Timer = erlang:send_after(?DEFAULT_POWER_CHECK_INTERVAL, self(), check_power),
-
-    {ok, #state{
-        idle_timeout = ?DEFAULT_IDLE_TIMEOUT,
-        resume_timeout = ?DEFAULT_RESUME_TIMEOUT,
-        power_budget = undefined,
-        power_check_timer = Timer,
-        enabled = true
-    }}.
-
-handle_call({suspend, NodeName}, _From, State) ->
-    Result = do_suspend(NodeName),
-    {reply, Result, State};
-
-handle_call({resume, NodeName}, _From, State) ->
-    Result = do_resume(NodeName, State#state.resume_timeout),
-    {reply, Result, State};
-
-handle_call({power_off, NodeName}, _From, State) ->
-    Result = do_power_off(NodeName),
-    {reply, Result, State};
-
-handle_call({power_on, NodeName}, _From, State) ->
-    Result = do_power_on(NodeName, State#state.resume_timeout),
-    {reply, Result, State};
-
-handle_call({set_policy, NodeName, Policy}, _From, State) ->
-    do_set_policy(NodeName, Policy),
-    {reply, ok, State};
-
-handle_call({get_policy, NodeName}, _From, State) ->
-    Result = do_get_policy(NodeName),
-    {reply, Result, State};
-
-handle_call(get_stats, _From, State) ->
-    Stats = compute_stats(),
-    {reply, Stats, State};
-
-handle_call({set_idle_timeout, Seconds}, _From, State) ->
-    {reply, ok, State#state{idle_timeout = Seconds}};
-
-handle_call(get_idle_timeout, _From, State) ->
-    {reply, State#state.idle_timeout, State};
-
-handle_call({set_resume_timeout, Seconds}, _From, State) ->
-    {reply, ok, State#state{resume_timeout = Seconds}};
-
-handle_call(check_idle, _From, State) ->
-    Count = do_check_idle_nodes(State#state.idle_timeout),
-    {reply, Count, State};
-
-handle_call({set_budget, Watts}, _From, State) ->
-    {reply, ok, State#state{power_budget = Watts}};
-
-handle_call(get_budget, _From, State) ->
-    {reply, State#state.power_budget, State};
-
-handle_call(get_power_usage, _From, State) ->
-    Usage = calculate_power_usage(),
-    {reply, Usage, State};
-
-handle_call(_Request, _From, State) ->
-    {reply, {error, unknown_request}, State}.
-
-handle_cast(_Msg, State) ->
-    {noreply, State}.
-
-handle_info(check_power, State) ->
-    case State#state.enabled of
-        true ->
-            do_check_idle_nodes(State#state.idle_timeout),
-            check_power_budget(State#state.power_budget),
-            check_pending_transitions();
-        false ->
-            ok
-    end,
-    Timer = erlang:send_after(?DEFAULT_POWER_CHECK_INTERVAL, self(), check_power),
-    {noreply, State#state{power_check_timer = Timer}};
-
-handle_info({power_transition_complete, NodeName, NewState}, State) ->
-    complete_transition(NodeName, NewState),
-    {noreply, State};
-
-handle_info(_Info, State) ->
-    {noreply, State}.
-
-terminate(_Reason, _State) ->
-    ok.
-
-code_change(_OldVsn, State, _Extra) ->
-    {ok, State}.
-
-%%====================================================================
-%% Internal Functions
-%%====================================================================
-
-do_suspend(NodeName) ->
-    case get_or_create_power_state(NodeName) of
-        #node_power{state = up} = Power ->
-            %% Check if node has running jobs
-            case node_has_jobs(NodeName) of
-                true ->
-                    {error, node_has_running_jobs};
-                false ->
-                    execute_suspend(Power)
-            end;
-        #node_power{state = State} ->
-            {error, {invalid_state, State}}
-    end.
-
-do_resume(NodeName, Timeout) ->
-    case ets:lookup(?POWER_TABLE, NodeName) of
-        [#node_power{state = suspend} = Power] ->
-            execute_resume(Power, Timeout);
-        [#node_power{state = down} = Power] ->
-            execute_power_on(Power, Timeout);
-        [#node_power{state = State}] ->
-            {error, {invalid_state, State}};
-        [] ->
-            {error, not_found}
-    end.
-
-do_power_off(NodeName) ->
-    case get_or_create_power_state(NodeName) of
-        #node_power{state = up} = Power ->
-            case node_has_jobs(NodeName) of
-                true ->
-                    {error, node_has_running_jobs};
-                false ->
-                    execute_power_off(Power)
-            end;
-        #node_power{state = suspend} = Power ->
-            execute_power_off(Power);
-        #node_power{state = State} ->
-            {error, {invalid_state, State}}
-    end.
-
-do_power_on(NodeName, Timeout) ->
-    case ets:lookup(?POWER_TABLE, NodeName) of
-        [#node_power{state = down} = Power] ->
-            execute_power_on(Power, Timeout);
-        [#node_power{state = State}] ->
-            {error, {invalid_state, State}};
-        [] ->
-            %% Node not in power table, assume it's down
-            Power = #node_power{name = NodeName, state = down, method = script},
-            ets:insert(?POWER_TABLE, Power),
-            execute_power_on(Power, Timeout)
-    end.
-
-execute_suspend(#node_power{name = Name, method = Method} = Power) ->
-    Now = erlang:system_time(second),
-
-    %% Update state to powering_down
-    UpdatedPower = Power#node_power{
-        state = powering_down,
-        last_state_change = Now,
-        suspend_count = Power#node_power.suspend_count + 1
-    },
-    ets:insert(?POWER_TABLE, UpdatedPower),
-
-    %% Execute suspend command
-    case execute_power_command(Method, suspend, Name) of
-        ok ->
-            %% Schedule completion check
-            erlang:send_after(5000, self(), {power_transition_complete, Name, suspend}),
-            ok;
-        Error ->
-            %% Rollback state
-            ets:insert(?POWER_TABLE, Power),
-            Error
-    end.
-
-execute_resume(#node_power{name = Name, method = Method} = Power, Timeout) ->
-    Now = erlang:system_time(second),
-
-    UpdatedPower = Power#node_power{
-        state = resume,
-        last_state_change = Now,
-        resume_count = Power#node_power.resume_count + 1
-    },
-    ets:insert(?POWER_TABLE, UpdatedPower),
-
-    case execute_power_command(Method, resume, Name) of
-        ok ->
-            %% Schedule timeout check
-            erlang:send_after(Timeout * 1000, self(),
-                {power_timeout, Name, resume}),
-            ok;
-        Error ->
-            ets:insert(?POWER_TABLE, Power),
-            Error
-    end.
-
-execute_power_off(#node_power{name = Name, method = Method} = Power) ->
-    Now = erlang:system_time(second),
-
-    UpdatedPower = Power#node_power{
-        state = powering_down,
-        last_state_change = Now
-    },
-    ets:insert(?POWER_TABLE, UpdatedPower),
-
-    case execute_power_command(Method, power_off, Name) of
-        ok ->
-            erlang:send_after(10000, self(), {power_transition_complete, Name, down}),
-            ok;
-        Error ->
-            ets:insert(?POWER_TABLE, Power),
-            Error
-    end.
-
-execute_power_on(#node_power{name = Name, method = Method} = Power, Timeout) ->
-    Now = erlang:system_time(second),
-
-    UpdatedPower = Power#node_power{
-        state = powering_up,
-        last_state_change = Now
-    },
-    ets:insert(?POWER_TABLE, UpdatedPower),
-
-    case execute_power_command(Method, power_on, Name) of
-        ok ->
-            erlang:send_after(Timeout * 1000, self(),
-                {power_timeout, Name, powering_up}),
-            ok;
-        Error ->
-            ets:insert(?POWER_TABLE, Power),
-            Error
-    end.
-
-execute_power_command(wake_on_lan, power_on, NodeName) ->
-    case get_mac_address(NodeName) of
-        {ok, MAC} ->
-            send_wake_on_lan(MAC);
-        Error ->
-            Error
-    end;
-execute_power_command(ipmi, Action, NodeName) ->
-    case get_ipmi_address(NodeName) of
-        {ok, Address} ->
-            execute_ipmi_command(Address, Action);
-        Error ->
-            Error
-    end;
-execute_power_command(cloud, Action, NodeName) ->
-    execute_cloud_command(NodeName, Action);
-execute_power_command(script, Action, NodeName) ->
-    execute_script_command(NodeName, Action);
-execute_power_command(_, _, _) ->
-    {error, unsupported_method}.
-
-get_mac_address(NodeName) ->
-    case ets:lookup(?POWER_TABLE, NodeName) of
-        [#node_power{mac_address = MAC}] when MAC =/= undefined ->
-            {ok, MAC};
-        _ ->
-            {error, no_mac_address}
-    end.
-
-get_ipmi_address(NodeName) ->
-    case ets:lookup(?POWER_TABLE, NodeName) of
-        [#node_power{ipmi_address = Addr}] when Addr =/= undefined ->
-            {ok, Addr};
-        _ ->
-            {error, no_ipmi_address}
-    end.
-
-send_wake_on_lan(MAC) ->
-    %% Build magic packet
-    MagicPacket = build_wol_packet(MAC),
-    %% Send UDP broadcast on port 9
-    case gen_udp:open(0, [binary, {broadcast, true}]) of
-        {ok, Socket} ->
-            Result = gen_udp:send(Socket, {255,255,255,255}, 9, MagicPacket),
-            gen_udp:close(Socket),
-            Result;
-        Error ->
-            Error
-    end.
-
-build_wol_packet(MACBinary) when is_binary(MACBinary) ->
-    %% MAC should be 6 bytes
-    %% Magic packet: 6 bytes of 0xFF followed by MAC repeated 16 times
-    Header = binary:copy(<<255>>, 6),
-    Body = binary:copy(MACBinary, 16),
-    <<Header/binary, Body/binary>>.
-
-execute_ipmi_command(Address, Action) ->
-    Command = case Action of
-        power_on -> "chassis power on";
-        power_off -> "chassis power off";
-        suspend -> "chassis power soft";
-        resume -> "chassis power on"
-    end,
-    %% Execute ipmitool command
-    FullCommand = io_lib:format("ipmitool -H ~s -U admin -P admin ~s",
-                                [Address, Command]),
-    case os:cmd(lists:flatten(FullCommand)) of
-        "Chassis Power Control: " ++ _ -> ok;
-        _ -> {error, ipmi_command_failed}
-    end.
-
-execute_cloud_command(NodeName, Action) ->
-    %% Delegate to cloud scaling module
-    case Action of
-        power_on -> catch flurm_cloud_scaling:start_instance(NodeName);
-        power_off -> catch flurm_cloud_scaling:stop_instance(NodeName);
-        suspend -> catch flurm_cloud_scaling:stop_instance(NodeName);
-        resume -> catch flurm_cloud_scaling:start_instance(NodeName)
-    end,
-    ok.
-
-execute_script_command(NodeName, Action) ->
-    Script = case Action of
-        power_on -> "/etc/flurm/power/power_on.sh";
-        power_off -> "/etc/flurm/power/power_off.sh";
-        suspend -> "/etc/flurm/power/suspend.sh";
-        resume -> "/etc/flurm/power/resume.sh"
-    end,
-    case filelib:is_file(Script) of
-        true ->
-            os:cmd(io_lib:format("~s ~s", [Script, NodeName])),
-            ok;
-        false ->
-            {error, {script_not_found, Script}}
-    end.
-
-complete_transition(NodeName, NewState) ->
-    case ets:lookup(?POWER_TABLE, NodeName) of
-        [Power] ->
-            ets:insert(?POWER_TABLE, Power#node_power{
-                state = NewState,
-                last_state_change = erlang:system_time(second)
-            }),
-            %% Notify scheduler
-            case NewState of
-                up -> catch flurm_scheduler:node_up(NodeName);
-                down -> catch flurm_scheduler:node_down(NodeName);
-                suspend -> catch flurm_scheduler:node_suspended(NodeName);
-                _ -> ok
-            end;
-        [] ->
-            ok
-    end.
-
-check_pending_transitions() ->
-    %% Check for stuck transitions
-    Now = erlang:system_time(second),
-    TransitionStates = [powering_up, powering_down, resume],
-
-    AllNodes = ets:tab2list(?POWER_TABLE),
-    lists:foreach(fun(#node_power{name = Name, state = State,
-                                   last_state_change = Changed}) ->
-        case lists:member(State, TransitionStates) of
-            true ->
-                TimeSinceChange = Now - Changed,
-                case TimeSinceChange > 300 of  % 5 minute timeout
-                    true ->
-                        error_logger:warning_msg(
-                            "Power transition timeout for node ~s in state ~p~n",
-                            [Name, State]),
-                        %% Force to down state
-                        complete_transition(Name, down);
-                    false ->
-                        ok
-                end;
-            false ->
-                ok
-        end
-    end, AllNodes).
-
-get_or_create_power_state(NodeName) ->
-    case ets:lookup(?POWER_TABLE, NodeName) of
-        [Power] ->
-            Power;
-        [] ->
-            Power = #node_power{
-                name = NodeName,
-                state = up,
-                method = script,
-                last_state_change = erlang:system_time(second),
-                suspend_count = 0,
-                resume_count = 0
-            },
-            ets:insert(?POWER_TABLE, Power),
-            Power
-    end.
-
-node_has_jobs(NodeName) ->
-    case catch flurm_node_registry:get_node(NodeName) of
-        {ok, #node_entry{}} ->
-            case catch flurm_node:get_running_jobs(NodeName) of
-                {ok, Jobs} -> length(Jobs) > 0;
-                _ -> false
-            end;
-        _ ->
-            false
-    end.
-
-do_check_idle_nodes(IdleTimeout) ->
-    Now = erlang:system_time(second),
-    AllNodes = ets:tab2list(?POWER_TABLE),
-
-    SuspendCount = lists:foldl(fun(#node_power{name = Name, state = up,
-                                                last_job_end = LastJob}, Acc) ->
-        case LastJob of
-            undefined ->
-                Acc;
-            Time when Now - Time > IdleTimeout ->
-                case do_suspend(Name) of
-                    ok -> Acc + 1;
-                    _ -> Acc
-                end;
-            _ ->
-                Acc
-        end
-    end, 0, AllNodes),
-    SuspendCount.
-
-check_power_budget(undefined) ->
-    ok;
-check_power_budget(Budget) ->
-    CurrentUsage = calculate_power_usage(),
-    case CurrentUsage > Budget of
-        true ->
-            %% Need to reduce power usage
-            %% Find idle nodes to suspend
-            IdleNodes = find_idle_nodes(),
-            suspend_nodes_for_budget(IdleNodes, CurrentUsage - Budget);
-        false ->
-            ok
-    end.
-
-calculate_power_usage() ->
-    AllNodes = ets:tab2list(?POWER_TABLE),
-    lists:foldl(fun(#node_power{state = State, power_watts = Watts}, Acc) ->
-        case State of
-            up when Watts =/= undefined -> Acc + Watts;
-            up -> Acc + 500;  % Default 500W estimate
-            _ -> Acc
-        end
-    end, 0, AllNodes).
-
-find_idle_nodes() ->
-    AllNodes = ets:tab2list(?POWER_TABLE),
-    lists:filter(fun(#node_power{name = Name, state = up}) ->
-        not node_has_jobs(Name);
-    (_) ->
-        false
-    end, AllNodes).
-
-suspend_nodes_for_budget([], _NeededReduction) ->
-    ok;
-suspend_nodes_for_budget(_Nodes, NeededReduction) when NeededReduction =< 0 ->
-    ok;
-suspend_nodes_for_budget([#node_power{name = Name, power_watts = Watts} | Rest],
-                         NeededReduction) ->
-    case do_suspend(Name) of
-        ok ->
-            NodePower = case Watts of
-                undefined -> 500;
-                W -> W
-            end,
-            suspend_nodes_for_budget(Rest, NeededReduction - NodePower);
-        _ ->
-            suspend_nodes_for_budget(Rest, NeededReduction)
-    end.
-
-do_set_policy(NodeName, Policy) ->
-    Power = get_or_create_power_state(NodeName),
-    UpdatedPower = maps:fold(fun(Key, Value, Acc) ->
-        case Key of
-            method -> Acc#node_power{method = Value};
-            mac_address -> Acc#node_power{mac_address = Value};
-            ipmi_address -> Acc#node_power{ipmi_address = Value};
-            power_watts -> Acc#node_power{power_watts = Value};
-            _ -> Acc
-        end
-    end, Power, Policy),
-    ets:insert(?POWER_TABLE, UpdatedPower).
-
-do_get_policy(NodeName) ->
-    case ets:lookup(?POWER_TABLE, NodeName) of
+    case ets:lookup(?POWER_STATE_TABLE, NodeName) of
         [#node_power{method = Method, mac_address = MAC,
                      ipmi_address = IPMI, power_watts = Watts}] ->
             {ok, #{
@@ -683,12 +371,1045 @@ do_get_policy(NodeName) ->
             {error, not_found}
     end.
 
-compute_stats() ->
-    AllNodes = ets:tab2list(?POWER_TABLE),
+get_power_stats() ->
+    gen_server:call(?SERVER, get_stats).
+
+set_idle_timeout(Seconds) ->
+    gen_server:call(?SERVER, {set_idle_timeout, Seconds}).
+
+get_idle_timeout() ->
+    gen_server:call(?SERVER, get_idle_timeout).
+
+set_resume_timeout(Seconds) ->
+    gen_server:call(?SERVER, {set_resume_timeout, Seconds}).
+
+check_idle_nodes() ->
+    gen_server:call(?SERVER, check_idle).
+
+set_power_budget(Watts) ->
+    set_power_cap(Watts).
+
+get_power_budget() ->
+    get_power_cap().
+
+get_current_power_usage() ->
+    get_current_power().
+
+%%====================================================================
+%% gen_server callbacks
+%%====================================================================
+
+init([]) ->
+    %% Create ETS tables
+    ets:new(?POWER_STATE_TABLE, [
+        named_table, public, set,
+        {keypos, #node_power.name}
+    ]),
+
+    ets:new(?ENERGY_TABLE, [
+        named_table, public, ordered_set,
+        {keypos, #energy_sample.key}
+    ]),
+
+    ets:new(?JOB_ENERGY_TABLE, [
+        named_table, public, set,
+        {keypos, #job_energy.job_id}
+    ]),
+
+    ets:new(?NODE_RELEASES_TABLE, [
+        named_table, public, set
+    ]),
+
+    %% Load policy settings based on defaults
+    PolicySettings = get_policy_settings(balanced),
+
+    %% Start timers
+    PowerTimer = erlang:send_after(?DEFAULT_POWER_CHECK_INTERVAL, self(), check_power),
+    EnergyTimer = erlang:send_after(?ENERGY_SAMPLE_INTERVAL, self(), sample_energy),
+
+    {ok, #state{
+        enabled = true,
+        policy = balanced,
+        idle_timeout = maps:get(idle_timeout, PolicySettings, ?DEFAULT_IDLE_TIMEOUT),
+        resume_timeout = ?DEFAULT_RESUME_TIMEOUT,
+        min_powered_nodes = maps:get(min_powered_nodes, PolicySettings, 1),
+        resume_threshold = maps:get(resume_threshold, PolicySettings, 5),
+        power_cap = undefined,
+        power_check_timer = PowerTimer,
+        energy_sample_timer = EnergyTimer,
+        pending_power_requests = #{}
+    }}.
+
+handle_call(enable, _From, State) ->
+    {reply, ok, State#state{enabled = true}};
+
+handle_call(disable, _From, State) ->
+    {reply, ok, State#state{enabled = false}};
+
+handle_call(get_status, _From, State) ->
+    Status = #{
+        enabled => State#state.enabled,
+        policy => State#state.policy,
+        idle_timeout => State#state.idle_timeout,
+        resume_timeout => State#state.resume_timeout,
+        min_powered_nodes => State#state.min_powered_nodes,
+        resume_threshold => State#state.resume_threshold,
+        power_cap => State#state.power_cap,
+        current_power => calculate_current_power(),
+        nodes_powered_on => length(get_nodes_by_power_state(powered_on)),
+        nodes_powered_off => length(get_nodes_by_power_state(powered_off)),
+        nodes_suspended => length(get_nodes_by_power_state(suspended)),
+        nodes_transitioning => length(get_nodes_by_power_state(powering_up)) +
+                               length(get_nodes_by_power_state(powering_down))
+    },
+    {reply, Status, State};
+
+handle_call({set_node_power_state, NodeName, TargetState}, From, State) ->
+    case do_set_node_power_state(NodeName, TargetState, From, State) of
+        {ok, NewState} ->
+            {reply, ok, NewState};
+        {pending, NewState} ->
+            %% Will reply async when power-on completes
+            {noreply, NewState};
+        {error, Reason} ->
+            {reply, {error, Reason}, State}
+    end;
+
+handle_call({execute_power_command, NodeName, Command, Options}, _From, State) ->
+    Result = do_execute_power_command(NodeName, Command, Options),
+    {reply, Result, State};
+
+handle_call({configure_node_power, NodeName, Config}, _From, State) ->
+    do_configure_node_power(NodeName, Config),
+    {reply, ok, State};
+
+handle_call({set_policy, Policy}, _From, State) ->
+    PolicySettings = get_policy_settings(Policy),
+    NewState = State#state{
+        policy = Policy,
+        idle_timeout = maps:get(idle_timeout, PolicySettings, State#state.idle_timeout),
+        min_powered_nodes = maps:get(min_powered_nodes, PolicySettings, State#state.min_powered_nodes),
+        resume_threshold = maps:get(resume_threshold, PolicySettings, State#state.resume_threshold)
+    },
+    {reply, ok, NewState};
+
+handle_call(get_policy, _From, State) ->
+    {reply, State#state.policy, State};
+
+handle_call({set_power_cap, Watts}, _From, State) ->
+    {reply, ok, State#state{power_cap = Watts}};
+
+handle_call(get_power_cap, _From, State) ->
+    {reply, State#state.power_cap, State};
+
+handle_call(get_current_power, _From, State) ->
+    Power = calculate_current_power(),
+    {reply, Power, State};
+
+handle_call({request_power_on, NodeName}, _From, State) ->
+    case do_request_power_on(NodeName, State) of
+        {ok, NewState} ->
+            {reply, ok, NewState};
+        {error, Reason} ->
+            {reply, {error, Reason}, State}
+    end;
+
+handle_call(get_stats, _From, State) ->
+    Stats = compute_stats(State),
+    {reply, Stats, State};
+
+handle_call({set_idle_timeout, Seconds}, _From, State) ->
+    {reply, ok, State#state{idle_timeout = Seconds}};
+
+handle_call(get_idle_timeout, _From, State) ->
+    {reply, State#state.idle_timeout, State};
+
+handle_call({set_resume_timeout, Seconds}, _From, State) ->
+    {reply, ok, State#state{resume_timeout = Seconds}};
+
+handle_call(check_idle, _From, State) ->
+    Count = do_check_idle_nodes(State),
+    {reply, Count, State};
+
+handle_call(_Request, _From, State) ->
+    {reply, {error, unknown_request}, State}.
+
+handle_cast({record_power_usage, NodeName, PowerWatts}, State) ->
+    Now = erlang:system_time(second),
+    Sample = #energy_sample{
+        key = {NodeName, Now},
+        power_watts = PowerWatts
+    },
+    ets:insert(?ENERGY_TABLE, Sample),
+
+    %% Update node's current power reading
+    case ets:lookup(?POWER_STATE_TABLE, NodeName) of
+        [Power] ->
+            ets:insert(?POWER_STATE_TABLE, Power#node_power{power_watts = PowerWatts});
+        [] ->
+            ok
+    end,
+    {noreply, State};
+
+handle_cast({record_job_energy, JobId, Nodes, EnergyWh}, State) ->
+    Now = erlang:system_time(second),
+    case ets:lookup(?JOB_ENERGY_TABLE, JobId) of
+        [#job_energy{} = Entry] ->
+            ets:insert(?JOB_ENERGY_TABLE, Entry#job_energy{
+                total_energy_wh = Entry#job_energy.total_energy_wh + EnergyWh,
+                samples = Entry#job_energy.samples + 1
+            });
+        [] ->
+            Entry = #job_energy{
+                job_id = JobId,
+                start_time = Now,
+                nodes = Nodes,
+                total_energy_wh = EnergyWh,
+                samples = 1
+            },
+            ets:insert(?JOB_ENERGY_TABLE, Entry)
+    end,
+    {noreply, State};
+
+handle_cast({release_for_power_off, NodeName}, State) ->
+    ets:insert(?NODE_RELEASES_TABLE, {NodeName, erlang:system_time(second)}),
+    %% Decrement pending power on requests
+    case ets:lookup(?POWER_STATE_TABLE, NodeName) of
+        [#node_power{pending_power_on_requests = N} = Power] when N > 0 ->
+            ets:insert(?POWER_STATE_TABLE, Power#node_power{
+                pending_power_on_requests = N - 1
+            });
+        _ ->
+            ok
+    end,
+    {noreply, State};
+
+handle_cast({job_start, JobId, Nodes}, State) ->
+    Now = erlang:system_time(second),
+    Entry = #job_energy{
+        job_id = JobId,
+        start_time = Now,
+        nodes = Nodes,
+        total_energy_wh = 0.0,
+        samples = 0
+    },
+    ets:insert(?JOB_ENERGY_TABLE, Entry),
+
+    %% Mark nodes as having active jobs
+    lists:foreach(fun(NodeName) ->
+        case ets:lookup(?POWER_STATE_TABLE, NodeName) of
+            [Power] ->
+                ets:insert(?POWER_STATE_TABLE, Power#node_power{
+                    last_job_end = undefined
+                });
+            [] ->
+                ok
+        end
+    end, Nodes),
+    {noreply, State};
+
+handle_cast({job_end, JobId}, State) ->
+    Now = erlang:system_time(second),
+    case ets:lookup(?JOB_ENERGY_TABLE, JobId) of
+        [#job_energy{nodes = Nodes} = Entry] ->
+            ets:insert(?JOB_ENERGY_TABLE, Entry#job_energy{end_time = Now}),
+
+            %% Update last_job_end for nodes
+            lists:foreach(fun(NodeName) ->
+                case ets:lookup(?POWER_STATE_TABLE, NodeName) of
+                    [Power] ->
+                        ets:insert(?POWER_STATE_TABLE, Power#node_power{
+                            last_job_end = Now
+                        });
+                    [] ->
+                        ok
+                end
+            end, Nodes);
+        [] ->
+            ok
+    end,
+    {noreply, State};
+
+handle_cast(_Msg, State) ->
+    {noreply, State}.
+
+handle_info(check_power, State) ->
+    case State#state.enabled of
+        true ->
+            do_check_idle_nodes(State),
+            check_power_cap(State),
+            check_pending_transitions(),
+            check_queue_for_power_on(State);
+        false ->
+            ok
+    end,
+    Timer = erlang:send_after(?DEFAULT_POWER_CHECK_INTERVAL, self(), check_power),
+    {noreply, State#state{power_check_timer = Timer}};
+
+handle_info(sample_energy, State) ->
+    sample_all_node_energy(),
+    update_job_energy(),
+    cleanup_old_energy_samples(),
+    Timer = erlang:send_after(?ENERGY_SAMPLE_INTERVAL, self(), sample_energy),
+    {noreply, State#state{energy_sample_timer = Timer}};
+
+handle_info({power_transition_complete, NodeName, NewState}, State) ->
+    complete_transition(NodeName, NewState, State),
+    {noreply, State};
+
+handle_info({power_timeout, NodeName, ExpectedState}, State) ->
+    handle_power_timeout(NodeName, ExpectedState, State),
+    {noreply, State};
+
+handle_info(_Info, State) ->
+    {noreply, State}.
+
+terminate(_Reason, _State) ->
+    ok.
+
+code_change(_OldVsn, State, _Extra) ->
+    {ok, State}.
+
+%%====================================================================
+%% Internal Functions - Power State Management
+%%====================================================================
+
+do_set_node_power_state(NodeName, TargetState, From, State) ->
+    Power = get_or_create_power_state(NodeName),
+    CurrentState = Power#node_power.state,
+
+    case validate_transition(CurrentState, TargetState) of
+        ok ->
+            execute_transition(NodeName, Power, TargetState, From, State);
+        {error, Reason} ->
+            {error, Reason}
+    end.
+
+validate_transition(Current, Target) ->
+    ValidTransitions = #{
+        powered_on => [off, suspend],
+        powered_off => [on, resume],
+        suspended => [resume, off],
+        powering_up => [],      % Can't interrupt
+        powering_down => []     % Can't interrupt
+    },
+
+    %% Normalize target state
+    NormalizedTarget = case Target of
+        on -> powered_on;
+        off -> powered_off;
+        suspend -> suspended;
+        resume -> powered_on;
+        Other -> Other
+    end,
+
+    AllowedTargets = maps:get(Current, ValidTransitions, []),
+    case lists:member(Target, AllowedTargets) orelse
+         lists:member(NormalizedTarget, AllowedTargets) orelse
+         Current =:= NormalizedTarget of
+        true -> ok;
+        false -> {error, {invalid_transition, Current, Target}}
+    end.
+
+execute_transition(NodeName, Power, on, _From, State) ->
+    execute_power_on(NodeName, Power, State);
+execute_transition(NodeName, Power, resume, _From, State) ->
+    execute_power_on(NodeName, Power, State);
+execute_transition(NodeName, Power, off, _From, State) ->
+    execute_power_off(NodeName, Power, State);
+execute_transition(NodeName, Power, suspend, _From, State) ->
+    execute_suspend(NodeName, Power, State);
+execute_transition(_NodeName, _Power, _Target, _From, State) ->
+    {error, {unsupported_transition, State}}.
+
+execute_power_on(NodeName, #node_power{state = CurrentState} = Power, State)
+  when CurrentState =:= powered_off; CurrentState =:= suspended ->
+    Now = erlang:system_time(second),
+    Method = Power#node_power.method,
+
+    UpdatedPower = Power#node_power{
+        state = powering_up,
+        last_state_change = Now,
+        resume_count = Power#node_power.resume_count + 1
+    },
+    ets:insert(?POWER_STATE_TABLE, UpdatedPower),
+
+    case do_execute_power_method(Method, power_on, Power) of
+        ok ->
+            %% Schedule timeout check
+            erlang:send_after(State#state.resume_timeout * 1000, self(),
+                {power_timeout, NodeName, powering_up}),
+            {ok, State};
+        Error ->
+            ets:insert(?POWER_STATE_TABLE, Power),
+            Error
+    end;
+execute_power_on(_NodeName, #node_power{state = powered_on}, State) ->
+    {ok, State};
+execute_power_on(_NodeName, _Power, _State) ->
+    {error, invalid_state}.
+
+execute_power_off(NodeName, #node_power{state = CurrentState} = Power, State)
+  when CurrentState =:= powered_on; CurrentState =:= suspended ->
+    %% Check if node has running jobs
+    case node_has_jobs(NodeName) of
+        true ->
+            {error, node_has_running_jobs};
+        false ->
+            Now = erlang:system_time(second),
+            Method = Power#node_power.method,
+
+            UpdatedPower = Power#node_power{
+                state = powering_down,
+                last_state_change = Now
+            },
+            ets:insert(?POWER_STATE_TABLE, UpdatedPower),
+
+            case do_execute_power_method(Method, power_off, Power) of
+                ok ->
+                    erlang:send_after(30000, self(),
+                        {power_transition_complete, NodeName, powered_off}),
+                    {ok, State};
+                Error ->
+                    ets:insert(?POWER_STATE_TABLE, Power),
+                    Error
+            end
+    end;
+execute_power_off(_NodeName, _Power, _State) ->
+    {error, invalid_state}.
+
+execute_suspend(NodeName, #node_power{state = powered_on} = Power, State) ->
+    case node_has_jobs(NodeName) of
+        true ->
+            {error, node_has_running_jobs};
+        false ->
+            Now = erlang:system_time(second),
+            Method = Power#node_power.method,
+
+            UpdatedPower = Power#node_power{
+                state = powering_down,
+                last_state_change = Now,
+                suspend_count = Power#node_power.suspend_count + 1
+            },
+            ets:insert(?POWER_STATE_TABLE, UpdatedPower),
+
+            case do_execute_power_method(Method, suspend, Power) of
+                ok ->
+                    erlang:send_after(10000, self(),
+                        {power_transition_complete, NodeName, suspended}),
+                    {ok, State};
+                Error ->
+                    ets:insert(?POWER_STATE_TABLE, Power),
+                    Error
+            end
+    end;
+execute_suspend(_NodeName, _Power, _State) ->
+    {error, invalid_state}.
+
+%%====================================================================
+%% Internal Functions - Power Control Methods
+%%====================================================================
+
+do_execute_power_command(NodeName, Command, Options) ->
+    Power = get_or_create_power_state(NodeName),
+    Method = maps:get(method, Options, Power#node_power.method),
+    do_execute_power_method(Method, Command, Power).
+
+do_execute_power_method(ipmi, Command, Power) ->
+    execute_ipmi_command(Power, Command);
+do_execute_power_method(wake_on_lan, power_on, Power) ->
+    send_wake_on_lan(Power#node_power.mac_address);
+do_execute_power_method(wake_on_lan, _, _Power) ->
+    {error, wake_on_lan_only_supports_power_on};
+do_execute_power_method(cloud, Command, Power) ->
+    execute_cloud_command(Power, Command);
+do_execute_power_method(script, Command, Power) ->
+    execute_script_command(Power, Command);
+do_execute_power_method(_, _, _) ->
+    {error, unsupported_method}.
+
+execute_ipmi_command(#node_power{ipmi_address = undefined}, _Command) ->
+    {error, no_ipmi_address};
+execute_ipmi_command(#node_power{ipmi_address = Address,
+                                  ipmi_user = User,
+                                  ipmi_password = Password}, Command) ->
+    IpmiCmd = case Command of
+        power_on -> "chassis power on";
+        power_off -> "chassis power off";
+        suspend -> "chassis power soft";
+        reset -> "chassis power reset";
+        status -> "chassis power status"
+    end,
+
+    UserArg = case User of
+        undefined -> "admin";
+        U -> binary_to_list(U)
+    end,
+    PassArg = case Password of
+        undefined -> "admin";
+        P -> binary_to_list(P)
+    end,
+
+    FullCommand = io_lib:format("ipmitool -H ~s -U ~s -P ~s ~s",
+                                [binary_to_list(Address), UserArg, PassArg, IpmiCmd]),
+    case os:cmd(lists:flatten(FullCommand)) of
+        "Chassis Power Control: " ++ _ -> ok;
+        "Chassis Power is " ++ _ -> ok;
+        Output ->
+            error_logger:warning_msg("IPMI command output: ~s~n", [Output]),
+            {error, {ipmi_command_failed, Output}}
+    end.
+
+send_wake_on_lan(undefined) ->
+    {error, no_mac_address};
+send_wake_on_lan(MAC) when is_binary(MAC) ->
+    MACBytes = parse_mac_address(MAC),
+    MagicPacket = build_wol_packet(MACBytes),
+    case gen_udp:open(0, [binary, {broadcast, true}]) of
+        {ok, Socket} ->
+            Result = gen_udp:send(Socket, {255,255,255,255}, 9, MagicPacket),
+            gen_udp:close(Socket),
+            Result;
+        Error ->
+            Error
+    end.
+
+parse_mac_address(MAC) when is_binary(MAC) ->
+    %% Parse MAC address in format "AA:BB:CC:DD:EE:FF" or "AA-BB-CC-DD-EE-FF"
+    Parts = binary:split(MAC, [<<":">>, <<"-">>], [global]),
+    list_to_binary([binary_to_integer(P, 16) || P <- Parts]).
+
+build_wol_packet(MACBytes) when is_binary(MACBytes), byte_size(MACBytes) =:= 6 ->
+    Header = binary:copy(<<255>>, 6),
+    Body = binary:copy(MACBytes, 16),
+    <<Header/binary, Body/binary>>.
+
+execute_cloud_command(#node_power{cloud_provider = undefined}, _Command) ->
+    {error, no_cloud_provider};
+execute_cloud_command(#node_power{cloud_provider = Provider,
+                                   cloud_instance_id = InstanceId}, Command) ->
+    case Provider of
+        aws ->
+            execute_aws_command(InstanceId, Command);
+        gcp ->
+            execute_gcp_command(InstanceId, Command);
+        azure ->
+            execute_azure_command(InstanceId, Command);
+        _ ->
+            %% Try to use flurm_cloud_scaling module
+            case Command of
+                power_on ->
+                    catch flurm_cloud_scaling:start_instance(InstanceId),
+                    ok;
+                power_off ->
+                    catch flurm_cloud_scaling:stop_instance(InstanceId),
+                    ok;
+                _ ->
+                    {error, {unsupported_cloud_command, Command}}
+            end
+    end.
+
+execute_aws_command(InstanceId, Command) when is_binary(InstanceId) ->
+    Action = case Command of
+        power_on -> "start-instances";
+        power_off -> "stop-instances";
+        _ -> undefined
+    end,
+    case Action of
+        undefined ->
+            {error, {unsupported_aws_command, Command}};
+        _ ->
+            Cmd = io_lib:format("aws ec2 ~s --instance-ids ~s",
+                               [Action, binary_to_list(InstanceId)]),
+            os:cmd(lists:flatten(Cmd)),
+            ok
+    end.
+
+execute_gcp_command(InstanceId, Command) when is_binary(InstanceId) ->
+    Action = case Command of
+        power_on -> "start";
+        power_off -> "stop";
+        _ -> undefined
+    end,
+    case Action of
+        undefined ->
+            {error, {unsupported_gcp_command, Command}};
+        _ ->
+            Cmd = io_lib:format("gcloud compute instances ~s ~s",
+                               [Action, binary_to_list(InstanceId)]),
+            os:cmd(lists:flatten(Cmd)),
+            ok
+    end.
+
+execute_azure_command(InstanceId, Command) when is_binary(InstanceId) ->
+    Action = case Command of
+        power_on -> "start";
+        power_off -> "stop";
+        _ -> undefined
+    end,
+    case Action of
+        undefined ->
+            {error, {unsupported_azure_command, Command}};
+        _ ->
+            Cmd = io_lib:format("az vm ~s --name ~s",
+                               [Action, binary_to_list(InstanceId)]),
+            os:cmd(lists:flatten(Cmd)),
+            ok
+    end.
+
+execute_script_command(#node_power{power_script = undefined, name = Name}, Command) ->
+    %% Default script paths
+    Script = case Command of
+        power_on -> "/etc/flurm/power/power_on.sh";
+        power_off -> "/etc/flurm/power/power_off.sh";
+        suspend -> "/etc/flurm/power/suspend.sh";
+        resume -> "/etc/flurm/power/resume.sh";
+        _ -> undefined
+    end,
+    case Script of
+        undefined ->
+            {error, {unsupported_script_command, Command}};
+        _ ->
+            case filelib:is_file(Script) of
+                true ->
+                    os:cmd(io_lib:format("~s ~s", [Script, binary_to_list(Name)])),
+                    ok;
+                false ->
+                    {error, {script_not_found, Script}}
+            end
+    end;
+execute_script_command(#node_power{power_script = Script, name = Name}, Command) ->
+    case filelib:is_file(binary_to_list(Script)) of
+        true ->
+            Cmd = io_lib:format("~s ~s ~s",
+                               [binary_to_list(Script), atom_to_list(Command),
+                                binary_to_list(Name)]),
+            os:cmd(lists:flatten(Cmd)),
+            ok;
+        false ->
+            {error, {script_not_found, Script}}
+    end.
+
+%%====================================================================
+%% Internal Functions - Configuration
+%%====================================================================
+
+do_configure_node_power(NodeName, Config) ->
+    Power = get_or_create_power_state(NodeName),
+    UpdatedPower = maps:fold(fun(Key, Value, Acc) ->
+        case Key of
+            method -> Acc#node_power{method = Value};
+            mac_address -> Acc#node_power{mac_address = Value};
+            ipmi_address -> Acc#node_power{ipmi_address = Value};
+            ipmi_user -> Acc#node_power{ipmi_user = Value};
+            ipmi_password -> Acc#node_power{ipmi_password = Value};
+            cloud_provider -> Acc#node_power{cloud_provider = Value};
+            cloud_instance_id -> Acc#node_power{cloud_instance_id = Value};
+            power_script -> Acc#node_power{power_script = Value};
+            power_watts -> Acc#node_power{power_watts = Value};
+            _ -> Acc
+        end
+    end, Power, Config),
+    ets:insert(?POWER_STATE_TABLE, UpdatedPower).
+
+get_policy_settings(aggressive) ->
+    #{
+        idle_timeout => 60,           % 1 minute
+        min_powered_nodes => 1,
+        resume_threshold => 3
+    };
+get_policy_settings(balanced) ->
+    #{
+        idle_timeout => 300,          % 5 minutes
+        min_powered_nodes => 2,
+        resume_threshold => 5
+    };
+get_policy_settings(conservative) ->
+    #{
+        idle_timeout => 900,          % 15 minutes
+        min_powered_nodes => 5,
+        resume_threshold => 10
+    }.
+
+%%====================================================================
+%% Internal Functions - Idle Node Management
+%%====================================================================
+
+do_check_idle_nodes(State) ->
+    Now = erlang:system_time(second),
+    IdleTimeout = State#state.idle_timeout,
+    MinPowered = State#state.min_powered_nodes,
+
+    %% Get all powered-on nodes
+    AllPowered = ets:tab2list(?POWER_STATE_TABLE),
+    PoweredOn = [P || P = #node_power{state = powered_on} <- AllPowered],
+
+    %% Don't power down if we're at minimum
+    case length(PoweredOn) =< MinPowered of
+        true ->
+            0;
+        false ->
+            %% Find idle nodes
+            IdleNodes = lists:filter(fun(#node_power{name = Name,
+                                                      last_job_end = LastJob,
+                                                      pending_power_on_requests = Pending}) ->
+                %% Don't power down nodes with pending requests
+                Pending =:= 0 andalso
+                %% Check if released for power-off
+                case ets:lookup(?NODE_RELEASES_TABLE, Name) of
+                    [{_, _ReleaseTime}] -> true;
+                    [] ->
+                        %% Check idle timeout
+                        case LastJob of
+                            undefined -> false;
+                            Time -> (Now - Time) > IdleTimeout
+                        end
+                end andalso
+                not node_has_jobs(Name)
+            end, PoweredOn),
+
+            %% Power down idle nodes, keeping minimum
+            MaxToSuspend = length(PoweredOn) - MinPowered,
+            NodesToSuspend = lists:sublist(IdleNodes, MaxToSuspend),
+
+            lists:foldl(fun(#node_power{name = Name}, Count) ->
+                case execute_suspend(Name, get_or_create_power_state(Name), State) of
+                    {ok, _} ->
+                        ets:delete(?NODE_RELEASES_TABLE, Name),
+                        Count + 1;
+                    _ -> Count
+                end
+            end, 0, NodesToSuspend)
+    end.
+
+check_queue_for_power_on(State) ->
+    %% Check if queue depth warrants powering on more nodes
+    QueueDepth = get_pending_job_count(),
+    ResumeThreshold = State#state.resume_threshold,
+
+    case QueueDepth >= ResumeThreshold of
+        true ->
+            %% Get suspended/powered-off nodes
+            Suspended = get_nodes_by_power_state(suspended),
+            PoweredOff = get_nodes_by_power_state(powered_off),
+            Available = Suspended ++ PoweredOff,
+
+            case Available of
+                [] -> ok;
+                [NodeName | _] ->
+                    %% Power on one node
+                    Power = get_or_create_power_state(NodeName),
+                    execute_power_on(NodeName, Power, State)
+            end;
+        false ->
+            ok
+    end.
+
+%%====================================================================
+%% Internal Functions - Power Capping
+%%====================================================================
+
+check_power_cap(#state{power_cap = undefined}) ->
+    ok;
+check_power_cap(#state{power_cap = Cap} = State) ->
+    CurrentPower = calculate_current_power(),
+    case CurrentPower > Cap of
+        true ->
+            %% Need to reduce power
+            Excess = CurrentPower - Cap,
+            reduce_power_usage(Excess, State);
+        false ->
+            ok
+    end.
+
+reduce_power_usage(ExcessWatts, State) ->
+    %% Find idle nodes to suspend
+    IdleNodes = find_idle_powered_nodes(),
+    suspend_nodes_for_power_reduction(IdleNodes, ExcessWatts, State).
+
+find_idle_powered_nodes() ->
+    AllPowered = ets:tab2list(?POWER_STATE_TABLE),
+    [P || P = #node_power{state = powered_on, name = Name} <- AllPowered,
+          not node_has_jobs(Name)].
+
+suspend_nodes_for_power_reduction([], _Needed, _State) ->
+    ok;
+suspend_nodes_for_power_reduction(_Nodes, Needed, _State) when Needed =< 0 ->
+    ok;
+suspend_nodes_for_power_reduction([#node_power{name = Name, power_watts = Watts} | Rest],
+                                   Needed, State) ->
+    NodePower = case Watts of
+        undefined -> 500;  % Default estimate
+        W -> W
+    end,
+    case execute_suspend(Name, get_or_create_power_state(Name), State) of
+        {ok, _} ->
+            suspend_nodes_for_power_reduction(Rest, Needed - NodePower, State);
+        _ ->
+            suspend_nodes_for_power_reduction(Rest, Needed, State)
+    end.
+
+%%====================================================================
+%% Internal Functions - Energy Tracking
+%%====================================================================
+
+sample_all_node_energy() ->
+    Now = erlang:system_time(second),
+    AllNodes = ets:tab2list(?POWER_STATE_TABLE),
+    lists:foreach(fun(#node_power{name = Name, state = powered_on, power_watts = Watts}) ->
+        %% For powered-on nodes, record current power
+        %% In production, this would query actual power sensors
+        Power = case Watts of
+            undefined -> estimate_node_power(Name);
+            W -> W
+        end,
+        Sample = #energy_sample{
+            key = {Name, Now},
+            power_watts = Power
+        },
+        ets:insert(?ENERGY_TABLE, Sample);
+    (_) ->
+        ok
+    end, AllNodes).
+
+estimate_node_power(NodeName) ->
+    %% Estimate power based on load
+    %% In production, this would use actual sensors or IPMI
+    case node_has_jobs(NodeName) of
+        true -> 400;   % Estimated active power
+        false -> 150   % Estimated idle power
+    end.
+
+update_job_energy() ->
+    _Now = erlang:system_time(second),
+    SampleInterval = ?ENERGY_SAMPLE_INTERVAL div 1000,  % Convert to seconds
+
+    %% Get all active jobs
+    AllJobs = ets:tab2list(?JOB_ENERGY_TABLE),
+    ActiveJobs = [J || J = #job_energy{end_time = undefined} <- AllJobs],
+
+    lists:foreach(fun(#job_energy{job_id = _JobId, nodes = Nodes} = Entry) ->
+        %% Calculate energy for this interval
+        TotalPower = lists:foldl(fun(NodeName, Acc) ->
+            case ets:lookup(?POWER_STATE_TABLE, NodeName) of
+                [#node_power{power_watts = Watts}] when Watts =/= undefined ->
+                    Acc + Watts;
+                _ ->
+                    Acc + estimate_node_power(NodeName)
+            end
+        end, 0, Nodes),
+
+        %% Convert to Wh (power * time_in_hours)
+        EnergyWh = TotalPower * (SampleInterval / 3600),
+
+        ets:insert(?JOB_ENERGY_TABLE, Entry#job_energy{
+            total_energy_wh = Entry#job_energy.total_energy_wh + EnergyWh,
+            samples = Entry#job_energy.samples + 1
+        })
+    end, ActiveJobs).
+
+cleanup_old_energy_samples() ->
+    %% Keep only last 24 hours of samples
+    CutoffTime = erlang:system_time(second) - 86400,
+    MatchSpec = [{#energy_sample{key = {'_', '$1'}, _ = '_'},
+                  [{'<', '$1', CutoffTime}],
+                  [true]}],
+    ets:select_delete(?ENERGY_TABLE, MatchSpec).
+
+get_energy_for_node(NodeName, StartTime, EndTime) ->
+    %% Sum energy from samples in time range
+    MatchSpec = [{#energy_sample{key = {NodeName, '$1'}, power_watts = '$2', _ = '_'},
+                  [{'>=', '$1', StartTime}, {'=<', '$1', EndTime}],
+                  [{{'$1', '$2'}}]}],
+    Samples = ets:select(?ENERGY_TABLE, MatchSpec),
+
+    case Samples of
+        [] ->
+            {ok, 0.0};
+        _ ->
+            %% Calculate energy from power samples
+            %% Assuming uniform sampling interval
+            SampleInterval = ?ENERGY_SAMPLE_INTERVAL div 1000,
+            TotalWh = lists:foldl(fun({_Time, Watts}, Acc) ->
+                Acc + (Watts * SampleInterval / 3600)
+            end, 0.0, Samples),
+            {ok, TotalWh}
+    end.
+
+get_total_cluster_energy(StartTime, EndTime) ->
+    AllNodes = ets:tab2list(?POWER_STATE_TABLE),
+    TotalEnergy = lists:foldl(fun(#node_power{name = Name}, Acc) ->
+        case get_energy_for_node(Name, StartTime, EndTime) of
+            {ok, Energy} -> Acc + Energy;
+            _ -> Acc
+        end
+    end, 0.0, AllNodes),
+    {ok, TotalEnergy}.
+
+%%====================================================================
+%% Internal Functions - Scheduler Integration
+%%====================================================================
+
+do_request_power_on(NodeName, State) ->
+    case get_node_power_state(NodeName) of
+        {ok, powered_on} ->
+            {ok, State};
+        {ok, powering_up} ->
+            %% Already powering up, increment request count
+            case ets:lookup(?POWER_STATE_TABLE, NodeName) of
+                [Power] ->
+                    ets:insert(?POWER_STATE_TABLE, Power#node_power{
+                        pending_power_on_requests = Power#node_power.pending_power_on_requests + 1
+                    });
+                [] ->
+                    ok
+            end,
+            {ok, State};
+        {ok, _OtherState} ->
+            %% Power on the node
+            Power = get_or_create_power_state(NodeName),
+            UpdatedPower = Power#node_power{
+                pending_power_on_requests = Power#node_power.pending_power_on_requests + 1
+            },
+            ets:insert(?POWER_STATE_TABLE, UpdatedPower),
+            execute_power_on(NodeName, UpdatedPower, State);
+        {error, not_found} ->
+            %% Create entry and power on
+            Power = #node_power{
+                name = NodeName,
+                state = powered_off,
+                method = script,
+                last_state_change = erlang:system_time(second),
+                suspend_count = 0,
+                resume_count = 0,
+                pending_power_on_requests = 1
+            },
+            ets:insert(?POWER_STATE_TABLE, Power),
+            execute_power_on(NodeName, Power, State)
+    end.
+
+%%====================================================================
+%% Internal Functions - Utilities
+%%====================================================================
+
+get_or_create_power_state(NodeName) ->
+    case ets:lookup(?POWER_STATE_TABLE, NodeName) of
+        [Power] ->
+            Power;
+        [] ->
+            Power = #node_power{
+                name = NodeName,
+                state = powered_on,
+                method = script,
+                last_state_change = erlang:system_time(second),
+                suspend_count = 0,
+                resume_count = 0,
+                pending_power_on_requests = 0
+            },
+            ets:insert(?POWER_STATE_TABLE, Power),
+            Power
+    end.
+
+node_has_jobs(NodeName) ->
+    case catch flurm_node_registry:get_node(NodeName) of
+        {ok, #node_entry{}} ->
+            case catch flurm_node:list_jobs(NodeName) of
+                {ok, Jobs} -> length(Jobs) > 0;
+                _ -> false
+            end;
+        _ ->
+            false
+    end.
+
+get_pending_job_count() ->
+    case catch flurm_scheduler:get_stats() of
+        {ok, #{pending_count := Count}} -> Count;
+        _ -> 0
+    end.
+
+calculate_current_power() ->
+    AllNodes = ets:tab2list(?POWER_STATE_TABLE),
+    lists:foldl(fun(#node_power{state = State, power_watts = Watts}, Acc) ->
+        case State of
+            powered_on when Watts =/= undefined -> Acc + Watts;
+            powered_on -> Acc + 500;  % Default estimate
+            _ -> Acc
+        end
+    end, 0, AllNodes).
+
+complete_transition(NodeName, NewState, _State) ->
+    case ets:lookup(?POWER_STATE_TABLE, NodeName) of
+        [Power] ->
+            ets:insert(?POWER_STATE_TABLE, Power#node_power{
+                state = NewState,
+                last_state_change = erlang:system_time(second)
+            }),
+            %% Notify scheduler
+            case NewState of
+                powered_on ->
+                    catch flurm_scheduler:trigger_schedule();
+                _ ->
+                    ok
+            end;
+        [] ->
+            ok
+    end.
+
+check_pending_transitions() ->
+    Now = erlang:system_time(second),
+    TransitionStates = [powering_up, powering_down],
+
+    AllNodes = ets:tab2list(?POWER_STATE_TABLE),
+    lists:foreach(fun(#node_power{name = Name, state = State,
+                                   last_state_change = Changed}) ->
+        case lists:member(State, TransitionStates) of
+            true ->
+                TimeSinceChange = Now - Changed,
+                case TimeSinceChange > 300 of  % 5 minute timeout
+                    true ->
+                        error_logger:warning_msg(
+                            "Power transition timeout for node ~s in state ~p~n",
+                            [Name, State]),
+                        %% Force to appropriate state
+                        FinalState = case State of
+                            powering_up -> powered_off;
+                            powering_down -> powered_off
+                        end,
+                        complete_transition(Name, FinalState, undefined);
+                    false ->
+                        ok
+                end;
+            false ->
+                ok
+        end
+    end, AllNodes).
+
+handle_power_timeout(NodeName, ExpectedState, _State) ->
+    case ets:lookup(?POWER_STATE_TABLE, NodeName) of
+        [#node_power{state = ExpectedState}] ->
+            %% Still in transition state - force completion
+            error_logger:warning_msg(
+                "Power operation timeout for node ~s in state ~p~n",
+                [NodeName, ExpectedState]),
+            case ExpectedState of
+                powering_up ->
+                    complete_transition(NodeName, powered_off, undefined);
+                powering_down ->
+                    complete_transition(NodeName, powered_off, undefined);
+                _ ->
+                    ok
+            end;
+        _ ->
+            %% State changed, timeout is irrelevant
+            ok
+    end.
+
+compute_stats(State) ->
+    AllNodes = ets:tab2list(?POWER_STATE_TABLE),
 
     %% Count nodes by state
-    StateCounts = lists:foldl(fun(#node_power{state = State}, Acc) ->
-        maps:update_with(State, fun(V) -> V + 1 end, 1, Acc)
+    StateCounts = lists:foldl(fun(#node_power{state = NodeState}, Acc) ->
+        maps:update_with(NodeState, fun(V) -> V + 1 end, 1, Acc)
     end, #{}, AllNodes),
 
     %% Total suspend/resume counts
@@ -698,9 +1419,15 @@ compute_stats() ->
         end, {0, 0}, AllNodes),
 
     #{
+        enabled => State#state.enabled,
+        policy => State#state.policy,
         nodes_by_state => StateCounts,
         total_nodes => length(AllNodes),
-        current_power_watts => calculate_power_usage(),
+        current_power_watts => calculate_current_power(),
+        power_cap => State#state.power_cap,
         total_suspends => TotalSuspends,
-        total_resumes => TotalResumes
+        total_resumes => TotalResumes,
+        idle_timeout => State#state.idle_timeout,
+        min_powered_nodes => State#state.min_powered_nodes,
+        resume_threshold => State#state.resume_threshold
     }.

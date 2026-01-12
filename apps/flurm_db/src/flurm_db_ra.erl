@@ -31,7 +31,8 @@
     create_partition/1,
     delete_partition/1,
     allocate_job/2,
-    set_job_exit_code/2
+    set_job_exit_code/2,
+    allocate_job_id/0
 ]).
 
 %% API - Queries (local read)
@@ -84,6 +85,15 @@ init(_Config) ->
 %% Always returns a 3-tuple for consistency: {State, Result, Effects}
 -spec apply(ra_machine:command_meta_data(), term(), #ra_state{}) ->
     {#ra_state{}, term(), ra_machine:effects()}.
+
+%% Allocate a job ID (for distributed job ID generation)
+apply(_Meta, allocate_job_id, State) ->
+    JobId = State#ra_state.job_counter,
+    NewState = State#ra_state{
+        job_counter = JobId + 1
+    },
+    %% No effects - just return the allocated ID
+    {NewState, {ok, JobId}, []};
 
 %% Submit a new job
 apply(_Meta, {submit_job, #ra_job_spec{} = JobSpec}, State) ->
@@ -370,6 +380,13 @@ create_partition(#ra_partition_spec{} = PartSpec) ->
 -spec delete_partition(partition_name()) -> ok | {error, term()}.
 delete_partition(PartName) when is_binary(PartName) ->
     ra_command({delete_partition, PartName}).
+
+%% @doc Allocate a new job ID.
+%% This atomically increments the job counter through Ra consensus,
+%% ensuring unique IDs across the distributed cluster.
+-spec allocate_job_id() -> {ok, job_id()} | {error, term()}.
+allocate_job_id() ->
+    ra_command(allocate_job_id).
 
 %%====================================================================
 %% API - Queries (Local Read - May Be Stale)
