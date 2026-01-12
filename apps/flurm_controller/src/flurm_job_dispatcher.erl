@@ -145,13 +145,23 @@ terminate(_Reason, _State) ->
 %%====================================================================
 
 build_job_launch_message(JobId, JobInfo) ->
+    WorkDir = maps:get(work_dir, JobInfo, <<"/tmp">>),
+    %% Default output file is slurm-<jobid>.out in work_dir
+    DefaultOut = iolist_to_binary([WorkDir, <<"/slurm-">>,
+                                   integer_to_binary(JobId), <<".out">>]),
+    StdOut = case maps:get(std_out, JobInfo, <<>>) of
+        <<>> -> DefaultOut;
+        Path -> Path
+    end,
+
     %% Build environment variables map
     Env = #{
         <<"SLURM_JOB_ID">> => integer_to_binary(JobId),
         <<"SLURM_JOB_NAME">> => maps:get(name, JobInfo, <<"job">>),
         <<"SLURM_NTASKS">> => integer_to_binary(maps:get(num_tasks, JobInfo, 1)),
         <<"SLURM_CPUS_PER_TASK">> => integer_to_binary(maps:get(num_cpus, JobInfo, 1)),
-        <<"SLURM_JOB_PARTITION">> => maps:get(partition, JobInfo, <<"default">>)
+        <<"SLURM_JOB_PARTITION">> => maps:get(partition, JobInfo, <<"default">>),
+        <<"SLURM_SUBMIT_DIR">> => WorkDir
     },
 
     #{
@@ -159,13 +169,15 @@ build_job_launch_message(JobId, JobInfo) ->
         payload => #{
             <<"job_id">> => JobId,
             <<"script">> => maps:get(script, JobInfo, <<>>),
-            <<"working_dir">> => maps:get(work_dir, JobInfo, <<"/tmp">>),
+            <<"working_dir">> => WorkDir,
             <<"environment">> => Env,
             <<"num_cpus">> => maps:get(num_cpus, JobInfo, 1),
             <<"memory_mb">> => maps:get(memory_mb, JobInfo, 1024),
             <<"time_limit">> => maps:get(time_limit, JobInfo, 3600),
             <<"user_id">> => maps:get(user_id, JobInfo, 0),
-            <<"group_id">> => maps:get(group_id, JobInfo, 0)
+            <<"group_id">> => maps:get(group_id, JobInfo, 0),
+            <<"std_out">> => StdOut,
+            <<"std_err">> => maps:get(std_err, JobInfo, <<>>)
         }
     }.
 

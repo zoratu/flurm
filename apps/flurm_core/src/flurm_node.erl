@@ -21,7 +21,13 @@
     release/2,
     set_state/2,
     get_info/1,
-    list_jobs/1
+    list_jobs/1,
+    %% Drain mode API
+    drain_node/1,
+    drain_node/2,
+    undrain_node/1,
+    get_drain_reason/1,
+    is_draining/1
 ]).
 
 %% gen_server callbacks
@@ -118,6 +124,55 @@ list_jobs(NodeName) when is_binary(NodeName) ->
         {error, not_found} -> {error, node_not_found}
     end.
 
+%% @doc Drain a node, preventing new job assignments.
+%% Existing jobs will continue to run until completion.
+%% Uses default reason "admin request".
+-spec drain_node(pid() | binary()) -> ok | {error, term()}.
+drain_node(NodeOrName) ->
+    drain_node(NodeOrName, <<"admin request">>).
+
+%% @doc Drain a node with a specific reason.
+%% Existing jobs will continue to run until completion.
+-spec drain_node(pid() | binary(), binary()) -> ok | {error, term()}.
+drain_node(Pid, Reason) when is_pid(Pid) ->
+    gen_server:call(Pid, {drain, Reason});
+drain_node(NodeName, Reason) when is_binary(NodeName) ->
+    case flurm_node_registry:lookup_node(NodeName) of
+        {ok, Pid} -> drain_node(Pid, Reason);
+        {error, not_found} -> {error, node_not_found}
+    end.
+
+%% @doc Remove drain state from a node, allowing new job assignments.
+-spec undrain_node(pid() | binary()) -> ok | {error, term()}.
+undrain_node(Pid) when is_pid(Pid) ->
+    gen_server:call(Pid, undrain);
+undrain_node(NodeName) when is_binary(NodeName) ->
+    case flurm_node_registry:lookup_node(NodeName) of
+        {ok, Pid} -> undrain_node(Pid);
+        {error, not_found} -> {error, node_not_found}
+    end.
+
+%% @doc Get the drain reason for a node.
+%% Returns {ok, Reason} if the node is draining, {error, not_draining} otherwise.
+-spec get_drain_reason(pid() | binary()) -> {ok, binary()} | {error, not_draining | node_not_found}.
+get_drain_reason(Pid) when is_pid(Pid) ->
+    gen_server:call(Pid, get_drain_reason);
+get_drain_reason(NodeName) when is_binary(NodeName) ->
+    case flurm_node_registry:lookup_node(NodeName) of
+        {ok, Pid} -> get_drain_reason(Pid);
+        {error, not_found} -> {error, node_not_found}
+    end.
+
+%% @doc Check if a node is in drain state.
+-spec is_draining(pid() | binary()) -> boolean() | {error, node_not_found}.
+is_draining(Pid) when is_pid(Pid) ->
+    gen_server:call(Pid, is_draining);
+is_draining(NodeName) when is_binary(NodeName) ->
+    case flurm_node_registry:lookup_node(NodeName) of
+        {ok, Pid} -> is_draining(Pid);
+        {error, not_found} -> {error, node_not_found}
+    end.
+
 %%====================================================================
 %% gen_server callbacks
 %%====================================================================
@@ -135,6 +190,7 @@ init([#node_spec{} = Spec]) ->
         gpus = Spec#node_spec.gpus,
         gpus_used = 0,
         state = up,
+        drain_reason = undefined,
         features = Spec#node_spec.features,
         partitions = Spec#node_spec.partitions,
         jobs = [],
@@ -193,6 +249,44 @@ handle_call(get_info, _From, State) ->
 
 handle_call(list_jobs, _From, State) ->
     {reply, {ok, State#node_state.jobs}, State};
+
+%% Drain mode operations
+handle_call({drain, Reason}, _From, State) ->
+    UpdatedState = State#node_state{
+        state = drain,
+        drain_reason = Reason
+    },
+    notify_state_change(UpdatedState),
+    %% Notify scheduler about drain
+    catch flurm_scheduler:trigger_schedule(),
+    {reply, ok, UpdatedState};
+
+handle_call(undrain, _From, State) ->
+    %% Only undrain if currently in drain state
+    case State#node_state.state of
+        drain ->
+            UpdatedState = State#node_state{
+                state = up,
+                drain_reason = undefined
+            },
+            notify_state_change(UpdatedState),
+            %% Notify scheduler that node is available again
+            catch flurm_scheduler:trigger_schedule(),
+            {reply, ok, UpdatedState};
+        _ ->
+            {reply, {error, not_draining}, State}
+    end;
+
+handle_call(get_drain_reason, _From, State) ->
+    case State#node_state.state of
+        drain ->
+            {reply, {ok, State#node_state.drain_reason}, State};
+        _ ->
+            {reply, {error, not_draining}, State}
+    end;
+
+handle_call(is_draining, _From, State) ->
+    {reply, State#node_state.state =:= drain, State};
 
 handle_call(_Request, _From, State) ->
     {reply, {error, unknown_request}, State}.
@@ -253,6 +347,7 @@ build_node_info(#node_state{} = State) ->
         gpus_used => State#node_state.gpus_used,
         gpus_available => State#node_state.gpus - State#node_state.gpus_used,
         state => State#node_state.state,
+        drain_reason => State#node_state.drain_reason,
         features => State#node_state.features,
         partitions => State#node_state.partitions,
         jobs => State#node_state.jobs,

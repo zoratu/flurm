@@ -56,21 +56,22 @@
 %%% String Packing
 %%%===================================================================
 
-%% @doc Pack a string as length-prefixed binary.
+%% @doc Pack a string as length-prefixed binary with null terminator.
 %%
-%% Format: <<Length:32/big, Data/binary>>
-%% An empty binary is encoded as <<0:32/big>> (zero length).
-%% The atom 'undefined' or 'null' is encoded as <<16#FFFFFFFF:32/big>> (NO_VAL).
+%% Format: <<Length:32/big, Data/binary, 0:8>>
+%% SLURM uses strlen(str)+1 which INCLUDES the null terminator in the length.
+%% An empty binary, undefined, or null is encoded as <<0:32/big>> (zero length).
 -spec pack_string(binary() | undefined | null) -> binary().
 pack_string(undefined) ->
-    <<?SLURM_NO_VAL:32/big>>;
+    <<0:32/big>>;  % Empty/NULL string - length 0, no data
 pack_string(null) ->
-    <<?SLURM_NO_VAL:32/big>>;
+    <<0:32/big>>;  % Empty/NULL string - length 0, no data
 pack_string(<<>>) ->
-    <<0:32/big>>;
+    <<0:32/big>>;  % Empty string - length 0, no data
 pack_string(Binary) when is_binary(Binary) ->
-    Length = byte_size(Binary),
-    <<Length:32/big, Binary/binary>>;
+    %% SLURM includes null terminator in length (strlen+1)
+    Length = byte_size(Binary) + 1,
+    <<Length:32/big, Binary/binary, 0:8>>;
 pack_string(List) when is_list(List) ->
     pack_string(list_to_binary(List)).
 

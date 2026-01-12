@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: flurm
+  labels:
+    app.kubernetes.io/name: flurm
+    app.kubernetes.io/component: namespace

@@ -1,0 +1,23 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: flurm
+
+resources:
+- namespace.yaml
+- config.yaml
+- controller-statefulset.yaml
+- node-daemonset.yaml
+- dbd-deployment.yaml
+
+images:
+- name: flurm/flurmctld
+  newTag: latest
+- name: flurm/flurmnd
+  newTag: latest
+- name: flurm/flurmbd
+  newTag: latest
+
+commonLabels:
+  app.kubernetes.io/part-of: flurm
+  app.kubernetes.io/managed-by: kustomize

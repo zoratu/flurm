@@ -12,8 +12,13 @@
     ]},
     {env, [
         {controller_host, "localhost"},
-        {controller_port, 6818},
-        {heartbeat_interval, 10000}
+        {controller_port, 6819},
+        {heartbeat_interval, 30000},  % 30 seconds
+        %% Prolog/Epilog scripts - uncomment to enable
+        %% {prolog_path, "/etc/flurm/prolog.sh"},
+        %% {epilog_path, "/etc/flurm/epilog.sh"},
+        %% State persistence
+        {state_file, "/var/lib/flurm/node_state.dat"}
     ]},
     {modules, []},
     {licenses, ["GPL-3.0"]},

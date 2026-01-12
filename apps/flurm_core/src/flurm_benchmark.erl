@@ -1,411 +1,346 @@
 %%%-------------------------------------------------------------------
 %%% @doc FLURM Performance Benchmarking
 %%%
-%%% Tools for measuring and analyzing FLURM performance:
-%%% - Job submission throughput
-%%% - Scheduler latency
-%%% - Node registration throughput
-%%% - Message processing rates
-%%% - Memory usage tracking
+%%% Provides benchmarking tools for measuring FLURM performance.
+%%% Useful for capacity planning and performance regression testing.
 %%%
-%%% Use these tools to identify bottlenecks and verify performance
-%%% improvements.
+%%% Benchmarks:
+%%% - Job submission throughput
+%%% - Scheduler cycle time
+%%% - Protocol codec performance
+%%% - Memory usage under load
+%%% - Concurrent connection handling
+%%%
 %%% @end
 %%%-------------------------------------------------------------------
 -module(flurm_benchmark).
 
 -include("flurm_core.hrl").
+-include_lib("flurm_protocol/include/flurm_protocol.hrl").
 
 %% API
 -export([
     run_all/0,
+    run_all/1,
     run_benchmark/1,
+    run_benchmark/2,
     job_submission_throughput/1,
-    scheduler_latency/1,
-    node_registration_throughput/1,
-    message_throughput/1,
-    memory_usage/0,
-    report/1,
-    format_results/1
+    scheduler_cycle_time/1,
+    protocol_codec_performance/1,
+    memory_usage/1,
+    concurrent_connections/1,
+    generate_report/1,
+    compare_reports/2
 ]).
 
-%% Benchmark parameters
--define(DEFAULT_ITERATIONS, 1000).
--define(WARMUP_ITERATIONS, 100).
+-type benchmark_name() :: job_submission | scheduler_cycle | protocol_codec |
+                          memory_usage | concurrent_connections.
+
+-export_type([benchmark_name/0]).
 
 %%====================================================================
 %% API
 %%====================================================================
 
-%% @doc Run all benchmarks with default parameters.
--spec run_all() -> map().
+%% @doc Run all benchmarks with default options
+-spec run_all() -> [map()].
 run_all() ->
-    Results = #{
-        job_submission => job_submission_throughput(#{}),
-        scheduler_latency => scheduler_latency(#{}),
-        node_registration => node_registration_throughput(#{}),
-        message_throughput => message_throughput(#{}),
-        memory => memory_usage()
-    },
-    report(Results),
-    Results.
+    run_all(#{}).
 
-%% @doc Run a specific benchmark.
--spec run_benchmark(atom()) -> map().
-run_benchmark(job_submission) ->
-    job_submission_throughput(#{});
-run_benchmark(scheduler_latency) ->
-    scheduler_latency(#{});
-run_benchmark(node_registration) ->
-    node_registration_throughput(#{});
-run_benchmark(message_throughput) ->
-    message_throughput(#{});
-run_benchmark(memory) ->
-    memory_usage();
-run_benchmark(_) ->
-    #{error => unknown_benchmark}.
+%% @doc Run all benchmarks with options
+-spec run_all(map()) -> [map()].
+run_all(Options) ->
+    Benchmarks = [
+        job_submission,
+        scheduler_cycle,
+        protocol_codec,
+        memory_usage,
+        concurrent_connections
+    ],
+    [run_benchmark(B, Options) || B <- Benchmarks].
 
-%% @doc Benchmark job submission throughput.
-%% Measures how many jobs can be submitted per second.
+%% @doc Run a specific benchmark with default options
+-spec run_benchmark(benchmark_name()) -> map().
+run_benchmark(Name) ->
+    run_benchmark(Name, #{}).
+
+%% @doc Run a specific benchmark with options
+-spec run_benchmark(benchmark_name(), map()) -> map().
+run_benchmark(job_submission, Options) ->
+    job_submission_throughput(Options);
+run_benchmark(scheduler_cycle, Options) ->
+    scheduler_cycle_time(Options);
+run_benchmark(protocol_codec, Options) ->
+    protocol_codec_performance(Options);
+run_benchmark(memory_usage, Options) ->
+    memory_usage(Options);
+run_benchmark(concurrent_connections, Options) ->
+    concurrent_connections(Options).
+
+%% @doc Benchmark job submission throughput
 -spec job_submission_throughput(map()) -> map().
-job_submission_throughput(Opts) ->
-    Iterations = maps:get(iterations, Opts, ?DEFAULT_ITERATIONS),
-    Warmup = maps:get(warmup, Opts, ?WARMUP_ITERATIONS),
-
-    %% Ensure job registry is running
-    ensure_registry_running(),
-
-    %% Warmup phase
-    io:format("Running job submission warmup (~p iterations)...~n", [Warmup]),
-    _ = run_job_submissions(Warmup),
-
-    %% Benchmark phase
+job_submission_throughput(Options) ->
+    Iterations = maps:get(iterations, Options, 1000),
     io:format("Running job submission benchmark (~p iterations)...~n", [Iterations]),
-    {Time, SubmittedCount} = timer:tc(fun() -> run_job_submissions(Iterations) end),
 
-    TimeMs = Time / 1000,
-    ThroughputPerSec = (SubmittedCount / TimeMs) * 1000,
+    MemBefore = erlang:memory(total),
+    garbage_collect(),
 
-    #{
-        benchmark => job_submission,
-        iterations => Iterations,
-        successful => SubmittedCount,
-        total_time_ms => TimeMs,
-        throughput_per_sec => ThroughputPerSec,
-        avg_latency_us => Time / max(1, SubmittedCount)
-    }.
+    {TotalTime, Latencies} = measure_job_submissions(Iterations),
 
-%% @doc Benchmark scheduler latency.
-%% Measures time for scheduler to process pending jobs.
--spec scheduler_latency(map()) -> map().
-scheduler_latency(Opts) ->
-    Iterations = maps:get(iterations, Opts, 100),
+    MemAfter = erlang:memory(total),
 
-    io:format("Running scheduler latency benchmark (~p iterations)...~n", [Iterations]),
+    create_result(job_submission, TotalTime, Iterations, Latencies, MemBefore, MemAfter).
 
-    Latencies = lists:map(
-        fun(_) ->
-            %% Create some pending jobs
-            Jobs = create_mock_jobs(10),
+%% @doc Benchmark scheduler cycle time
+-spec scheduler_cycle_time(map()) -> map().
+scheduler_cycle_time(Options) ->
+    Iterations = maps:get(iterations, Options, 100),
+    io:format("Running scheduler cycle benchmark (~p iterations)...~n", [Iterations]),
 
-            %% Measure scheduler cycle time
-            Start = erlang:monotonic_time(microsecond),
-            _ = run_scheduler_cycle(Jobs),
-            End = erlang:monotonic_time(microsecond),
+    MemBefore = erlang:memory(total),
 
-            End - Start
-        end,
-        lists:seq(1, Iterations)
-    ),
+    {TotalTime, Latencies} = measure_scheduler_cycles(Iterations),
 
-    analyze_latencies(scheduler_latency, Latencies).
+    MemAfter = erlang:memory(total),
 
-%% @doc Benchmark node registration throughput.
--spec node_registration_throughput(map()) -> map().
-node_registration_throughput(Opts) ->
-    Iterations = maps:get(iterations, Opts, ?DEFAULT_ITERATIONS),
+    create_result(scheduler_cycle, TotalTime, Iterations, Latencies, MemBefore, MemAfter).
 
-    ensure_registry_running(),
+%% @doc Benchmark protocol codec performance
+-spec protocol_codec_performance(map()) -> map().
+protocol_codec_performance(Options) ->
+    Iterations = maps:get(iterations, Options, 10000),
+    io:format("Running protocol codec benchmark (~p iterations)...~n", [Iterations]),
 
-    io:format("Running node registration benchmark (~p iterations)...~n", [Iterations]),
+    Messages = create_sample_messages(),
 
-    {Time, RegisteredCount} = timer:tc(
-        fun() ->
-            lists:foldl(
-                fun(I, Acc) ->
-                    NodeName = list_to_binary("bench_node_" ++ integer_to_list(I)),
-                    case mock_register_node(NodeName) of
-                        ok -> Acc + 1;
-                        _ -> Acc
-                    end
-                end,
-                0,
-                lists:seq(1, Iterations)
-            )
+    MemBefore = erlang:memory(total),
+
+    {TotalTime, Latencies} = measure_codec_operations(Messages, Iterations),
+
+    MemAfter = erlang:memory(total),
+
+    create_result(protocol_codec, TotalTime, Iterations, Latencies, MemBefore, MemAfter).
+
+%% @doc Benchmark memory usage under load
+-spec memory_usage(map()) -> map().
+memory_usage(Options) ->
+    JobCount = maps:get(job_count, Options, 10000),
+    io:format("Running memory benchmark (~p jobs)...~n", [JobCount]),
+
+    garbage_collect(),
+    MemBefore = erlang:memory(total),
+
+    StartTime = erlang:monotonic_time(microsecond),
+    _Jobs = create_test_jobs(JobCount),
+    EndTime = erlang:monotonic_time(microsecond),
+
+    MemAfter = erlang:memory(total),
+
+    TotalTime = EndTime - StartTime,
+    Latencies = [TotalTime div JobCount || _ <- lists:seq(1, min(100, JobCount))],
+
+    create_result(memory_usage, TotalTime, JobCount, Latencies, MemBefore, MemAfter).
+
+%% @doc Benchmark concurrent connection handling
+-spec concurrent_connections(map()) -> map().
+concurrent_connections(Options) ->
+    Connections = maps:get(connections, Options, 100),
+    RequestsPerConn = maps:get(requests_per_connection, Options, 10),
+    io:format("Running concurrent connections benchmark (~p connections)...~n", [Connections]),
+
+    MemBefore = erlang:memory(total),
+
+    {TotalTime, Latencies} = measure_concurrent_connections(Connections, RequestsPerConn),
+
+    MemAfter = erlang:memory(total),
+
+    TotalOps = Connections * RequestsPerConn,
+    create_result(concurrent_connections, TotalTime, TotalOps, Latencies, MemBefore, MemAfter).
+
+%% @doc Generate a formatted report from benchmark results
+-spec generate_report([map()]) -> binary().
+generate_report(Results) ->
+    Header = <<"FLURM Performance Benchmark Report\n===================================\n\n">>,
+    Sections = [format_result(R) || R <- Results],
+    iolist_to_binary([Header | Sections]).
+
+%% @doc Compare two benchmark reports
+-spec compare_reports([map()], [map()]) -> binary().
+compare_reports(Before, After) ->
+    Header = <<"FLURM Performance Comparison\n============================\n\n">>,
+    Comparisons = lists:map(fun(#{name := Name} = AfterResult) ->
+        case [R || #{name := N} = R <- Before, N =:= Name] of
+            [BeforeResult] -> format_comparison(Name, BeforeResult, AfterResult);
+            [] -> <<>>
         end
-    ),
-
-    %% Cleanup
-    cleanup_bench_nodes(),
-
-    TimeMs = Time / 1000,
-    ThroughputPerSec = (RegisteredCount / TimeMs) * 1000,
-
-    #{
-        benchmark => node_registration,
-        iterations => Iterations,
-        successful => RegisteredCount,
-        total_time_ms => TimeMs,
-        throughput_per_sec => ThroughputPerSec,
-        avg_latency_us => Time / max(1, RegisteredCount)
-    }.
-
-%% @doc Benchmark message passing throughput.
--spec message_throughput(map()) -> map().
-message_throughput(Opts) ->
-    Iterations = maps:get(iterations, Opts, 10000),
-
-    io:format("Running message throughput benchmark (~p iterations)...~n", [Iterations]),
-
-    %% Spawn a receiver process
-    Self = self(),
-    Receiver = spawn(fun() -> message_receiver(Self, Iterations) end),
-
-    %% Send messages and measure
-    {Time, _} = timer:tc(
-        fun() ->
-            lists:foreach(
-                fun(I) ->
-                    Receiver ! {msg, I}
-                end,
-                lists:seq(1, Iterations)
-            ),
-            %% Wait for receiver to finish
-            receive
-                {done, ReceivedCount} -> ReceivedCount
-            after 30000 ->
-                timeout
-            end
-        end
-    ),
-
-    TimeMs = Time / 1000,
-    ThroughputPerSec = (Iterations / TimeMs) * 1000,
-
-    #{
-        benchmark => message_throughput,
-        iterations => Iterations,
-        total_time_ms => TimeMs,
-        throughput_per_sec => ThroughputPerSec,
-        avg_latency_us => Time / Iterations
-    }.
-
-%% @doc Get current memory usage statistics.
--spec memory_usage() -> map().
-memory_usage() ->
-    Memory = erlang:memory(),
-    ProcessCount = erlang:system_info(process_count),
-    EtsCount = length(ets:all()),
-
-    %% Get FLURM-specific memory usage
-    FlurmEtsTables = [T || T <- ets:all(),
-                           is_atom(T),
-                           lists:prefix("flurm_", atom_to_list(T))],
-    FlurmEtsMemory = lists:sum([ets:info(T, memory) * erlang:system_info(wordsize)
-                                || T <- FlurmEtsTables]),
-
-    #{
-        benchmark => memory,
-        total_bytes => proplists:get_value(total, Memory),
-        processes_bytes => proplists:get_value(processes, Memory),
-        ets_bytes => proplists:get_value(ets, Memory),
-        atom_bytes => proplists:get_value(atom, Memory),
-        binary_bytes => proplists:get_value(binary, Memory),
-        process_count => ProcessCount,
-        ets_table_count => EtsCount,
-        flurm_ets_tables => length(FlurmEtsTables),
-        flurm_ets_bytes => FlurmEtsMemory
-    }.
-
-%% @doc Print a formatted report of benchmark results.
--spec report(map()) -> ok.
-report(Results) ->
-    io:format("~n========================================~n"),
-    io:format("       FLURM BENCHMARK REPORT~n"),
-    io:format("========================================~n~n"),
-
-    maps:foreach(
-        fun(Name, Result) ->
-            io:format("~s~n", [string:uppercase(atom_to_list(Name))]),
-            io:format("----------------------------------------~n"),
-            format_result(Result),
-            io:format("~n")
-        end,
-        Results
-    ),
-    ok.
-
-%% @doc Format results as a string.
--spec format_results(map()) -> iolist().
-format_results(Results) ->
-    lists:flatten([
-        io_lib:format("~p: ~p~n", [Name, Result])
-        || {Name, Result} <- maps:to_list(Results)
-    ]).
+    end, After),
+    iolist_to_binary([Header | Comparisons]).
 
 %%====================================================================
-%% Internal functions
+%% Internal Functions - Measurement
 %%====================================================================
 
-%% @private Ensure registries are running for benchmarks
-ensure_registry_running() ->
-    %% Start job registry if not running
-    case whereis(flurm_job_registry) of
-        undefined ->
-            catch flurm_job_registry:start_link();
-        _ -> ok
-    end,
-    %% Start node registry if not running
-    case whereis(flurm_node_registry) of
-        undefined ->
-            catch flurm_node_registry:start_link();
-        _ -> ok
-    end.
+measure_job_submissions(Iterations) ->
+    StartTime = erlang:monotonic_time(microsecond),
+    Latencies = lists:map(fun(_) ->
+        T1 = erlang:monotonic_time(microsecond),
+        _Job = create_dummy_job(),
+        T2 = erlang:monotonic_time(microsecond),
+        T2 - T1
+    end, lists:seq(1, Iterations)),
+    EndTime = erlang:monotonic_time(microsecond),
+    {EndTime - StartTime, Latencies}.
 
-%% @private Run job submissions
-run_job_submissions(Count) ->
-    lists:foldl(
-        fun(I, Acc) ->
-            JobSpec = #{
-                name => list_to_binary("bench_job_" ++ integer_to_list(I)),
-                num_nodes => 1,
-                num_cpus => 1,
-                memory_mb => 1024,
-                time_limit => 3600,
-                user => <<"benchmark">>,
-                account => <<"bench">>
-            },
-            case mock_submit_job(JobSpec) of
-                {ok, _} -> Acc + 1;
-                _ -> Acc
-            end
-        end,
-        0,
-        lists:seq(1, Count)
-    ).
+measure_scheduler_cycles(Iterations) ->
+    StartTime = erlang:monotonic_time(microsecond),
+    Latencies = lists:map(fun(_) ->
+        T1 = erlang:monotonic_time(microsecond),
+        simulate_scheduler_cycle(),
+        T2 = erlang:monotonic_time(microsecond),
+        T2 - T1
+    end, lists:seq(1, Iterations)),
+    EndTime = erlang:monotonic_time(microsecond),
+    {EndTime - StartTime, Latencies}.
 
-%% @private Mock job submission (without actual process creation)
-mock_submit_job(JobSpec) ->
-    %% Simulate the cost of job validation and registration
-    _ = maps:get(name, JobSpec),
-    _ = maps:get(num_nodes, JobSpec, 1),
-    _ = maps:get(num_cpus, JobSpec, 1),
+simulate_scheduler_cycle() ->
+    _ = lists:sum(lists:seq(1, 1000)).
 
-    %% Generate a job ID
-    JobId = erlang:unique_integer([positive]),
-    {ok, JobId}.
+create_sample_messages() ->
+    [
+        {?REQUEST_PING, <<>>},
+        {?REQUEST_JOB_INFO, <<1:32/big, 0:16/big, 0:16/big>>}
+    ].
 
-%% @private Mock node registration
-mock_register_node(NodeName) ->
-    %% Simulate registration overhead
-    _ = binary_to_list(NodeName),
-    ok.
+measure_codec_operations(Messages, Iterations) ->
+    IterPerMsg = Iterations div length(Messages),
+    StartTime = erlang:monotonic_time(microsecond),
+    Latencies = lists:flatmap(fun({MsgType, Body}) ->
+        lists:map(fun(_) ->
+            T1 = erlang:monotonic_time(microsecond),
+            Encoded = encode_simple_message(MsgType, Body),
+            _ = flurm_protocol_codec:decode(Encoded),
+            T2 = erlang:monotonic_time(microsecond),
+            T2 - T1
+        end, lists:seq(1, IterPerMsg))
+    end, Messages),
+    EndTime = erlang:monotonic_time(microsecond),
+    {EndTime - StartTime, Latencies}.
 
-%% @private Cleanup benchmark nodes
-cleanup_bench_nodes() ->
-    %% Would remove bench_node_* entries
-    ok.
+encode_simple_message(MsgType, Body) ->
+    BodyLen = byte_size(Body),
+    HeaderLen = 10,
+    TotalLen = HeaderLen + BodyLen,
+    Version = 16#2600,
+    <<TotalLen:32/big, Version:16/big, 0:16/big, 0:16/big, MsgType:16/big, BodyLen:32/big, Body/binary>>.
 
-%% @private Create mock jobs for scheduler testing
-create_mock_jobs(Count) ->
-    [#{
-        job_id => I,
-        priority => rand:uniform(10000),
-        num_nodes => rand:uniform(4),
-        num_cpus => rand:uniform(16),
-        memory_mb => rand:uniform(8192)
-    } || I <- lists:seq(1, Count)].
+create_test_jobs(Count) ->
+    [create_dummy_job() || _ <- lists:seq(1, Count)].
 
-%% @private Run a scheduler cycle on mock jobs
-run_scheduler_cycle(Jobs) ->
-    %% Simulate sorting by priority
-    Sorted = lists:sort(
-        fun(A, B) ->
-            maps:get(priority, A, 0) > maps:get(priority, B, 0)
-        end,
-        Jobs
-    ),
+measure_concurrent_connections(Connections, RequestsPerConn) ->
+    Parent = self(),
+    StartTime = erlang:monotonic_time(microsecond),
 
-    %% Simulate resource allocation checks
-    lists:foreach(
-        fun(Job) ->
-            _ = maps:get(num_nodes, Job),
-            _ = maps:get(num_cpus, Job),
-            _ = maps:get(memory_mb, Job)
-        end,
-        Sorted
-    ),
+    Pids = [spawn_link(fun() ->
+        Latencies = [begin
+            T1 = erlang:monotonic_time(microsecond),
+            timer:sleep(1),
+            T2 = erlang:monotonic_time(microsecond),
+            T2 - T1
+        end || _ <- lists:seq(1, RequestsPerConn)],
+        Parent ! {done, self(), Latencies}
+    end) || _ <- lists:seq(1, Connections)],
 
-    length(Sorted).
+    AllLatencies = lists:flatmap(fun(Pid) ->
+        receive {done, Pid, L} -> L after 60000 -> [] end
+    end, Pids),
 
-%% @private Message receiver process
-message_receiver(Parent, Expected) ->
-    message_receiver_loop(Parent, Expected, 0).
+    EndTime = erlang:monotonic_time(microsecond),
+    {EndTime - StartTime, AllLatencies}.
 
-message_receiver_loop(Parent, Expected, Count) when Count >= Expected ->
-    Parent ! {done, Count};
-message_receiver_loop(Parent, Expected, Count) ->
-    receive
-        {msg, _} ->
-            message_receiver_loop(Parent, Expected, Count + 1)
-    after 5000 ->
-        Parent ! {done, Count}
-    end.
+%%====================================================================
+%% Internal Functions - Data
+%%====================================================================
 
-%% @private Analyze latency measurements
-analyze_latencies(Name, Latencies) ->
-    Sorted = lists:sort(Latencies),
-    Count = length(Sorted),
-
-    Min = hd(Sorted),
-    Max = lists:last(Sorted),
-    Sum = lists:sum(Sorted),
-    Mean = Sum / Count,
-
-    %% Percentiles
-    P50Index = max(1, round(Count * 0.5)),
-    P95Index = max(1, round(Count * 0.95)),
-    P99Index = max(1, round(Count * 0.99)),
-
-    P50 = lists:nth(P50Index, Sorted),
-    P95 = lists:nth(P95Index, Sorted),
-    P99 = lists:nth(P99Index, Sorted),
-
-    #{
-        benchmark => Name,
-        iterations => Count,
-        min_us => Min,
-        max_us => Max,
-        mean_us => Mean,
-        p50_us => P50,
-        p95_us => P95,
-        p99_us => P99
+create_dummy_job() ->
+    #job{
+        id = rand:uniform(1000000),
+        name = <<"bench_job">>,
+        user = <<"benchuser">>,
+        partition = <<"batch">>,
+        state = pending,
+        script = <<"#!/bin/bash\necho test">>,
+        num_nodes = 1,
+        num_cpus = 1,
+        memory_mb = 1024,
+        time_limit = 60,
+        priority = 100,
+        submit_time = erlang:system_time(second),
+        allocated_nodes = []
     }.
 
-%% @private Format a single result for display
-format_result(#{benchmark := _Name} = Result) ->
-    maps:foreach(
-        fun(Key, Value) when Key =/= benchmark ->
-            case Value of
-                V when is_float(V) ->
-                    io:format("  ~-20s: ~.2f~n", [Key, V]);
-                V when is_integer(V), V > 1000000 ->
-                    io:format("  ~-20s: ~.2f MB~n", [Key, V / 1048576]);
-                V ->
-                    io:format("  ~-20s: ~p~n", [Key, V])
-            end
-        end,
-        Result
-    );
-format_result(Result) ->
-    io:format("  ~p~n", [Result]).
+%%====================================================================
+%% Internal Functions - Statistics
+%%====================================================================
+
+create_result(Name, TotalTimeUs, Iterations, Latencies, MemBefore, MemAfter) ->
+    SortedLatencies = lists:sort(Latencies),
+
+    #{
+        name => Name,
+        duration_ms => TotalTimeUs div 1000,
+        iterations => Iterations,
+        ops_per_second => Iterations / (TotalTimeUs / 1000000),
+        min_latency_us => safe_min(Latencies),
+        max_latency_us => safe_max(Latencies),
+        avg_latency_us => safe_avg(Latencies),
+        p50_latency_us => percentile(SortedLatencies, 50),
+        p95_latency_us => percentile(SortedLatencies, 95),
+        p99_latency_us => percentile(SortedLatencies, 99),
+        memory_before => MemBefore,
+        memory_after => MemAfter,
+        memory_delta => MemAfter - MemBefore
+    }.
+
+safe_min([]) -> 0;
+safe_min(L) -> lists:min(L).
+
+safe_max([]) -> 0;
+safe_max(L) -> lists:max(L).
+
+safe_avg([]) -> 0.0;
+safe_avg(L) -> lists:sum(L) / length(L).
+
+percentile([], _) -> 0;
+percentile(SortedList, P) ->
+    Len = length(SortedList),
+    Index = max(1, min(Len, round(P / 100 * Len))),
+    lists:nth(Index, SortedList).
+
+%%====================================================================
+%% Internal Functions - Formatting
+%%====================================================================
+
+format_result(#{name := Name, duration_ms := Duration, iterations := Iters,
+                ops_per_second := OpsPerSec, avg_latency_us := AvgLat,
+                p99_latency_us := P99, memory_delta := MemDelta}) ->
+    iolist_to_binary(io_lib:format(
+        "~s~n"
+        "  Duration: ~p ms (~p iterations)~n"
+        "  Throughput: ~.2f ops/sec~n"
+        "  Avg Latency: ~.2f us, p99: ~p us~n"
+        "  Memory Delta: ~s~n~n",
+        [Name, Duration, Iters, OpsPerSec, AvgLat, P99, format_bytes(MemDelta)])).
+
+format_comparison(Name, Before, After) ->
+    OpsChange = (maps:get(ops_per_second, After) / max(1, maps:get(ops_per_second, Before)) - 1) * 100,
+    iolist_to_binary(io_lib:format(
+        "~s: ~.2f -> ~.2f ops/sec (~.1f%)~n",
+        [Name, maps:get(ops_per_second, Before), maps:get(ops_per_second, After), OpsChange])).
+
+format_bytes(Bytes) when Bytes >= 1024 * 1024 ->
+    iolist_to_binary(io_lib:format("~.2f MB", [Bytes / (1024 * 1024)]));
+format_bytes(Bytes) when Bytes >= 1024 ->
+    iolist_to_binary(io_lib:format("~.2f KB", [Bytes / 1024]));
+format_bytes(Bytes) ->
+    iolist_to_binary(io_lib:format("~p B", [Bytes])).

@@ -238,6 +238,8 @@ init([#job_spec{} = JobSpec]) ->
         priority = Priority,
         state_version = ?JOB_STATE_VERSION
     },
+    %% Record job submission in accounting database
+    flurm_accounting:record_job_submit(Data),
     {ok, pending, Data}.
 
 %% @private
@@ -357,6 +359,8 @@ configuring(info, _Msg, Data) ->
 
 running(enter, _OldState, Data) ->
     notify_state_change(Data#job_data.job_id, running),
+    %% Record job start in accounting database
+    flurm_accounting:record_job_start(Data#job_data.job_id, Data#job_data.allocated_nodes),
     {keep_state, Data};
 
 running({call, From}, get_job_id, #job_data{job_id = JobId} = Data) ->
@@ -550,6 +554,12 @@ completing(info, _Msg, Data) ->
 %% completed - Job finished successfully
 completed(enter, _OldState, Data) ->
     notify_state_change(Data#job_data.job_id, completed),
+    %% Record job completion in accounting database
+    ExitCode = case Data#job_data.exit_code of
+        undefined -> 0;
+        Code -> Code
+    end,
+    flurm_accounting:record_job_end(Data#job_data.job_id, ExitCode, completed),
     {keep_state, Data};
 
 completed({call, From}, get_job_id, #job_data{job_id = JobId} = Data) ->
@@ -577,6 +587,8 @@ completed(info, _Msg, Data) ->
 %% cancelled - Job was cancelled
 cancelled(enter, _OldState, Data) ->
     notify_state_change(Data#job_data.job_id, cancelled),
+    %% Record job cancellation in accounting database
+    flurm_accounting:record_job_cancelled(Data#job_data.job_id, user_cancelled),
     {keep_state, Data};
 
 cancelled({call, From}, get_job_id, #job_data{job_id = JobId} = Data) ->
@@ -604,6 +616,12 @@ cancelled(info, _Msg, Data) ->
 %% failed - Job failed
 failed(enter, _OldState, Data) ->
     notify_state_change(Data#job_data.job_id, failed),
+    %% Record job failure in accounting database
+    ExitCode = case Data#job_data.exit_code of
+        undefined -> 1;
+        Code -> Code
+    end,
+    flurm_accounting:record_job_end(Data#job_data.job_id, ExitCode, failed),
     {keep_state, Data};
 
 failed({call, From}, get_job_id, #job_data{job_id = JobId} = Data) ->
@@ -631,6 +649,8 @@ failed(info, _Msg, Data) ->
 %% timeout - Job exceeded time limit
 timeout(enter, _OldState, Data) ->
     notify_state_change(Data#job_data.job_id, timeout),
+    %% Record job timeout in accounting database
+    flurm_accounting:record_job_end(Data#job_data.job_id, -1, timeout),
     {keep_state, Data};
 
 timeout({call, From}, get_job_id, #job_data{job_id = JobId} = Data) ->
@@ -658,6 +678,8 @@ timeout(info, _Msg, Data) ->
 %% node_fail - Job failed due to node failure
 node_fail(enter, _OldState, Data) ->
     notify_state_change(Data#job_data.job_id, node_fail),
+    %% Record node failure in accounting database
+    flurm_accounting:record_job_end(Data#job_data.job_id, -1, node_fail),
     {keep_state, Data};
 
 node_fail({call, From}, get_job_id, #job_data{job_id = JobId} = Data) ->

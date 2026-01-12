@@ -75,6 +75,23 @@ init(Ref, Transport, Opts) ->
 loop(#{socket := Socket, transport := Transport, buffer := Buffer} = State) ->
     case Transport:recv(Socket, 0, ?RECV_TIMEOUT) of
         {ok, Data} ->
+            %% Log incoming data hex prefix for debugging
+            InHex = case byte_size(Data) of
+                N when N >= 24 ->
+                    <<First24:24/binary, _/binary>> = Data,
+                    binary_to_hex(First24);
+                _ ->
+                    binary_to_hex(Data)
+            end,
+            lager:info("Received ~p bytes, hex=~s", [byte_size(Data), InHex]),
+            %% Log full header info for debugging (skip 4-byte outer length)
+            case byte_size(Data) >= 14 of
+                true ->
+                    <<_OL:32/big, V:16/big, F:16/big, MT:16/big, BL:32/big, _/binary>> = Data,
+                    lager:info("Header: version=~.16B flags=~.16B msg_type=~p body_len=~p",
+                              [V, F, MT, BL]);
+                false -> ok
+            end,
             NewBuffer = <<Buffer/binary, Data/binary>>,
             case process_buffer(NewBuffer, State) of
                 {continue, UpdatedState} ->
@@ -186,17 +203,25 @@ handle_message(MessageBin, #{socket := Socket, transport := Transport,
     end.
 
 %% @doc Send a response message back to the client.
-%% Uses encode_response which includes auth section at beginning (required by real SLURM clients).
+%% All responses use encode_response which includes auth section.
 -spec send_response(inet:socket(), module(), non_neg_integer(), term()) -> ok | {error, term()}.
 send_response(Socket, Transport, MsgType, Body) ->
-    %% Use encode_response - includes auth section (auth/none) at beginning of body
     case flurm_protocol_codec:encode_response(MsgType, Body) of
         {ok, ResponseBin} ->
+            %% Log hex of first 24 bytes for debugging
+            HexPrefix = case byte_size(ResponseBin) of
+                N when N >= 24 ->
+                    <<First24:24/binary, _/binary>> = ResponseBin,
+                    binary_to_hex(First24);
+                _ ->
+                    binary_to_hex(ResponseBin)
+            end,
+            lager:info("Sending response type=~p (~s) size=~p hex=~s",
+                       [MsgType, flurm_protocol_codec:message_type_name(MsgType),
+                        byte_size(ResponseBin), HexPrefix]),
             case Transport:send(Socket, ResponseBin) of
                 ok ->
-                    lager:debug("Sent response type: ~p (~p) with ~p bytes",
-                                [MsgType, flurm_protocol_codec:message_type_name(MsgType),
-                                 byte_size(ResponseBin)]),
+                    lager:info("Response sent successfully"),
                     ok;
                 {error, Reason} ->
                     lager:warning("Failed to send response: ~p", [Reason]),
@@ -206,6 +231,10 @@ send_response(Socket, Transport, MsgType, Body) ->
             lager:warning("Failed to encode response: ~p", [Reason]),
             {error, Reason}
     end.
+
+%% Helper to convert binary to hex string
+binary_to_hex(Bin) ->
+    list_to_binary([[io_lib:format("~2.16.0B", [B]) || B <- binary_to_list(Bin)]]).
 
 %%====================================================================
 %% Connection Management

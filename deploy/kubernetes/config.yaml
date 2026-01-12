@@ -1,0 +1,91 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: flurm-config
+  namespace: flurm
+  labels:
+    app.kubernetes.io/name: flurm
+    app.kubernetes.io/component: config
+data:
+  sys.config: |
+    [
+      {flurm_controller, [
+        {cluster_name, <<"flurm-k8s">>},
+        {listen_port, 6817},
+        {ra_data_dir, "/var/lib/flurm/ra"},
+        {peer_discovery, kubernetes},
+        {k8s_service, "flurmctld-headless"},
+        {k8s_namespace, "flurm"}
+      ]},
+      {flurm_core, [
+        {scheduler_interval, 1000},
+        {heartbeat_interval, 10000},
+        {node_timeout, 60000}
+      ]},
+      {lager, [
+        {handlers, [
+          {lager_console_backend, [{level, info}]},
+          {lager_file_backend, [
+            {file, "/var/log/flurm/controller.log"},
+            {level, info},
+            {size, 10485760},
+            {date, "$D0"},
+            {count, 5}
+          ]}
+        ]}
+      ]},
+      {prometheus, [
+        {collectors, [
+          prometheus_boolean,
+          prometheus_counter,
+          prometheus_gauge,
+          prometheus_histogram,
+          prometheus_summary
+        ]}
+      ]},
+      {prometheus_httpd, [
+        {port, 9090}
+      ]}
+    ].
+  
+  vm.args: |
+    -name ${FLURM_NODE_NAME}
+    -setcookie ${ERLANG_COOKIE}
+    +K true
+    +P 1000000
+    +Q 1000000
+    -env ERL_MAX_PORTS 100000
+    -kernel inet_dist_listen_min 9100
+    -kernel inet_dist_listen_max 9155
+    +sbwt very_long
+    +swt very_low
+  
+  slurm.conf: |
+    ClusterName=flurm-k8s
+    SlurmctldPort=6817
+    SlurmdPort=6818
+    
+    # Scheduler settings
+    SchedulerType=sched/backfill
+    SelectType=select/cons_tres
+    SelectTypeParameters=CR_CPU_Memory
+    
+    # Default partition
+    PartitionName=default Nodes=ALL Default=YES MaxTime=INFINITE State=UP
+    
+    # Accounting
+    AccountingStorageType=accounting_storage/slurmdbd
+    AccountingStorageHost=flurmbd
+    AccountingStoragePort=6819
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: flurm-secrets
+  namespace: flurm
+  labels:
+    app.kubernetes.io/name: flurm
+    app.kubernetes.io/component: config
+type: Opaque
+stringData:
+  erlang-cookie: "FLURM_SUPER_SECRET_COOKIE_CHANGE_ME"

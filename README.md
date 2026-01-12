@@ -167,15 +167,31 @@ Create a `flurm.config` file:
 
 FLURM is currently in active development. The following components are implemented:
 
+### Core Components
 - [x] SLURM protocol decoder/encoder
 - [x] Basic job submission and management
 - [x] Node registration and heartbeat
 - [x] Partition management
 - [x] Fair share scheduler
-- [ ] Accounting integration
+- [x] Raft consensus integration (Ra library)
+- [x] Controller failover
+- [x] Hot code reloading (slurm.conf live reload)
+- [x] srun support (interactive jobs)
+- [x] Job steps management
+- [x] sacctmgr (accounting management)
+- [x] slurmdbd (accounting daemon)
+
+### Testing & Verification
+- [x] Protocol fuzzing (mutation, boundary, edge case testing)
+- [x] Deterministic simulation framework (FoundationDB-style)
+- [x] Performance benchmarks (throughput, latency)
+- [x] Multi-node cluster tests
+
+### Planned Features
 - [ ] Federation support
 - [ ] GPU scheduling (GRES)
 - [ ] Burst buffer support
+- [ ] Kubernetes operator deployment
 
 ## Contributing
 

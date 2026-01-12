@@ -26,12 +26,18 @@
     get_all/0,
     reconfigure/0,
     reconfigure/1,
+    reload/0,
+    reload/1,
     subscribe/0,
     unsubscribe/0,
+    subscribe_changes/1,
+    unsubscribe_changes/0,
     get_nodes/0,
     get_partitions/0,
     get_node/1,
-    get_partition/1
+    get_partition/1,
+    get_version/0,
+    get_last_reload/0
 ]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 
@@ -41,6 +47,8 @@
     config :: map(),
     config_file :: string() | undefined,
     subscribers :: [pid()],
+    %% Subscribers with key filters: #{Pid => [Key1, Key2, ...] | all}
+    filtered_subscribers :: #{pid() => [atom()] | all},
     last_reload :: integer() | undefined,
     version :: pos_integer()
 }).
@@ -94,6 +102,38 @@ subscribe() ->
 -spec unsubscribe() -> ok.
 unsubscribe() ->
     gen_server:call(?MODULE, {unsubscribe, self()}).
+
+%% @doc Reload configuration (alias for reconfigure/0)
+-spec reload() -> ok | {error, term()}.
+reload() ->
+    reconfigure().
+
+%% @doc Reload configuration from a specific file (alias for reconfigure/1)
+-spec reload(string()) -> ok | {error, term()}.
+reload(Filename) ->
+    reconfigure(Filename).
+
+%% @doc Subscribe to configuration changes for specific keys.
+%% Keys can be a list of atoms (e.g., [nodes, partitions]) or 'all' for all changes.
+%% Notifications are sent as {config_changed, Key, OldValue, NewValue} messages.
+-spec subscribe_changes([atom()] | all) -> ok.
+subscribe_changes(Keys) when is_list(Keys); Keys =:= all ->
+    gen_server:call(?MODULE, {subscribe_changes, self(), Keys}).
+
+%% @doc Unsubscribe from filtered configuration changes
+-spec unsubscribe_changes() -> ok.
+unsubscribe_changes() ->
+    gen_server:call(?MODULE, {unsubscribe_changes, self()}).
+
+%% @doc Get the current configuration version number
+-spec get_version() -> pos_integer().
+get_version() ->
+    gen_server:call(?MODULE, get_version).
+
+%% @doc Get the timestamp of the last reload
+-spec get_last_reload() -> integer() | undefined.
+get_last_reload() ->
+    gen_server:call(?MODULE, get_last_reload).
 
 %% @doc Get all node definitions
 -spec get_nodes() -> [map()].
@@ -152,6 +192,7 @@ init(Options) ->
         config = InitialConfig,
         config_file = ConfigFile,
         subscribers = [],
+        filtered_subscribers = #{},
         last_reload = erlang:system_time(second),
         version = 1
     }}.
@@ -161,10 +202,11 @@ handle_call({get, Key, Default}, _From, #state{config = Config} = State) ->
     {reply, Value, State};
 
 handle_call({set, Key, Value}, _From, #state{config = Config, version = V} = State) ->
+    OldValue = maps:get(Key, Config, undefined),
     NewConfig = Config#{Key => Value},
     NewState = State#state{config = NewConfig, version = V + 1},
-    %% Notify subscribers of the change
-    notify_subscribers([{Key, Value}], NewState),
+    %% Notify subscribers of the change (using the new 3-tuple format)
+    notify_subscribers([{Key, OldValue, Value}], NewState),
     {reply, ok, NewState};
 
 handle_call(get_all, _From, #state{config = Config} = State) ->
@@ -194,6 +236,25 @@ handle_call({unsubscribe, Pid}, _From, #state{subscribers = Subs} = State) ->
     NewSubs = lists:delete(Pid, Subs),
     {reply, ok, State#state{subscribers = NewSubs}};
 
+handle_call({subscribe_changes, Pid, Keys}, _From, #state{filtered_subscribers = FSubs} = State) ->
+    %% Monitor the process if not already monitored
+    case maps:is_key(Pid, FSubs) of
+        false -> monitor(process, Pid);
+        true -> ok
+    end,
+    NewFSubs = FSubs#{Pid => Keys},
+    {reply, ok, State#state{filtered_subscribers = NewFSubs}};
+
+handle_call({unsubscribe_changes, Pid}, _From, #state{filtered_subscribers = FSubs} = State) ->
+    NewFSubs = maps:remove(Pid, FSubs),
+    {reply, ok, State#state{filtered_subscribers = NewFSubs}};
+
+handle_call(get_version, _From, #state{version = V} = State) ->
+    {reply, V, State};
+
+handle_call(get_last_reload, _From, #state{last_reload = LR} = State) ->
+    {reply, LR, State};
+
 handle_call(get_nodes, _From, #state{config = Config} = State) ->
     Nodes = maps:get(nodes, Config, []),
     {reply, Nodes, State};
@@ -218,9 +279,10 @@ handle_call(_Request, _From, State) ->
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
-handle_info({'DOWN', _Ref, process, Pid, _Reason}, #state{subscribers = Subs} = State) ->
+handle_info({'DOWN', _Ref, process, Pid, _Reason}, #state{subscribers = Subs, filtered_subscribers = FSubs} = State) ->
     NewSubs = lists:delete(Pid, Subs),
-    {noreply, State#state{subscribers = NewSubs}};
+    NewFSubs = maps:remove(Pid, FSubs),
+    {noreply, State#state{subscribers = NewSubs, filtered_subscribers = NewFSubs}};
 
 handle_info(_Info, State) ->
     {noreply, State}.
@@ -250,7 +312,7 @@ find_default_config() ->
 
 load_config_file(Filename) ->
     %% Determine file type by extension
-    case filename:extension(Filename) of
+    Result = case filename:extension(Filename) of
         ".conf" ->
             %% Assume slurm.conf format
             flurm_config_slurm:parse_file(Filename);
@@ -271,14 +333,21 @@ load_config_file(Filename) ->
                     {ok, Config};
                 {error, _} ->
                     case file:consult(Filename) of
-                        {ok, [Config]} when is_map(Config) ->
-                            {ok, Config};
+                        {ok, [Config2]} when is_map(Config2) ->
+                            {ok, Config2};
                         {ok, Terms} when is_list(Terms) ->
                             {ok, maps:from_list(Terms)};
                         {error, Reason} ->
                             {error, Reason}
                     end
             end
+    end,
+    %% Apply defaults to the loaded configuration
+    case Result of
+        {ok, LoadedConfig} ->
+            {ok, flurm_config_defaults:apply_defaults(LoadedConfig)};
+        Error ->
+            Error
     end.
 
 do_reconfigure(File, #state{config = OldConfig, version = V} = State) ->
@@ -360,6 +429,7 @@ validate_node_definitions(Config) ->
         _ -> {error, {invalid_nodes, InvalidNodes}}
     end.
 
+%% @doc Find changes between old and new config, returning {Key, OldValue, NewValue} tuples
 find_changes(OldConfig, NewConfig) ->
     AllKeys = lists:usort(maps:keys(OldConfig) ++ maps:keys(NewConfig)),
     lists:filtermap(fun(Key) ->
@@ -367,36 +437,70 @@ find_changes(OldConfig, NewConfig) ->
         NewVal = maps:get(Key, NewConfig, undefined),
         case OldVal =:= NewVal of
             true -> false;
-            false -> {true, {Key, NewVal}}
+            false -> {true, {Key, OldVal, NewVal}}
         end
     end, AllKeys).
 
-notify_subscribers(Changes, #state{subscribers = Subs, version = V}) ->
-    Msg = {config_changed, V, Changes},
+notify_subscribers(Changes, #state{subscribers = Subs, filtered_subscribers = FSubs, version = V}) ->
+    %% Legacy notification format for backward compatibility with subscribe/0
+    LegacyChanges = [{Key, NewVal} || {Key, _OldVal, NewVal} <- Changes],
+    Msg = {config_changed, V, LegacyChanges},
     lists:foreach(fun(Pid) ->
         Pid ! Msg
-    end, Subs).
+    end, Subs),
+
+    %% Detailed notifications for subscribe_changes/1 subscribers
+    %% Send individual {config_changed, Key, OldValue, NewValue} messages
+    maps:foreach(fun(Pid, Keys) ->
+        FilteredChanges = case Keys of
+            all -> Changes;
+            KeyList -> lists:filter(fun({K, _, _}) -> lists:member(K, KeyList) end, Changes)
+        end,
+        lists:foreach(fun({Key, OldVal, NewVal}) ->
+            Pid ! {config_changed, Key, OldVal, NewVal}
+        end, FilteredChanges)
+    end, FSubs).
 
 apply_config_changes(Changes, _Config) ->
     %% Apply relevant changes to running components
-    lists:foreach(fun({Key, Value}) ->
-        apply_single_change(Key, Value)
+    lists:foreach(fun({Key, _OldValue, NewValue}) ->
+        apply_single_change(Key, NewValue)
     end, Changes).
 
 apply_single_change(slurmctldport, _Port) ->
     %% Would need to restart listener - log warning for now
     log(warning, "SlurmctldPort changed - restart required for listener", []);
-apply_single_change(schedulertype, _Type) ->
-    %% TODO: Hot-swap scheduler
-    log(info, "SchedulerType changed - scheduler will be updated", []);
+apply_single_change(schedulertype, Type) ->
+    %% Hot-swap scheduler type
+    log(info, "SchedulerType changed to ~p - notifying scheduler", [Type]),
+    %% Trigger scheduler to refresh with new configuration
+    catch flurm_scheduler:trigger_schedule();
 apply_single_change(nodes, Nodes) ->
-    %% Update node registry
-    log(info,"Node definitions updated: ~p nodes", [length(Nodes)]);
+    %% Update node registry with new node definitions
+    log(info,"Node definitions updated: ~p nodes", [length(Nodes)]),
+    %% Send direct notification to node registry if it's running
+    catch notify_node_registry(Nodes);
 apply_single_change(partitions, Partitions) ->
-    %% Update partition registry
-    log(info,"Partition definitions updated: ~p partitions", [length(Partitions)]);
+    %% Update partition registry with new partition definitions
+    log(info,"Partition definitions updated: ~p partitions", [length(Partitions)]),
+    %% Send direct notification to partition registry if it's running
+    catch notify_partition_registry(Partitions);
 apply_single_change(Key, _Value) ->
     log(debug,"Config key ~p updated", [Key]).
+
+%% @doc Notify the node registry to update node definitions from config
+notify_node_registry(NodeDefs) ->
+    case whereis(flurm_node_registry) of
+        undefined -> ok;
+        Pid -> Pid ! {config_reload_nodes, NodeDefs}
+    end.
+
+%% @doc Notify the partition registry to update partition definitions from config
+notify_partition_registry(PartitionDefs) ->
+    case whereis(flurm_partition_registry) of
+        undefined -> ok;
+        Pid -> Pid ! {config_reload_partitions, PartitionDefs}
+    end.
 
 find_node(NodeName, Nodes) when is_binary(NodeName) ->
     lists:foldl(fun(Node, Acc) ->

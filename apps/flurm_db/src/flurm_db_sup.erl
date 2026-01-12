@@ -81,7 +81,13 @@ init(Config) ->
 %% @private
 %% Initialize ETS tables for fallback storage.
 %% Called from the supervisor so tables persist when ra_starter terminates.
+%% Also initializes DETS for disk persistence and loads existing data.
 init_ets_tables() ->
+    %% Ensure data directory exists
+    DataDir = get_data_dir(),
+    ok = filelib:ensure_dir(filename:join(DataDir, "dummy")),
+
+    %% Create ETS tables
     Tables = [flurm_db_jobs_ets, flurm_db_nodes_ets, flurm_db_partitions_ets,
               flurm_db_job_counter_ets],
     lists:foreach(fun(Table) ->
@@ -92,9 +98,76 @@ init_ets_tables() ->
                 ok
         end
     end, Tables),
-    %% Initialize job counter if not present
-    case ets:lookup(flurm_db_job_counter_ets, counter) of
-        [] -> ets:insert(flurm_db_job_counter_ets, {counter, 0});
-        _ -> ok
+
+    %% Open DETS tables for disk persistence
+    DetsOpts = [{type, set}, {auto_save, 30000}],  % Auto-save every 30 seconds
+    JobsDetsFile = filename:join(DataDir, "flurm_jobs.dets"),
+    CounterDetsFile = filename:join(DataDir, "flurm_counter.dets"),
+
+    case dets:open_file(flurm_db_jobs_dets, [{file, JobsDetsFile} | DetsOpts]) of
+        {ok, _} ->
+            lager:info("Opened DETS jobs table: ~s", [JobsDetsFile]);
+        {error, Reason1} ->
+            lager:warning("Failed to open DETS jobs table: ~p", [Reason1])
     end,
+
+    case dets:open_file(flurm_db_counter_dets, [{file, CounterDetsFile} | DetsOpts]) of
+        {ok, _} ->
+            lager:info("Opened DETS counter table: ~s", [CounterDetsFile]);
+        {error, Reason2} ->
+            lager:warning("Failed to open DETS counter table: ~p", [Reason2])
+    end,
+
+    %% Load existing jobs from DETS into ETS
+    load_jobs_from_dets(),
+
+    %% Initialize job counter
+    init_job_counter(),
+
     ok.
+
+%% Get data directory for persistence
+get_data_dir() ->
+    case application:get_env(flurm_db, data_dir) of
+        {ok, Dir} -> Dir;
+        undefined ->
+            %% Default to /var/lib/flurm or ./data
+            case filelib:is_dir("/var/lib/flurm") of
+                true -> "/var/lib/flurm";
+                false ->
+                    {ok, Cwd} = file:get_cwd(),
+                    filename:join(Cwd, "data")
+            end
+    end.
+
+%% Load jobs from DETS into ETS on startup
+load_jobs_from_dets() ->
+    case dets:info(flurm_db_jobs_dets) of
+        undefined ->
+            lager:info("DETS jobs table not available, starting fresh");
+        _ ->
+            Jobs = dets:select(flurm_db_jobs_dets, [{'$1', [], ['$1']}]),
+            lists:foreach(fun({_Id, _Job} = Entry) ->
+                ets:insert(flurm_db_jobs_ets, Entry)
+            end, Jobs),
+            lager:info("Loaded ~p jobs from DETS into ETS", [length(Jobs)])
+    end.
+
+%% Initialize job counter from DETS or existing jobs
+init_job_counter() ->
+    Counter = case dets:lookup(flurm_db_counter_dets, counter) of
+        [{counter, C}] ->
+            lager:info("Restored job counter from DETS: ~p", [C]),
+            C;
+        [] ->
+            %% Calculate from existing jobs
+            case ets:tab2list(flurm_db_jobs_ets) of
+                [] -> 0;
+                Jobs ->
+                    MaxId = lists:max([Id || {Id, _} <- Jobs]),
+                    lager:info("Calculated job counter from jobs: ~p", [MaxId]),
+                    MaxId
+            end
+    end,
+    ets:insert(flurm_db_job_counter_ets, {counter, Counter}),
+    dets:insert(flurm_db_counter_dets, {counter, Counter}).

@@ -182,6 +182,24 @@ init([]) ->
 
     %% Base children - always started
     BaseChildren = [
+        %% Metrics Server - collects Prometheus metrics
+        #{
+            id => flurm_metrics,
+            start => {flurm_metrics, start_link, []},
+            restart => permanent,
+            shutdown => 5000,
+            type => worker,
+            modules => [flurm_metrics]
+        },
+        %% Metrics HTTP Server - exposes /metrics endpoint
+        #{
+            id => flurm_metrics_http,
+            start => {flurm_metrics_http, start_link, []},
+            restart => permanent,
+            shutdown => 5000,
+            type => worker,
+            modules => [flurm_metrics_http]
+        },
         %% Job Manager - handles job lifecycle
         #{
             id => flurm_job_manager,
@@ -190,6 +208,15 @@ init([]) ->
             shutdown => 5000,
             type => worker,
             modules => [flurm_job_manager]
+        },
+        %% Step Manager - handles job steps within jobs
+        #{
+            id => flurm_step_manager,
+            start => {flurm_step_manager, start_link, []},
+            restart => permanent,
+            shutdown => 5000,
+            type => worker,
+            modules => [flurm_step_manager]
         },
         %% Node Manager - tracks node status
         #{
@@ -235,6 +262,15 @@ init([]) ->
             shutdown => 5000,
             type => worker,
             modules => [flurm_partition_manager]
+        },
+        %% Account Manager - manages accounting entities
+        #{
+            id => flurm_account_manager,
+            start => {flurm_account_manager, start_link, []},
+            restart => permanent,
+            shutdown => 5000,
+            type => worker,
+            modules => [flurm_account_manager]
         }
     ],
 
@@ -269,12 +305,21 @@ init([]) ->
     {ok, {SupFlags, Children}}.
 
 %% @doc Check if cluster mode is enabled.
+%% Cluster mode is enabled by default since Ra consensus works even with
+%% single-node clusters, providing persistence and state machine guarantees.
 is_cluster_enabled() ->
-    case application:get_env(flurm_controller, cluster_nodes) of
-        {ok, Nodes} when is_list(Nodes), length(Nodes) > 1 ->
-            true;
+    case application:get_env(flurm_controller, enable_cluster, true) of
+        false ->
+            false;
         _ ->
-            false
+            %% Check if distributed Erlang is available
+            case node() of
+                'nonode@nohost' ->
+                    lager:warning("Distributed Erlang not enabled, cluster mode disabled"),
+                    false;
+                _ ->
+                    true
+            end
     end.
 
 %%====================================================================

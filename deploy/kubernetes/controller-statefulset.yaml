@@ -1,0 +1,135 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: flurmctld
+  namespace: flurm
+  labels:
+    app.kubernetes.io/name: flurm
+    app.kubernetes.io/component: controller
+spec:
+  serviceName: flurmctld-headless
+  replicas: 3
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: flurm
+      app.kubernetes.io/component: controller
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: flurm
+        app.kubernetes.io/component: controller
+    spec:
+      terminationGracePeriodSeconds: 60
+      containers:
+      - name: flurmctld
+        image: flurm/flurmctld:latest
+        imagePullPolicy: Always
+        ports:
+        - name: slurm
+          containerPort: 6817
+          protocol: TCP
+        - name: erlang-dist
+          containerPort: 4369
+          protocol: TCP
+        - name: metrics
+          containerPort: 9090
+          protocol: TCP
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: ERLANG_COOKIE
+          valueFrom:
+            secretKeyRef:
+              name: flurm-secrets
+              key: erlang-cookie
+        - name: FLURM_CLUSTER_NAME
+          value: "flurm-k8s"
+        - name: FLURM_NODE_NAME
+          value: "flurm@$(POD_NAME).flurmctld-headless.$(POD_NAMESPACE).svc.cluster.local"
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/flurm
+        - name: config
+          mountPath: /etc/flurm
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "2"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 9090
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 9090
+          initialDelaySeconds: 10
+          periodSeconds: 5
+      volumes:
+      - name: config
+        configMap:
+          name: flurm-config
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      storageClassName: standard
+      resources:
+        requests:
+          storage: 10Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: flurmctld
+  namespace: flurm
+  labels:
+    app.kubernetes.io/name: flurm
+    app.kubernetes.io/component: controller
+spec:
+  type: ClusterIP
+  ports:
+  - name: slurm
+    port: 6817
+    targetPort: 6817
+    protocol: TCP
+  selector:
+    app.kubernetes.io/name: flurm
+    app.kubernetes.io/component: controller
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: flurmctld-headless
+  namespace: flurm
+  labels:
+    app.kubernetes.io/name: flurm
+    app.kubernetes.io/component: controller
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+  - name: slurm
+    port: 6817
+    targetPort: 6817
+    protocol: TCP
+  - name: erlang-dist
+    port: 4369
+    targetPort: 4369
+    protocol: TCP
+  selector:
+    app.kubernetes.io/name: flurm
+    app.kubernetes.io/component: controller

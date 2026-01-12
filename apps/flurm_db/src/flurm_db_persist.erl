@@ -222,18 +222,24 @@ ra_job_to_job(#ra_job{} = R) ->
     }.
 
 %%====================================================================
-%% ETS Backend Implementation
+%% ETS Backend Implementation (with DETS for disk persistence)
 %%====================================================================
 
 store_job_ets(Job) ->
+    %% Write to ETS for fast reads
     ets:insert(flurm_db_jobs_ets, {Job#job.id, Job}),
+    %% Also write to DETS for persistence
+    persist_to_dets({Job#job.id, Job}),
     ok.
 
 update_job_ets(JobId, Updates) ->
     case ets:lookup(flurm_db_jobs_ets, JobId) of
         [{JobId, Job}] ->
             UpdatedJob = apply_job_updates(Job, Updates),
+            %% Write to ETS
             ets:insert(flurm_db_jobs_ets, {JobId, UpdatedJob}),
+            %% Also write to DETS for persistence
+            persist_to_dets({JobId, UpdatedJob}),
             ok;
         [] ->
             {error, not_found}
@@ -249,6 +255,8 @@ get_job_ets(JobId) ->
 
 delete_job_ets(JobId) ->
     ets:delete(flurm_db_jobs_ets, JobId),
+    %% Also delete from DETS
+    delete_from_dets(JobId),
     ok.
 
 list_jobs_ets() ->
@@ -258,7 +266,38 @@ list_jobs_ets() ->
     end.
 
 next_job_id_ets() ->
-    ets:update_counter(flurm_db_job_counter_ets, counter, 1).
+    Counter = ets:update_counter(flurm_db_job_counter_ets, counter, 1),
+    %% Also update DETS counter
+    persist_counter(Counter),
+    Counter.
+
+%% Persist job entry to DETS
+persist_to_dets(Entry) ->
+    case dets:info(flurm_db_jobs_dets) of
+        undefined -> ok;
+        _ ->
+            dets:insert(flurm_db_jobs_dets, Entry),
+            %% Sync immediately for safety
+            dets:sync(flurm_db_jobs_dets)
+    end.
+
+%% Delete job from DETS
+delete_from_dets(JobId) ->
+    case dets:info(flurm_db_jobs_dets) of
+        undefined -> ok;
+        _ ->
+            dets:delete(flurm_db_jobs_dets, JobId),
+            dets:sync(flurm_db_jobs_dets)
+    end.
+
+%% Persist job counter to DETS
+persist_counter(Counter) ->
+    case dets:info(flurm_db_counter_dets) of
+        undefined -> ok;
+        _ ->
+            dets:insert(flurm_db_counter_dets, {counter, Counter}),
+            dets:sync(flurm_db_counter_dets)
+    end.
 
 %% Apply updates to a job record
 apply_job_updates(Job, Updates) ->

@@ -6,8 +6,10 @@ services:
     ports:
       - "6817:6817"
       - "6818:6818"
+      - "9090:9090"  # Prometheus metrics
     volumes:
       - munge-key:/etc/munge
+      - flurm-data:/var/lib/flurm
     networks:
       - flurm-net
 
@@ -38,6 +40,7 @@ services:
 
 volumes:
   munge-key:
+  flurm-data:
 
 networks:
   flurm-net:

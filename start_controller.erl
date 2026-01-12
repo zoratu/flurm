@@ -3,6 +3,32 @@
 
 main(_) ->
     io:format("Starting FLURM controller...~n"),
+
+    %% Start epmd if not running (required for distributed Erlang)
+    os:cmd("epmd -daemon"),
+    timer:sleep(500),  %% Give epmd time to start
+
+    %% Start distributed Erlang
+    NodeName = case os:getenv("FLURM_NODE_NAME") of
+        false ->
+            %% Generate node name from hostname
+            {ok, Hostname} = inet:gethostname(),
+            list_to_atom("flurmctld@" ++ Hostname);
+        Name ->
+            list_to_atom(Name)
+    end,
+
+    %% Start the distributed node
+    case net_kernel:start([NodeName, shortnames]) of
+        {ok, _} ->
+            io:format("Node started as: ~p~n", [node()]);
+        {error, {already_started, _}} ->
+            io:format("Node already distributed: ~p~n", [node()]);
+        {error, Reason} ->
+            io:format("Warning: Could not start distributed node: ~p~n", [Reason]),
+            io:format("Running in non-distributed mode (Ra cluster disabled)~n")
+    end,
+
     code:add_paths(filelib:wildcard("_build/default/lib/*/ebin")),
 
     %% Configure config file path

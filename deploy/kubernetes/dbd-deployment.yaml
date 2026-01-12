@@ -1,0 +1,93 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flurmbd
+  namespace: flurm
+  labels:
+    app.kubernetes.io/name: flurm
+    app.kubernetes.io/component: dbd
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: flurm
+      app.kubernetes.io/component: dbd
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: flurm
+        app.kubernetes.io/component: dbd
+    spec:
+      containers:
+      - name: flurmbd
+        image: flurm/flurmbd:latest
+        imagePullPolicy: Always
+        ports:
+        - name: dbd
+          containerPort: 6819
+          protocol: TCP
+        env:
+        - name: ERLANG_COOKIE
+          valueFrom:
+            secretKeyRef:
+              name: flurm-secrets
+              key: erlang-cookie
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/flurm/dbd
+        - name: config
+          mountPath: /etc/flurm
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+        livenessProbe:
+          tcpSocket:
+            port: 6819
+          initialDelaySeconds: 10
+          periodSeconds: 10
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: flurmbd-data
+      - name: config
+        configMap:
+          name: flurm-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: flurmbd
+  namespace: flurm
+  labels:
+    app.kubernetes.io/name: flurm
+    app.kubernetes.io/component: dbd
+spec:
+  type: ClusterIP
+  ports:
+  - name: dbd
+    port: 6819
+    targetPort: 6819
+    protocol: TCP
+  selector:
+    app.kubernetes.io/name: flurm
+    app.kubernetes.io/component: dbd
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: flurmbd-data
+  namespace: flurm
+  labels:
+    app.kubernetes.io/name: flurm
+    app.kubernetes.io/component: dbd
+spec:
+  accessModes:
+  - ReadWriteOnce
+  storageClassName: standard
+  resources:
+    requests:
+      storage: 20Gi

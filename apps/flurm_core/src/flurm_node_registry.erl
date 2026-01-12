@@ -320,6 +320,29 @@ handle_info({'DOWN', MonRef, process, _Pid, _Reason}, State) ->
             }}
     end;
 
+%% Handle config reload notification from flurm_config_server
+handle_info({config_reload_nodes, NodeDefs}, State) ->
+    lager:info("Node registry received config reload with ~p node definitions", [length(NodeDefs)]),
+    %% Process each node definition to update features, resources, etc.
+    %% This doesn't register new nodes, but updates existing registered nodes
+    %% with any changed configuration (features, partitions, etc.)
+    lists:foreach(fun(NodeDef) ->
+        update_node_from_config(NodeDef)
+    end, NodeDefs),
+    {noreply, State};
+
+%% Handle config changes from flurm_config_server (via subscribe_changes)
+handle_info({config_changed, nodes, _OldNodes, NewNodes}, State) ->
+    lager:info("Node registry received node config change: ~p definitions", [length(NewNodes)]),
+    lists:foreach(fun(NodeDef) ->
+        update_node_from_config(NodeDef)
+    end, NewNodes),
+    {noreply, State};
+
+handle_info({config_changed, _Key, _OldValue, _NewValue}, State) ->
+    %% Ignore other config changes
+    {noreply, State};
+
 handle_info(_Info, State) ->
     {noreply, State}.
 
@@ -373,4 +396,63 @@ find_monitor_ref(NodeName, Monitors) ->
     case maps:to_list(maps:filter(fun(_, V) -> V =:= NodeName end, Monitors)) of
         [{Ref, _}] -> Ref;
         [] -> undefined
+    end.
+
+%% @private
+%% Update a registered node's configuration from a config file node definition
+update_node_from_config(NodeDef) ->
+    %% Get the node name pattern and expand it
+    case maps:get(nodename, NodeDef, undefined) of
+        undefined -> ok;
+        NodePattern ->
+            %% Expand hostlist pattern (e.g., node[001-100])
+            ExpandedNodes = case catch flurm_config_slurm:expand_hostlist(NodePattern) of
+                NodeList when is_list(NodeList) -> NodeList;
+                _ -> [NodePattern]  % Fallback if expansion fails
+            end,
+            %% Update each matching registered node
+            lists:foreach(fun(NodeName) ->
+                case ets:lookup(?NODES_BY_NAME, NodeName) of
+                    [#node_entry{} = Entry] ->
+                        %% Update features if specified in config
+                        NewEntry = update_entry_from_config(Entry, NodeDef),
+                        ets:insert(?NODES_BY_NAME, NewEntry),
+                        lager:debug("Updated node ~s from config", [NodeName]);
+                    [] ->
+                        %% Node not registered yet, skip
+                        ok
+                end
+            end, ExpandedNodes)
+    end.
+
+%% @private
+%% Apply config definition updates to a node entry
+update_entry_from_config(Entry, NodeDef) ->
+    %% Update partitions if specified
+    Entry1 = case maps:get(partitions, NodeDef, undefined) of
+        undefined -> Entry;
+        Partitions when is_list(Partitions) ->
+            Entry#node_entry{partitions = Partitions};
+        _ -> Entry
+    end,
+    %% Update CPU count if specified
+    Entry2 = case maps:get(cpus, NodeDef, undefined) of
+        undefined -> Entry1;
+        Cpus when is_integer(Cpus) ->
+            Entry1#node_entry{cpus_total = Cpus};
+        _ -> Entry1
+    end,
+    %% Update memory if specified
+    Entry3 = case maps:get(realmemory, NodeDef, undefined) of
+        undefined -> Entry2;
+        Memory when is_integer(Memory) ->
+            Entry2#node_entry{memory_total = Memory};
+        _ -> Entry2
+    end,
+    %% Update state if specified
+    case maps:get(state, NodeDef, undefined) of
+        undefined -> Entry3;
+        down -> Entry3#node_entry{state = down};
+        drain -> Entry3#node_entry{state = drain};
+        _ -> Entry3
     end.

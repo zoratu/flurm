@@ -259,6 +259,27 @@ handle_call(_Request, _From, State) ->
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
+%% Handle config reload notification from flurm_config_server
+handle_info({config_reload_partitions, PartitionDefs}, State) ->
+    lager:info("Partition registry received config reload with ~p partition definitions", [length(PartitionDefs)]),
+    %% Process each partition definition to update or create partitions
+    lists:foreach(fun(PartDef) ->
+        update_partition_from_config(PartDef)
+    end, PartitionDefs),
+    {noreply, State};
+
+%% Handle config changes from flurm_config_server (via subscribe_changes)
+handle_info({config_changed, partitions, _OldPartitions, NewPartitions}, State) ->
+    lager:info("Partition registry received partition config change: ~p definitions", [length(NewPartitions)]),
+    lists:foreach(fun(PartDef) ->
+        update_partition_from_config(PartDef)
+    end, NewPartitions),
+    {noreply, State};
+
+handle_info({config_changed, _Key, _OldValue, _NewValue}, State) ->
+    %% Ignore other config changes
+    {noreply, State};
+
 handle_info(_Info, State) ->
     {noreply, State}.
 
@@ -309,3 +330,63 @@ apply_updates(P, Updates) ->
         max_nodes = maps:get(max_nodes, Updates, P#partition.max_nodes),
         allow_root = maps:get(allow_root, Updates, P#partition.allow_root)
     }.
+
+%% @private Update or create a partition from a config file partition definition
+update_partition_from_config(PartDef) ->
+    case maps:get(partitionname, PartDef, undefined) of
+        undefined -> ok;
+        PartName ->
+            %% Expand node hostlist if specified
+            Nodes = case maps:get(nodes, PartDef, undefined) of
+                undefined -> [];
+                NodePattern when is_binary(NodePattern) ->
+                    flurm_config_slurm:expand_hostlist(NodePattern);
+                NodeList when is_list(NodeList) ->
+                    NodeList
+            end,
+            %% Convert config state to partition state
+            PartState = case maps:get(state, PartDef, undefined) of
+                undefined -> up;
+                <<"UP">> -> up;
+                <<"DOWN">> -> down;
+                <<"DRAIN">> -> drain;
+                up -> up;
+                down -> down;
+                drain -> drain;
+                _ -> up
+            end,
+            %% Check if partition exists
+            case ets:lookup(?PARTITIONS_TABLE, PartName) of
+                [{PartName, #partition{} = P}] ->
+                    %% Update existing partition
+                    UpdatedPartition = P#partition{
+                        nodes = case Nodes of [] -> P#partition.nodes; _ -> Nodes end,
+                        state = PartState,
+                        priority = maps:get(prioritytier, PartDef, P#partition.priority),
+                        max_time = maps:get(maxtime, PartDef, P#partition.max_time),
+                        default_time = maps:get(defaulttime, PartDef, P#partition.default_time)
+                    },
+                    ets:insert(?PARTITIONS_TABLE, {PartName, UpdatedPartition}),
+                    lager:info("Updated partition ~s from config", [PartName]);
+                [] ->
+                    %% Create new partition
+                    NewPartition = #partition{
+                        name = PartName,
+                        nodes = Nodes,
+                        state = PartState,
+                        priority = maps:get(prioritytier, PartDef, 1000),
+                        max_time = maps:get(maxtime, PartDef, 86400),
+                        default_time = maps:get(defaulttime, PartDef, 3600),
+                        max_nodes = 0,
+                        allow_root = false
+                    },
+                    ets:insert(?PARTITIONS_TABLE, {PartName, NewPartition}),
+                    %% Set as default if marked
+                    case maps:get(default, PartDef, false) of
+                        true -> ets:insert(?PARTITIONS_TABLE, {?DEFAULT_PARTITION_KEY, PartName});
+                        <<"YES">> -> ets:insert(?PARTITIONS_TABLE, {?DEFAULT_PARTITION_KEY, PartName});
+                        _ -> ok
+                    end,
+                    lager:info("Created partition ~s from config with ~p nodes", [PartName, length(Nodes)])
+            end
+    end.

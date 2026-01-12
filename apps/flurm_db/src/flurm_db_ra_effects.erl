@@ -230,6 +230,9 @@ became_leader(Node) ->
     %% Start scheduler if not running
     maybe_start_scheduler(),
 
+    %% Notify the failover handler that we became leader
+    notify_failover_handler(became_leader),
+
     %% Notify subscribers
     notify_subscribers({became_leader, Node}),
     ok.
@@ -241,6 +244,9 @@ became_follower(Node) ->
 
     %% Stop scheduler if running
     maybe_stop_scheduler(),
+
+    %% Notify the failover handler that we lost leadership
+    notify_failover_handler(became_follower),
 
     %% Notify subscribers
     notify_subscribers({became_follower, Node}),
@@ -316,6 +322,18 @@ maybe_stop_scheduler() ->
     case whereis(flurm_scheduler) of
         undefined -> ok;
         Pid -> Pid ! pause_scheduling
+    end.
+
+%% @private
+notify_failover_handler(Event) ->
+    %% Try to notify the failover handler about leadership changes
+    case whereis(flurm_controller_failover) of
+        undefined -> ok;
+        _Pid ->
+            case Event of
+                became_leader -> catch flurm_controller_failover:on_became_leader();
+                became_follower -> catch flurm_controller_failover:on_lost_leadership()
+            end
     end.
 
 %% @private

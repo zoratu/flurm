@@ -1,0 +1,24 @@
+{application, flurm_dbd, [
+    {description, "FLURM Database Daemon - flurmbd (accounting storage)"},
+    {vsn, "0.1.0"},
+    {registered, [flurm_dbd_sup, flurm_dbd_server]},
+    {mod, {flurm_dbd_app, []}},
+    {applications, [
+        kernel,
+        stdlib,
+        ranch,
+        lager,
+        flurm_protocol,
+        flurm_core
+    ]},
+    {env, [
+        {listen_port, 6819},
+        {listen_address, "0.0.0.0"},
+        {storage_backend, ets},  % Options: ets, mnesia
+        {archive_events, true},
+        {purge_events_days, 30}
+    ]},
+    {modules, []},
+    {licenses, ["GPL-3.0"]},
+    {links, []}
+]}.

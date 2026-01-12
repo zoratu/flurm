@@ -13,8 +13,8 @@
 -type job_id() :: pos_integer().
 -type user_id() :: pos_integer().
 -type group_id() :: pos_integer().
--type job_state() :: pending | configuring | running | completing |
-                     completed | cancelled | failed | timeout | node_fail.
+-type job_state() :: pending | held | configuring | running | completing |
+                     completed | cancelled | failed | timeout | node_fail | requeued.
 -type node_state() :: up | down | drain | idle | allocated | mixed.
 -type partition_state() :: up | down | drain | inactive.
 
@@ -55,7 +55,11 @@
     start_time :: non_neg_integer() | undefined,
     end_time :: non_neg_integer() | undefined,
     allocated_nodes :: [binary()],
-    exit_code :: integer() | undefined
+    exit_code :: integer() | undefined,
+    %% Output file paths
+    work_dir = <<"/tmp">> :: binary(),
+    std_out = <<>> :: binary(),        % Empty means slurm-<jobid>.out
+    std_err = <<>> :: binary()         % Empty means stderr goes to stdout
 }).
 
 %%====================================================================
@@ -67,6 +71,7 @@
     cpus :: pos_integer(),
     memory_mb :: pos_integer(),
     state :: node_state(),
+    drain_reason :: binary() | undefined,  % Reason for drain state
     features :: [binary()],
     partitions :: [binary()],
     running_jobs :: [job_id()],
@@ -180,6 +185,7 @@
     gpus          :: non_neg_integer(),
     gpus_used     :: non_neg_integer(),
     state         :: up | down | drain | maint,
+    drain_reason  :: binary() | undefined,  % Reason for drain (maintenance, admin, etc.)
     features      :: [atom()],
     partitions    :: [binary()],
     jobs          :: [pos_integer()],    % Job IDs running on this node
@@ -267,5 +273,104 @@
 
 %% Scheduler defaults
 -define(SCHEDULE_INTERVAL, 100).  % milliseconds
+
+%%====================================================================
+%% Accounting Records
+%%====================================================================
+
+%% Account record - represents a SLURM account (organization unit)
+-record(account, {
+    name :: binary(),               % Account name (primary key)
+    description = <<>> :: binary(), % Description
+    organization = <<>> :: binary(),% Organization name
+    parent = <<>> :: binary(),      % Parent account (for hierarchy)
+    coordinators = [] :: [binary()],% List of coordinator user names
+    default_qos = <<>> :: binary(), % Default QOS
+    fairshare = 1 :: non_neg_integer(), % Fairshare value
+    max_jobs = 0 :: non_neg_integer(),   % Max concurrent jobs (0 = unlimited)
+    max_submit = 0 :: non_neg_integer(), % Max submit jobs (0 = unlimited)
+    max_wall = 0 :: non_neg_integer()    % Max wall time in minutes (0 = unlimited)
+}).
+
+%% User record - represents a SLURM user for accounting
+-record(acct_user, {
+    name :: binary(),               % Username (primary key)
+    default_account = <<>> :: binary(), % Default account
+    accounts = [] :: [binary()],    % List of associated accounts
+    default_qos = <<>> :: binary(), % Default QOS
+    admin_level = none :: none | operator | admin, % Admin level
+    fairshare = 1 :: non_neg_integer(),
+    max_jobs = 0 :: non_neg_integer(),
+    max_submit = 0 :: non_neg_integer(),
+    max_wall = 0 :: non_neg_integer()
+}).
+
+%% Association record - links users to accounts with specific limits
+-record(association, {
+    id :: pos_integer(),            % Association ID (primary key)
+    cluster :: binary(),            % Cluster name
+    account :: binary(),            % Account name
+    user :: binary(),               % User name (empty for account-level)
+    partition = <<>> :: binary(),   % Partition (empty for all)
+    parent_id = 0 :: non_neg_integer(), % Parent association ID
+    shares = 1 :: non_neg_integer(),    % Fairshare shares
+    grp_tres_mins = #{} :: map(),       % Group TRES limits (CPU minutes, etc)
+    grp_tres = #{} :: map(),            % Group TRES (concurrent)
+    grp_jobs = 0 :: non_neg_integer(),  % Max concurrent jobs in group
+    grp_submit = 0 :: non_neg_integer(),% Max submit in group
+    grp_wall = 0 :: non_neg_integer(),  % Max wall in group
+    max_tres_mins_per_job = #{} :: map(), % Per-job TRES minutes
+    max_tres_per_job = #{} :: map(),    % Per-job TRES
+    max_tres_per_node = #{} :: map(),   % Per-node TRES
+    max_jobs = 0 :: non_neg_integer(),
+    max_submit = 0 :: non_neg_integer(),
+    max_wall_per_job = 0 :: non_neg_integer(),
+    priority = 0 :: non_neg_integer(),
+    qos = [] :: [binary()],         % Allowed QOS list
+    default_qos = <<>> :: binary()
+}).
+
+%% QOS (Quality of Service) record
+-record(qos, {
+    name :: binary(),               % QOS name (primary key)
+    description = <<>> :: binary(),
+    priority = 0 :: integer(),      % Priority adjustment
+    flags = [] :: [atom()],         % QOS flags
+    grace_time = 0 :: non_neg_integer(), % Grace period in seconds
+    max_jobs_pa = 0 :: non_neg_integer(), % Max jobs per account
+    max_jobs_pu = 0 :: non_neg_integer(), % Max jobs per user
+    max_submit_jobs_pa = 0 :: non_neg_integer(),
+    max_submit_jobs_pu = 0 :: non_neg_integer(),
+    max_tres_pa = #{} :: map(),     % Max TRES per account
+    max_tres_pu = #{} :: map(),     % Max TRES per user
+    max_tres_per_job = #{} :: map(),
+    max_tres_per_node = #{} :: map(),
+    max_tres_per_user = #{} :: map(),
+    max_wall_per_job = 0 :: non_neg_integer(),
+    min_tres_per_job = #{} :: map(),
+    preempt = [] :: [binary()],     % QOS names that can be preempted
+    preempt_mode = off :: off | cancel | requeue | suspend,
+    usage_factor = 1.0 :: float(),  % Fairshare usage factor
+    usage_threshold = 0.0 :: float()% Fairshare usage threshold
+}).
+
+%% Cluster record (for multi-cluster accounting)
+-record(acct_cluster, {
+    name :: binary(),               % Cluster name (primary key)
+    control_host = <<>> :: binary(),% Control host
+    control_port = 6817 :: non_neg_integer(),
+    rpc_version = 0 :: non_neg_integer(),
+    classification = 0 :: non_neg_integer(),
+    tres = #{} :: map(),            % Configured TRES
+    flags = [] :: [atom()]
+}).
+
+%% TRES (Trackable Resources) record
+-record(tres, {
+    id :: pos_integer(),            % TRES ID
+    type :: binary(),               % Type (cpu, mem, gres/gpu, etc)
+    name = <<>> :: binary(),        % Name (for gres types)
+    count = 0 :: non_neg_integer()  % Count
+}).
 
 -endif.

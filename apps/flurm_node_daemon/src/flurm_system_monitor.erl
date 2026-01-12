@@ -14,6 +14,7 @@
 
 -export([start_link/0]).
 -export([get_metrics/0, get_hostname/0, get_gpus/0, get_disk_usage/0]).
+-export([get_gpu_allocation/0, allocate_gpus/2, release_gpus/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
 -define(COLLECT_INTERVAL, 5000). % 5 seconds
@@ -30,7 +31,9 @@
     available_memory_mb :: non_neg_integer(),
     gpus :: list(),
     disk_usage :: map(),
-    platform :: linux | darwin | other
+    platform :: linux | darwin | other,
+    %% GPU allocation tracking: #{GpuIndex => JobId}
+    gpu_allocation :: #{non_neg_integer() => pos_integer()}
 }).
 
 %%====================================================================
@@ -59,6 +62,22 @@ get_gpus() ->
 -spec get_disk_usage() -> map().
 get_disk_usage() ->
     gen_server:call(?MODULE, get_disk_usage).
+
+%% @doc Get current GPU allocation (which GPUs are allocated to which jobs)
+-spec get_gpu_allocation() -> #{non_neg_integer() => pos_integer()}.
+get_gpu_allocation() ->
+    gen_server:call(?MODULE, get_gpu_allocation).
+
+%% @doc Allocate GPUs for a job
+%% Returns list of allocated GPU indices or {error, not_enough_gpus}
+-spec allocate_gpus(pos_integer(), non_neg_integer()) -> {ok, [non_neg_integer()]} | {error, term()}.
+allocate_gpus(JobId, NumGpus) ->
+    gen_server:call(?MODULE, {allocate_gpus, JobId, NumGpus}).
+
+%% @doc Release GPUs allocated to a job
+-spec release_gpus(pos_integer()) -> ok.
+release_gpus(JobId) ->
+    gen_server:cast(?MODULE, {release_gpus, JobId}).
 
 %%====================================================================
 %% gen_server callbacks
@@ -93,7 +112,8 @@ init([]) ->
         available_memory_mb = TotalMemoryMB,
         gpus = GPUs,
         disk_usage = #{},
-        platform = Platform
+        platform = Platform,
+        gpu_allocation = #{}
     }}.
 
 handle_call(get_metrics, _From, State) ->
@@ -120,8 +140,54 @@ handle_call(get_gpus, _From, State) ->
 handle_call(get_disk_usage, _From, State) ->
     {reply, State#state.disk_usage, State};
 
+handle_call(get_gpu_allocation, _From, State) ->
+    {reply, State#state.gpu_allocation, State};
+
+handle_call({allocate_gpus, JobId, NumGpus}, _From, State) ->
+    case NumGpus of
+        0 ->
+            {reply, {ok, []}, State};
+        _ ->
+            %% Find available (unallocated) GPUs
+            AllGpuIndices = [maps:get(index, G) || G <- State#state.gpus],
+            AllocatedIndices = maps:keys(State#state.gpu_allocation),
+            AvailableIndices = AllGpuIndices -- AllocatedIndices,
+            case length(AvailableIndices) >= NumGpus of
+                true ->
+                    %% Allocate the requested number of GPUs
+                    {ToAllocate, _Rest} = lists:split(NumGpus, AvailableIndices),
+                    %% Update allocation map
+                    NewAllocation = lists:foldl(
+                        fun(GpuIdx, Acc) -> maps:put(GpuIdx, JobId, Acc) end,
+                        State#state.gpu_allocation,
+                        ToAllocate
+                    ),
+                    lager:info("Allocated GPUs ~p to job ~p", [ToAllocate, JobId]),
+                    {reply, {ok, ToAllocate}, State#state{gpu_allocation = NewAllocation}};
+                false ->
+                    lager:warning("Not enough GPUs for job ~p: requested ~p, available ~p",
+                                 [JobId, NumGpus, length(AvailableIndices)]),
+                    {reply, {error, not_enough_gpus}, State}
+            end
+    end;
+
 handle_call(_Request, _From, State) ->
     {reply, {error, unknown_request}, State}.
+
+handle_cast({release_gpus, JobId}, State) ->
+    %% Remove all GPU allocations for this job
+    NewAllocation = maps:filter(
+        fun(_GpuIdx, AllocJobId) -> AllocJobId =/= JobId end,
+        State#state.gpu_allocation
+    ),
+    ReleasedCount = maps:size(State#state.gpu_allocation) - maps:size(NewAllocation),
+    case ReleasedCount > 0 of
+        true ->
+            lager:info("Released ~p GPUs from job ~p", [ReleasedCount, JobId]);
+        false ->
+            ok
+    end,
+    {noreply, State#state{gpu_allocation = NewAllocation}};
 
 handle_cast(_Msg, State) ->
     {noreply, State}.

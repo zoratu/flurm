@@ -13,6 +13,8 @@
 -export([register_node/1, update_node/2, get_node/1, list_nodes/0]).
 -export([heartbeat/1, get_available_nodes/0]).
 -export([get_available_nodes_for_job/3, allocate_resources/4, release_resources/2]).
+%% Drain mode API
+-export([drain_node/2, undrain_node/1, get_drain_reason/1, is_node_draining/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
 -include_lib("flurm_core/include/flurm_core.hrl").
@@ -75,6 +77,27 @@ allocate_resources(Hostname, JobId, Cpus, MemoryMb) ->
 release_resources(Hostname, JobId) ->
     gen_server:cast(?MODULE, {release_resources, Hostname, JobId}).
 
+%% @doc Drain a node, preventing new job assignments.
+%% Existing jobs will continue running until completion.
+-spec drain_node(Hostname :: binary(), Reason :: binary()) -> ok | {error, term()}.
+drain_node(Hostname, Reason) ->
+    gen_server:call(?MODULE, {drain_node, Hostname, Reason}).
+
+%% @doc Resume a drained node, allowing new job assignments.
+-spec undrain_node(Hostname :: binary()) -> ok | {error, term()}.
+undrain_node(Hostname) ->
+    gen_server:call(?MODULE, {undrain_node, Hostname}).
+
+%% @doc Get the drain reason for a node.
+-spec get_drain_reason(Hostname :: binary()) -> {ok, binary()} | {error, not_draining | not_found}.
+get_drain_reason(Hostname) ->
+    gen_server:call(?MODULE, {get_drain_reason, Hostname}).
+
+%% @doc Check if a node is in draining state.
+-spec is_node_draining(Hostname :: binary()) -> boolean() | {error, not_found}.
+is_node_draining(Hostname) ->
+    gen_server:call(?MODULE, {is_node_draining, Hostname}).
+
 %%====================================================================
 %% gen_server callbacks
 %%====================================================================
@@ -124,7 +147,7 @@ handle_call(get_available_nodes, _From, #state{nodes = Nodes} = State) ->
 handle_call({get_available_nodes_for_job, NumCpus, MemoryMb, Partition}, _From,
             #state{nodes = Nodes} = State) ->
     %% Filter nodes that:
-    %% 1. Are in idle or mixed state
+    %% 1. Are in idle or mixed state (excludes drain, down, allocated)
     %% 2. Have enough available resources
     %% 3. Are in the requested partition (or default matches any)
     AllNodes = maps:values(Nodes),
@@ -138,10 +161,21 @@ handle_call({get_available_nodes_for_job, NumCpus, MemoryMb, Partition}, _From,
                 <<"default">> -> true;
                 _ -> lists:member(Partition, Node#node.partitions)
             end,
-            Eligible = (NodeState =:= idle orelse NodeState =:= mixed) andalso
+            %% Check state - only idle or mixed can accept new jobs
+            %% drain state means node is being removed gracefully
+            StateOk = (NodeState =:= idle orelse NodeState =:= mixed),
+            Eligible = StateOk andalso
                        CpusAvail >= NumCpus andalso
                        MemAvail >= MemoryMb andalso
                        InPartition,
+            %% Log if node is draining (for debugging)
+            case NodeState of
+                drain ->
+                    lager:debug("Node ~s is draining (reason: ~p), skipping",
+                               [Node#node.hostname, Node#node.drain_reason]);
+                _ ->
+                    ok
+            end,
             lager:debug("Node ~s: state=~p, cpus=~p/~p, mem=~p/~p, partition_ok=~p, eligible=~p",
                        [Node#node.hostname, NodeState, CpusAvail, Node#node.cpus,
                         MemAvail, Node#node.memory_mb, InPartition, Eligible]),
@@ -182,6 +216,63 @@ handle_call({allocate_resources, Hostname, JobId, Cpus, MemoryMb}, _From,
             end;
         error ->
             {reply, {error, node_not_found}, State}
+    end;
+
+%% Drain mode operations
+handle_call({drain_node, Hostname, Reason}, _From, #state{nodes = Nodes} = State) ->
+    case maps:find(Hostname, Nodes) of
+        {ok, Node} ->
+            %% Set node to drain state with reason
+            UpdatedNode = flurm_core:update_node_state(Node, drain),
+            FinalNode = UpdatedNode#node{drain_reason = Reason},
+            NewNodes = maps:put(Hostname, FinalNode, Nodes),
+            lager:info("Node ~s set to drain state: ~s", [Hostname, Reason]),
+            %% Trigger scheduler to find new nodes for pending jobs
+            catch flurm_scheduler:trigger_schedule(),
+            {reply, ok, State#state{nodes = NewNodes}};
+        error ->
+            {reply, {error, not_found}, State}
+    end;
+
+handle_call({undrain_node, Hostname}, _From, #state{nodes = Nodes} = State) ->
+    case maps:find(Hostname, Nodes) of
+        {ok, #node{state = drain} = Node} ->
+            %% Determine new state based on current allocations
+            NewState = case map_size(Node#node.allocations) of
+                0 -> idle;
+                _ -> mixed
+            end,
+            UpdatedNode = flurm_core:update_node_state(Node, NewState),
+            FinalNode = UpdatedNode#node{drain_reason = undefined},
+            NewNodes = maps:put(Hostname, FinalNode, Nodes),
+            lager:info("Node ~s resumed from drain state, now ~p", [Hostname, NewState]),
+            %% Trigger scheduler since node is now available
+            catch flurm_scheduler:trigger_schedule(),
+            {reply, ok, State#state{nodes = NewNodes}};
+        {ok, _Node} ->
+            {reply, {error, not_draining}, State};
+        error ->
+            {reply, {error, not_found}, State}
+    end;
+
+handle_call({get_drain_reason, Hostname}, _From, #state{nodes = Nodes} = State) ->
+    case maps:find(Hostname, Nodes) of
+        {ok, #node{state = drain, drain_reason = Reason}} ->
+            {reply, {ok, Reason}, State};
+        {ok, _Node} ->
+            {reply, {error, not_draining}, State};
+        error ->
+            {reply, {error, not_found}, State}
+    end;
+
+handle_call({is_node_draining, Hostname}, _From, #state{nodes = Nodes} = State) ->
+    case maps:find(Hostname, Nodes) of
+        {ok, #node{state = drain}} ->
+            {reply, true, State};
+        {ok, _Node} ->
+            {reply, false, State};
+        error ->
+            {reply, {error, not_found}, State}
     end;
 
 handle_call(_Request, _From, State) ->

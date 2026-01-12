@@ -47,7 +47,10 @@
     schedule_timer  :: reference() | undefined,
     schedule_cycles :: non_neg_integer(),
     completed_count :: non_neg_integer(),
-    failed_count    :: non_neg_integer()
+    failed_count    :: non_neg_integer(),
+    %% Track why jobs are pending (for debugging and user info)
+    %% #{JobId => {Reason, Timestamp}}
+    pending_reasons :: #{pos_integer() => {term(), non_neg_integer()}}
 }).
 
 %%====================================================================
@@ -97,6 +100,9 @@ init([]) ->
         {keypos, 1}
     ]),
 
+    %% Subscribe to config changes for partitions, nodes, and scheduler settings
+    catch flurm_config_server:subscribe_changes([partitions, nodes, schedulertype]),
+
     %% Start the periodic scheduling timer
     Timer = schedule_next_cycle(),
 
@@ -107,7 +113,8 @@ init([]) ->
         schedule_timer = Timer,
         schedule_cycles = 0,
         completed_count = 0,
-        failed_count = 0
+        failed_count = 0,
+        pending_reasons = #{}
     },
     {ok, State}.
 
@@ -162,6 +169,7 @@ handle_cast(_Msg, State) ->
 
 %% @private
 handle_info(schedule_cycle, State) ->
+    StartTime = erlang:monotonic_time(millisecond),
     PendingCount = queue:len(State#scheduler_state.pending_jobs),
     lager:debug("schedule_cycle: ~p pending, ~p running, cycle ~p",
                [PendingCount, sets:size(State#scheduler_state.running_jobs),
@@ -175,6 +183,13 @@ handle_info(schedule_cycle, State) ->
     %% Run scheduling cycle
     NewState = schedule_cycle(State),
 
+    %% Record metrics
+    Duration = erlang:monotonic_time(millisecond) - StartTime,
+    catch flurm_metrics:increment(flurm_scheduler_cycles_total),
+    catch flurm_metrics:histogram(flurm_scheduler_duration_ms, Duration),
+    catch flurm_metrics:gauge(flurm_jobs_pending, queue:len(NewState#scheduler_state.pending_jobs)),
+    catch flurm_metrics:gauge(flurm_jobs_running, sets:size(NewState#scheduler_state.running_jobs)),
+
     %% Schedule next cycle
     Timer = schedule_next_cycle(),
     FinalState = NewState#scheduler_state{
@@ -182,6 +197,30 @@ handle_info(schedule_cycle, State) ->
         schedule_cycles = NewState#scheduler_state.schedule_cycles + 1
     },
     {noreply, FinalState};
+
+%% Handle config changes from flurm_config_server
+handle_info({config_changed, partitions, _OldPartitions, NewPartitions}, State) ->
+    lager:info("Scheduler received partition config change: ~p partitions", [length(NewPartitions)]),
+    %% Trigger a scheduling cycle to re-evaluate jobs with new partition definitions
+    self() ! schedule_cycle,
+    {noreply, State};
+
+handle_info({config_changed, nodes, _OldNodes, NewNodes}, State) ->
+    lager:info("Scheduler received node config change: ~p node definitions", [length(NewNodes)]),
+    %% Trigger a scheduling cycle to re-evaluate jobs with new node definitions
+    self() ! schedule_cycle,
+    {noreply, State};
+
+handle_info({config_changed, schedulertype, _OldType, NewType}, State) ->
+    lager:info("Scheduler type changed to ~p - applying new scheduler configuration", [NewType]),
+    %% Could implement scheduler type switching here (FIFO, backfill, etc.)
+    %% For now, just trigger a schedule cycle
+    self() ! schedule_cycle,
+    {noreply, State};
+
+handle_info({config_changed, _Key, _OldValue, _NewValue}, State) ->
+    %% Ignore other config changes
+    {noreply, State};
 
 handle_info(_Info, State) ->
     {noreply, State}.
@@ -223,7 +262,27 @@ handle_job_finished(JobId, State) ->
                     flurm_node_manager:release_resources(NodeName, JobId)
                 end,
                 AllocatedNodes
-            );
+            ),
+            %% Notify limits module that job has stopped (for usage tracking)
+            %% Calculate wall time for TRES minutes accounting
+            WallTime = case {Job#job.start_time, Job#job.end_time} of
+                {undefined, _} -> 0;
+                {_, undefined} ->
+                    %% Job still ending, use current time
+                    erlang:system_time(second) - Job#job.start_time;
+                {Start, End} -> End - Start
+            end,
+            LimitInfo = #{
+                user => Job#job.user,
+                account => <<>>,  % TODO: Add account field to job record if needed
+                tres => #{
+                    cpu => Job#job.num_cpus,
+                    mem => Job#job.memory_mb,
+                    node => Job#job.num_nodes
+                },
+                wall_time => WallTime
+            },
+            flurm_limits:enforce_limit(stop, JobId, LimitInfo);
         _ ->
             ok
     end,
@@ -244,25 +303,27 @@ schedule_cycle(State) ->
     schedule_pending_jobs(State).
 
 %% @private
-%% Try to schedule pending jobs
+%% Try to schedule pending jobs with backfill support
 schedule_pending_jobs(State) ->
     case queue:out(State#scheduler_state.pending_jobs) of
         {empty, _} ->
             %% No pending jobs
             State;
         {{value, JobId}, RestQueue} ->
-            %% Try to schedule this job
+            %% Try to schedule this job (highest priority / FIFO first)
             case try_schedule_job(JobId, State) of
                 {ok, NewState} ->
                     %% Job scheduled, continue with rest of queue
                     schedule_pending_jobs(NewState#scheduler_state{
                         pending_jobs = RestQueue
                     });
-                {wait, _Reason} ->
+                {wait, Reason} ->
                     %% Job cannot be scheduled (insufficient resources)
-                    %% Keep it at the front of the queue (FIFO)
-                    %% Stop trying to schedule more jobs
-                    State;
+                    %% Try backfill: schedule smaller jobs that can fit
+                    lager:info("Job ~p waiting (~p), trying backfill", [JobId, Reason]),
+                    BackfillState = try_backfill_jobs(RestQueue, State),
+                    %% Keep original job at front of queue
+                    BackfillState;
                 {error, job_not_found} ->
                     %% Job no longer exists, skip it
                     schedule_pending_jobs(State#scheduler_state{
@@ -277,8 +338,52 @@ schedule_pending_jobs(State) ->
     end.
 
 %% @private
+%% Try to backfill smaller jobs while high-priority job waits
+%% This improves cluster utilization
+try_backfill_jobs(Queue, State) ->
+    %% Get jobs from queue as list for backfill analysis
+    JobsList = queue:to_list(Queue),
+    lager:debug("Backfill: checking ~p jobs", [length(JobsList)]),
+
+    %% Try to schedule smaller jobs that fit
+    {ScheduledJobs, NewState} = backfill_loop(JobsList, State, []),
+
+    %% Remove scheduled jobs from the pending queue
+    NewQueue = remove_jobs_from_queue(ScheduledJobs, State#scheduler_state.pending_jobs),
+    NewState#scheduler_state{pending_jobs = NewQueue}.
+
+%% @private
+%% Loop through candidate jobs for backfill
+backfill_loop([], State, ScheduledAcc) ->
+    {lists:reverse(ScheduledAcc), State};
+backfill_loop([JobId | Rest], State, ScheduledAcc) ->
+    case try_schedule_job(JobId, State) of
+        {ok, NewState} ->
+            lager:info("Backfill: scheduled job ~p", [JobId]),
+            %% Record backfill metric
+            catch flurm_metrics:increment(flurm_scheduler_backfill_jobs),
+            %% Continue looking for more backfill candidates
+            backfill_loop(Rest, NewState, [JobId | ScheduledAcc]);
+        _ ->
+            %% This job can't be scheduled, try next one
+            backfill_loop(Rest, State, ScheduledAcc)
+    end.
+
+%% @private
+%% Remove scheduled jobs from the queue
+remove_jobs_from_queue([], Queue) ->
+    Queue;
+remove_jobs_from_queue(JobsToRemove, Queue) ->
+    ScheduledSet = sets:from_list(JobsToRemove),
+    queue:filter(
+        fun(JobId) -> not sets:is_element(JobId, ScheduledSet) end,
+        Queue
+    ).
+
+%% @private
 %% Try to schedule a single job
 %% Uses flurm_job_manager to get job info (not flurm_job_registry)
+%% Now includes resource limits checking via flurm_limits module
 try_schedule_job(JobId, State) ->
     lager:info("Trying to schedule job ~p", [JobId]),
     case flurm_job_manager:get_job(JobId) of
@@ -289,7 +394,17 @@ try_schedule_job(JobId, State) ->
                 pending ->
                     %% Convert job record to info map for allocation
                     Info = job_to_info(Job),
-                    try_allocate_job_simple(JobId, Info, State);
+                    %% Check resource limits before attempting to schedule
+                    LimitCheckSpec = job_to_limit_spec(Job),
+                    case flurm_limits:check_limits(LimitCheckSpec) of
+                        ok ->
+                            %% Limits OK, proceed with allocation
+                            try_allocate_job_simple(JobId, Info, State);
+                        {error, LimitReason} ->
+                            %% Limits exceeded, keep job pending
+                            lager:info("Job ~p blocked by limits: ~p", [JobId, LimitReason]),
+                            {wait, {limit_exceeded, LimitReason}}
+                    end;
                 _OtherState ->
                     %% Job is no longer pending
                     lager:info("Job ~p not pending, skipping", [JobId]),
@@ -364,7 +479,39 @@ job_to_info(#job{} = Job) ->
         memory_mb => Job#job.memory_mb,
         time_limit => Job#job.time_limit,
         script => Job#job.script,
-        allocated_nodes => Job#job.allocated_nodes
+        allocated_nodes => Job#job.allocated_nodes,
+        work_dir => Job#job.work_dir,
+        std_out => Job#job.std_out,
+        std_err => Job#job.std_err,
+        user => Job#job.user
+    }.
+
+%% @private
+%% Convert a job record to a limit check spec for flurm_limits:check_limits/1
+%% The spec must include user, account, partition, and resource requirements
+job_to_limit_spec(#job{} = Job) ->
+    #{
+        user => Job#job.user,
+        account => <<>>,  % TODO: Add account field to job record if needed
+        partition => Job#job.partition,
+        num_nodes => Job#job.num_nodes,
+        num_cpus => Job#job.num_cpus,
+        memory_mb => Job#job.memory_mb,
+        time_limit => Job#job.time_limit
+    }.
+
+%% @private
+%% Build info map for flurm_limits:enforce_limit/3
+%% Contains user, account, and TRES (trackable resources) for usage accounting
+build_limit_info(JobInfo) ->
+    #{
+        user => maps:get(user, JobInfo, <<"unknown">>),
+        account => maps:get(account, JobInfo, <<>>),
+        tres => #{
+            cpu => maps:get(num_cpus, JobInfo, 1),
+            mem => maps:get(memory_mb, JobInfo, 0),
+            node => maps:get(num_nodes, JobInfo, 1)
+        }
     }.
 
 %% @private
@@ -394,6 +541,9 @@ try_allocate_job_simple(JobId, JobInfo, State) ->
                         ok ->
                             %% Mark job as running
                             flurm_job_manager:update_job(JobId, #{state => running}),
+                            %% Notify limits module that job has started (for usage tracking)
+                            LimitInfo = build_limit_info(JobInfo),
+                            flurm_limits:enforce_limit(start, JobId, LimitInfo),
                             NewRunning = sets:add_element(JobId, State#scheduler_state.running_jobs),
                             lager:info("Job ~p scheduled on nodes: ~p", [JobId, NodeNames]),
                             {ok, State#scheduler_state{running_jobs = NewRunning}};

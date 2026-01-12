@@ -1,0 +1,77 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: flurmnd
+  namespace: flurm
+  labels:
+    app.kubernetes.io/name: flurm
+    app.kubernetes.io/component: node-daemon
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: flurm
+      app.kubernetes.io/component: node-daemon
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: flurm
+        app.kubernetes.io/component: node-daemon
+    spec:
+      hostNetwork: true
+      hostPID: true
+      nodeSelector:
+        flurm.io/compute-node: "true"
+      tolerations:
+      - operator: Exists
+      containers:
+      - name: flurmnd
+        image: flurm/flurmnd:latest
+        imagePullPolicy: Always
+        securityContext:
+          privileged: true
+        ports:
+        - name: slurmd
+          containerPort: 6818
+          hostPort: 6818
+          protocol: TCP
+        env:
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        - name: ERLANG_COOKIE
+          valueFrom:
+            secretKeyRef:
+              name: flurm-secrets
+              key: erlang-cookie
+        - name: FLURM_CONTROLLERS
+          value: "flurmctld.flurm.svc.cluster.local:6817"
+        volumeMounts:
+        - name: cgroup
+          mountPath: /sys/fs/cgroup
+        - name: host-run
+          mountPath: /var/run
+        - name: config
+          mountPath: /etc/flurm
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "1Gi"
+            cpu: "1"
+        livenessProbe:
+          tcpSocket:
+            port: 6818
+          initialDelaySeconds: 10
+          periodSeconds: 10
+      volumes:
+      - name: cgroup
+        hostPath:
+          path: /sys/fs/cgroup
+      - name: host-run
+        hostPath:
+          path: /var/run
+      - name: config
+        configMap:
+          name: flurm-config

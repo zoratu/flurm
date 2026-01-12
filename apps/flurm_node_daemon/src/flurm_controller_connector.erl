@@ -17,7 +17,8 @@
 -behaviour(gen_server).
 
 -export([start_link/0]).
--export([send_message/1, report_job_complete/3, report_job_failed/3]).
+-export([send_message/1, report_job_complete/3, report_job_complete/4,
+         report_job_failed/3, report_job_failed/4]).
 -export([get_state/0]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
@@ -36,7 +37,9 @@
     node_id :: binary() | undefined,
     reconnect_interval :: pos_integer(),
     buffer :: binary(),  % Buffer for TCP message framing
-    running_jobs :: #{pos_integer() => pid()}  % Job ID -> Executor PID
+    running_jobs :: #{pos_integer() => pid()},  % Job ID -> Executor PID
+    draining :: boolean(),  % Whether node is draining (not accepting new jobs)
+    drain_reason :: binary() | undefined  % Reason for draining
 }).
 
 %%====================================================================
@@ -54,12 +57,22 @@ send_message(Message) ->
 %% @doc Report job completion to controller
 -spec report_job_complete(pos_integer(), integer(), binary()) -> ok | {error, term()}.
 report_job_complete(JobId, ExitCode, Output) ->
-    gen_server:cast(?MODULE, {job_complete, JobId, ExitCode, Output}).
+    report_job_complete(JobId, ExitCode, Output, 0).
+
+%% @doc Report job completion to controller with energy data
+-spec report_job_complete(pos_integer(), integer(), binary(), non_neg_integer()) -> ok | {error, term()}.
+report_job_complete(JobId, ExitCode, Output, EnergyUsed) ->
+    gen_server:cast(?MODULE, {job_complete, JobId, ExitCode, Output, EnergyUsed}).
 
 %% @doc Report job failure to controller
 -spec report_job_failed(pos_integer(), term(), binary()) -> ok | {error, term()}.
 report_job_failed(JobId, Reason, Output) ->
-    gen_server:cast(?MODULE, {job_failed, JobId, Reason, Output}).
+    report_job_failed(JobId, Reason, Output, 0).
+
+%% @doc Report job failure to controller with energy data
+-spec report_job_failed(pos_integer(), term(), binary(), non_neg_integer()) -> ok | {error, term()}.
+report_job_failed(JobId, Reason, Output, EnergyUsed) ->
+    gen_server:cast(?MODULE, {job_failed, JobId, Reason, Output, EnergyUsed}).
 
 %% @doc Get current connection state
 -spec get_state() -> map().
@@ -91,7 +104,9 @@ init([]) ->
         node_id = undefined,
         reconnect_interval = ?INITIAL_RECONNECT_INTERVAL,
         buffer = <<>>,
-        running_jobs = #{}
+        running_jobs = #{},
+        draining = false,
+        drain_reason = undefined
     }}.
 
 handle_call({send_message, Message}, _From, #state{socket = Socket, connected = true} = State) ->
@@ -108,19 +123,21 @@ handle_call(get_state, _From, State) ->
         node_id => State#state.node_id,
         host => State#state.host,
         port => State#state.port,
-        running_jobs => maps:size(State#state.running_jobs)
+        running_jobs => maps:size(State#state.running_jobs),
+        draining => State#state.draining,
+        drain_reason => State#state.drain_reason
     },
     {reply, Info, State};
 
 handle_call(_Request, _From, State) ->
     {reply, {error, unknown_request}, State}.
 
-handle_cast({job_complete, JobId, ExitCode, Output}, State) ->
-    NewState = handle_job_completion(JobId, ExitCode, Output, completed, State),
+handle_cast({job_complete, JobId, ExitCode, Output, EnergyUsed}, State) ->
+    NewState = handle_job_completion(JobId, ExitCode, Output, completed, EnergyUsed, State),
     {noreply, NewState};
 
-handle_cast({job_failed, JobId, Reason, Output}, State) ->
-    NewState = handle_job_completion(JobId, -1, Output, {failed, Reason}, State),
+handle_cast({job_failed, JobId, Reason, Output, EnergyUsed}, State) ->
+    NewState = handle_job_completion(JobId, -1, Output, {failed, Reason}, EnergyUsed, State),
     {noreply, NewState};
 
 handle_cast(_Msg, State) ->
@@ -153,6 +170,15 @@ handle_info(connect, #state{host = Host, port = Port, reconnect_interval = Inter
 handle_info(heartbeat, #state{socket = Socket, connected = true, heartbeat_interval = Interval} = State) ->
     Metrics = flurm_system_monitor:get_metrics(),
     RunningJobIds = maps:keys(State#state.running_jobs),
+    GPUInfo = flurm_system_monitor:get_gpus(),
+    GPUAllocation = flurm_system_monitor:get_gpu_allocation(),
+
+    %% Get current power consumption from job executor (if available)
+    PowerWatts = try
+        flurm_job_executor:get_current_power()
+    catch
+        _:_ -> 0.0
+    end,
 
     HeartbeatMsg = #{
         type => node_heartbeat,
@@ -161,9 +187,22 @@ handle_info(heartbeat, #state{socket = Socket, connected = true, heartbeat_inter
             cpus => maps:get(cpus, Metrics),
             total_memory_mb => maps:get(total_memory_mb, Metrics),
             free_memory_mb => maps:get(free_memory_mb, Metrics),
+            available_memory_mb => maps:get(available_memory_mb, Metrics, 0),
             load_avg => maps:get(load_avg, Metrics),
+            load_avg_5 => maps:get(load_avg_5, Metrics, 0.0),
+            load_avg_15 => maps:get(load_avg_15, Metrics, 0.0),
             running_jobs => RunningJobIds,
-            job_count => length(RunningJobIds)
+            job_count => length(RunningJobIds),
+            %% GPU tracking
+            gpus => GPUInfo,
+            gpu_count => length(GPUInfo),
+            gpu_allocation => GPUAllocation,
+            %% Energy/power monitoring
+            power_watts => PowerWatts,
+            %% Node status
+            draining => State#state.draining,
+            drain_reason => State#state.drain_reason,
+            timestamp => erlang:system_time(millisecond)
         }
     },
 
@@ -224,7 +263,7 @@ handle_info({'DOWN', _Ref, process, Pid, Reason}, State) ->
             lager:warning("Job ~p executor died: ~p", [JobId, Reason]),
             NewJobs = maps:remove(JobId, State#state.running_jobs),
             %% Report failure to controller
-            report_job_to_controller(State#state.socket, JobId, failed, -1, <<"Executor crashed">>),
+            report_job_to_controller(State#state.socket, JobId, failed, -1, <<"Executor crashed">>, 0),
             {noreply, State#state{running_jobs = NewJobs}};
         error ->
             {noreply, State}
@@ -306,30 +345,45 @@ handle_controller_message(#{type := node_heartbeat_ack}, State) ->
 handle_controller_message(#{type := job_launch, payload := Payload}, State) ->
     JobId = maps:get(<<"job_id">>, Payload),
     TimeLimit = maps:get(<<"time_limit">>, Payload, undefined),
-    lager:info("Received job launch request for job ~p (time_limit: ~p)", [JobId, TimeLimit]),
+    StdOut = maps:get(<<"std_out">>, Payload, undefined),
+    StdErr = maps:get(<<"std_err">>, Payload, undefined),
+    lager:info("Received job launch request for job ~p (time_limit: ~p, std_out: ~p)",
+               [JobId, TimeLimit, StdOut]),
 
-    JobSpec = #{
-        job_id => JobId,
-        script => maps:get(<<"script">>, Payload, <<>>),
-        working_dir => maps:get(<<"working_dir">>, Payload, <<"/tmp">>),
-        environment => maps:get(<<"environment">>, Payload, #{}),
-        num_cpus => maps:get(<<"num_cpus">>, Payload, 1),
-        memory_mb => maps:get(<<"memory_mb">>, Payload, 1024),
-        time_limit => TimeLimit
-    },
-
-    case flurm_job_executor_sup:start_job(JobSpec) of
-        {ok, Pid} ->
-            %% Monitor the job executor
-            erlang:monitor(process, Pid),
-            NewJobs = maps:put(JobId, Pid, State#state.running_jobs),
-            lager:info("Started job ~p, executor: ~p", [JobId, Pid]),
-            State#state{running_jobs = NewJobs};
-        {error, Reason} ->
-            lager:error("Failed to start job ~p: ~p", [JobId, Reason]),
+    %% Check if node is draining - reject new jobs if so
+    case State#state.draining of
+        true ->
+            lager:warning("Rejecting job ~p - node is draining: ~s",
+                         [JobId, State#state.drain_reason]),
             report_job_to_controller(State#state.socket, JobId, failed, -1,
-                                    iolist_to_binary(io_lib:format("~p", [Reason]))),
-            State
+                                    <<"Node is draining, cannot accept new jobs">>, 0),
+            State;
+        false ->
+            JobSpec = #{
+                job_id => JobId,
+                script => maps:get(<<"script">>, Payload, <<>>),
+                working_dir => maps:get(<<"working_dir">>, Payload, <<"/tmp">>),
+                environment => maps:get(<<"environment">>, Payload, #{}),
+                num_cpus => maps:get(<<"num_cpus">>, Payload, 1),
+                memory_mb => maps:get(<<"memory_mb">>, Payload, 1024),
+                time_limit => TimeLimit,
+                std_out => StdOut,
+                std_err => StdErr
+            },
+
+            case flurm_job_executor_sup:start_job(JobSpec) of
+                {ok, Pid} ->
+                    %% Monitor the job executor
+                    erlang:monitor(process, Pid),
+                    NewJobs = maps:put(JobId, Pid, State#state.running_jobs),
+                    lager:info("Started job ~p, executor: ~p", [JobId, Pid]),
+                    State#state{running_jobs = NewJobs};
+                {error, Reason} ->
+                    lager:error("Failed to start job ~p: ~p", [JobId, Reason]),
+                    report_job_to_controller(State#state.socket, JobId, failed, -1,
+                                            iolist_to_binary(io_lib:format("~p", [Reason])), 0),
+                    State
+            end
     end;
 
 handle_controller_message(#{type := job_cancel, payload := Payload}, State) ->
@@ -346,15 +400,29 @@ handle_controller_message(#{type := job_cancel, payload := Payload}, State) ->
             State#state{running_jobs = NewJobs}
     end;
 
-handle_controller_message(#{type := node_drain}, State) ->
-    lager:info("Received drain request - stopping new job acceptance"),
-    %% TODO: Mark node as draining, don't accept new jobs
-    State;
+handle_controller_message(#{type := node_drain} = Msg, State) ->
+    Payload = maps:get(payload, Msg, #{}),
+    Reason = maps:get(<<"reason">>, Payload, <<"controller request">>),
+    lager:info("Received drain request - stopping new job acceptance, reason: ~s", [Reason]),
+    %% Mark node as draining - existing jobs continue, new jobs rejected
+    NewState = State#state{
+        draining = true,
+        drain_reason = Reason
+    },
+    %% Send acknowledgement to controller
+    send_drain_ack(State#state.socket, true, Reason, maps:size(State#state.running_jobs)),
+    NewState;
 
 handle_controller_message(#{type := node_resume}, State) ->
-    lager:info("Received resume request"),
-    %% TODO: Resume accepting new jobs
-    State;
+    lager:info("Received resume request - accepting new jobs again"),
+    %% Resume accepting new jobs
+    NewState = State#state{
+        draining = false,
+        drain_reason = undefined
+    },
+    %% Send acknowledgement to controller
+    send_drain_ack(State#state.socket, false, undefined, maps:size(State#state.running_jobs)),
+    NewState;
 
 handle_controller_message(#{type := ack, payload := Payload}, State) ->
     lager:debug("Received ack from controller: ~p", [Payload]),
@@ -368,19 +436,20 @@ handle_controller_message(#{type := Type, payload := Payload}, State) ->
     lager:info("Received unknown message from controller: ~p ~p", [Type, Payload]),
     State.
 
-handle_job_completion(JobId, ExitCode, Output, Status, #state{running_jobs = Jobs} = State) ->
+handle_job_completion(JobId, ExitCode, Output, Status, EnergyUsed, #state{running_jobs = Jobs} = State) ->
     case maps:is_key(JobId, Jobs) of
         true ->
-            report_job_to_controller(State#state.socket, JobId, Status, ExitCode, Output),
+            report_job_to_controller(State#state.socket, JobId, Status, ExitCode, Output, EnergyUsed),
             State#state{running_jobs = maps:remove(JobId, Jobs)};
         false ->
             lager:warning("Job ~p not found in running jobs", [JobId]),
             State
     end.
 
-report_job_to_controller(undefined, _JobId, _Status, _ExitCode, _Output) ->
+%% Report job status to controller with energy tracking
+report_job_to_controller(undefined, _JobId, _Status, _ExitCode, _Output, _EnergyUsed) ->
     {error, not_connected};
-report_job_to_controller(Socket, JobId, Status, ExitCode, Output) ->
+report_job_to_controller(Socket, JobId, Status, ExitCode, Output, EnergyUsed) ->
     {MsgType, Reason} = case Status of
         completed -> {job_complete, <<"completed">>};
         {failed, timeout} -> {job_failed, <<"timeout">>};
@@ -398,6 +467,7 @@ report_job_to_controller(Socket, JobId, Status, ExitCode, Output) ->
             exit_code => ExitCode,
             output => Output,
             reason => Reason,
+            energy_used_uj => EnergyUsed,  % Energy in microjoules
             timestamp => erlang:system_time(millisecond)
         }
     },
@@ -412,6 +482,21 @@ find_job_by_pid(Pid, Jobs) ->
 
 cancel_timer(undefined) -> ok;
 cancel_timer(Ref) -> erlang:cancel_timer(Ref).
+
+%% Send drain acknowledgement to controller
+send_drain_ack(undefined, _Draining, _Reason, _RunningJobCount) ->
+    {error, not_connected};
+send_drain_ack(Socket, Draining, Reason, RunningJobCount) ->
+    Msg = #{
+        type => drain_ack,
+        payload => #{
+            draining => Draining,
+            reason => Reason,
+            running_jobs => RunningJobCount,
+            timestamp => erlang:system_time(millisecond)
+        }
+    },
+    send_protocol_message(Socket, Msg).
 
 %% Detect hardware features available on this node
 detect_features() ->
