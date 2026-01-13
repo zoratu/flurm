@@ -16,6 +16,7 @@
 -export([start_link/0]).
 -export([submit_job/1, cancel_job/1, get_job/1, list_jobs/0, update_job/2]).
 -export([hold_job/1, release_job/1, requeue_job/1]).
+-export([import_job/1]).  %% For SLURM migration
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
 -include_lib("flurm_core/include/flurm_core.hrl").
@@ -78,6 +79,11 @@ release_job(JobId) ->
 requeue_job(JobId) ->
     gen_server:call(?MODULE, {requeue_job, JobId}).
 
+%% @doc Import a job from SLURM migration (preserves job ID)
+-spec import_job(map()) -> {ok, job_id()} | {error, term()}.
+import_job(JobSpec) ->
+    gen_server:call(?MODULE, {import_job, JobSpec}).
+
 %%====================================================================
 %% gen_server callbacks
 %%====================================================================
@@ -98,6 +104,35 @@ handle_call({submit_job, JobSpec}, _From, #state{jobs = Jobs, job_counter = Coun
         ArraySpec ->
             %% Array job submission
             submit_array_job(JobSpec, ArraySpec, Jobs, Counter, State)
+    end;
+
+%% Import a job from SLURM migration (preserves job ID)
+handle_call({import_job, JobSpec}, _From, #state{jobs = Jobs, job_counter = Counter} = State) ->
+    JobId = maps:get(id, JobSpec),
+    case maps:is_key(JobId, Jobs) of
+        true ->
+            {reply, {error, already_exists}, State};
+        false ->
+            %% Create job record from import spec
+            Job = #job{
+                id = JobId,
+                name = maps:get(name, JobSpec, <<"imported">>),
+                user = maps:get(user, JobSpec, <<"unknown">>),
+                partition = maps:get(partition, JobSpec, <<"default">>),
+                num_cpus = maps:get(num_cpus, JobSpec, 1),
+                num_nodes = maps:get(num_nodes, JobSpec, 1),
+                memory_mb = maps:get(memory_mb, JobSpec, 256),
+                priority = maps:get(priority, JobSpec, 100),
+                state = maps:get(state, JobSpec, pending),
+                time_limit = maps:get(time_limit, JobSpec, 60),
+                submit_time = maps:get(submit_time, JobSpec, erlang:system_time(second)),
+                start_time = maps:get(start_time, JobSpec, undefined)
+            },
+            NewJobs = maps:put(JobId, Job, Jobs),
+            NewCounter = max(Counter, JobId + 1),
+            lager:info("Imported job ~p from SLURM (state: ~p)", [JobId, Job#job.state]),
+            persist_job(Job),
+            {reply, {ok, JobId}, State#state{jobs = NewJobs, job_counter = NewCounter}}
     end;
 
 handle_call({cancel_job, JobId}, _From, #state{jobs = Jobs} = State) ->

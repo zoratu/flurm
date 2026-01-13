@@ -21,7 +21,7 @@ This guide provides step-by-step instructions for migrating from SLURM to FLURM.
 |-----------------|-------------------|
 | `slurmctld` | `flurmctld` (Erlang-based controller) |
 | `slurmd` | `flurmnd` (Erlang-based node daemon) |
-| `slurmdbd` | Coming soon (currently use existing) |
+| `slurmdbd` | `flurmbd` (Erlang-based accounting daemon) |
 
 ### What Stays the Same
 
@@ -89,6 +89,161 @@ squeue
 - [ ] Firewall ports opened (6817, 6818, 4369, 9100-9110)
 - [ ] DNS/hostnames correct for all nodes
 - [ ] Rollback plan documented
+
+## Hot Migration (Zero-Downtime)
+
+For production clusters where draining all jobs is impractical, FLURM supports a hot migration path that preserves running jobs.
+
+### Overview
+
+The hot migration process:
+1. Start FLURM in "shadow mode" alongside SLURM
+2. FLURM imports current state from SLURM
+3. Switch client traffic to FLURM (via load balancer or DNS)
+4. FLURM takes over job management
+5. Stop SLURM (running jobs continue under FLURM)
+
+### Step 1: Build and Deploy FLURM
+
+```bash
+# Build FLURM
+git clone https://github.com/your-org/flurm.git
+cd flurm && rebar3 release
+
+# Deploy to controller nodes (use different ports initially)
+scp -r _build/default/rel/flurm controller:/opt/flurm
+```
+
+### Step 2: Start FLURM in Shadow Mode
+
+Shadow mode allows FLURM to run alongside SLURM, importing state without serving clients.
+
+```bash
+# Create shadow mode config
+cat > /etc/flurm/shadow.config << 'EOF'
+[
+  {flurm, [
+    {shadow_mode, true},
+    {slurmctld_port, 16817},     % Different port from SLURM
+    {slurm_state_dir, "/var/spool/slurm/ctld"},
+    {import_slurm_state, true},
+    {sync_interval, 5000}        % Sync every 5 seconds
+  ]}
+].
+EOF
+
+# Start FLURM in shadow mode
+/opt/flurm/bin/flurm foreground -config /etc/flurm/shadow.config
+```
+
+### Step 3: Verify State Import
+
+```bash
+# Compare job counts
+SLURM_JOBS=$(squeue -h | wc -l)
+FLURM_JOBS=$(curl -s http://localhost:16817/api/jobs | jq length)
+echo "SLURM: $SLURM_JOBS jobs, FLURM: $FLURM_JOBS jobs"
+
+# Compare node states
+sinfo > /tmp/slurm_nodes.txt
+curl -s http://localhost:16817/api/nodes > /tmp/flurm_nodes.json
+```
+
+### Step 4: Switch Client Traffic
+
+Option A: Load Balancer (Recommended)
+
+```bash
+# Update HAProxy/nginx to route new connections to FLURM
+# Old config:
+#   backend slurm_controllers
+#     server slurmctld 192.168.1.10:6817 check
+#
+# New config:
+backend slurm_controllers
+  server flurmctld 192.168.1.10:16817 check weight 100
+  server slurmctld 192.168.1.10:6817 check weight 0 backup
+```
+
+Option B: DNS Cutover
+
+```bash
+# Update DNS to point to FLURM
+# Or update /etc/slurm/slurm.conf on clients:
+SlurmctldHost=controller(192.168.1.10) SlurmctldPort=16817
+```
+
+### Step 5: Disable Shadow Mode
+
+Once traffic is flowing to FLURM:
+
+```bash
+# Reconfigure FLURM to take over completely
+cat > /etc/flurm/production.config << 'EOF'
+[
+  {flurm, [
+    {shadow_mode, false},
+    {slurmctld_port, 6817},      % Standard SLURM port
+    {import_slurm_state, false}  % No more imports
+  ]}
+].
+EOF
+
+# Restart FLURM with production config
+/opt/flurm/bin/flurm stop
+/opt/flurm/bin/flurm foreground -config /etc/flurm/production.config
+```
+
+### Step 6: Stop SLURM
+
+```bash
+# Stop SLURM controller (jobs continue under FLURM)
+systemctl stop slurmctld
+
+# Update compute nodes to use FLURM (rolling restart)
+pdsh -a 'systemctl stop slurmd && systemctl start flurmnd'
+```
+
+### Verification During Hot Migration
+
+```bash
+#!/bin/bash
+# hot_migration_check.sh - Run continuously during migration
+
+while true; do
+    echo "=== $(date) ==="
+
+    # Job counts
+    SLURM_RUNNING=$(squeue -h -t RUNNING 2>/dev/null | wc -l)
+    FLURM_RUNNING=$(curl -s http://localhost:16817/api/jobs?state=running 2>/dev/null | jq length)
+    echo "Running jobs - SLURM: $SLURM_RUNNING, FLURM: $FLURM_RUNNING"
+
+    # New submissions going to FLURM?
+    echo "Recent submissions:"
+    curl -s http://localhost:16817/api/jobs?limit=5 | jq -r '.[] | "\(.id) \(.state) \(.submit_time)"'
+
+    sleep 10
+done
+```
+
+### Rollback During Hot Migration
+
+If issues occur during hot migration:
+
+```bash
+# Revert load balancer to SLURM
+# In HAProxy:
+backend slurm_controllers
+  server slurmctld 192.168.1.10:6817 check weight 100
+  server flurmctld 192.168.1.10:16817 check weight 0 backup
+
+# Stop FLURM shadow
+/opt/flurm/bin/flurm stop
+
+# SLURM continues serving all requests
+```
+
+---
 
 ## Single Controller Migration
 
@@ -527,13 +682,21 @@ erl_call -sname flurm -c your_cookie -a 'flurm_db_cluster status []'
 | Job status (squeue) | ✓ | ✓ |
 | Node info (sinfo) | ✓ | ✓ |
 | Job cancel (scancel) | ✓ | ✓ |
-| Interactive jobs (srun) | ✓ | Planned |
-| Job arrays | ✓ | Planned |
-| Job dependencies | ✓ | Planned |
-| Accounting (sacct) | ✓ | Planned |
-| Backfill scheduling | ✓ | Planned |
-| Fair-share scheduling | ✓ | Planned |
+| Interactive jobs (srun) | ✓ | ✓ |
+| Job arrays | ✓ | ✓ |
+| Job dependencies | ✓ | ✓ |
+| Accounting (sacct/sacctmgr) | ✓ | ✓ |
+| Accounting daemon (slurmdbd) | ✓ | ✓ |
+| Backfill scheduling | ✓ | ✓ |
+| Fair-share scheduling | ✓ | ✓ |
+| Preemption | ✓ | ✓ |
+| Reservations | ✓ | ✓ |
+| GRES/GPU scheduling | ✓ | ✓ |
+| Burst buffers | ✓ | ✓ |
+| License management | ✓ | ✓ |
+| Node drain/resume | ✓ | ✓ |
 | Hot config reload | Partial | ✓ |
 | Active-active HA | ✗ | ✓ |
 | Zero-downtime upgrades | ✗ | ✓ |
 | Dynamic node scaling | Restart | ✓ |
+| Sub-second failover | ✗ | ✓ |

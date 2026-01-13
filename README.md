@@ -85,51 +85,40 @@ Create a `flurm.config` file:
 
 ## Architecture Overview
 
-```
-                                    FLURM Architecture
-    ┌─────────────────────────────────────────────────────────────────────────┐
-    │                           Client Layer                                   │
-    │  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐       │
-    │  │ sbatch  │  │ squeue  │  │ scancel │  │  sinfo  │  │ scontrol│       │
-    │  └────┬────┘  └────┬────┘  └────┬────┘  └────┬────┘  └────┬────┘       │
-    │       └────────────┴───────────┬┴───────────┴────────────┘             │
-    └────────────────────────────────┼────────────────────────────────────────┘
-                                     │ SLURM Protocol (TCP)
-    ┌────────────────────────────────┼────────────────────────────────────────┐
-    │                        Controller Layer                                  │
-    │  ┌─────────────────────────────┴─────────────────────────────┐          │
-    │  │                    Protocol Decoder                        │          │
-    │  │              (flurm_protocol.erl)                         │          │
-    │  └─────────────────────────────┬─────────────────────────────┘          │
-    │                                │                                         │
-    │  ┌──────────────┬──────────────┼──────────────┬──────────────┐          │
-    │  │              │              │              │              │          │
-    │  ▼              ▼              ▼              ▼              ▼          │
-    │ ┌────────┐  ┌────────┐  ┌──────────┐  ┌────────┐  ┌──────────┐         │
-    │ │  Job   │  │ Queue  │  │Scheduler │  │ Node   │  │Partition │         │
-    │ │Manager │  │Manager │  │  Engine  │  │Manager │  │ Manager  │         │
-    │ └────┬───┘  └────┬───┘  └────┬─────┘  └────┬───┘  └────┬─────┘         │
-    │      │           │           │             │           │               │
-    │      └───────────┴───────────┼─────────────┴───────────┘               │
-    │                              │                                          │
-    │  ┌───────────────────────────┴───────────────────────────────┐         │
-    │  │                    State Manager                           │         │
-    │  │         (Raft Consensus + Mnesia Replication)             │         │
-    │  └───────────────────────────────────────────────────────────┘         │
-    └────────────────────────────────┬────────────────────────────────────────┘
-                                     │
-    ┌────────────────────────────────┼────────────────────────────────────────┐
-    │                         Compute Layer                                    │
-    │                                │                                         │
-    │      ┌─────────────────────────┼─────────────────────────────┐          │
-    │      │                         │                             │          │
-    │      ▼                         ▼                             ▼          │
-    │  ┌────────┐              ┌────────┐                    ┌────────┐       │
-    │  │ Node 1 │              │ Node 2 │        ...         │ Node N │       │
-    │  │(slurmd)│              │(slurmd)│                    │(slurmd)│       │
-    │  └────────┘              └────────┘                    └────────┘       │
-    │                                                                          │
-    └──────────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph Clients["Client Layer"]
+        sbatch
+        squeue
+        scancel
+        sinfo
+        scontrol
+    end
+
+    subgraph Controller["Controller Layer"]
+        Protocol["Protocol Decoder<br/>(flurm_protocol.erl)"]
+
+        subgraph Managers["Core Managers"]
+            Job["Job<br/>Manager"]
+            Queue["Queue<br/>Manager"]
+            Sched["Scheduler<br/>Engine"]
+            Node["Node<br/>Manager"]
+            Part["Partition<br/>Manager"]
+        end
+
+        State["State Manager<br/>(Raft Consensus + Mnesia)"]
+    end
+
+    subgraph Compute["Compute Layer"]
+        N1["Node 1<br/>(flurmnd)"]
+        N2["Node 2<br/>(flurmnd)"]
+        NN["Node N<br/>(flurmnd)"]
+    end
+
+    Clients -->|SLURM Protocol TCP| Protocol
+    Protocol --> Managers
+    Managers --> State
+    State --> Compute
 ```
 
 ## SLURM vs FLURM Capabilities
@@ -187,11 +176,20 @@ FLURM is currently in active development. The following components are implement
 - [x] Performance benchmarks (throughput, latency)
 - [x] Multi-node cluster tests
 
+### Advanced Features
+- [x] GPU scheduling (GRES) - Full generic resource support
+- [x] Burst buffer support - Stage-in/stage-out operations
+- [x] Job arrays - Full array syntax with throttling
+- [x] Job dependencies - afterok, afterany, afternotok, singleton
+- [x] Preemption - Checkpoint, requeue, suspend modes
+- [x] Reservations - Maintenance windows and user reservations
+- [x] License management - Cluster-wide license tracking
+- [x] Federation support (partial)
+
 ### Planned Features
-- [ ] Federation support
-- [ ] GPU scheduling (GRES)
-- [ ] Burst buffer support
+- [ ] Full federation with cross-cluster job submission
 - [ ] Kubernetes operator deployment
+- [ ] SPANK plugin compatibility layer
 
 ## Contributing
 
