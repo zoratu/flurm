@@ -50,9 +50,20 @@ get_available_nodes_for_job(NumCpus, MemoryMb, Partition) ->
 
 %% @doc Get available nodes with GRES requirements.
 -spec get_available_nodes_with_gres(pos_integer(), pos_integer(), binary(), binary()) -> [#node{}].
-get_available_nodes_with_gres(NumCpus, MemoryMb, Partition, _GRESSpec) ->
-    %% For now, just get regular nodes - GRES filtering is a stub
-    get_available_nodes_for_job(NumCpus, MemoryMb, Partition).
+get_available_nodes_with_gres(NumCpus, MemoryMb, Partition, GRESSpec) ->
+    %% Get nodes that satisfy CPU/memory/partition requirements
+    BaseNodes = get_available_nodes_for_job(NumCpus, MemoryMb, Partition),
+    %% Filter by GRES requirements if specified
+    case GRESSpec of
+        <<>> -> BaseNodes;
+        _ ->
+            %% Get node names from the base nodes
+            NodeNames = [N#node.hostname || N <- BaseNodes],
+            %% Filter by GRES availability using the flurm_gres module
+            FilteredNames = flurm_gres:filter_nodes_by_gres(NodeNames, GRESSpec),
+            %% Return only nodes that passed the GRES filter
+            [N || N <- BaseNodes, lists:member(N#node.hostname, FilteredNames)]
+    end.
 
 %% @doc Allocate resources on a node for a job.
 -spec allocate_resources(binary(), pos_integer(), pos_integer(), pos_integer()) -> ok | {error, term()}.
@@ -74,18 +85,25 @@ release_resources(NodeName, JobId) ->
             {error, node_not_found}
     end.
 
-%% @doc Allocate GRES on a node (stub).
--spec allocate_gres(binary(), pos_integer(), binary(), boolean()) -> {ok, []} | {error, term()}.
+%% @doc Allocate GRES on a node for a job.
+%% Returns {ok, AllocatedIndices} on success or {error, Reason} on failure.
+-spec allocate_gres(binary(), pos_integer(), binary(), boolean()) -> {ok, list()} | {error, term()}.
 allocate_gres(_NodeName, _JobId, <<>>, _Exclusive) ->
     {ok, []};
-allocate_gres(_NodeName, _JobId, _GRESSpec, _Exclusive) ->
-    %% GRES allocation is a stub for now
-    {ok, []}.
+allocate_gres(NodeName, JobId, GRESSpec, _Exclusive) ->
+    %% Use flurm_gres module to allocate GRES resources
+    case flurm_gres:allocate(JobId, NodeName, GRESSpec) of
+        {ok, AllocatedIndices} ->
+            {ok, AllocatedIndices};
+        {error, Reason} ->
+            {error, Reason}
+    end.
 
-%% @doc Release GRES from a node (stub).
+%% @doc Release GRES allocated to a job on a node.
 -spec release_gres(binary(), pos_integer()) -> ok.
-release_gres(_NodeName, _JobId) ->
-    ok.
+release_gres(NodeName, JobId) ->
+    %% Use flurm_gres module to deallocate GRES resources
+    flurm_gres:deallocate(JobId, NodeName).
 
 %%====================================================================
 %% Internal functions

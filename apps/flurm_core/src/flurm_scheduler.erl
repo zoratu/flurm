@@ -298,7 +298,7 @@ handle_job_finished(JobId, FinalState, State) ->
             end,
             LimitInfo = #{
                 user => Job#job.user,
-                account => <<>>,  % TODO: Add account field to job record if needed
+                account => Job#job.account,
                 tres => #{
                     cpu => Job#job.num_cpus,
                     mem => Job#job.memory_mb,
@@ -1013,6 +1013,7 @@ job_to_info(#job{} = Job) ->
         std_out => Job#job.std_out,
         std_err => Job#job.std_err,
         user => Job#job.user,
+        account => Job#job.account,
         licenses => Job#job.licenses,
         %% GRES fields for GPU/accelerator scheduling
         gres => Job#job.gres,
@@ -1029,7 +1030,7 @@ job_to_info(#job{} = Job) ->
 job_to_limit_spec(#job{} = Job) ->
     #{
         user => Job#job.user,
-        account => <<>>,  % TODO: Add account field to job record if needed
+        account => Job#job.account,
         partition => Job#job.partition,
         num_nodes => Job#job.num_nodes,
         num_cpus => Job#job.num_cpus,

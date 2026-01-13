@@ -58,6 +58,22 @@ setup() ->
     application:ensure_all_started(lager),
     application:ensure_all_started(ranch),
 
+    %% Stop any existing cluster process from previous tests to avoid
+    %% cluster_not_ready errors. This ensures is_cluster_enabled() returns false
+    %% and the handler uses the single-node code path.
+    case whereis(flurm_controller_cluster) of
+        undefined -> ok;
+        ClusterPid ->
+            catch gen_server:stop(ClusterPid, normal, 1000),
+            timer:sleep(100)
+    end,
+
+    %% Disable cluster mode completely:
+    %% 1. Set enable_cluster to false to prevent supervisor from starting cluster
+    %% 2. Unset cluster_nodes to ensure handler's is_cluster_enabled() returns false
+    application:set_env(flurm_controller, enable_cluster, false),
+    application:unset_env(flurm_controller, cluster_nodes),
+
     %% Stop any existing listener from previous runs to avoid conflicts
     catch ranch:stop_listener(flurm_controller_listener),
     timer:sleep(200),
