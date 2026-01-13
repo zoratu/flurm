@@ -70,10 +70,25 @@ exec erl \
     -setcookie ${FLURM_COOKIE:-flurm_migration_test} \
     -pa _build/default/lib/*/ebin \
     -config ${FLURM_CONFIG} \
-    -s flurm_core \
-    -s flurm_slurm_import \
     -noshell \
     -eval "
         io:format(\"FLURM starting in shadow mode~n\"),
+        %% Start required applications
+        application:ensure_all_started(sasl),
+        application:ensure_all_started(lager),
+        application:ensure_all_started(ranch),
+        application:ensure_all_started(ra),
+        %% Start FLURM applications
+        application:ensure_all_started(flurm_config),
+        application:ensure_all_started(flurm_protocol),
+        application:ensure_all_started(flurm_core),
+        application:ensure_all_started(flurm_db),
+        application:ensure_all_started(flurm_controller),
+        io:format(\"FLURM controller started~n\"),
+        %% Start SLURM import if available
+        case application:ensure_all_started(flurm_slurm_import) of
+            {ok, _} -> io:format(\"SLURM import module loaded~n\");
+            _ -> io:format(\"SLURM import not available~n\")
+        end,
         receive stop -> ok end
     "
