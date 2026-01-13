@@ -31,11 +31,18 @@
     update_task_state/3,
     parse_array_spec/1,
     format_array_spec/1,
+    expand_array/1,
     get_pending_tasks/1,
     get_running_tasks/1,
     get_completed_tasks/1,
     get_array_stats/1,
-    get_task_env/2
+    get_task_env/2,
+    can_schedule_task/1,
+    schedule_next_task/1,
+    task_started/3,
+    task_completed/3,
+    get_schedulable_count/1,
+    get_schedulable_tasks/1
 ]).
 
 %% gen_server callbacks
@@ -85,9 +92,11 @@
 }).
 
 -record(array_spec, {
-    start_idx :: non_neg_integer(),
-    end_idx :: non_neg_integer(),
+    %% Either range-based (start_idx, end_idx, step) or explicit list (indices)
+    start_idx :: non_neg_integer() | undefined,
+    end_idx :: non_neg_integer() | undefined,
     step :: pos_integer(),
+    indices :: [non_neg_integer()] | undefined,  % For comma-separated lists
     max_concurrent :: pos_integer() | unlimited
 }).
 
@@ -171,6 +180,14 @@ parse_array_spec(Spec) when is_list(Spec) ->
 
 %% @doc Format array spec as string
 -spec format_array_spec(#array_spec{}) -> binary().
+format_array_spec(#array_spec{indices = Indices, max_concurrent = MaxConc})
+  when is_list(Indices) ->
+    %% Format comma-separated list
+    Base = iolist_to_binary(lists:join(<<",">>, [integer_to_binary(I) || I <- Indices])),
+    case MaxConc of
+        unlimited -> Base;
+        N -> iolist_to_binary([Base, <<"%">>, integer_to_binary(N)])
+    end;
 format_array_spec(#array_spec{start_idx = Start, end_idx = End,
                                step = Step, max_concurrent = MaxConc}) ->
     Base = if
@@ -266,6 +283,20 @@ handle_cast({update_task_state, ArrayJobId, TaskId, Updates}, State) ->
     do_update_task_state(ArrayJobId, TaskId, Updates),
     {noreply, State};
 
+handle_cast({check_throttle, ArrayJobId}, State) ->
+    %% When a task completes and throttling is in effect, notify the scheduler
+    %% that more tasks may be schedulable for this array job
+    case get_schedulable_tasks(ArrayJobId) of
+        [] ->
+            ok;
+        SchedulableTasks ->
+            %% Notify scheduler that array tasks are ready
+            catch flurm_scheduler:trigger_schedule(),
+            lager:debug("Array job ~p: ~p tasks ready to schedule",
+                       [ArrayJobId, length(SchedulableTasks)])
+    end,
+    {noreply, State};
+
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
@@ -325,7 +356,11 @@ do_create_array_job(ArrayJobId, BaseJob, #array_spec{} = Spec) ->
             ok
     end.
 
+generate_task_ids(#array_spec{indices = Indices}) when is_list(Indices) ->
+    %% Explicit list of indices
+    Indices;
 generate_task_ids(#array_spec{start_idx = Start, end_idx = End, step = Step}) ->
+    %% Range-based specification
     lists:seq(Start, End, Step).
 
 do_cancel_array_job(ArrayJobId) ->
@@ -452,6 +487,13 @@ check_array_completion(ArrayJobId) ->
 %% Parsing Functions
 %%====================================================================
 
+%% @doc Parse array specification string
+%% Formats:
+%%   "0-100"       - Range from 0 to 100
+%%   "1,2,5,8"     - Explicit list of indices
+%%   "0-100:2"     - Range with step
+%%   "0-100%10"    - Range with max concurrent limit
+%%   "1,3,5,7%2"   - List with max concurrent limit
 do_parse_array_spec(Spec) ->
     %% Handle max concurrent suffix (e.g., "0-100%10")
     {BaseSpec, MaxConc} = case string:split(Spec, "%") of
@@ -461,6 +503,18 @@ do_parse_array_spec(Spec) ->
             {Base, unlimited}
     end,
 
+    %% Check if this is a comma-separated list
+    case string:find(BaseSpec, ",") of
+        nomatch ->
+            %% Range-based specification
+            parse_range_spec(BaseSpec, MaxConc);
+        _ ->
+            %% Comma-separated list - parse each element which can be a range or value
+            parse_list_spec(BaseSpec, MaxConc)
+    end.
+
+%% Parse range-based spec like "0-100" or "0-100:2"
+parse_range_spec(BaseSpec, MaxConc) ->
     %% Handle step notation (e.g., "0-100:2")
     {RangeSpec, Step} = case string:split(BaseSpec, ":") of
         [Range, StepStr] ->
@@ -469,33 +523,48 @@ do_parse_array_spec(Spec) ->
             {Range, 1}
     end,
 
-    %% Parse range
-    {Start, End} = parse_range(RangeSpec),
+    %% Parse the range
+    case string:split(RangeSpec, "-") of
+        [StartStr, EndStr] ->
+            #array_spec{
+                start_idx = list_to_integer(string:trim(StartStr)),
+                end_idx = list_to_integer(string:trim(EndStr)),
+                step = Step,
+                indices = undefined,
+                max_concurrent = MaxConc
+            };
+        [SingleStr] ->
+            N = list_to_integer(string:trim(SingleStr)),
+            #array_spec{
+                start_idx = N,
+                end_idx = N,
+                step = 1,
+                indices = undefined,
+                max_concurrent = MaxConc
+            }
+    end.
 
+%% Parse comma-separated list like "1,3,5,7" or "1-5,10,15-20"
+parse_list_spec(BaseSpec, MaxConc) ->
+    Parts = string:split(BaseSpec, ",", all),
+    Indices = lists:usort(lists:flatten([parse_list_element(string:trim(P)) || P <- Parts])),
     #array_spec{
-        start_idx = Start,
-        end_idx = End,
-        step = Step,
+        start_idx = undefined,
+        end_idx = undefined,
+        step = 1,
+        indices = Indices,
         max_concurrent = MaxConc
     }.
 
-parse_range(RangeSpec) ->
-    case string:split(RangeSpec, "-") of
+%% Parse a single element which could be a number or a range
+parse_list_element(Elem) ->
+    case string:split(Elem, "-") of
         [StartStr, EndStr] ->
-            {list_to_integer(string:trim(StartStr)),
-             list_to_integer(string:trim(EndStr))};
+            Start = list_to_integer(string:trim(StartStr)),
+            End = list_to_integer(string:trim(EndStr)),
+            lists:seq(Start, End);
         [SingleStr] ->
-            %% Could be comma-separated list or single value
-            case string:find(SingleStr, ",") of
-                nomatch ->
-                    N = list_to_integer(string:trim(SingleStr)),
-                    {N, N};
-                _ ->
-                    %% Comma-separated - find min/max
-                    Nums = [list_to_integer(string:trim(S)) ||
-                            S <- string:split(SingleStr, ",", all)],
-                    {lists:min(Nums), lists:max(Nums)}
-            end
+            [list_to_integer(string:trim(SingleStr))]
     end.
 
 %%====================================================================
@@ -516,4 +585,127 @@ get_task_env(ArrayJobId, TaskId) ->
             };
         {error, _} ->
             #{}
+    end.
+
+%%====================================================================
+%% Array Expansion
+%%====================================================================
+
+%% @doc Expand an array spec into a list of task index records
+%% Returns a list of maps with task information for job submission
+-spec expand_array(#array_spec{} | binary()) -> {ok, [map()]} | {error, term()}.
+expand_array(Spec) when is_binary(Spec) ->
+    case parse_array_spec(Spec) of
+        {ok, ParsedSpec} -> expand_array(ParsedSpec);
+        {error, Reason} -> {error, Reason}
+    end;
+expand_array(#array_spec{} = Spec) ->
+    TaskIds = generate_task_ids(Spec),
+    TaskCount = length(TaskIds),
+    MinIdx = lists:min(TaskIds),
+    MaxIdx = lists:max(TaskIds),
+    MaxConc = Spec#array_spec.max_concurrent,
+
+    Tasks = [#{
+        task_id => TaskId,
+        task_count => TaskCount,
+        task_min => MinIdx,
+        task_max => MaxIdx,
+        max_concurrent => MaxConc
+    } || TaskId <- TaskIds],
+
+    {ok, Tasks}.
+
+%%====================================================================
+%% Throttling and Concurrent Task Management
+%%====================================================================
+
+%% @doc Check if a new task can be scheduled for an array job (respects throttling)
+-spec can_schedule_task(array_job_id()) -> boolean().
+can_schedule_task(ArrayJobId) ->
+    case get_array_job(ArrayJobId) of
+        {ok, #array_job{max_concurrent = unlimited}} ->
+            true;
+        {ok, #array_job{max_concurrent = MaxConc}} ->
+            RunningTasks = get_running_tasks(ArrayJobId),
+            length(RunningTasks) < MaxConc;
+        {error, _} ->
+            false
+    end.
+
+%% @doc Get the next pending task that can be scheduled (respecting throttling)
+%% Returns the task or {error, throttled} if at limit, or {error, no_pending} if none left
+-spec schedule_next_task(array_job_id()) ->
+    {ok, #array_task{}} | {error, throttled | no_pending | not_found}.
+schedule_next_task(ArrayJobId) ->
+    case can_schedule_task(ArrayJobId) of
+        false ->
+            {error, throttled};
+        true ->
+            case get_pending_tasks(ArrayJobId) of
+                [] ->
+                    {error, no_pending};
+                [_Task | _] ->
+                    %% Return the first pending task (sorted by task_id)
+                    SortedTasks = lists:sort(
+                        fun(A, B) -> A#array_task.task_id =< B#array_task.task_id end,
+                        get_pending_tasks(ArrayJobId)
+                    ),
+                    {ok, hd(SortedTasks)}
+            end
+    end.
+
+%% @doc Mark a task as started (called when task begins execution)
+-spec task_started(array_job_id(), task_id(), job_id()) -> ok.
+task_started(ArrayJobId, TaskId, JobId) ->
+    update_task_state(ArrayJobId, TaskId, #{
+        state => running,
+        job_id => JobId,
+        start_time => erlang:system_time(second)
+    }).
+
+%% @doc Mark a task as completed (called when task finishes)
+-spec task_completed(array_job_id(), task_id(), integer()) -> ok.
+task_completed(ArrayJobId, TaskId, ExitCode) ->
+    State = case ExitCode of
+        0 -> completed;
+        _ -> failed
+    end,
+    update_task_state(ArrayJobId, TaskId, #{
+        state => State,
+        exit_code => ExitCode,
+        end_time => erlang:system_time(second)
+    }),
+    %% Trigger scheduling of next task (if throttled)
+    gen_server:cast(?SERVER, {check_throttle, ArrayJobId}).
+
+%% @doc Get count of tasks that can still be scheduled (for batch scheduling)
+-spec get_schedulable_count(array_job_id()) -> non_neg_integer().
+get_schedulable_count(ArrayJobId) ->
+    case get_array_job(ArrayJobId) of
+        {ok, #array_job{max_concurrent = unlimited}} ->
+            length(get_pending_tasks(ArrayJobId));
+        {ok, #array_job{max_concurrent = MaxConc}} ->
+            RunningCount = length(get_running_tasks(ArrayJobId)),
+            PendingCount = length(get_pending_tasks(ArrayJobId)),
+            Available = MaxConc - RunningCount,
+            min(Available, PendingCount);
+        {error, _} ->
+            0
+    end.
+
+%% @doc Get the next N tasks that can be scheduled
+-spec get_schedulable_tasks(array_job_id()) -> [#array_task{}].
+get_schedulable_tasks(ArrayJobId) ->
+    Count = get_schedulable_count(ArrayJobId),
+    case Count > 0 of
+        true ->
+            PendingTasks = get_pending_tasks(ArrayJobId),
+            SortedTasks = lists:sort(
+                fun(A, B) -> A#array_task.task_id =< B#array_task.task_id end,
+                PendingTasks
+            ),
+            lists:sublist(SortedTasks, Count);
+        false ->
+            []
     end.

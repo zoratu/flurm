@@ -99,7 +99,7 @@ handle_message(#{type := job_status, payload := #{job_id := JobId}}) ->
     end;
 
 handle_message(#{type := node_register, payload := Payload}) ->
-    case flurm_node_manager:register_node(Payload) of
+    case flurm_node_manager_server:register_node(Payload) of
         ok ->
             #{type => ack, payload => #{status => <<"registered">>}};
         {error, Reason} ->
@@ -107,7 +107,7 @@ handle_message(#{type := node_register, payload := Payload}) ->
     end;
 
 handle_message(#{type := node_heartbeat, payload := Payload}) ->
-    flurm_node_manager:heartbeat(Payload),
+    flurm_node_manager_server:heartbeat(Payload),
     #{type => ack, payload => #{status => <<"ok">>}};
 
 handle_message(#{type := partition_create, payload := Payload}) ->

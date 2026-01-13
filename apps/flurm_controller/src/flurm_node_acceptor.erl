@@ -92,7 +92,7 @@ handle_message(Socket, Transport, #{type := node_register, payload := Payload}) 
         partitions => [<<"default">>]
     },
     log(info, "Node ~s calling node_manager:register_node", [Hostname]),
-    case flurm_node_manager:register_node(NodeSpec) of
+    case flurm_node_manager_server:register_node(NodeSpec) of
         ok ->
             log(info, "Node ~s registered with node_manager", [Hostname]),
             %% Register socket with connection manager
@@ -128,7 +128,7 @@ handle_message(Socket, Transport, #{type := node_heartbeat, payload := Payload})
         free_memory_mb => maps:get(<<"free_memory_mb">>, Payload, 0),
         running_jobs => maps:get(<<"running_jobs">>, Payload, [])
     },
-    flurm_node_manager:heartbeat(HeartbeatData),
+    flurm_node_manager_server:heartbeat(HeartbeatData),
 
     %% Send ack
     send_message(Socket, Transport, #{type => node_heartbeat_ack, payload => #{}});
@@ -201,7 +201,7 @@ handle_disconnect(Socket) ->
         {ok, Hostname} ->
             log(info, "Node ~s disconnected", [Hostname]),
             %% Mark node as down
-            flurm_node_manager:update_node(Hostname, #{state => down}),
+            flurm_node_manager_server:update_node(Hostname, #{state => down}),
             %% Fail all jobs running on this node
             fail_jobs_on_node(Hostname),
             %% Unregister the connection

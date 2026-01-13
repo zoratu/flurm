@@ -75,6 +75,11 @@
 -define(RESPONSE_SHARE_INFO, 2011).
 -define(REQUEST_RESERVATION_INFO, 2012).
 -define(RESPONSE_RESERVATION_INFO, 2013).
+%% Reservation management (FLURM extensions - not standard SLURM)
+-define(REQUEST_CREATE_RESERVATION, 2050).
+-define(RESPONSE_CREATE_RESERVATION, 2051).
+-define(REQUEST_UPDATE_RESERVATION, 2052).
+-define(REQUEST_DELETE_RESERVATION, 2053).
 -define(REQUEST_JOB_STATE, 2014).
 -define(RESPONSE_JOB_STATE, 2015).
 -define(REQUEST_CONFIG_INFO, 2016).
@@ -885,6 +890,54 @@
     reservations = [] :: [#reservation_info{}]
 }).
 
+%% Create reservation request (REQUEST_CREATE_RESERVATION - 2050)
+%% Used by scontrol create reservation
+-record(create_reservation_request, {
+    name = <<>> :: binary(),
+    start_time = 0 :: non_neg_integer(),       % Unix timestamp
+    end_time = 0 :: non_neg_integer(),         % Unix timestamp (if 0, use duration)
+    duration = 0 :: non_neg_integer(),         % Duration in minutes
+    nodes = <<>> :: binary(),                   % Node list (e.g., "node[01-10]")
+    node_cnt = 0 :: non_neg_integer(),         % Number of nodes (alternative to node list)
+    partition = <<>> :: binary(),
+    users = <<>> :: binary(),                   % Comma-separated user list
+    accounts = <<>> :: binary(),                % Comma-separated account list
+    groups = <<>> :: binary(),                  % Comma-separated group list
+    licenses = <<>> :: binary(),                % License spec (e.g., "matlab:5")
+    features = <<>> :: binary(),                % Feature requirements
+    flags = 0 :: non_neg_integer(),            % Reservation flags (MAINT, FLEX, etc.)
+    type = <<>> :: binary()                     % Reservation type: maint, flex, user
+}).
+
+%% Create reservation response (RESPONSE_CREATE_RESERVATION - 2051)
+-record(create_reservation_response, {
+    name = <<>> :: binary(),                    % Reserved name (may be generated)
+    error_code = 0 :: non_neg_integer(),
+    error_msg = <<>> :: binary()
+}).
+
+%% Update reservation request (REQUEST_UPDATE_RESERVATION - 2052)
+-record(update_reservation_request, {
+    name = <<>> :: binary(),                    % Name of reservation to update
+    start_time = 0 :: non_neg_integer(),       % 0 = no change
+    end_time = 0 :: non_neg_integer(),
+    duration = 0 :: non_neg_integer(),
+    nodes = <<>> :: binary(),
+    node_cnt = 0 :: non_neg_integer(),
+    partition = <<>> :: binary(),
+    users = <<>> :: binary(),
+    accounts = <<>> :: binary(),
+    groups = <<>> :: binary(),
+    licenses = <<>> :: binary(),
+    features = <<>> :: binary(),
+    flags = 0 :: non_neg_integer()
+}).
+
+%% Delete reservation request (REQUEST_DELETE_RESERVATION - 2053)
+-record(delete_reservation_request, {
+    name = <<>> :: binary()                     % Name of reservation to delete
+}).
+
 %% License info request (REQUEST_LICENSE_INFO - 1017)
 -record(license_info_request, {
     show_flags = 0 :: non_neg_integer()
@@ -1083,6 +1136,29 @@
     bf_active = false :: boolean(),
     rpc_type_stats = [] :: list(),
     rpc_user_stats = [] :: list()
+}).
+
+%% Reconfigure request (REQUEST_RECONFIGURE - 1003)
+%% Used by scontrol reconfigure for full configuration reload
+-record(reconfigure_request, {
+    flags = 0 :: non_neg_integer()  %% Reserved for future use
+}).
+
+%% Reconfigure with config request (REQUEST_RECONFIGURE_WITH_CONFIG - 1004)
+%% Used for partial reconfiguration with specific settings
+-record(reconfigure_with_config_request, {
+    config_file = <<>> :: binary(),           %% Optional config file path
+    settings = #{} :: map(),                  %% Key-value settings to apply
+    force = false :: boolean(),               %% Force apply even if validation warnings
+    notify_nodes = true :: boolean()          %% Whether to notify compute nodes
+}).
+
+%% Reconfigure response (shared for both 1003 and 1004)
+-record(reconfigure_response, {
+    return_code = 0 :: integer(),             %% 0 = success, negative = error
+    message = <<>> :: binary(),               %% Human-readable status message
+    changed_keys = [] :: [atom()],            %% List of keys that were changed
+    version = 0 :: non_neg_integer()          %% New config version number
 }).
 
 %%%===================================================================

@@ -220,12 +220,12 @@ init([]) ->
         },
         %% Node Manager - tracks node status
         #{
-            id => flurm_node_manager,
-            start => {flurm_node_manager, start_link, []},
+            id => flurm_node_manager_server,
+            start => {flurm_node_manager_server, start_link, []},
             restart => permanent,
             shutdown => 5000,
             type => worker,
-            modules => [flurm_node_manager]
+            modules => [flurm_node_manager_server]
         },
         %% Node Connection Manager - tracks active node connections
         #{
@@ -238,12 +238,12 @@ init([]) ->
         },
         %% Job Dispatcher - dispatches jobs to nodes
         #{
-            id => flurm_job_dispatcher,
-            start => {flurm_job_dispatcher, start_link, []},
+            id => flurm_job_dispatcher_server,
+            start => {flurm_job_dispatcher_server, start_link, []},
             restart => permanent,
             shutdown => 5000,
             type => worker,
-            modules => [flurm_job_dispatcher]
+            modules => [flurm_job_dispatcher_server]
         },
         %% Scheduler - assigns jobs to nodes
         #{

@@ -114,9 +114,9 @@ prop_no_memory_overallocation() ->
 %% PROPERTY: All job state transitions are valid
 prop_valid_job_transitions() ->
     ValidTransitions = #{
-        pending => [configuring, cancelled, failed],
+        pending => [configuring, running, cancelled, failed],
         configuring => [running, failed, cancelled],
-        running => [completing, failed, cancelled, timeout],
+        running => [completing, completed, failed, cancelled, timeout],
         completing => [completed, failed],
         completed => [],
         failed => [],

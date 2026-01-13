@@ -140,13 +140,15 @@ prop_header_parsing() ->
     ?FORALL({Version, Flags, MsgType, BodySize},
             {range(16#2600, 16#2700), range(0, 15), range(1000, 9000), range(0, 1000)},
         begin
-            %% Construct a valid header
+            %% Construct a valid message:
+            %% Wire format: <<Length:32, Header:10/binary, Body/binary>>
+            %% Header format (10 bytes): <<Version:16, Flags:16, MsgType:16, BodyLength:32>>
+            %% Length = 10 (header size) + BodySize
             TotalLen = 10 + BodySize,
-            Header = <<TotalLen:32/big, Version:16/big, Flags:16/big, 
-                       0:16/big, MsgType:16/big, BodySize:32/big>>,
+            Header = <<Version:16/big, Flags:16/big, MsgType:16/big, BodySize:32/big>>,
             Body = binary:copy(<<0>>, BodySize),
-            Message = <<Header/binary, Body/binary>>,
-            
+            Message = <<TotalLen:32/big, Header/binary, Body/binary>>,
+
             case flurm_protocol_codec:decode(Message) of
                 {ok, #slurm_msg{header = ParsedHeader}, <<>>} ->
                     ParsedHeader#slurm_header.version =:= Version andalso

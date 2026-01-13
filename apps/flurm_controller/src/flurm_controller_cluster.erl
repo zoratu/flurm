@@ -290,23 +290,23 @@ do_init_ra_cluster(#state{cluster_name = ClusterName,
     %% Configure Ra data directory
     application:set_env(ra, data_dir, DataDir),
 
-    %% Create cluster ID
-    ClusterId = {ClusterName, node()},
-
     %% Define Ra machine configuration
     Machine = {module, ?RA_MACHINE, #{}},
 
     %% Build server configurations for all nodes
+    %% Server IDs are tuples {ClusterName, Node}, but cluster name is just an atom
     Servers = [{ClusterName, N} || N <- ClusterNodes, N =/= node()],
     ThisServer = {ClusterName, node()},
 
-    lager:info("Attempting to start Ra cluster: ~p", [ClusterId]),
+    lager:info("Attempting to start Ra cluster: ~p with servers: ~p", [ClusterName, [ThisServer | Servers]]),
 
     %% Try to start or join the cluster
-    case try_start_ra_cluster(ClusterId, ThisServer, Servers, Machine, State) of
+    %% Note: ClusterName must be an atom, not a tuple
+    case try_start_ra_cluster(ClusterName, ThisServer, Servers, Machine, State) of
         {ok, NewState} ->
             lager:info("Ra cluster started successfully"),
-            NewState#state{ra_ready = true, ra_cluster_id = ClusterId};
+            %% Store ThisServer as the cluster_id for ra:members calls
+            NewState#state{ra_ready = true, ra_cluster_id = ThisServer};
         {error, Reason} ->
             lager:warning("Ra cluster init failed: ~p, will retry", [Reason]),
             %% Schedule retry
@@ -315,32 +315,36 @@ do_init_ra_cluster(#state{cluster_name = ClusterName,
     end.
 
 %% @doc Try to start or join the Ra cluster.
-try_start_ra_cluster(ClusterId, ThisServer, OtherServers, Machine, State) ->
+%% ClusterName is an atom, ThisServer is {ClusterName, Node} tuple
+try_start_ra_cluster(ClusterName, ThisServer, OtherServers, Machine, State) ->
     AllServers = [ThisServer | OtherServers],
 
     %% First, try to start as a new cluster
-    case ra:start_cluster(default, ClusterId, Machine, AllServers) of
+    %% ra:start_cluster/4 expects: SystemName (atom), ClusterName (atom), Machine, Servers
+    case ra:start_cluster(default, ClusterName, Machine, AllServers) of
         {ok, Started, _Failed} ->
             lager:info("Ra cluster started with servers: ~p", [Started]),
-            {ok, State#state{ra_cluster_id = ClusterId}};
+            {ok, State#state{ra_cluster_id = ThisServer}};
         {error, cluster_not_formed} ->
             %% Try joining existing cluster
-            try_join_existing_cluster(ClusterId, ThisServer, OtherServers, Machine, State);
+            try_join_existing_cluster(ClusterName, ThisServer, OtherServers, Machine, State);
         {error, {already_started, _}} ->
             %% Already running, that's fine
             lager:info("Ra server already started"),
-            {ok, State#state{ra_cluster_id = ClusterId}};
+            {ok, State#state{ra_cluster_id = ThisServer}};
         {error, Reason} ->
             lager:warning("Failed to start Ra cluster: ~p", [Reason]),
             {error, Reason}
     end.
 
 %% @doc Try to join an existing cluster.
-try_join_existing_cluster(ClusterId, ThisServer, OtherServers, Machine, State) ->
+%% ClusterName is an atom, ThisServer is {ClusterName, Node} tuple
+try_join_existing_cluster(ClusterName, ThisServer, OtherServers, Machine, State) ->
     %% Try to contact each other server
     JoinResult = lists:foldl(
         fun(Server, {error, _}) ->
-            case ra:start_server(default, ClusterId, ThisServer, Machine, [Server]) of
+            %% ra:start_server/5 expects: SystemName, ClusterName (atom), ServerId, Machine, ServerIds
+            case ra:start_server(default, ClusterName, ThisServer, Machine, [Server]) of
                 ok ->
                     %% Now add ourselves to the cluster
                     case ra:add_member(Server, ThisServer) of
@@ -361,7 +365,7 @@ try_join_existing_cluster(ClusterId, ThisServer, OtherServers, Machine, State) -
 
     case JoinResult of
         {ok, _} ->
-            {ok, State#state{ra_cluster_id = ClusterId}};
+            {ok, State#state{ra_cluster_id = ThisServer}};
         {error, Reason} ->
             {error, Reason}
     end.
@@ -441,20 +445,21 @@ do_join_cluster(ExistingNode, #state{cluster_name = ClusterName} = State) ->
     case rpc:call(ExistingNode, ra, members, [ExistingServer], 5000) of
         {ok, Members, _Leader} ->
             %% Start local Ra server
+            %% ra:start_server/5 expects: SystemName, ClusterName (atom), ServerId, Machine, ServerIds
             Machine = {module, ?RA_MACHINE, #{}},
-            case ra:start_server(default, {ClusterName, node()}, ThisServer, Machine, Members) of
+            case ra:start_server(default, ClusterName, ThisServer, Machine, Members) of
                 ok ->
                     %% Request to be added to cluster
                     case ra:add_member(ExistingServer, ThisServer) of
                         {ok, _, _} ->
                             lager:info("Successfully joined cluster"),
-                            {ok, State#state{ra_ready = true}};
+                            {ok, State#state{ra_ready = true, ra_cluster_id = ThisServer}};
                         {error, Reason} ->
                             lager:error("Failed to add to cluster: ~p", [Reason]),
                             {error, Reason}
                     end;
                 {error, {already_started, _}} ->
-                    {ok, State#state{ra_ready = true}};
+                    {ok, State#state{ra_ready = true, ra_cluster_id = ThisServer}};
                 {error, Reason} ->
                     lager:error("Failed to start Ra server: ~p", [Reason]),
                     {error, Reason}

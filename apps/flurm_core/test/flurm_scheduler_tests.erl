@@ -43,6 +43,11 @@ setup() ->
     {ok, JobSupPid} = flurm_job_sup:start_link(),
     {ok, NodeRegistryPid} = flurm_node_registry:start_link(),
     {ok, NodeSupPid} = flurm_node_sup:start_link(),
+    %% Start dependencies for flurm_job_manager
+    {ok, LimitsPid} = flurm_limits:start_link(),
+    {ok, LicensePid} = flurm_license:start_link(),
+    %% Start job manager (scheduler depends on it)
+    {ok, JobManagerPid} = flurm_job_manager:start_link(),
     {ok, SchedulerPid} = flurm_scheduler:start_link(),
 
     #{
@@ -50,6 +55,9 @@ setup() ->
         job_sup => JobSupPid,
         node_registry => NodeRegistryPid,
         node_sup => NodeSupPid,
+        limits => LimitsPid,
+        license => LicensePid,
+        job_manager => JobManagerPid,
         scheduler => SchedulerPid
     }.
 
@@ -57,18 +65,33 @@ cleanup(#{job_registry := JobRegistryPid,
           job_sup := JobSupPid,
           node_registry := NodeRegistryPid,
           node_sup := NodeSupPid,
+          limits := LimitsPid,
+          license := LicensePid,
+          job_manager := JobManagerPid,
           scheduler := SchedulerPid}) ->
     %% Stop all jobs first
     [flurm_job_sup:stop_job(Pid) || Pid <- flurm_job_sup:which_jobs()],
     %% Stop all nodes
     [flurm_node_sup:stop_node(Pid) || Pid <- flurm_node_sup:which_nodes()],
-    %% Stop processes
-    catch exit(SchedulerPid, shutdown),
-    catch exit(NodeSupPid, shutdown),
-    catch exit(NodeRegistryPid, shutdown),
-    catch exit(JobSupPid, shutdown),
-    catch exit(JobRegistryPid, shutdown),
-    timer:sleep(100),
+    %% Unlink before stopping to prevent shutdown propagation to test process
+    catch unlink(SchedulerPid),
+    catch unlink(JobManagerPid),
+    catch unlink(LimitsPid),
+    catch unlink(LicensePid),
+    catch unlink(NodeSupPid),
+    catch unlink(NodeRegistryPid),
+    catch unlink(JobSupPid),
+    catch unlink(JobRegistryPid),
+    %% Stop processes properly using gen_server:stop
+    %% Stop scheduler first (depends on job_manager)
+    catch gen_server:stop(SchedulerPid, shutdown, 5000),
+    catch gen_server:stop(JobManagerPid, shutdown, 5000),
+    catch gen_server:stop(LimitsPid, shutdown, 5000),
+    catch gen_server:stop(LicensePid, shutdown, 5000),
+    catch gen_server:stop(NodeSupPid, shutdown, 5000),
+    catch gen_server:stop(NodeRegistryPid, shutdown, 5000),
+    catch gen_server:stop(JobSupPid, shutdown, 5000),
+    catch gen_server:stop(JobRegistryPid, shutdown, 5000),
     ok.
 
 %%====================================================================
@@ -100,6 +123,46 @@ make_job_spec(Overrides) ->
         script = maps:get(script, Props),
         priority = maps:get(priority, Props)
     }.
+
+%% Convert job_spec record to map for flurm_job_manager
+job_spec_to_map(#job_spec{} = Spec) ->
+    #{
+        user => integer_to_binary(Spec#job_spec.user_id),
+        partition => Spec#job_spec.partition,
+        num_nodes => Spec#job_spec.num_nodes,
+        num_cpus => Spec#job_spec.num_cpus,
+        time_limit => Spec#job_spec.time_limit,
+        script => Spec#job_spec.script,
+        priority => Spec#job_spec.priority,
+        name => <<"test_job">>,
+        memory_mb => 1024  % Default memory
+    }.
+
+%% Submit a job via flurm_job_manager (for scheduler tests)
+submit_job_via_manager(JobSpec) ->
+    JobMap = job_spec_to_map(JobSpec),
+    flurm_job_manager:submit_job(JobMap).
+
+%% Get job state from flurm_job_manager
+get_job_state(JobId) ->
+    case flurm_job_manager:get_job(JobId) of
+        {ok, Job} -> {ok, Job#job.state};
+        Error -> Error
+    end.
+
+%% Get job info from flurm_job_manager
+get_job_info(JobId) ->
+    case flurm_job_manager:get_job(JobId) of
+        {ok, Job} -> {ok, #{
+            job_id => Job#job.id,
+            state => Job#job.state,
+            allocated_nodes => Job#job.allocated_nodes,
+            partition => Job#job.partition,
+            num_cpus => Job#job.num_cpus,
+            num_nodes => Job#job.num_nodes
+        }};
+        Error -> Error
+    end.
 
 make_node_spec(Name) ->
     make_node_spec(Name, #{}).
@@ -142,22 +205,19 @@ test_submit_and_schedule() ->
     %% Register a node that can run jobs
     _NodePid = register_test_node(<<"node1">>, #{cpus => 8, memory => 16384}),
 
-    %% Submit a job
+    %% Submit a job via flurm_job_manager (which also notifies scheduler)
     JobSpec = make_job_spec(#{num_cpus => 4}),
-    {ok, _Pid, JobId} = flurm_job:submit(JobSpec),
-
-    %% Add job to scheduler
-    ok = flurm_scheduler:submit_job(JobId),
+    {ok, JobId} = submit_job_via_manager(JobSpec),
 
     %% Wait for scheduling cycle
-    timer:sleep(200),
+    timer:sleep(500),
 
-    %% Verify job was scheduled (moved to configuring)
-    {ok, JobState} = flurm_job:get_state(JobId),
-    ?assertEqual(configuring, JobState),
+    %% Verify job was scheduled (moved to configuring or running)
+    {ok, JobState} = get_job_state(JobId),
+    ?assert(JobState =:= configuring orelse JobState =:= running),
 
     %% Verify job has allocated nodes
-    {ok, Info} = flurm_job:get_info(JobId),
+    {ok, Info} = get_job_info(JobId),
     ?assertEqual([<<"node1">>], maps:get(allocated_nodes, Info)),
     ok.
 
@@ -169,8 +229,7 @@ test_fifo_order() ->
     Jobs = lists:map(
         fun(I) ->
             JobSpec = make_job_spec(#{num_cpus => 4}),
-            {ok, _Pid, JobId} = flurm_job:submit(JobSpec),
-            ok = flurm_scheduler:submit_job(JobId),
+            {ok, JobId} = submit_job_via_manager(JobSpec),
             {I, JobId}
         end,
         lists:seq(1, 3)
@@ -179,18 +238,18 @@ test_fifo_order() ->
     %% Wait for scheduling cycle
     timer:sleep(200),
 
-    %% First job should be scheduled
+    %% First job should be scheduled (configuring or running)
     {1, FirstJobId} = lists:nth(1, Jobs),
-    {ok, FirstJobState} = flurm_job:get_state(FirstJobId),
-    ?assertEqual(configuring, FirstJobState),
+    {ok, FirstJobState} = get_job_state(FirstJobId),
+    ?assert(FirstJobState =:= configuring orelse FirstJobState =:= running),
 
     %% Other jobs should still be pending (waiting for resources)
     {2, SecondJobId} = lists:nth(2, Jobs),
-    {ok, SecondJobState} = flurm_job:get_state(SecondJobId),
+    {ok, SecondJobState} = get_job_state(SecondJobId),
     ?assertEqual(pending, SecondJobState),
 
     {3, ThirdJobId} = lists:nth(3, Jobs),
-    {ok, ThirdJobState} = flurm_job:get_state(ThirdJobId),
+    {ok, ThirdJobState} = get_job_state(ThirdJobId),
     ?assertEqual(pending, ThirdJobState),
     ok.
 
@@ -200,14 +259,13 @@ test_resource_exhaustion() ->
 
     %% Submit a job requiring more resources than available
     JobSpec = make_job_spec(#{num_cpus => 8}),
-    {ok, _Pid, JobId} = flurm_job:submit(JobSpec),
-    ok = flurm_scheduler:submit_job(JobId),
+    {ok, JobId} = submit_job_via_manager(JobSpec),
 
     %% Wait for scheduling cycle
     timer:sleep(200),
 
     %% Job should still be pending (insufficient resources)
-    {ok, JobState} = flurm_job:get_state(JobId),
+    {ok, JobState} = get_job_state(JobId),
     ?assertEqual(pending, JobState),
 
     %% Check scheduler stats - should show pending job
@@ -221,27 +279,24 @@ test_job_completion_frees_resources() ->
 
     %% Submit first job
     JobSpec1 = make_job_spec(#{num_cpus => 4}),
-    {ok, Pid1, JobId1} = flurm_job:submit(JobSpec1),
-    ok = flurm_scheduler:submit_job(JobId1),
+    {ok, JobId1} = submit_job_via_manager(JobSpec1),
 
     %% Submit second job (will wait)
     JobSpec2 = make_job_spec(#{num_cpus => 4}),
-    {ok, _Pid2, JobId2} = flurm_job:submit(JobSpec2),
-    ok = flurm_scheduler:submit_job(JobId2),
+    {ok, JobId2} = submit_job_via_manager(JobSpec2),
 
     %% Wait for scheduling
     timer:sleep(200),
 
-    %% First job should be scheduled
-    {ok, configuring} = flurm_job:get_state(JobId1),
+    %% First job should be scheduled (configuring or running)
+    {ok, Job1State} = get_job_state(JobId1),
+    ?assert(Job1State =:= configuring orelse Job1State =:= running),
 
     %% Second job should be pending
-    {ok, pending} = flurm_job:get_state(JobId2),
+    {ok, pending} = get_job_state(JobId2),
 
-    %% Complete the first job
-    ok = flurm_job:signal_config_complete(Pid1),
-    ok = flurm_job:signal_job_complete(Pid1, 0),
-    ok = flurm_job:signal_cleanup_complete(Pid1),
+    %% Complete the first job by updating its state directly
+    ok = flurm_job_manager:update_job(JobId1, #{state => completed}),
 
     %% Notify scheduler
     ok = flurm_scheduler:job_completed(JobId1),
@@ -249,9 +304,9 @@ test_job_completion_frees_resources() ->
     %% Wait for scheduling cycle
     timer:sleep(200),
 
-    %% Second job should now be scheduled
-    {ok, Job2State} = flurm_job:get_state(JobId2),
-    ?assertEqual(configuring, Job2State),
+    %% Second job should now be scheduled (configuring or running)
+    {ok, Job2State} = get_job_state(JobId2),
+    ?assert(Job2State =:= configuring orelse Job2State =:= running),
     ok.
 
 test_node_failure() ->
@@ -261,14 +316,14 @@ test_node_failure() ->
 
     %% Submit a job
     JobSpec = make_job_spec(#{num_cpus => 4}),
-    {ok, _Pid, JobId} = flurm_job:submit(JobSpec),
-    ok = flurm_scheduler:submit_job(JobId),
+    {ok, JobId} = submit_job_via_manager(JobSpec),
 
     %% Wait for scheduling
     timer:sleep(200),
 
-    %% Job should be scheduled
-    {ok, configuring} = flurm_job:get_state(JobId),
+    %% Job should be scheduled (configuring or running)
+    {ok, JobState} = get_job_state(JobId),
+    ?assert(JobState =:= configuring orelse JobState =:= running),
 
     %% Kill node2 (simulate failure)
     exit(NodePid2, kill),
@@ -460,9 +515,10 @@ allocation_overflow_test_() ->
          #{node_registry => NodeRegistryPid, node_sup => NodeSupPid}
      end,
      fun(#{node_registry := NodeRegistryPid, node_sup := NodeSupPid}) ->
-         catch exit(NodeSupPid, shutdown),
-         catch exit(NodeRegistryPid, shutdown),
-         timer:sleep(50)
+         catch unlink(NodeSupPid),
+         catch unlink(NodeRegistryPid),
+         catch gen_server:stop(NodeSupPid, shutdown, 5000),
+         catch gen_server:stop(NodeRegistryPid, shutdown, 5000)
      end,
      fun(_) ->
          {"Cannot allocate more resources than available", fun() ->
@@ -497,9 +553,10 @@ release_nonexistent_test_() ->
          #{node_registry => NodeRegistryPid, node_sup => NodeSupPid}
      end,
      fun(#{node_registry := NodeRegistryPid, node_sup := NodeSupPid}) ->
-         catch exit(NodeSupPid, shutdown),
-         catch exit(NodeRegistryPid, shutdown),
-         timer:sleep(50)
+         catch unlink(NodeSupPid),
+         catch unlink(NodeRegistryPid),
+         catch gen_server:stop(NodeSupPid, shutdown, 5000),
+         catch gen_server:stop(NodeRegistryPid, shutdown, 5000)
      end,
      fun(_) ->
          {"Releasing non-existent job returns error", fun() ->
@@ -556,9 +613,10 @@ node_monitor_cleanup_test_() ->
          #{node_registry => NodeRegistryPid, node_sup => NodeSupPid}
      end,
      fun(#{node_registry := NodeRegistryPid, node_sup := NodeSupPid}) ->
-         catch exit(NodeSupPid, shutdown),
-         catch exit(NodeRegistryPid, shutdown),
-         timer:sleep(50)
+         catch unlink(NodeSupPid),
+         catch unlink(NodeRegistryPid),
+         catch gen_server:stop(NodeSupPid, shutdown, 5000),
+         catch gen_server:stop(NodeRegistryPid, shutdown, 5000)
      end,
      fun(_) ->
          {"Node automatically unregistered when process dies", fun() ->

@@ -29,7 +29,10 @@
     reserve/2,
     unreserve/2,
     get_available/1,
-    check_availability/1
+    check_availability/1,
+    parse_license_spec/1,
+    validate_licenses/1,
+    exists/1
 ]).
 
 %% gen_server callbacks
@@ -139,6 +142,75 @@ check_availability(Requests) ->
         get_available(Name) >= Count
     end, Requests).
 
+%% @doc Parse license specification string (format: "name:count,name:count")
+%% Compatible with SLURM's --licenses option
+-spec parse_license_spec(binary() | string()) -> {ok, [{binary(), non_neg_integer()}]} | {error, term()}.
+parse_license_spec(<<>>) ->
+    {ok, []};
+parse_license_spec("") ->
+    {ok, []};
+parse_license_spec(Spec) when is_list(Spec) ->
+    parse_license_spec(list_to_binary(Spec));
+parse_license_spec(Spec) when is_binary(Spec) ->
+    %% Split by comma to get individual license specs
+    Parts = binary:split(Spec, <<",">>, [global, trim_all]),
+    try
+        Licenses = lists:map(fun parse_single_license/1, Parts),
+        {ok, Licenses}
+    catch
+        throw:{invalid_license, Reason} ->
+            {error, {invalid_license_spec, Reason}}
+    end.
+
+%% @doc Parse a single license specification (format: "name:count" or "name")
+-spec parse_single_license(binary()) -> {binary(), non_neg_integer()}.
+parse_single_license(Part) ->
+    case binary:split(Part, <<":">>) of
+        [Name] ->
+            %% No count specified, default to 1
+            TrimmedName = string:trim(Name),
+            case TrimmedName of
+                <<>> -> throw({invalid_license, empty_name});
+                _ -> {TrimmedName, 1}
+            end;
+        [Name, CountBin] ->
+            TrimmedName = string:trim(Name),
+            TrimmedCount = string:trim(CountBin),
+            case TrimmedName of
+                <<>> -> throw({invalid_license, empty_name});
+                _ ->
+                    case catch binary_to_integer(TrimmedCount) of
+                        Count when is_integer(Count), Count > 0 ->
+                            {TrimmedName, Count};
+                        Count when is_integer(Count), Count =< 0 ->
+                            throw({invalid_license, {invalid_count, Count}});
+                        _ ->
+                            throw({invalid_license, {invalid_count, TrimmedCount}})
+                    end
+            end;
+        _ ->
+            throw({invalid_license, {invalid_format, Part}})
+    end.
+
+%% @doc Check if a license exists
+-spec exists(binary()) -> boolean().
+exists(Name) ->
+    case ets:lookup(?LICENSE_TABLE, Name) of
+        [_] -> true;
+        [] -> false
+    end.
+
+%% @doc Validate that all requested licenses exist
+%% Returns ok if all licenses exist, or {error, {unknown_license, Name}} for first unknown
+-spec validate_licenses([{binary(), non_neg_integer()}]) -> ok | {error, term()}.
+validate_licenses([]) ->
+    ok;
+validate_licenses([{Name, _Count} | Rest]) ->
+    case exists(Name) of
+        true -> validate_licenses(Rest);
+        false -> {error, {unknown_license, Name}}
+    end.
+
 %%====================================================================
 %% gen_server callbacks
 %%====================================================================
@@ -173,6 +245,16 @@ handle_call({allocate, JobId, Requests}, _From, State) ->
 
 handle_call({deallocate, JobId, Requests}, _From, State) ->
     do_deallocate(JobId, Requests),
+    %% Trigger scheduling when licenses become available
+    %% This allows jobs waiting for licenses to be scheduled
+    case Requests of
+        [] -> ok;
+        _ ->
+            %% Use cast to avoid blocking
+            spawn(fun() ->
+                catch flurm_scheduler:trigger_schedule()
+            end)
+    end,
     {reply, ok, State};
 
 handle_call({reserve, Name, Count}, _From, State) ->

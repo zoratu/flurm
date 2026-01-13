@@ -241,7 +241,7 @@ count_jobs_by_state(Jobs, State) ->
 %% @doc Get node statistics.
 node_stats() ->
     try
-        Nodes = flurm_node_manager:list_nodes(),
+        Nodes = flurm_node_manager_server:list_nodes(),
         #{
             total => length(Nodes),
             up => count_nodes_by_state(Nodes, idle) +

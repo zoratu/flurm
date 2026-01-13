@@ -50,10 +50,12 @@ setup() ->
 cleanup(#{registry := RegistryPid, supervisor := SupPid}) ->
     %% Stop all jobs first
     [flurm_job_sup:stop_job(Pid) || Pid <- flurm_job_sup:which_jobs()],
-    %% Stop supervisor and registry
-    catch exit(SupPid, shutdown),
-    catch exit(RegistryPid, shutdown),
-    timer:sleep(100),
+    %% Unlink before stopping to prevent shutdown propagation to test process
+    catch unlink(SupPid),
+    catch unlink(RegistryPid),
+    %% Stop supervisor and registry properly using gen_server:stop
+    catch gen_server:stop(SupPid, shutdown, 5000),
+    catch gen_server:stop(RegistryPid, shutdown, 5000),
     ok.
 
 %%====================================================================
@@ -458,12 +460,28 @@ test_multiple_jobs() ->
 %%====================================================================
 
 %% Test that accessing a non-existent job returns proper error
-nonexistent_job_test() ->
-    {error, job_not_found} = flurm_job:cancel(999999999),
-    {error, job_not_found} = flurm_job:get_info(999999999),
-    {error, job_not_found} = flurm_job:get_state(999999999),
-    {error, job_not_found} = flurm_job:allocate(999999999, [<<"node1">>]),
-    ok.
+nonexistent_job_test_() ->
+    {setup,
+     fun() ->
+         {ok, RegistryPid} = flurm_job_registry:start_link(),
+         {ok, SupPid} = flurm_job_sup:start_link(),
+         #{registry => RegistryPid, supervisor => SupPid}
+     end,
+     fun(#{registry := RegistryPid, supervisor := SupPid}) ->
+         catch unlink(SupPid),
+         catch unlink(RegistryPid),
+         catch gen_server:stop(SupPid, shutdown, 5000),
+         catch gen_server:stop(RegistryPid, shutdown, 5000)
+     end,
+     fun(_) ->
+         {"Non-existent job returns job_not_found", fun() ->
+             {error, job_not_found} = flurm_job:cancel(999999999),
+             {error, job_not_found} = flurm_job:get_info(999999999),
+             {error, job_not_found} = flurm_job:get_state(999999999),
+             {error, job_not_found} = flurm_job:allocate(999999999, [<<"node1">>]),
+             ok
+         end}
+     end}.
 
 %% Test priority bounds
 priority_bounds_test_() ->
@@ -474,9 +492,10 @@ priority_bounds_test_() ->
          #{registry => RegistryPid, supervisor => SupPid}
      end,
      fun(#{registry := RegistryPid, supervisor := SupPid}) ->
-         catch exit(SupPid, shutdown),
-         catch exit(RegistryPid, shutdown),
-         timer:sleep(50)
+         catch unlink(SupPid),
+         catch unlink(RegistryPid),
+         catch gen_server:stop(SupPid, shutdown, 5000),
+         catch gen_server:stop(RegistryPid, shutdown, 5000)
      end,
      fun(_) ->
          [
@@ -519,9 +538,10 @@ failed_exit_code_test_() ->
          #{registry => RegistryPid, supervisor => SupPid}
      end,
      fun(#{registry := RegistryPid, supervisor := SupPid}) ->
-         catch exit(SupPid, shutdown),
-         catch exit(RegistryPid, shutdown),
-         timer:sleep(50)
+         catch unlink(SupPid),
+         catch unlink(RegistryPid),
+         catch gen_server:stop(SupPid, shutdown, 5000),
+         catch gen_server:stop(RegistryPid, shutdown, 5000)
      end,
      fun(_) ->
          {"Non-zero exit code leads to failed state", fun() ->
@@ -545,9 +565,10 @@ node_failure_ignored_test_() ->
          #{registry => RegistryPid, supervisor => SupPid}
      end,
      fun(#{registry := RegistryPid, supervisor := SupPid}) ->
-         catch exit(SupPid, shutdown),
-         catch exit(RegistryPid, shutdown),
-         timer:sleep(50)
+         catch unlink(SupPid),
+         catch unlink(RegistryPid),
+         catch gen_server:stop(SupPid, shutdown, 5000),
+         catch gen_server:stop(RegistryPid, shutdown, 5000)
      end,
      fun(_) ->
          {"Node failure for non-allocated node is ignored", fun() ->

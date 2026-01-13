@@ -20,10 +20,12 @@
 -include_lib("flurm_core/include/flurm_core.hrl").
 
 %% Test configuration
--define(TEST_PORT_BASE, 26817).
 -define(TEST_TIMEOUT, 30000).
 -define(CLUSTER_FORMATION_TIMEOUT, 15000).
 -define(ELECTION_TIMEOUT, 10000).
+
+%% Generate unique port for each test run (avoid conflicts)
+-define(TEST_PORT_BASE, (26817 + (erlang:system_time(millisecond) rem 1000))).
 
 %%====================================================================
 %% Test Fixtures
@@ -73,47 +75,103 @@ unit_test_() ->
 %%====================================================================
 
 setup_single_node() ->
+    %% Generate unique test ID for this run
+    TestId = erlang:system_time(millisecond),
+    TestDataDir = "/tmp/flurm_test_ra_" ++ integer_to_list(TestId),
+    TestClusterName = list_to_atom("flurm_test_" ++ integer_to_list(TestId)),
+    TestPort = 26817 + (TestId rem 1000),
+
+    %% Clean up any previous Ra state that might conflict
+    cleanup_ra_state(),
+
     %% Start required applications
     application:ensure_all_started(lager),
     application:ensure_all_started(ranch),
-    application:ensure_all_started(ra),
 
-    %% Configure for single node mode
+    %% Configure for single node mode with unique settings
     application:set_env(flurm_controller, cluster_nodes, [node()]),
-    application:set_env(flurm_controller, listen_port, ?TEST_PORT_BASE),
-    application:set_env(flurm_controller, ra_data_dir, "/tmp/flurm_test_ra"),
+    application:set_env(flurm_controller, listen_port, TestPort),
+    application:set_env(flurm_controller, cluster_name, TestClusterName),
+    application:set_env(flurm_controller, ra_data_dir, TestDataDir),
+    application:set_env(ra, data_dir, TestDataDir),
+
+    %% Ensure Ra is started
+    application:ensure_all_started(ra),
 
     %% Start cluster module directly for testing
     case flurm_controller_cluster:start_link() of
-        {ok, Pid} -> {ok, Pid};
-        {error, {already_started, Pid}} -> {ok, Pid}
+        {ok, Pid} -> {ok, {Pid, TestDataDir}};
+        {error, {already_started, Pid}} -> {ok, {Pid, TestDataDir}}
     end.
 
-cleanup_single_node(_) ->
+cleanup_single_node(SetupResult) ->
     %% Stop cluster module if running
     case whereis(flurm_controller_cluster) of
         undefined -> ok;
         Pid ->
-            gen_server:stop(Pid, normal, 5000)
+            catch gen_server:stop(Pid, normal, 5000)
     end,
-    %% Clean up test data
-    os:cmd("rm -rf /tmp/flurm_test_ra"),
+
+    %% Give Ra time to clean up
+    timer:sleep(100),
+
+    %% Stop Ra if possible
+    cleanup_ra_state(),
+
+    %% Clean up test data - extract data dir from setup result
+    DataDirToClean = case SetupResult of
+        {ok, {_, Dir}} when is_list(Dir) -> Dir;
+        {_, Dir} when is_list(Dir) -> Dir;
+        Dir when is_list(Dir) -> Dir;
+        _ -> "/tmp/flurm_test_ra"
+    end,
+    os:cmd("rm -rf " ++ DataDirToClean),
+    os:cmd("rm -rf /tmp/flurm_test_ra_*"),
     ok.
 
 setup_cluster_simulation() ->
+    %% Generate unique test ID for this run
+    TestId = erlang:system_time(millisecond),
+    TestDataDir = "/tmp/flurm_cluster_test_ra_" ++ integer_to_list(TestId),
+    TestClusterName = list_to_atom("flurm_cluster_test_" ++ integer_to_list(TestId)),
+
+    %% Clean up any previous Ra state
+    cleanup_ra_state(),
+
     %% For cluster simulation, we mock the distributed behavior
     %% since we can't easily start multiple Erlang nodes in eunit
     application:ensure_all_started(lager),
     application:ensure_all_started(ranch),
 
-    %% Start with mocked cluster configuration
-    application:set_env(flurm_controller, cluster_name, flurm_test),
-    application:set_env(flurm_controller, ra_data_dir, "/tmp/flurm_cluster_test_ra"),
+    %% Start with mocked cluster configuration using unique names
+    application:set_env(flurm_controller, cluster_name, TestClusterName),
+    application:set_env(flurm_controller, ra_data_dir, TestDataDir),
+    application:set_env(ra, data_dir, TestDataDir),
 
+    TestDataDir.
+
+cleanup_cluster_simulation(TestDataDir) ->
+    %% Stop any running cluster module
+    case whereis(flurm_controller_cluster) of
+        undefined -> ok;
+        Pid -> catch gen_server:stop(Pid, normal, 5000)
+    end,
+
+    cleanup_ra_state(),
+
+    DataDirToClean = case TestDataDir of
+        Dir when is_list(Dir) -> Dir;
+        _ -> "/tmp/flurm_cluster_test_ra"
+    end,
+    os:cmd("rm -rf " ++ DataDirToClean),
+    os:cmd("rm -rf /tmp/flurm_cluster_test_ra_*"),
     ok.
 
-cleanup_cluster_simulation(_) ->
-    os:cmd("rm -rf /tmp/flurm_cluster_test_ra"),
+%% Helper to clean up Ra state between tests
+cleanup_ra_state() ->
+    %% Try to stop Ra servers gracefully
+    catch application:stop(ra),
+    timer:sleep(50),
     ok.
 
 %%====================================================================
@@ -197,10 +255,24 @@ test_job_submission_leader() ->
         num_cpus => 1
     },
 
+    %% Start required dependencies (flurm_limits is required by flurm_job_manager)
+    case whereis(flurm_limits) of
+        undefined ->
+            case flurm_limits:start_link() of
+                {ok, _} -> ok;
+                {error, {already_started, _}} -> ok
+            end;
+        _ ->
+            ok
+    end,
+
     %% Start job manager if not running
     case whereis(flurm_job_manager) of
         undefined ->
-            {ok, _} = flurm_job_manager:start_link();
+            case flurm_job_manager:start_link() of
+                {ok, _} -> ok;
+                {error, {already_started, _}} -> ok
+            end;
         _ ->
             ok
     end,
@@ -214,6 +286,10 @@ test_job_submission_leader() ->
     %% Verify job exists
     {ok, Job} = flurm_job_manager:get_job(JobId),
     ?assertEqual(<<"test_job">>, Job#job.name),
+
+    %% Cleanup
+    catch gen_server:stop(flurm_job_manager),
+    catch gen_server:stop(flurm_limits),
 
     ok.
 

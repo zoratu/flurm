@@ -274,7 +274,7 @@ recover_job_state() ->
 %% @doc Recover node state.
 recover_node_state() ->
     try
-        Nodes = flurm_node_manager:list_nodes(),
+        Nodes = flurm_node_manager_server:list_nodes(),
         lager:info("Recovered ~p nodes from state", [length(Nodes)]),
 
         %% Mark nodes that haven't sent heartbeat as potentially down
@@ -358,7 +358,7 @@ check_component_health() ->
 
     %% Check node manager
     try
-        _ = flurm_node_manager:list_nodes(),
+        _ = flurm_node_manager_server:list_nodes(),
         ok
     catch
         _:_ ->

@@ -24,7 +24,8 @@
     job_completed/1,
     job_failed/1,
     trigger_schedule/0,
-    get_stats/0
+    get_stats/0,
+    job_deps_satisfied/1
 ]).
 
 %% gen_server callbacks
@@ -87,6 +88,12 @@ trigger_schedule() ->
 get_stats() ->
     gen_server:call(?SERVER, get_stats).
 
+%% @doc Notify scheduler that a job's dependencies are now satisfied.
+%% Called by flurm_job_deps when all dependencies become satisfied.
+-spec job_deps_satisfied(pos_integer()) -> ok.
+job_deps_satisfied(JobId) when is_integer(JobId), JobId > 0 ->
+    gen_server:cast(?SERVER, {job_deps_satisfied, JobId}).
+
 %%====================================================================
 %% gen_server callbacks
 %%====================================================================
@@ -143,7 +150,7 @@ handle_cast({submit_job, JobId}, State) ->
     {noreply, NewState};
 
 handle_cast({job_completed, JobId}, State) ->
-    NewState = handle_job_finished(JobId, State),
+    NewState = handle_job_finished(JobId, completed, State),
     FinalState = NewState#scheduler_state{
         completed_count = NewState#scheduler_state.completed_count + 1
     },
@@ -152,7 +159,7 @@ handle_cast({job_completed, JobId}, State) ->
     {noreply, FinalState};
 
 handle_cast({job_failed, JobId}, State) ->
-    NewState = handle_job_finished(JobId, State),
+    NewState = handle_job_finished(JobId, failed, State),
     FinalState = NewState#scheduler_state{
         failed_count = NewState#scheduler_state.failed_count + 1
     },
@@ -161,6 +168,12 @@ handle_cast({job_failed, JobId}, State) ->
     {noreply, FinalState};
 
 handle_cast(trigger_schedule, State) ->
+    self() ! schedule_cycle,
+    {noreply, State};
+
+handle_cast({job_deps_satisfied, JobId}, State) ->
+    %% Job dependencies are satisfied, trigger scheduling
+    lager:info("Job ~p dependencies satisfied, triggering schedule", [JobId]),
     self() ! schedule_cycle,
     {noreply, State};
 
@@ -249,7 +262,8 @@ schedule_next_cycle() ->
 
 %% @private
 %% Handle job finished (completed or failed) - release resources
-handle_job_finished(JobId, State) ->
+%% Also notifies flurm_job_deps to release dependent jobs
+handle_job_finished(JobId, FinalState, State) ->
     %% Remove from running set
     NewRunning = sets:del_element(JobId, State#scheduler_state.running_jobs),
 
@@ -263,6 +277,16 @@ handle_job_finished(JobId, State) ->
                 end,
                 AllocatedNodes
             ),
+
+            %% Release licenses allocated to this job
+            Licenses = Job#job.licenses,
+            case Licenses of
+                [] -> ok;
+                _ ->
+                    lager:info("Releasing licenses for job ~p: ~p", [JobId, Licenses]),
+                    flurm_license:deallocate(JobId, Licenses)
+            end,
+
             %% Notify limits module that job has stopped (for usage tracking)
             %% Calculate wall time for TRES minutes accounting
             WallTime = case {Job#job.start_time, Job#job.end_time} of
@@ -282,12 +306,31 @@ handle_job_finished(JobId, State) ->
                 },
                 wall_time => WallTime
             },
-            flurm_limits:enforce_limit(stop, JobId, LimitInfo);
+            flurm_limits:enforce_limit(stop, JobId, LimitInfo),
+
+            %% Notify flurm_job_deps about job completion to release dependent jobs
+            %% This allows afterok/afternotok/afterany dependencies to be satisfied
+            notify_job_deps_completion(JobId, FinalState);
         _ ->
-            ok
+            %% Job not found, still try to notify deps
+            notify_job_deps_completion(JobId, FinalState)
     end,
 
     State#scheduler_state{running_jobs = NewRunning}.
+
+%% @private
+%% Notify flurm_job_deps about job completion/failure
+%% This triggers dependency resolution for waiting jobs
+notify_job_deps_completion(JobId, FinalState) ->
+    case catch flurm_job_deps:notify_completion(JobId, FinalState) of
+        ok -> ok;
+        {'EXIT', {noproc, _}} ->
+            %% flurm_job_deps not running, ignore
+            ok;
+        {'EXIT', Reason} ->
+            lager:warning("Failed to notify job deps for job ~p: ~p", [JobId, Reason]),
+            ok
+    end.
 
 %% @private
 %% Run a scheduling cycle - try to schedule pending jobs
@@ -475,6 +518,7 @@ remove_jobs_from_queue(JobsToRemove, Queue) ->
 %% Try to schedule a single job
 %% Uses flurm_job_manager to get job info (not flurm_job_registry)
 %% Now includes resource limits checking via flurm_limits module
+%% Also checks job dependencies via flurm_job_deps before scheduling
 try_schedule_job(JobId, State) ->
     lager:info("Trying to schedule job ~p", [JobId]),
     case flurm_job_manager:get_job(JobId) of
@@ -483,19 +527,24 @@ try_schedule_job(JobId, State) ->
             lager:debug("Job ~p state: ~p", [JobId, JobState]),
             case JobState of
                 pending ->
-                    %% Convert job record to info map for allocation
-                    Info = job_to_info(Job),
-                    %% Check resource limits before attempting to schedule
-                    LimitCheckSpec = job_to_limit_spec(Job),
-                    case flurm_limits:check_limits(LimitCheckSpec) of
-                        ok ->
-                            %% Limits OK, proceed with allocation
-                            try_allocate_job_simple(JobId, Info, State);
-                        {error, LimitReason} ->
-                            %% Limits exceeded, keep job pending
-                            lager:info("Job ~p blocked by limits: ~p", [JobId, LimitReason]),
-                            {wait, {limit_exceeded, LimitReason}}
+                    %% Check job dependencies before scheduling
+                    case check_job_dependencies(JobId) of
+                        {ok, satisfied} ->
+                            %% Dependencies satisfied, proceed with scheduling
+                            schedule_job_with_limits(JobId, Job, State);
+                        {wait, deps_not_satisfied} ->
+                            %% Dependencies not satisfied, skip this job
+                            lager:info("Job ~p waiting for dependencies", [JobId]),
+                            {wait, dependencies_not_satisfied};
+                        {error, DepError} ->
+                            %% Dependency error (e.g., missing dependency job)
+                            lager:warning("Job ~p dependency error: ~p", [JobId, DepError]),
+                            {error, {dependency_error, DepError}}
                     end;
+                held ->
+                    %% Job is held (possibly for dependencies), skip
+                    lager:debug("Job ~p is held, skipping", [JobId]),
+                    {wait, job_held};
                 _OtherState ->
                     %% Job is no longer pending
                     lager:info("Job ~p not pending, skipping", [JobId]),
@@ -503,27 +552,416 @@ try_schedule_job(JobId, State) ->
             end;
         {error, not_found} ->
             lager:warning("Job ~p not found in job_manager", [JobId]),
+            io:format("*** SCHED: Job ~p NOT FOUND in job_manager!~n", [JobId]),
             {error, job_not_found}
     end.
 
 %% @private
-%% Find nodes that can run a job
-%% Uses flurm_node_manager to find connected compute nodes with available resources
-find_nodes_for_job(NumNodes, NumCpus, MemoryMb, Partition) ->
-    %% Get nodes with available resources from node manager
+%% Check if a job's dependencies are satisfied
+%% Returns {ok, satisfied} if all deps met, {wait, deps_not_satisfied} if waiting,
+%% or {error, Reason} if there's a problem with the dependencies
+check_job_dependencies(JobId) ->
+    Result = catch flurm_job_deps:check_dependencies(JobId),
+    case Result of
+        {ok, []} ->
+            %% No dependencies or all satisfied
+            {ok, satisfied};
+        {waiting, _UnsatisfiedDeps} ->
+            %% Has unsatisfied dependencies
+            {wait, deps_not_satisfied};
+        {'EXIT', {noproc, _}} ->
+            %% flurm_job_deps not running, assume no dependencies
+            {ok, satisfied};
+        {'EXIT', {badarg, _}} ->
+            %% flurm_job_deps ETS table doesn't exist, assume no dependencies
+            {ok, satisfied};
+        {'EXIT', _Reason} ->
+            %% Other error in deps module, assume no dependencies to not block jobs
+            {ok, satisfied};
+        _ ->
+            %% Unexpected result - treat as satisfied to not block jobs
+            {ok, satisfied}
+    end.
+
+%% @private
+%% Schedule a job after dependency check passes
+%% Checks resource limits and reservations before attempting allocation
+%% Also attempts preemption if high-priority job can't be scheduled
+schedule_job_with_limits(JobId, Job, State) ->
+    %% Convert job record to info map for allocation
+    Info = job_to_info(Job),
+    %% Check resource limits before attempting to schedule
+    LimitCheckSpec = job_to_limit_spec(Job),
+    case flurm_limits:check_limits(LimitCheckSpec) of
+        ok ->
+            %% Limits OK, check reservation constraints
+            case check_job_reservation_constraints(Job) of
+                {ok, no_reservation} ->
+                    %% No reservation, proceed with normal allocation (excluding reserved nodes)
+                    case try_allocate_job_excluding_reserved(JobId, Info, State) of
+                        {ok, NewState} ->
+                            {ok, NewState};
+                        {wait, insufficient_nodes} ->
+                            %% Not enough resources - try preemption for high priority jobs
+                            try_preemption_for_job(JobId, Job, Info, State);
+                        Other ->
+                            Other
+                    end;
+                {ok, use_reservation, ReservedNodes} ->
+                    %% Job has valid reservation, use reserved nodes
+                    lager:info("Job ~p using reservation nodes: ~p", [JobId, ReservedNodes]),
+                    try_allocate_job_with_reservation(JobId, Info, ReservedNodes, State);
+                {wait, ReservationReason} ->
+                    %% Reservation not yet active or other wait condition
+                    lager:info("Job ~p waiting for reservation: ~p", [JobId, ReservationReason]),
+                    {wait, {reservation_wait, ReservationReason}};
+                {error, ReservationError} ->
+                    %% Reservation error (invalid, expired, no access)
+                    lager:warning("Job ~p reservation error: ~p", [JobId, ReservationError]),
+                    {error, {reservation_error, ReservationError}}
+            end;
+        {error, LimitReason} ->
+            %% Limits exceeded, keep job pending
+            lager:info("Job ~p blocked by limits: ~p", [JobId, LimitReason]),
+            {wait, {limit_exceeded, LimitReason}}
+    end.
+
+%% @private
+%% Check reservation constraints for a job
+%% Returns:
+%%   {ok, no_reservation} - Job has no reservation, schedule normally
+%%   {ok, use_reservation, Nodes} - Job has active reservation, use these nodes
+%%   {wait, Reason} - Reservation not yet active, wait
+%%   {error, Reason} - Reservation error
+check_job_reservation_constraints(#job{reservation = <<>>}) ->
+    {ok, no_reservation};
+check_job_reservation_constraints(#job{reservation = undefined}) ->
+    {ok, no_reservation};
+check_job_reservation_constraints(#job{} = Job) ->
+    %% Job has reservation specified, check it
+    ResName = Job#job.reservation,
+    case catch flurm_reservation:check_reservation_access(Job, ResName) of
+        {ok, ReservedNodes} ->
+            {ok, use_reservation, ReservedNodes};
+        {error, {reservation_not_started, StartTime}} ->
+            %% Reservation exists but not yet started
+            {wait, {not_started, StartTime}};
+        {error, access_denied} ->
+            {error, reservation_access_denied};
+        {error, reservation_not_found} ->
+            {error, reservation_not_found};
+        {error, reservation_expired} ->
+            {error, reservation_expired};
+        {error, Reason} ->
+            {error, Reason};
+        {'EXIT', {noproc, _}} ->
+            %% flurm_reservation not running, assume no reservation system
+            {ok, no_reservation};
+        {'EXIT', Reason} ->
+            {error, Reason}
+    end.
+
+%% @private
+%% Try to allocate job excluding reserved nodes (for jobs without reservation)
+try_allocate_job_excluding_reserved(JobId, JobInfo, State) ->
+    NumNodes = maps:get(num_nodes, JobInfo, 1),
+    NumCpus = maps:get(num_cpus, JobInfo, 1),
+    Partition = maps:get(partition, JobInfo, <<"default">>),
+    MemoryMb = maps:get(memory_mb, JobInfo, 256),
+    Licenses = maps:get(licenses, JobInfo, []),
+
+    lager:debug("try_allocate_job_excluding_reserved: job ~p needs ~p nodes, ~p cpus, ~p MB, partition ~p",
+               [JobId, NumNodes, NumCpus, MemoryMb, Partition]),
+
+    %% First check if required licenses are available
+    case check_license_availability(Licenses) of
+        {ok, available} ->
+            %% Get available nodes excluding reserved ones
+            case find_nodes_excluding_reserved(NumNodes, NumCpus, MemoryMb, Partition) of
+                {ok, Nodes} ->
+                    complete_job_allocation(JobId, JobInfo, Nodes, NumCpus, MemoryMb, Licenses, State);
+                {wait, Reason} ->
+                    {wait, Reason}
+            end;
+        {wait, licenses_unavailable} ->
+            lager:info("Job ~p waiting for licenses: ~p", [JobId, Licenses]),
+            {wait, licenses_unavailable}
+    end.
+
+%% @private
+%% Try to allocate job using reserved nodes
+try_allocate_job_with_reservation(JobId, JobInfo, ReservedNodes, State) ->
+    NumNodes = maps:get(num_nodes, JobInfo, 1),
+    NumCpus = maps:get(num_cpus, JobInfo, 1),
+    MemoryMb = maps:get(memory_mb, JobInfo, 256),
+    Partition = maps:get(partition, JobInfo, <<"default">>),
+    Licenses = maps:get(licenses, JobInfo, []),
+
+    lager:debug("try_allocate_job_with_reservation: job ~p needs ~p nodes from reserved: ~p",
+               [JobId, NumNodes, ReservedNodes]),
+
+    %% First check if required licenses are available
+    case check_license_availability(Licenses) of
+        {ok, available} ->
+            %% Get available nodes from the reserved set only
+            case find_nodes_from_reserved(NumNodes, NumCpus, MemoryMb, Partition, ReservedNodes) of
+                {ok, Nodes} ->
+                    %% Confirm reservation usage before allocation
+                    ResName = maps:get(reservation, JobInfo, <<>>),
+                    catch flurm_reservation:confirm_reservation(ResName),
+                    complete_job_allocation(JobId, JobInfo, Nodes, NumCpus, MemoryMb, Licenses, State);
+                {wait, Reason} ->
+                    {wait, Reason}
+            end;
+        {wait, licenses_unavailable} ->
+            lager:info("Job ~p waiting for licenses: ~p", [JobId, Licenses]),
+            {wait, licenses_unavailable}
+    end.
+
+%% @private
+%% Complete job allocation after nodes are selected
+complete_job_allocation(JobId, JobInfo, Nodes, NumCpus, MemoryMb, Licenses, State) ->
+    case allocate_job(JobId, Nodes, NumCpus, MemoryMb, 0) of
+        ok ->
+            %% Node resources allocated, now allocate licenses
+            case allocate_licenses(JobId, Licenses) of
+                ok ->
+                    NodeNames = [N#node.hostname || N <- Nodes],
+                    %% Update job in job manager with allocated nodes
+                    flurm_job_manager:update_job(JobId, #{
+                        state => configuring,
+                        allocated_nodes => NodeNames
+                    }),
+                    %% Dispatch job to nodes
+                    UpdatedInfo = JobInfo#{allocated_nodes => NodeNames},
+                    case flurm_job_dispatcher:dispatch_job(JobId, UpdatedInfo) of
+                        ok ->
+                            %% Mark job as running
+                            flurm_job_manager:update_job(JobId, #{state => running}),
+                            %% Notify limits module that job has started
+                            LimitInfo = build_limit_info(JobInfo),
+                            flurm_limits:enforce_limit(start, JobId, LimitInfo),
+                            NewRunning = sets:add_element(JobId, State#scheduler_state.running_jobs),
+                            lager:info("Job ~p scheduled on nodes: ~p (licenses: ~p)", [JobId, NodeNames, Licenses]),
+                            {ok, State#scheduler_state{running_jobs = NewRunning}};
+                        {error, DispatchErr} ->
+                            lager:warning("Job ~p dispatch failed: ~p, will retry", [JobId, DispatchErr]),
+                            %% Release licenses
+                            deallocate_licenses(JobId, Licenses),
+                            %% Release node resources
+                            lists:foreach(
+                                fun(Node) ->
+                                    flurm_node_manager:release_resources(Node#node.hostname, JobId)
+                                end,
+                                Nodes
+                            ),
+                            flurm_job_manager:update_job(JobId, #{
+                                state => pending,
+                                allocated_nodes => []
+                            }),
+                            {wait, {dispatch_failed, DispatchErr}}
+                    end;
+                {error, LicAllocErr} ->
+                    %% License allocation failed - release node resources
+                    lager:warning("Job ~p license allocation failed: ~p", [JobId, LicAllocErr]),
+                    lists:foreach(
+                        fun(Node) ->
+                            flurm_node_manager:release_resources(Node#node.hostname, JobId)
+                        end,
+                        Nodes
+                    ),
+                    {wait, {licenses_unavailable, LicAllocErr}}
+            end;
+        {error, Reason} ->
+            {error, Reason}
+    end.
+
+%% @private
+%% Find nodes excluding those in active reservations
+find_nodes_excluding_reserved(NumNodes, NumCpus, MemoryMb, Partition) ->
+    %% Get all available nodes
     AllNodes = flurm_node_manager:get_available_nodes_for_job(NumCpus, MemoryMb, Partition),
-    lager:info("find_nodes_for_job: need ~p nodes with ~p cpus, ~p MB for partition ~p, found ~p nodes",
-                [NumNodes, NumCpus, MemoryMb, Partition, length(AllNodes)]),
+    AllNodeNames = [N#node.hostname || N <- AllNodes],
+
+    %% Filter out reserved nodes
+    AvailableNodeNames = case catch flurm_reservation:get_available_nodes_excluding_reserved(AllNodeNames) of
+        FilteredNames when is_list(FilteredNames) -> FilteredNames;
+        {'EXIT', _} -> AllNodeNames  % Reservation module not available
+    end,
+
+    %% Get the full node records for available nodes
+    AvailableNodes = [N || N <- AllNodes, lists:member(N#node.hostname, AvailableNodeNames)],
+
+    lager:info("find_nodes_excluding_reserved: need ~p nodes with ~p cpus, ~p MB, found ~p after excluding reserved",
+               [NumNodes, NumCpus, MemoryMb, length(AvailableNodes)]),
+
+    if
+        length(AvailableNodes) >= NumNodes ->
+            SelectedNodes = lists:sublist(AvailableNodes, NumNodes),
+            lager:info("Selected nodes (excluding reserved): ~p", [[N#node.hostname || N <- SelectedNodes]]),
+            {ok, SelectedNodes};
+        true ->
+            lager:warning("Insufficient nodes: need ~p, have ~p (after excluding reserved)",
+                         [NumNodes, length(AvailableNodes)]),
+            {wait, insufficient_nodes}
+    end.
+
+%% @private
+%% Find nodes from a reserved set that can run the job
+find_nodes_from_reserved(NumNodes, NumCpus, MemoryMb, Partition, ReservedNodeNames) ->
+    %% Get all nodes with available resources
+    AllNodes = flurm_node_manager:get_available_nodes_for_job(NumCpus, MemoryMb, Partition),
+
+    %% Filter to only reserved nodes
+    AvailableReserved = [N || N <- AllNodes, lists:member(N#node.hostname, ReservedNodeNames)],
+
+    lager:debug("find_nodes_from_reserved: need ~p nodes, ~p available in reserved set",
+               [NumNodes, length(AvailableReserved)]),
+
+    if
+        length(AvailableReserved) >= NumNodes ->
+            SelectedNodes = lists:sublist(AvailableReserved, NumNodes),
+            {ok, SelectedNodes};
+        true ->
+            {wait, {insufficient_reserved_nodes, length(AvailableReserved), NumNodes}}
+    end.
+
+%% @private
+%% Attempt preemption for a high-priority job that can't be scheduled
+%% Only preempts if the job has sufficient priority and preemption is enabled
+try_preemption_for_job(JobId, Job, JobInfo, State) ->
+    Priority = Job#job.priority,
+    %% Only consider preemption for jobs above normal priority threshold
+    MinPreemptPriority = ?DEFAULT_PRIORITY + flurm_preemption:get_priority_threshold(),
+    case Priority >= MinPreemptPriority of
+        false ->
+            %% Job priority too low for preemption
+            lager:debug("Job ~p priority ~p below preemption threshold ~p",
+                       [JobId, Priority, MinPreemptPriority]),
+            {wait, insufficient_nodes};
+        true ->
+            %% Try to find preemptable jobs
+            ResourcesNeeded = #{
+                num_nodes => Job#job.num_nodes,
+                num_cpus => Job#job.num_cpus,
+                memory_mb => Job#job.memory_mb
+            },
+            %% Add partition and QOS to job info for preemption mode lookup
+            PendingJobInfo = JobInfo#{
+                priority => Priority,
+                partition => Job#job.partition,
+                qos => Job#job.qos
+            },
+            case flurm_preemption:find_preemptable_jobs(PendingJobInfo, ResourcesNeeded) of
+                {ok, JobsToPreempt} ->
+                    lager:info("Job ~p (priority ~p): found ~p jobs to preempt",
+                              [JobId, Priority, length(JobsToPreempt)]),
+                    %% Execute preemption
+                    execute_preemption_and_schedule(JobId, Job, JobInfo, JobsToPreempt, State);
+                {error, Reason} ->
+                    lager:debug("Job ~p: preemption not possible: ~p", [JobId, Reason]),
+                    {wait, insufficient_nodes}
+            end
+    end.
+
+%% @private
+%% Execute preemption for selected jobs and then schedule the high-priority job
+execute_preemption_and_schedule(JobId, Job, JobInfo, JobsToPreempt, State) ->
+    %% Get preemption mode and grace time
+    Partition = Job#job.partition,
+    QOS = Job#job.qos,
+    Mode = flurm_preemption:get_preemption_mode(#{partition => Partition, qos => QOS}),
+    GraceTime = flurm_preemption:get_grace_time(Partition),
+
+    %% Build preemption plan
+    PreemptionPlan = #{
+        jobs_to_preempt => JobsToPreempt,
+        preemption_mode => Mode,
+        grace_time => GraceTime,
+        resources_freed => calculate_resources_to_free(JobsToPreempt)
+    },
+
+    %% Execute the preemption
+    case flurm_preemption:execute_preemption(PreemptionPlan, JobInfo) of
+        {ok, PreemptedJobIds} ->
+            lager:info("Successfully preempted ~p jobs for job ~p: ~p",
+                      [length(PreemptedJobIds), JobId, PreemptedJobIds]),
+            %% Record metrics
+            catch flurm_metrics:increment(flurm_preemptions_for_scheduling, length(PreemptedJobIds)),
+
+            %% Wait a moment for resources to be released
+            timer:sleep(100),
+
+            %% Now try to schedule the high-priority job again
+            case try_allocate_job_simple(JobId, JobInfo, State) of
+                {ok, NewState} ->
+                    lager:info("Job ~p scheduled after preemption", [JobId]),
+                    {ok, NewState};
+                Other ->
+                    %% Still couldn't schedule - resources may not be freed yet
+                    lager:warning("Job ~p still couldn't be scheduled after preemption: ~p",
+                                 [JobId, Other]),
+                    Other
+            end;
+        {error, Reason} ->
+            lager:warning("Preemption failed for job ~p: ~p", [JobId, Reason]),
+            {wait, {preemption_failed, Reason}}
+    end.
+
+%% @private
+%% Calculate total resources that would be freed by preempting jobs
+calculate_resources_to_free(Jobs) ->
+    lists:foldl(
+        fun(JobMap, Acc) ->
+            #{
+                nodes => maps:get(nodes, Acc, 0) + maps:get(num_nodes, JobMap, 1),
+                cpus => maps:get(cpus, Acc, 0) + maps:get(num_cpus, JobMap, 1),
+                memory_mb => maps:get(memory_mb, Acc, 0) + maps:get(memory_mb, JobMap, 1024)
+            }
+        end,
+        #{nodes => 0, cpus => 0, memory_mb => 0},
+        Jobs
+    ).
+
+%% @private
+%% Find nodes that can run a job with optional GRES requirements
+%% GRESSpec can be <<>> for no GRES, or a string like "gpu:2" or "gpu:a100:4"
+find_nodes_for_job(NumNodes, NumCpus, MemoryMb, Partition, GRESSpec) ->
+    %% Get nodes with available resources from node manager
+    AllNodes = case GRESSpec of
+        <<>> ->
+            flurm_node_manager:get_available_nodes_for_job(NumCpus, MemoryMb, Partition);
+        _ ->
+            %% Use GRES-aware node selection
+            flurm_node_manager:get_available_nodes_with_gres(NumCpus, MemoryMb, Partition, GRESSpec)
+    end,
+    lager:info("find_nodes_for_job: need ~p nodes with ~p cpus, ~p MB, GRES ~p for partition ~p, found ~p nodes",
+                [NumNodes, NumCpus, MemoryMb, GRESSpec, Partition, length(AllNodes)]),
+
+    %% If GRES is specified, also filter through flurm_gres module for advanced constraints
+    FilteredNodes = case GRESSpec of
+        <<>> -> AllNodes;
+        _ ->
+            NodeHostnames = [N#node.hostname || N <- AllNodes],
+            FilteredHostnames = flurm_gres:filter_nodes_by_gres(NodeHostnames, GRESSpec),
+            [N || N <- AllNodes, lists:member(N#node.hostname, FilteredHostnames)]
+    end,
 
     %% Check if we have enough nodes
     if
-        length(AllNodes) >= NumNodes ->
-            %% Take first N nodes (could be improved with better selection)
-            SelectedNodes = lists:sublist(AllNodes, NumNodes),
+        length(FilteredNodes) >= NumNodes ->
+            %% Take first N nodes (could be improved with better selection based on GRES topology)
+            SelectedNodes = lists:sublist(FilteredNodes, NumNodes),
             lager:info("Selected nodes: ~p", [[N#node.hostname || N <- SelectedNodes]]),
             {ok, SelectedNodes};
         true ->
-            lager:warning("Insufficient nodes: need ~p, have ~p", [NumNodes, length(AllNodes)]),
+            case GRESSpec of
+                <<>> ->
+                    lager:warning("Insufficient nodes: need ~p, have ~p", [NumNodes, length(FilteredNodes)]);
+                _ ->
+                    lager:warning("Insufficient nodes with GRES ~p: need ~p, have ~p",
+                                  [GRESSpec, NumNodes, length(FilteredNodes)])
+            end,
             {wait, insufficient_nodes}
     end.
 
@@ -574,7 +1012,15 @@ job_to_info(#job{} = Job) ->
         work_dir => Job#job.work_dir,
         std_out => Job#job.std_out,
         std_err => Job#job.std_err,
-        user => Job#job.user
+        user => Job#job.user,
+        licenses => Job#job.licenses,
+        %% GRES fields for GPU/accelerator scheduling
+        gres => Job#job.gres,
+        gres_per_node => Job#job.gres_per_node,
+        gres_per_task => Job#job.gres_per_task,
+        gpu_type => Job#job.gpu_type,
+        gpu_memory_mb => Job#job.gpu_memory_mb,
+        gpu_exclusive => Job#job.gpu_exclusive
     }.
 
 %% @private
@@ -608,54 +1054,180 @@ build_limit_info(JobInfo) ->
 %% @private
 %% Simple allocation without flurm_job process
 %% Used when jobs are stored in flurm_job_manager instead of flurm_job_registry
+%% Now includes license checking, GRES allocation, and license allocation
 try_allocate_job_simple(JobId, JobInfo, State) ->
     NumNodes = maps:get(num_nodes, JobInfo, 1),
     NumCpus = maps:get(num_cpus, JobInfo, 1),
     Partition = maps:get(partition, JobInfo, <<"default">>),
     MemoryMb = maps:get(memory_mb, JobInfo, 256),  % Default 256 MB for container compatibility
-    lager:debug("try_allocate_job_simple: job ~p needs ~p nodes, ~p cpus, ~p MB, partition ~p",
-               [JobId, NumNodes, NumCpus, MemoryMb, Partition]),
+    Licenses = maps:get(licenses, JobInfo, []),
+    %% Get GRES requirements
+    GRESSpec = maps:get(gres, JobInfo, <<>>),
+    GPUExclusive = maps:get(gpu_exclusive, JobInfo, true),
+    lager:debug("try_allocate_job_simple: job ~p needs ~p nodes, ~p cpus, ~p MB, partition ~p, licenses ~p, gres ~p",
+               [JobId, NumNodes, NumCpus, MemoryMb, Partition, Licenses, GRESSpec]),
 
-    case find_nodes_for_job(NumNodes, NumCpus, MemoryMb, Partition) of
-        {ok, Nodes} ->
-            case allocate_job(JobId, Nodes, NumCpus, MemoryMb, 0) of
-                ok ->
-                    NodeNames = [N#node.hostname || N <- Nodes],
-                    %% Update job in job manager with allocated nodes
-                    flurm_job_manager:update_job(JobId, #{
-                        state => configuring,
-                        allocated_nodes => NodeNames
-                    }),
-                    %% Dispatch job to nodes
-                    UpdatedInfo = JobInfo#{allocated_nodes => NodeNames},
-                    case flurm_job_dispatcher:dispatch_job(JobId, UpdatedInfo) of
+    %% First check if required licenses are available
+    case check_license_availability(Licenses) of
+        {ok, available} ->
+            %% Licenses available, continue with node allocation (including GRES filtering)
+            case find_nodes_for_job(NumNodes, NumCpus, MemoryMb, Partition, GRESSpec) of
+                {ok, Nodes} ->
+                    case allocate_job(JobId, Nodes, NumCpus, MemoryMb, 0) of
                         ok ->
-                            %% Mark job as running
-                            flurm_job_manager:update_job(JobId, #{state => running}),
-                            %% Notify limits module that job has started (for usage tracking)
-                            LimitInfo = build_limit_info(JobInfo),
-                            flurm_limits:enforce_limit(start, JobId, LimitInfo),
-                            NewRunning = sets:add_element(JobId, State#scheduler_state.running_jobs),
-                            lager:info("Job ~p scheduled on nodes: ~p", [JobId, NodeNames]),
-                            {ok, State#scheduler_state{running_jobs = NewRunning}};
-                        {error, DispatchErr} ->
-                            lager:warning("Job ~p dispatch failed: ~p, will retry", [JobId, DispatchErr]),
-                            lists:foreach(
-                                fun(Node) ->
-                                    flurm_node_manager:release_resources(Node#node.hostname, JobId)
-                                end,
-                                Nodes
-                            ),
-                            flurm_job_manager:update_job(JobId, #{
-                                state => pending,
-                                allocated_nodes => []
-                            }),
-                            %% Return wait so job stays in queue and can retry
-                            {wait, {dispatch_failed, DispatchErr}}
+                            %% Node CPU/memory resources allocated, now allocate GRES if needed
+                            case allocate_gres_on_nodes(JobId, Nodes, GRESSpec, GPUExclusive) of
+                                {ok, _GRESAllocations} ->
+                                    %% GRES allocated, now allocate licenses
+                                    case allocate_licenses(JobId, Licenses) of
+                                        ok ->
+                                            NodeNames = [N#node.hostname || N <- Nodes],
+                                            %% Update job in job manager with allocated nodes
+                                            flurm_job_manager:update_job(JobId, #{
+                                                state => configuring,
+                                                allocated_nodes => NodeNames
+                                            }),
+                                            %% Dispatch job to nodes
+                                            UpdatedInfo = JobInfo#{allocated_nodes => NodeNames},
+                                            case flurm_job_dispatcher:dispatch_job(JobId, UpdatedInfo) of
+                                                ok ->
+                                                    %% Mark job as running
+                                                    flurm_job_manager:update_job(JobId, #{state => running}),
+                                                    %% Notify limits module that job has started (for usage tracking)
+                                                    LimitInfo = build_limit_info(JobInfo),
+                                                    flurm_limits:enforce_limit(start, JobId, LimitInfo),
+                                                    NewRunning = sets:add_element(JobId, State#scheduler_state.running_jobs),
+                                                    lager:info("Job ~p scheduled on nodes: ~p (licenses: ~p, gres: ~p)",
+                                                              [JobId, NodeNames, Licenses, GRESSpec]),
+                                                    {ok, State#scheduler_state{running_jobs = NewRunning}};
+                                                {error, DispatchErr} ->
+                                                    lager:warning("Job ~p dispatch failed: ~p, will retry", [JobId, DispatchErr]),
+                                                    %% Rollback: release licenses
+                                                    deallocate_licenses(JobId, Licenses),
+                                                    %% Rollback: release GRES
+                                                    release_gres_on_nodes(JobId, Nodes),
+                                                    %% Rollback: release node resources
+                                                    lists:foreach(
+                                                        fun(Node) ->
+                                                            flurm_node_manager:release_resources(Node#node.hostname, JobId)
+                                                        end,
+                                                        Nodes
+                                                    ),
+                                                    flurm_job_manager:update_job(JobId, #{
+                                                        state => pending,
+                                                        allocated_nodes => []
+                                                    }),
+                                                    %% Return wait so job stays in queue and can retry
+                                                    {wait, {dispatch_failed, DispatchErr}}
+                                            end;
+                                        {error, LicAllocErr} ->
+                                            %% License allocation failed - rollback GRES and node resources
+                                            lager:warning("Job ~p license allocation failed: ~p", [JobId, LicAllocErr]),
+                                            release_gres_on_nodes(JobId, Nodes),
+                                            lists:foreach(
+                                                fun(Node) ->
+                                                    flurm_node_manager:release_resources(Node#node.hostname, JobId)
+                                                end,
+                                                Nodes
+                                            ),
+                                            {wait, {licenses_unavailable, LicAllocErr}}
+                                    end;
+                                {error, GRESErr} ->
+                                    %% GRES allocation failed - rollback node resources
+                                    lager:warning("Job ~p GRES allocation failed: ~p", [JobId, GRESErr]),
+                                    lists:foreach(
+                                        fun(Node) ->
+                                            flurm_node_manager:release_resources(Node#node.hostname, JobId)
+                                        end,
+                                        Nodes
+                                    ),
+                                    {wait, {gres_unavailable, GRESErr}}
+                            end;
+                        {error, Reason} ->
+                            {error, Reason}
                     end;
-                {error, Reason} ->
-                    {error, Reason}
+                {wait, Reason} ->
+                    {wait, Reason}
             end;
-        {wait, Reason} ->
-            {wait, Reason}
+        {wait, licenses_unavailable} ->
+            %% Licenses not available, job must wait
+            lager:info("Job ~p waiting for licenses: ~p", [JobId, Licenses]),
+            {wait, licenses_unavailable}
     end.
+
+%% @private
+%% Allocate GRES on all nodes for a job
+%% Returns {ok, Allocations} or {error, Reason}
+allocate_gres_on_nodes(_JobId, _Nodes, <<>>, _Exclusive) ->
+    {ok, []};  % No GRES requirements
+allocate_gres_on_nodes(JobId, Nodes, GRESSpec, Exclusive) ->
+    %% Try to allocate GRES on each node
+    Results = lists:map(
+        fun(#node{hostname = Hostname}) ->
+            case flurm_node_manager:allocate_gres(Hostname, JobId, GRESSpec, Exclusive) of
+                {ok, Alloc} -> {ok, {Hostname, Alloc}};
+                {error, Reason} -> {error, {Hostname, Reason}}
+            end
+        end,
+        Nodes
+    ),
+    %% Check if all allocations succeeded
+    Errors = [E || {error, E} <- Results],
+    case Errors of
+        [] ->
+            Allocations = [{H, A} || {ok, {H, A}} <- Results],
+            %% Also register with flurm_gres module
+            lists:foreach(
+                fun(#node{hostname = Hostname}) ->
+                    catch flurm_gres:allocate(JobId, Hostname, GRESSpec)
+                end,
+                Nodes
+            ),
+            {ok, Allocations};
+        [FirstErr | _] ->
+            %% Rollback successful allocations
+            lists:foreach(
+                fun
+                    ({ok, {Hostname, _}}) -> flurm_node_manager:release_gres(Hostname, JobId);
+                    (_) -> ok
+                end,
+                Results
+            ),
+            {error, FirstErr}
+    end.
+
+%% @private
+%% Release GRES on all nodes for a job
+release_gres_on_nodes(JobId, Nodes) ->
+    lists:foreach(
+        fun(#node{hostname = Hostname}) ->
+            flurm_node_manager:release_gres(Hostname, JobId),
+            catch flurm_gres:deallocate(JobId, Hostname)
+        end,
+        Nodes
+    ).
+
+%% @private
+%% Check if licenses are available for the job
+%% Returns {ok, available} or {wait, licenses_unavailable}
+check_license_availability([]) ->
+    {ok, available};
+check_license_availability(Licenses) ->
+    case flurm_license:check_availability(Licenses) of
+        true -> {ok, available};
+        false -> {wait, licenses_unavailable}
+    end.
+
+%% @private
+%% Allocate licenses for the job
+allocate_licenses(_JobId, []) ->
+    ok;
+allocate_licenses(JobId, Licenses) ->
+    flurm_license:allocate(JobId, Licenses).
+
+%% @private
+%% Deallocate licenses for the job
+deallocate_licenses(_JobId, []) ->
+    ok;
+deallocate_licenses(JobId, Licenses) ->
+    flurm_license:deallocate(JobId, Licenses).

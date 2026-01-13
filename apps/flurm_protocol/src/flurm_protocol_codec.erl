@@ -35,8 +35,9 @@
     encode_with_extra/2,
     encode_with_extra/3,
 
-    %% Response encoding (with auth section at beginning)
+    %% Response encoding/decoding (with auth section)
     encode_response/2,
+    decode_response/1,
 
     %% Body encode/decode
     decode_body/2,
@@ -49,7 +50,10 @@
 
     %% Job description extraction
     extract_full_job_desc/1,
-    extract_resources_from_protocol/1
+    extract_resources_from_protocol/1,
+
+    %% Reconfigure response encoding
+    encode_reconfigure_response/1
 ]).
 
 -include("flurm_protocol.hrl").
@@ -259,6 +263,60 @@ encode_response(MsgType, Body) ->
             BodyError
     end.
 
+%% @doc Decode a response message (with auth section stripped).
+%%
+%% Response wire format (server to client):
+%%   <<OuterLength:32, Header:10, AuthSection/binary, Body/binary>>
+%% Where AuthSection = <<AuthHeader:10, CredLen:32, Credential:CredLen>>
+%%
+%% This decoder strips the auth section and returns just the message.
+-spec decode_response(binary()) -> {ok, #slurm_msg{}, binary()} | {error, term()}.
+decode_response(<<Length:32/big, Rest/binary>> = _Data)
+  when byte_size(Rest) >= Length, Length >= ?SLURM_HEADER_SIZE ->
+    <<MsgData:Length/binary, Remaining/binary>> = Rest,
+    <<HeaderBin:?SLURM_HEADER_SIZE/binary, BodyWithAuth/binary>> = MsgData,
+    case flurm_protocol_header:parse_header(HeaderBin) of
+        {ok, Header, <<>>} ->
+            MsgType = Header#slurm_header.msg_type,
+            BodyLen = Header#slurm_header.body_length,
+            %% Auth section is between header and body
+            %% AuthSection = 10-byte header + 4-byte cred_len + credential
+            case strip_auth_section_from_response(BodyWithAuth, BodyLen) of
+                {ok, ActualBody} ->
+                    case decode_body(MsgType, ActualBody) of
+                        {ok, Body} ->
+                            Msg = #slurm_msg{header = Header, body = Body},
+                            {ok, Msg, Remaining};
+                        {error, _} = BodyError ->
+                            BodyError
+                    end;
+                {error, _} = AuthError ->
+                    AuthError
+            end;
+        {ok, _Header, _Extra} ->
+            {error, extra_header_data};
+        {error, _} = HeaderError ->
+            HeaderError
+    end;
+decode_response(<<Length:32/big, Rest/binary>>)
+  when byte_size(Rest) < Length ->
+    {error, {incomplete_message, Length, byte_size(Rest)}};
+decode_response(Binary) when byte_size(Binary) < 4 ->
+    {error, {incomplete_length_prefix, byte_size(Binary)}};
+decode_response(_) ->
+    {error, invalid_message_data}.
+
+%% @doc Strip auth section from response to get actual body.
+%% The auth section is at the start, and body is the last BodyLen bytes.
+-spec strip_auth_section_from_response(binary(), non_neg_integer()) -> {ok, binary()} | {error, term()}.
+strip_auth_section_from_response(BodyWithAuth, BodyLen) when byte_size(BodyWithAuth) >= BodyLen ->
+    %% Body is at the END of BodyWithAuth
+    AuthLen = byte_size(BodyWithAuth) - BodyLen,
+    <<_AuthSection:AuthLen/binary, ActualBody:BodyLen/binary>> = BodyWithAuth,
+    {ok, ActualBody};
+strip_auth_section_from_response(BodyWithAuth, BodyLen) ->
+    {error, {body_too_short, byte_size(BodyWithAuth), BodyLen}}.
+
 %% @doc Create auth section with MUNGE credential
 %% Format: 10-byte header + credential length + credential
 %% Header format: 8 bytes padding/zeros + 2 bytes auth type indicator
@@ -363,8 +421,12 @@ decode_body(?REQUEST_BURST_BUFFER_INFO, Binary) ->
     decode_burst_buffer_info_request(Binary);
 
 %% REQUEST_RECONFIGURE (1003) - scontrol reconfigure
-decode_body(?REQUEST_RECONFIGURE, _Binary) ->
-    {ok, #{}};
+decode_body(?REQUEST_RECONFIGURE, Binary) ->
+    decode_reconfigure_request(Binary);
+
+%% REQUEST_RECONFIGURE_WITH_CONFIG (1004) - scontrol reconfigure with specific settings
+decode_body(?REQUEST_RECONFIGURE_WITH_CONFIG, Binary) ->
+    decode_reconfigure_with_config_request(Binary);
 
 %% REQUEST_SHUTDOWN (1005) - scontrol shutdown
 decode_body(?REQUEST_SHUTDOWN, Binary) ->
@@ -393,6 +455,10 @@ decode_body(?RESPONSE_SUBMIT_BATCH_JOB, Binary) ->
 %% RESPONSE_JOB_INFO (2004)
 decode_body(?RESPONSE_JOB_INFO, Binary) ->
     decode_job_info_response(Binary);
+
+%% RESPONSE_PARTITION_INFO (2010)
+decode_body(?RESPONSE_PARTITION_INFO, Binary) ->
+    decode_partition_info_response(Binary);
 
 %% Unknown message type - return raw body
 decode_body(_MsgType, Binary) ->
@@ -541,6 +607,7 @@ encode_body(MsgType, Body) ->
 message_type_name(?REQUEST_NODE_REGISTRATION_STATUS) -> request_node_registration_status;
 message_type_name(?MESSAGE_NODE_REGISTRATION_STATUS) -> message_node_registration_status;
 message_type_name(?REQUEST_RECONFIGURE) -> request_reconfigure;
+message_type_name(?REQUEST_RECONFIGURE_WITH_CONFIG) -> request_reconfigure_with_config;
 message_type_name(?REQUEST_SHUTDOWN) -> request_shutdown;
 message_type_name(?REQUEST_PING) -> request_ping;
 message_type_name(?REQUEST_BUILD_INFO) -> request_build_info;
@@ -587,6 +654,7 @@ message_type_name(Type) -> {unknown, Type}.
 -spec is_request(non_neg_integer()) -> boolean().
 is_request(?REQUEST_NODE_REGISTRATION_STATUS) -> true;
 is_request(?REQUEST_RECONFIGURE) -> true;
+is_request(?REQUEST_RECONFIGURE_WITH_CONFIG) -> true;
 is_request(?REQUEST_SHUTDOWN) -> true;
 is_request(?REQUEST_PING) -> true;
 is_request(?REQUEST_BUILD_INFO) -> true;
@@ -1675,6 +1743,108 @@ decode_single_job_info(Binary) ->
             {error, invalid_job_info}
     end.
 
+%% Decode RESPONSE_PARTITION_INFO (2010)
+decode_partition_info_response(Binary) ->
+    case Binary of
+        <<PartCount:32/big, LastUpdate:64/big, Rest/binary>> ->
+            Partitions = decode_partition_list(PartCount, Rest, []),
+            {ok, #partition_info_response{
+                last_update = LastUpdate,
+                partition_count = PartCount,
+                partitions = Partitions
+            }};
+        <<PartCount:32/big, LastUpdate:64/big>> ->
+            {ok, #partition_info_response{
+                last_update = LastUpdate,
+                partition_count = PartCount,
+                partitions = []
+            }};
+        <<>> ->
+            {ok, #partition_info_response{}};
+        _ ->
+            {error, invalid_partition_info_response}
+    end.
+
+decode_partition_list(0, _Binary, Acc) ->
+    lists:reverse(Acc);
+decode_partition_list(Count, Binary, Acc) when Count > 0 ->
+    case decode_single_partition_info(Binary) of
+        {ok, PartInfo, Rest} ->
+            decode_partition_list(Count - 1, Rest, [PartInfo | Acc]);
+        {error, _} ->
+            lists:reverse(Acc)
+    end.
+
+%% Decode a single partition_info record (simplified)
+%% Matches the format from encode_single_partition_info
+decode_single_partition_info(Binary) ->
+    try
+        %% Field 1: name
+        {ok, Name, R1} = flurm_protocol_pack:unpack_string(Binary),
+        %% Fields 2-9: cpu_bind, grace_time, max_time, default_time, max_nodes, min_nodes, total_nodes, total_cpus
+        {ok, _CpuBind, R2} = flurm_protocol_pack:unpack_uint32(R1),
+        {ok, _GraceTime, R3} = flurm_protocol_pack:unpack_uint32(R2),
+        {ok, MaxTime, R4} = flurm_protocol_pack:unpack_uint32(R3),
+        {ok, DefaultTime, R5} = flurm_protocol_pack:unpack_uint32(R4),
+        {ok, MaxNodes, R6} = flurm_protocol_pack:unpack_uint32(R5),
+        {ok, MinNodes, R7} = flurm_protocol_pack:unpack_uint32(R6),
+        {ok, TotalNodes, R8} = flurm_protocol_pack:unpack_uint32(R7),
+        {ok, TotalCpus, R9} = flurm_protocol_pack:unpack_uint32(R8),
+        %% Fields 10-12: def_mem_per_cpu (uint64), max_cpus_per_node, max_mem_per_cpu (uint64)
+        {ok, _DefMemPerCpu, R10} = flurm_protocol_pack:unpack_uint64(R9),
+        {ok, _MaxCpusPerNode, R11} = flurm_protocol_pack:unpack_uint32(R10),
+        {ok, _MaxMemPerCpu, R12} = flurm_protocol_pack:unpack_uint64(R11),
+        %% Fields 13-22: 10 uint16 values
+        {ok, _Flags, R13} = flurm_protocol_pack:unpack_uint16(R12),
+        {ok, _MaxShare, R14} = flurm_protocol_pack:unpack_uint16(R13),
+        {ok, _OverTimeLimit, R15} = flurm_protocol_pack:unpack_uint16(R14),
+        {ok, _PreemptMode, R16} = flurm_protocol_pack:unpack_uint16(R15),
+        {ok, PriorityJobFactor, R17} = flurm_protocol_pack:unpack_uint16(R16),
+        {ok, PriorityTier, R18} = flurm_protocol_pack:unpack_uint16(R17),
+        {ok, StateUp, R19} = flurm_protocol_pack:unpack_uint16(R18),
+        {ok, _CrType, R20} = flurm_protocol_pack:unpack_uint16(R19),
+        {ok, _ResumeTimeout, R21} = flurm_protocol_pack:unpack_uint16(R20),
+        {ok, _SuspendTimeout, R22} = flurm_protocol_pack:unpack_uint16(R21),
+        %% Field 23: suspend_time (uint32)
+        {ok, _SuspendTime, R23} = flurm_protocol_pack:unpack_uint32(R22),
+        %% Fields 24-33: 10 strings
+        {ok, _AllowAccounts, R24} = flurm_protocol_pack:unpack_string(R23),
+        {ok, _AllowGroups, R25} = flurm_protocol_pack:unpack_string(R24),
+        {ok, _AllowAllocNodes, R26} = flurm_protocol_pack:unpack_string(R25),
+        {ok, _AllowQos, R27} = flurm_protocol_pack:unpack_string(R26),
+        {ok, _QosChar, R28} = flurm_protocol_pack:unpack_string(R27),
+        {ok, _Alternate, R29} = flurm_protocol_pack:unpack_string(R28),
+        {ok, _DenyAccounts, R30} = flurm_protocol_pack:unpack_string(R29),
+        {ok, _DenyQos, R31} = flurm_protocol_pack:unpack_string(R30),
+        {ok, Nodes, R32} = flurm_protocol_pack:unpack_string(R31),
+        {ok, _Nodesets, R33} = flurm_protocol_pack:unpack_string(R32),
+        %% Field 34: node_inx (NO_VAL marker)
+        <<_NoVal:32/big, R34/binary>> = R33,
+        %% Fields 35-36: 2 strings
+        {ok, _BillingWeights, R35} = flurm_protocol_pack:unpack_string(R34),
+        {ok, _TresFmt, R36} = flurm_protocol_pack:unpack_string(R35),
+        %% Field 37: job_defaults_list count
+        <<_JobDefaultsCount:32/big, Rest/binary>> = R36,
+
+        PartInfo = #partition_info{
+            name = ensure_binary(Name),
+            max_time = ensure_integer(MaxTime),
+            default_time = ensure_integer(DefaultTime),
+            max_nodes = ensure_integer(MaxNodes),
+            min_nodes = ensure_integer(MinNodes),
+            total_nodes = ensure_integer(TotalNodes),
+            total_cpus = ensure_integer(TotalCpus),
+            priority_job_factor = ensure_integer(PriorityJobFactor),
+            priority_tier = ensure_integer(PriorityTier),
+            state_up = ensure_integer(StateUp),
+            nodes = ensure_binary(Nodes)
+        },
+        {ok, PartInfo, Rest}
+    catch
+        _:_ ->
+            {error, invalid_partition_info}
+    end.
+
 %%%===================================================================
 %%% Request Encoders
 %%%===================================================================
@@ -1693,6 +1863,27 @@ encode_job_info_request(#job_info_request{
     {ok, <<ShowFlags:32/big, JobId:32/big, UserId:32/big>>}.
 
 %% Encode REQUEST_SUBMIT_BATCH_JOB (4003) - Simplified
+%% Handle legacy job_submit_req record by converting to batch_job_request
+encode_batch_job_request(#job_submit_req{} = Req) ->
+    BatchReq = #batch_job_request{
+        name = Req#job_submit_req.name,
+        script = Req#job_submit_req.script,
+        partition = Req#job_submit_req.partition,
+        min_nodes = Req#job_submit_req.num_nodes,
+        max_nodes = Req#job_submit_req.num_nodes,
+        min_cpus = Req#job_submit_req.num_cpus,
+        cpus_per_task = 1,
+        num_tasks = Req#job_submit_req.num_cpus,
+        min_mem_per_node = Req#job_submit_req.memory_mb,
+        time_limit = Req#job_submit_req.time_limit,
+        priority = Req#job_submit_req.priority,
+        work_dir = Req#job_submit_req.working_dir,
+        environment = maps:fold(fun(K, V, Acc) ->
+            [<<(atom_to_binary(K, utf8))/binary, "=", V/binary>> | Acc]
+        end, [], Req#job_submit_req.env)
+    },
+    encode_batch_job_request(BatchReq);
+
 encode_batch_job_request(#batch_job_request{} = Req) ->
     Parts = [
         flurm_protocol_pack:pack_string(Req#batch_job_request.account),
@@ -2906,3 +3097,74 @@ decode_shutdown_request(Binary) ->
 %% Decode REQUEST_STATS_INFO (1009) - sdiag
 decode_stats_info_request(Binary) ->
     {ok, Binary}.
+
+%% Decode REQUEST_RECONFIGURE (1003) - scontrol reconfigure
+%% This is typically an empty request (no body) for full reconfiguration
+decode_reconfigure_request(<<>>) ->
+    {ok, #reconfigure_request{}};
+decode_reconfigure_request(<<Flags:32/big, _Rest/binary>>) ->
+    {ok, #reconfigure_request{flags = Flags}};
+decode_reconfigure_request(_Binary) ->
+    {ok, #reconfigure_request{}}.
+
+%% Decode REQUEST_RECONFIGURE_WITH_CONFIG (1004) - scontrol reconfigure with specific settings
+%% Wire format: ConfigFileLen:32, ConfigFile/binary, SettingsCount:32, Settings...
+decode_reconfigure_with_config_request(<<>>) ->
+    {ok, #reconfigure_with_config_request{}};
+decode_reconfigure_with_config_request(Binary) ->
+    try
+        %% Parse config file path
+        {ConfigFile, Rest1} = flurm_protocol_pack:unpack_string(Binary),
+
+        %% Parse flags (force, notify_nodes)
+        <<Flags:32/big, Rest2/binary>> = Rest1,
+        Force = (Flags band 1) =/= 0,
+        NotifyNodes = (Flags band 2) =/= 0,
+
+        %% Parse settings count and key-value pairs
+        <<SettingsCount:32/big, Rest3/binary>> = Rest2,
+        {Settings, _Remaining} = decode_settings(SettingsCount, Rest3, #{}),
+
+        {ok, #reconfigure_with_config_request{
+            config_file = ConfigFile,
+            settings = Settings,
+            force = Force,
+            notify_nodes = NotifyNodes
+        }}
+    catch
+        _:_ ->
+            %% If parsing fails, return empty request (will trigger full reconfigure)
+            {ok, #reconfigure_with_config_request{}}
+    end.
+
+%% Decode key-value settings from binary
+decode_settings(0, Binary, Acc) ->
+    {Acc, Binary};
+decode_settings(Count, Binary, Acc) when Count > 0 ->
+    try
+        {Key, Rest1} = flurm_protocol_pack:unpack_string(Binary),
+        {Value, Rest2} = flurm_protocol_pack:unpack_string(Rest1),
+        KeyAtom = try binary_to_existing_atom(Key, utf8)
+                  catch _:_ -> binary_to_atom(Key, utf8)
+                  end,
+        decode_settings(Count - 1, Rest2, Acc#{KeyAtom => Value})
+    catch
+        _:_ ->
+            {Acc, <<>>}
+    end.
+
+%% Encode RESPONSE for reconfigure (using reconfigure_response record)
+encode_reconfigure_response(#reconfigure_response{} = R) ->
+    %% Encode changed keys as comma-separated string
+    ChangedKeysStr = iolist_to_binary(lists:join(<<",">>,
+        [atom_to_binary(K, utf8) || K <- R#reconfigure_response.changed_keys])),
+    Parts = [
+        flurm_protocol_pack:pack_int32(R#reconfigure_response.return_code),
+        flurm_protocol_pack:pack_string(R#reconfigure_response.message),
+        flurm_protocol_pack:pack_string(ChangedKeysStr),
+        flurm_protocol_pack:pack_uint32(R#reconfigure_response.version)
+    ],
+    {ok, iolist_to_binary(Parts)};
+encode_reconfigure_response(_) ->
+    %% Fallback - success with no details
+    {ok, <<0:32/big-signed, 0:32, 0:32, 0:32>>}.

@@ -48,7 +48,15 @@
     check_reservation/2,
     %% Scheduler integration API
     check_job_reservation/1,
-    get_reserved_nodes/1
+    get_reserved_nodes/1,
+    %% Additional scheduler integration API
+    get_active_reservations/0,
+    check_reservation_access/2,
+    filter_nodes_for_scheduling/2,
+    get_available_nodes_excluding_reserved/1,
+    %% Notification callbacks from scheduler
+    reservation_activated/1,
+    reservation_deactivated/1
 ]).
 
 %% gen_server callbacks
@@ -64,11 +72,19 @@
 -define(SERVER, ?MODULE).
 -define(RESERVATION_TABLE, flurm_reservations).
 
--type reservation_type() :: maintenance | user | license | partition.
+%% Reservation types:
+%% - maintenance/maint: System maintenance (no jobs allowed)
+%% - user: User-specific reservation (only specified users)
+%% - flex: Flexible reservation (jobs can use if space available)
+%% - license: License-based reservation
+%% - partition: Partition-wide reservation
+-type reservation_type() :: maintenance | maint | user | flex | license | partition.
 -type reservation_flags() :: [maint | ignore_jobs | overlap |
                                part_nodes | no_hold_jobs_after |
                                daily | weekly | weekday | weekend |
-                               flex | magnetic].
+                               flex | magnetic | any | first_cores |
+                               time_float | purge_comp | no_hold_jobs |
+                               replace | replace_down | static_alloc].
 
 -record(reservation, {
     name :: binary(),
@@ -290,6 +306,172 @@ get_reserved_nodes(ReservationName) ->
         Error ->
             Error
     end.
+
+%%--------------------------------------------------------------------
+%% Additional Scheduler Integration API
+%%--------------------------------------------------------------------
+
+%% @doc Get all currently active reservations
+%% Returns reservations that have started and not yet ended
+-spec get_active_reservations() -> [#reservation{}].
+get_active_reservations() ->
+    list_active().
+
+%% @doc Check if a job or user can access a reservation
+%% Returns {ok, nodes} if access granted, {error, reason} otherwise
+-spec check_reservation_access(#job{} | binary(), binary()) ->
+    {ok, [binary()]} | {error, term()}.
+check_reservation_access(#job{id = JobId, user = User, account = Account}, ReservationName) ->
+    check_reservation_access_impl(JobId, User, Account, ReservationName);
+check_reservation_access(User, ReservationName) when is_binary(User) ->
+    check_reservation_access_impl(undefined, User, <<>>, ReservationName).
+
+%% @private
+check_reservation_access_impl(JobId, User, Account, ReservationName) ->
+    case ?MODULE:get(ReservationName) of
+        {ok, #reservation{state = active, type = Type, users = Users,
+                          accounts = Accounts, nodes = Nodes,
+                          end_time = EndTime, flags = Flags}} ->
+            Now = erlang:system_time(second),
+            %% Check if reservation is still valid
+            case EndTime > Now of
+                false ->
+                    {error, reservation_expired};
+                true ->
+                    %% Check type-specific access rules
+                    case check_type_access(Type, Flags, User, Account, Users, Accounts) of
+                        true ->
+                            %% Add job to reservation's jobs_using list if JobId provided
+                            case JobId of
+                                undefined -> ok;
+                                _ -> gen_server:cast(?SERVER, {add_job_to_reservation, JobId, ReservationName})
+                            end,
+                            {ok, Nodes};
+                        false ->
+                            {error, access_denied}
+                    end
+            end;
+        {ok, #reservation{state = inactive, start_time = StartTime}} ->
+            Now = erlang:system_time(second),
+            case StartTime > Now of
+                true -> {error, {reservation_not_started, StartTime}};
+                false -> {error, reservation_not_active}
+            end;
+        {ok, #reservation{state = expired}} ->
+            {error, reservation_expired};
+        {error, not_found} ->
+            {error, reservation_not_found}
+    end.
+
+%% @private Check type-specific access rules
+check_type_access(maintenance, _Flags, _User, _Account, _Users, _Accounts) ->
+    %% MAINT reservations: no jobs allowed
+    false;
+check_type_access(maint, Flags, User, Account, Users, Accounts) ->
+    %% MAINT type: check if ignore_jobs flag is set
+    case lists:member(ignore_jobs, Flags) of
+        true -> false;
+        false -> check_user_access(User, Account, Users, Accounts)
+    end;
+check_type_access(flex, _Flags, User, Account, Users, Accounts) ->
+    %% FLEX reservations: jobs can use if space available
+    %% Any user can use if users list is empty, otherwise check authorization
+    check_user_access(User, Account, Users, Accounts);
+check_type_access(user, _Flags, User, Account, Users, Accounts) ->
+    %% USER reservations: only specified users/accounts
+    check_user_access(User, Account, Users, Accounts);
+check_type_access(_, _Flags, User, Account, Users, Accounts) ->
+    %% Default: check user authorization
+    check_user_access(User, Account, Users, Accounts).
+
+%% @private Check if user is authorized
+check_user_access(User, Account, Users, Accounts) ->
+    %% If both users and accounts are empty, anyone can use
+    case Users =:= [] andalso Accounts =:= [] of
+        true -> true;
+        false ->
+            lists:member(User, Users) orelse
+            lists:member(Account, Accounts) orelse
+            user_in_accounts(User, Accounts)
+    end.
+
+%% @doc Filter nodes for scheduling based on reservations
+%% Returns nodes that are available for the given job/user
+%% If job has a reservation, returns only reserved nodes
+%% If job has no reservation, excludes reserved nodes (unless flex type)
+-spec filter_nodes_for_scheduling(#job{} | binary(), [binary()]) -> [binary()].
+filter_nodes_for_scheduling(#job{reservation = <<>>} = _Job, Nodes) ->
+    %% No reservation specified - exclude reserved nodes
+    get_available_nodes_excluding_reserved(Nodes);
+filter_nodes_for_scheduling(#job{reservation = undefined} = _Job, Nodes) ->
+    %% No reservation specified - exclude reserved nodes
+    get_available_nodes_excluding_reserved(Nodes);
+filter_nodes_for_scheduling(#job{reservation = ResName, user = User, account = Account} = _Job, Nodes) ->
+    %% Job has reservation - check access and filter to reserved nodes
+    case check_reservation_access_impl(undefined, User, Account, ResName) of
+        {ok, ReservedNodes} ->
+            %% Return intersection of requested nodes and reserved nodes
+            [N || N <- Nodes, lists:member(N, ReservedNodes)];
+        {error, _} ->
+            %% No access to reservation - return no nodes
+            []
+    end;
+filter_nodes_for_scheduling(User, Nodes) when is_binary(User) ->
+    %% Filter for user without specific job - exclude reserved nodes
+    get_available_nodes_excluding_reserved(Nodes).
+
+%% @doc Get available nodes excluding those in active non-flex reservations
+%% Flex reservations allow other jobs to use nodes if space available
+-spec get_available_nodes_excluding_reserved([binary()]) -> [binary()].
+get_available_nodes_excluding_reserved(Nodes) ->
+    Now = erlang:system_time(second),
+    ActiveReservations = list_active(),
+
+    %% Collect all nodes in non-flex active reservations
+    ReservedNodes = lists:foldl(
+        fun(#reservation{type = Type, flags = Flags, nodes = RNodes,
+                         start_time = Start, end_time = End}, Acc) ->
+            %% Check if reservation is currently active (time-based)
+            case Start =< Now andalso End > Now of
+                true ->
+                    %% Check if this is a flex reservation (allows other jobs)
+                    IsFlex = (Type =:= flex) orelse lists:member(flex, Flags),
+                    case IsFlex of
+                        true ->
+                            %% Flex reservations don't block nodes
+                            Acc;
+                        false ->
+                            %% Non-flex reservations block nodes
+                            sets:union(Acc, sets:from_list(RNodes))
+                    end;
+                false ->
+                    Acc
+            end
+        end,
+        sets:new(),
+        ActiveReservations
+    ),
+
+    %% Return nodes not in reserved set
+    [N || N <- Nodes, not sets:is_element(N, ReservedNodes)].
+
+%% @doc Callback when a reservation is activated
+%% Called by scheduler or timer when reservation start time arrives
+-spec reservation_activated(binary()) -> ok.
+reservation_activated(ReservationName) ->
+    error_logger:info_msg("Reservation ~s activated~n", [ReservationName]),
+    %% Trigger scheduler to re-evaluate pending jobs
+    catch flurm_scheduler:trigger_schedule(),
+    ok.
+
+%% @doc Callback when a reservation is deactivated
+%% Called by scheduler or timer when reservation end time arrives
+-spec reservation_deactivated(binary()) -> ok.
+reservation_deactivated(ReservationName) ->
+    error_logger:info_msg("Reservation ~s deactivated~n", [ReservationName]),
+    %% Trigger scheduler to re-evaluate pending jobs (nodes are now free)
+    catch flurm_scheduler:trigger_schedule(),
+    ok.
 
 %%====================================================================
 %% gen_server callbacks

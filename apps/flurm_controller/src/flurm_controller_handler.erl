@@ -299,7 +299,7 @@ handle(#slurm_header{msg_type = ?REQUEST_CANCEL_JOB},
 %% REQUEST_NODE_INFO (2007) -> RESPONSE_NODE_INFO
 handle(#slurm_header{msg_type = ?REQUEST_NODE_INFO}, _Body) ->
     lager:debug("Handling node info request"),
-    Nodes = flurm_node_manager:list_nodes(),
+    Nodes = flurm_node_manager_server:list_nodes(),
     lager:info("DEBUG: Found ~p nodes", [length(Nodes)]),
     NodeInfoList = [node_to_node_info(N) || N <- Nodes],
     Response = #node_info_response{
@@ -369,17 +369,27 @@ handle(#slurm_header{msg_type = ?REQUEST_BUILD_INFO}, _Body) ->
     {ok, ?RESPONSE_BUILD_INFO, Response};
 
 %% REQUEST_RECONFIGURE (1003) -> RESPONSE_SLURM_RC
-%% Hot-reload configuration from slurm.conf
-handle(#slurm_header{msg_type = ?REQUEST_RECONFIGURE}, _Body) ->
-    lager:info("Handling reconfigure request"),
+%% Hot-reload configuration from slurm.conf (full reconfigure)
+handle(#slurm_header{msg_type = ?REQUEST_RECONFIGURE}, Body) ->
+    lager:info("Handling full reconfigure request (REQUEST_RECONFIGURE 1003)"),
+    StartTime = erlang:system_time(millisecond),
+
+    %% Parse the request body if it's a record
+    _Flags = case Body of
+        #reconfigure_request{flags = F} -> F;
+        _ -> 0
+    end,
+
     Result = case is_cluster_enabled() of
         true ->
             %% In cluster mode, only leader processes reconfigure
             case flurm_controller_cluster:is_leader() of
                 true ->
+                    lager:info("Processing reconfigure as cluster leader"),
                     do_reconfigure();
                 false ->
                     %% Forward to leader
+                    lager:info("Forwarding reconfigure request to cluster leader"),
                     case flurm_controller_cluster:forward_to_leader(reconfigure, []) of
                         {ok, ReconfigResult} -> ReconfigResult;
                         {error, no_leader} -> {error, no_leader};
@@ -389,13 +399,84 @@ handle(#slurm_header{msg_type = ?REQUEST_RECONFIGURE}, _Body) ->
         false ->
             do_reconfigure()
     end,
+
+    ElapsedMs = erlang:system_time(millisecond) - StartTime,
+
     case Result of
         ok ->
-            lager:info("Reconfiguration completed successfully"),
+            lager:info("Full reconfiguration completed successfully in ~p ms", [ElapsedMs]),
+            Response = #slurm_rc_response{return_code = 0},
+            {ok, ?RESPONSE_SLURM_RC, Response};
+        {ok, ChangedKeys} when is_list(ChangedKeys) ->
+            lager:info("Full reconfiguration completed successfully in ~p ms, ~p keys changed: ~p",
+                      [ElapsedMs, length(ChangedKeys), ChangedKeys]),
             Response = #slurm_rc_response{return_code = 0},
             {ok, ?RESPONSE_SLURM_RC, Response};
         {error, Reason2} ->
-            lager:warning("Reconfiguration failed: ~p", [Reason2]),
+            lager:warning("Full reconfiguration failed after ~p ms: ~p", [ElapsedMs, Reason2]),
+            Response = #slurm_rc_response{return_code = -1},
+            {ok, ?RESPONSE_SLURM_RC, Response}
+    end;
+
+%% REQUEST_RECONFIGURE_WITH_CONFIG (1004) -> RESPONSE_SLURM_RC
+%% Partial reconfiguration with specific settings
+handle(#slurm_header{msg_type = ?REQUEST_RECONFIGURE_WITH_CONFIG}, Body) ->
+    lager:info("Handling partial reconfigure request (REQUEST_RECONFIGURE_WITH_CONFIG 1004)"),
+    StartTime = erlang:system_time(millisecond),
+
+    %% Parse the request
+    Request = case Body of
+        #reconfigure_with_config_request{} = Req -> Req;
+        _ -> #reconfigure_with_config_request{}
+    end,
+
+    ConfigFile = Request#reconfigure_with_config_request.config_file,
+    Settings = Request#reconfigure_with_config_request.settings,
+    Force = Request#reconfigure_with_config_request.force,
+    NotifyNodes = Request#reconfigure_with_config_request.notify_nodes,
+
+    lager:info("Partial reconfigure: config_file=~s, settings_count=~p, force=~p, notify_nodes=~p",
+               [ConfigFile, maps:size(Settings), Force, NotifyNodes]),
+
+    Result = case is_cluster_enabled() of
+        true ->
+            case flurm_controller_cluster:is_leader() of
+                true ->
+                    lager:info("Processing partial reconfigure as cluster leader"),
+                    do_partial_reconfigure(ConfigFile, Settings, Force, NotifyNodes);
+                false ->
+                    lager:info("Forwarding partial reconfigure request to cluster leader"),
+                    case flurm_controller_cluster:forward_to_leader(
+                           partial_reconfigure,
+                           {ConfigFile, Settings, Force, NotifyNodes}) of
+                        {ok, ReconfigResult} -> ReconfigResult;
+                        {error, no_leader} -> {error, no_leader};
+                        {error, Reason} -> {error, Reason}
+                    end
+            end;
+        false ->
+            do_partial_reconfigure(ConfigFile, Settings, Force, NotifyNodes)
+    end,
+
+    ElapsedMs = erlang:system_time(millisecond) - StartTime,
+
+    case Result of
+        ok ->
+            lager:info("Partial reconfiguration completed successfully in ~p ms", [ElapsedMs]),
+            Response = #slurm_rc_response{return_code = 0},
+            {ok, ?RESPONSE_SLURM_RC, Response};
+        {ok, ChangedKeys} when is_list(ChangedKeys) ->
+            lager:info("Partial reconfiguration completed in ~p ms, ~p keys changed: ~p",
+                      [ElapsedMs, length(ChangedKeys), ChangedKeys]),
+            Response = #slurm_rc_response{return_code = 0},
+            {ok, ?RESPONSE_SLURM_RC, Response};
+        {error, {validation_failed, Details}} ->
+            lager:warning("Partial reconfiguration validation failed after ~p ms: ~p",
+                         [ElapsedMs, Details]),
+            Response = #slurm_rc_response{return_code = -1},
+            {ok, ?RESPONSE_SLURM_RC, Response};
+        {error, Reason2} ->
+            lager:warning("Partial reconfiguration failed after ~p ms: ~p", [ElapsedMs, Reason2]),
             Response = #slurm_rc_response{return_code = -1},
             {ok, ?RESPONSE_SLURM_RC, Response}
     end;
@@ -542,7 +623,7 @@ handle(#slurm_header{msg_type = ?REQUEST_JOB_WILL_RUN},
 
     %% Check available resources using existing API
     AvailNodes = try
-        flurm_node_manager:get_available_nodes_for_job(Partition, MinNodes, MinCpus)
+        flurm_node_manager_server:get_available_nodes_for_job(Partition, MinNodes, MinCpus)
     catch
         _:_ -> []
     end,
@@ -593,6 +674,107 @@ handle(#slurm_header{msg_type = ?REQUEST_RESERVATION_INFO}, _Body) ->
         reservations = ResvInfoList
     },
     {ok, ?RESPONSE_RESERVATION_INFO, Response};
+
+%% REQUEST_CREATE_RESERVATION (2050) -> RESPONSE_CREATE_RESERVATION
+%% scontrol create reservation
+handle(#slurm_header{msg_type = ?REQUEST_CREATE_RESERVATION},
+       #create_reservation_request{} = Request) ->
+    lager:info("Handling create reservation request: ~s", [Request#create_reservation_request.name]),
+    ResvSpec = create_reservation_request_to_spec(Request),
+    Result = case is_cluster_enabled() of
+        true ->
+            case flurm_controller_cluster:is_leader() of
+                true -> flurm_reservation:create(ResvSpec);
+                false ->
+                    case flurm_controller_cluster:forward_to_leader(create_reservation, ResvSpec) of
+                        {ok, R} -> R;
+                        {error, no_leader} -> {error, no_leader};
+                        {error, Reason} -> {error, Reason}
+                    end
+            end;
+        false ->
+            flurm_reservation:create(ResvSpec)
+    end,
+    case Result of
+        {ok, ResvName} ->
+            lager:info("Reservation ~s created successfully", [ResvName]),
+            Response = #create_reservation_response{
+                name = ResvName,
+                error_code = 0,
+                error_msg = <<"Reservation created successfully">>
+            },
+            {ok, ?RESPONSE_CREATE_RESERVATION, Response};
+        {error, Reason2} ->
+            lager:warning("Create reservation failed: ~p", [Reason2]),
+            Response = #create_reservation_response{
+                name = <<>>,
+                error_code = 1,
+                error_msg = error_to_binary(Reason2)
+            },
+            {ok, ?RESPONSE_CREATE_RESERVATION, Response}
+    end;
+
+%% REQUEST_UPDATE_RESERVATION (2052) -> RESPONSE_SLURM_RC
+%% scontrol update reservation
+handle(#slurm_header{msg_type = ?REQUEST_UPDATE_RESERVATION},
+       #update_reservation_request{} = Request) ->
+    Name = Request#update_reservation_request.name,
+    lager:info("Handling update reservation request: ~s", [Name]),
+    Updates = update_reservation_request_to_updates(Request),
+    Result = case is_cluster_enabled() of
+        true ->
+            case flurm_controller_cluster:is_leader() of
+                true -> flurm_reservation:update(Name, Updates);
+                false ->
+                    case flurm_controller_cluster:forward_to_leader(update_reservation, {Name, Updates}) of
+                        {ok, R} -> R;
+                        {error, no_leader} -> {error, no_leader};
+                        {error, Reason} -> {error, Reason}
+                    end
+            end;
+        false ->
+            flurm_reservation:update(Name, Updates)
+    end,
+    case Result of
+        ok ->
+            lager:info("Reservation ~s updated successfully", [Name]),
+            Response = #slurm_rc_response{return_code = 0},
+            {ok, ?RESPONSE_SLURM_RC, Response};
+        {error, Reason2} ->
+            lager:warning("Update reservation ~s failed: ~p", [Name, Reason2]),
+            Response = #slurm_rc_response{return_code = -1},
+            {ok, ?RESPONSE_SLURM_RC, Response}
+    end;
+
+%% REQUEST_DELETE_RESERVATION (2053) -> RESPONSE_SLURM_RC
+%% scontrol delete reservation
+handle(#slurm_header{msg_type = ?REQUEST_DELETE_RESERVATION},
+       #delete_reservation_request{name = Name}) ->
+    lager:info("Handling delete reservation request: ~s", [Name]),
+    Result = case is_cluster_enabled() of
+        true ->
+            case flurm_controller_cluster:is_leader() of
+                true -> flurm_reservation:delete(Name);
+                false ->
+                    case flurm_controller_cluster:forward_to_leader(delete_reservation, Name) of
+                        {ok, R} -> R;
+                        {error, no_leader} -> {error, no_leader};
+                        {error, Reason} -> {error, Reason}
+                    end
+            end;
+        false ->
+            flurm_reservation:delete(Name)
+    end,
+    case Result of
+        ok ->
+            lager:info("Reservation ~s deleted successfully", [Name]),
+            Response = #slurm_rc_response{return_code = 0},
+            {ok, ?RESPONSE_SLURM_RC, Response};
+        {error, Reason2} ->
+            lager:warning("Delete reservation ~s failed: ~p", [Name, Reason2]),
+            Response = #slurm_rc_response{return_code = -1},
+            {ok, ?RESPONSE_SLURM_RC, Response}
+    end;
 
 %% REQUEST_LICENSE_INFO (1017) -> RESPONSE_LICENSE_INFO
 %% scontrol show license
@@ -768,7 +950,9 @@ batch_request_to_job_spec(#batch_job_request{} = Req) ->
         work_dir => default_work_dir(Req#batch_job_request.work_dir),
         std_out => Req#batch_job_request.std_out,
         std_err => Req#batch_job_request.std_err,
-        account => Req#batch_job_request.account
+        account => Req#batch_job_request.account,
+        licenses => Req#batch_job_request.licenses,
+        dependency => Req#batch_job_request.dependency
     }.
 
 %% @doc Convert resource allocation request (srun) to job spec map
@@ -789,6 +973,7 @@ resource_request_to_job_spec(#resource_allocation_request{} = Req) ->
         std_out => <<>>,
         std_err => <<>>,
         account => Req#resource_allocation_request.account,
+        licenses => Req#resource_allocation_request.licenses,
         interactive => true  % Mark as interactive job
     }.
 
@@ -898,7 +1083,7 @@ job_to_job_info(#job{} = Job) ->
         het_job_id_set = <<>>,
         het_job_offset = 16#FFFFFFFF,
         last_sched_eval = 0,
-        licenses = <<>>,
+        licenses = format_licenses(Job#job.licenses),
         mail_type = 0,
         mail_user = <<>>,
         mcs_label = <<>>,
@@ -978,8 +1163,8 @@ node_to_node_info(#node{} = Node) ->
 partition_to_partition_info(#partition{} = Part) ->
     %% For now, auto-include all registered nodes in the partition
     %% In production, this would be based on configuration
-    AllNodes = [N#node.hostname || N <- flurm_node_manager:list_nodes()],
-    TotalCpus = lists:sum([N#node.cpus || N <- flurm_node_manager:list_nodes()]),
+    AllNodes = [N#node.hostname || N <- flurm_node_manager_server:list_nodes()],
+    TotalCpus = lists:sum([N#node.cpus || N <- flurm_node_manager_server:list_nodes()]),
     #partition_info{
         name = Part#partition.name,
         state_up = partition_state_to_slurm(Part#partition.state),
@@ -1124,6 +1309,15 @@ format_node_list([]) -> <<>>;
 format_node_list(Nodes) ->
     iolist_to_binary(lists:join(<<",">>, Nodes)).
 
+%% @doc Format licenses list to SLURM format (name:count,name:count)
+-spec format_licenses([{binary(), non_neg_integer()}]) -> binary().
+format_licenses([]) -> <<>>;
+format_licenses(Licenses) ->
+    Formatted = lists:map(fun({Name, Count}) ->
+        iolist_to_binary([Name, <<":">>, integer_to_binary(Count)])
+    end, Licenses),
+    iolist_to_binary(lists:join(<<",">>, Formatted)).
+
 %%====================================================================
 %% Internal Functions - Job Control Helpers
 %%====================================================================
@@ -1194,30 +1388,195 @@ is_cluster_enabled() ->
 %%====================================================================
 
 %% @doc Perform hot reconfiguration by reloading slurm.conf
--spec do_reconfigure() -> ok | {error, term()}.
+-spec do_reconfigure() -> ok | {ok, [atom()]} | {error, term()}.
 do_reconfigure() ->
-    lager:info("Starting hot reconfiguration"),
+    lager:info("Starting full hot reconfiguration"),
+
+    %% Get current config version before reload
+    OldVersion = try flurm_config_server:get_version() catch _:_ -> 0 end,
 
     %% Step 1: Reload configuration from file
     case flurm_config_server:reconfigure() of
         ok ->
-            lager:info("Configuration reloaded from file"),
+            NewVersion = try flurm_config_server:get_version() catch _:_ -> 0 end,
+            lager:info("Configuration reloaded from file (version ~p -> ~p)",
+                      [OldVersion, NewVersion]),
 
             %% Step 2: Apply node changes
+            lager:debug("Applying node configuration changes"),
             apply_node_changes(),
 
             %% Step 3: Apply partition changes
+            lager:debug("Applying partition configuration changes"),
             apply_partition_changes(),
 
             %% Step 4: Notify scheduler to refresh
-            flurm_scheduler:trigger_schedule(),
+            lager:debug("Triggering scheduler refresh"),
+            notify_scheduler_reconfigure(),
 
-            lager:info("Reconfiguration complete"),
+            %% Step 5: Broadcast to compute nodes if needed
+            broadcast_reconfigure_to_nodes(),
+
+            lager:info("Full reconfiguration complete"),
             ok;
         {error, Reason} ->
             lager:error("Failed to reload configuration: ~p", [Reason]),
             {error, Reason}
     end.
+
+%% @doc Perform partial reconfiguration with specific settings
+%% This allows updating specific configuration values without a full reload.
+-spec do_partial_reconfigure(binary(), map(), boolean(), boolean()) ->
+    ok | {ok, [atom()]} | {error, term()}.
+do_partial_reconfigure(ConfigFile, Settings, Force, NotifyNodes) ->
+    lager:info("Starting partial reconfiguration"),
+
+    %% Get current config version
+    OldVersion = try flurm_config_server:get_version() catch _:_ -> 0 end,
+
+    %% Step 1: If a config file is specified, reload from that file first
+    FileResult = case ConfigFile of
+        <<>> ->
+            ok;
+        _ ->
+            lager:info("Reloading configuration from specified file: ~s", [ConfigFile]),
+            case flurm_config_server:reconfigure(binary_to_list(ConfigFile)) of
+                ok -> ok;
+                {error, R} when Force ->
+                    lager:warning("Config file reload failed but force=true, continuing: ~p", [R]),
+                    ok;
+                {error, R} ->
+                    {error, {file_reload_failed, R}}
+            end
+    end,
+
+    case FileResult of
+        ok ->
+            %% Step 2: Apply specific settings
+            ChangedKeys = apply_settings(Settings, Force),
+            lager:info("Applied ~p configuration settings: ~p",
+                      [length(ChangedKeys), ChangedKeys]),
+
+            %% Step 3: Apply node and partition changes based on what was changed
+            case lists:member(nodes, ChangedKeys) of
+                true ->
+                    lager:debug("Nodes configuration changed, applying updates"),
+                    apply_node_changes();
+                false ->
+                    ok
+            end,
+
+            case lists:member(partitions, ChangedKeys) of
+                true ->
+                    lager:debug("Partitions configuration changed, applying updates"),
+                    apply_partition_changes();
+                false ->
+                    ok
+            end,
+
+            %% Step 4: Notify scheduler if scheduling-related settings changed
+            SchedulerKeys = [schedulertype, schedulerparameters, prioritytype,
+                            priorityweightage, priorityweightfairshare,
+                            priorityweightjobsize, priorityweightpartition,
+                            priorityweightqos],
+            case lists:any(fun(K) -> lists:member(K, ChangedKeys) end, SchedulerKeys) of
+                true ->
+                    lager:info("Scheduler-related settings changed, refreshing scheduler"),
+                    notify_scheduler_reconfigure();
+                false ->
+                    ok
+            end,
+
+            %% Step 5: Notify compute nodes if requested
+            case NotifyNodes of
+                true ->
+                    broadcast_reconfigure_to_nodes();
+                false ->
+                    lager:debug("Skipping node notification (notify_nodes=false)")
+            end,
+
+            NewVersion = try flurm_config_server:get_version() catch _:_ -> 0 end,
+            lager:info("Partial reconfiguration complete (version ~p -> ~p)",
+                      [OldVersion, NewVersion]),
+            {ok, ChangedKeys};
+        {error, _} = Error ->
+            Error
+    end.
+
+%% @doc Apply specific settings to the configuration
+-spec apply_settings(map(), boolean()) -> [atom()].
+apply_settings(Settings, _Force) when map_size(Settings) == 0 ->
+    [];
+apply_settings(Settings, Force) ->
+    ChangedKeys = maps:fold(fun(Key, Value, Acc) ->
+        try
+            %% Get current value to check if it's actually changing
+            CurrentValue = flurm_config_server:get(Key, undefined),
+            case CurrentValue =:= Value of
+                true ->
+                    lager:debug("Setting ~p unchanged (value=~p)", [Key, Value]),
+                    Acc;
+                false ->
+                    lager:info("Updating setting ~p: ~p -> ~p", [Key, CurrentValue, Value]),
+                    flurm_config_server:set(Key, Value),
+                    [Key | Acc]
+            end
+        catch
+            Error:Reason ->
+                case Force of
+                    true ->
+                        lager:warning("Failed to set ~p=~p, but force=true: ~p:~p",
+                                     [Key, Value, Error, Reason]),
+                        Acc;
+                    false ->
+                        lager:error("Failed to set ~p=~p: ~p:~p",
+                                   [Key, Value, Error, Reason]),
+                        Acc
+                end
+        end
+    end, [], Settings),
+    lists:reverse(ChangedKeys).
+
+%% @doc Notify the scheduler of configuration changes
+-spec notify_scheduler_reconfigure() -> ok.
+notify_scheduler_reconfigure() ->
+    try
+        flurm_scheduler:trigger_schedule(),
+        lager:debug("Scheduler notified of reconfiguration")
+    catch
+        _:_ ->
+            lager:debug("Could not notify scheduler (may not be running)")
+    end,
+    ok.
+
+%% @doc Broadcast reconfiguration message to all compute nodes
+-spec broadcast_reconfigure_to_nodes() -> ok.
+broadcast_reconfigure_to_nodes() ->
+    try
+        Nodes = flurm_node_manager_server:list_nodes(),
+        lager:info("Broadcasting reconfigure to ~p compute nodes", [length(Nodes)]),
+        lists:foreach(fun(Node) ->
+            NodeName = Node#node.hostname,
+            try
+                %% Send reconfigure notification to the node
+                %% The node daemon will reload its local configuration
+                case flurm_node_manager_server:send_command(NodeName, reconfigure) of
+                    ok ->
+                        lager:debug("Reconfigure sent to node ~s", [NodeName]);
+                    {error, Reason} ->
+                        lager:warning("Failed to send reconfigure to node ~s: ~p",
+                                     [NodeName, Reason])
+                end
+            catch
+                _:NodeError ->
+                    lager:warning("Error notifying node ~s: ~p", [NodeName, NodeError])
+            end
+        end, Nodes)
+    catch
+        _:_ ->
+            lager:debug("Could not broadcast to nodes (node manager may not be running)")
+    end,
+    ok.
 
 %% @doc Perform graceful shutdown of the controller
 -spec do_graceful_shutdown() -> ok | {error, term()}.
@@ -1271,7 +1630,7 @@ apply_node_changes() ->
 %% @doc Ensure a node exists in the node manager (for pre-configured nodes)
 -spec ensure_node_exists(binary(), map()) -> ok.
 ensure_node_exists(NodeName, NodeDef) ->
-    case flurm_node_manager:get_node(NodeName) of
+    case flurm_node_manager_server:get_node(NodeName) of
         {ok, _Node} ->
             %% Node exists, could update if needed
             ok;
@@ -1523,4 +1882,206 @@ pool_to_bb_pool(Pool) when is_tuple(Pool) ->
     end;
 pool_to_bb_pool(_) ->
     #burst_buffer_pool{name = <<"default">>}.
+
+%%====================================================================
+%% Internal Functions - Reservation Management
+%%====================================================================
+
+%% @doc Convert create reservation request to spec for flurm_reservation:create/1
+-spec create_reservation_request_to_spec(#create_reservation_request{}) -> map().
+create_reservation_request_to_spec(#create_reservation_request{} = Req) ->
+    Now = erlang:system_time(second),
+
+    %% Determine start time
+    StartTime = case Req#create_reservation_request.start_time of
+        0 -> Now;  % Start now
+        S -> S
+    end,
+
+    %% Determine end time (from end_time or duration)
+    EndTime = case Req#create_reservation_request.end_time of
+        0 ->
+            %% No end time specified, use duration
+            Duration = case Req#create_reservation_request.duration of
+                0 -> 60;  % Default 1 hour
+                D -> D
+            end,
+            StartTime + (Duration * 60);  % Convert minutes to seconds
+        E -> E
+    end,
+
+    %% Parse node list
+    Nodes = case Req#create_reservation_request.nodes of
+        <<>> -> [];
+        NodeList ->
+            %% Expand hostlist pattern if needed
+            try flurm_config_slurm:expand_hostlist(NodeList)
+            catch _:_ -> binary:split(NodeList, <<",">>, [global])
+            end
+    end,
+
+    %% Parse users list
+    Users = case Req#create_reservation_request.users of
+        <<>> -> [];
+        UserList -> binary:split(UserList, <<",">>, [global])
+    end,
+
+    %% Parse accounts list
+    Accounts = case Req#create_reservation_request.accounts of
+        <<>> -> [];
+        AccountList -> binary:split(AccountList, <<",">>, [global])
+    end,
+
+    %% Determine reservation type from flags or type field
+    Type = determine_reservation_type(
+        Req#create_reservation_request.type,
+        Req#create_reservation_request.flags
+    ),
+
+    %% Build flags list from flags integer
+    Flags = parse_reservation_flags(Req#create_reservation_request.flags),
+
+    #{
+        name => case Req#create_reservation_request.name of
+            <<>> -> generate_reservation_name();
+            N -> N
+        end,
+        type => Type,
+        start_time => StartTime,
+        end_time => EndTime,
+        nodes => Nodes,
+        node_count => case Req#create_reservation_request.node_cnt of
+            0 -> length(Nodes);
+            NC -> NC
+        end,
+        partition => Req#create_reservation_request.partition,
+        users => Users,
+        accounts => Accounts,
+        features => case Req#create_reservation_request.features of
+            <<>> -> [];
+            F -> binary:split(F, <<",">>, [global])
+        end,
+        flags => Flags,
+        state => case StartTime =< Now of
+            true -> active;
+            false -> inactive
+        end
+    }.
+
+%% @doc Convert update reservation request to updates map for flurm_reservation:update/2
+-spec update_reservation_request_to_updates(#update_reservation_request{}) -> map().
+update_reservation_request_to_updates(#update_reservation_request{} = Req) ->
+    Updates0 = #{},
+
+    %% Only include fields that are actually set (non-zero, non-empty)
+    Updates1 = case Req#update_reservation_request.start_time of
+        0 -> Updates0;
+        S -> maps:put(start_time, S, Updates0)
+    end,
+
+    Updates2 = case Req#update_reservation_request.end_time of
+        0 -> Updates1;
+        E -> maps:put(end_time, E, Updates1)
+    end,
+
+    Updates3 = case Req#update_reservation_request.duration of
+        0 -> Updates2;
+        D -> maps:put(duration, D * 60, Updates2)  % Convert minutes to seconds
+    end,
+
+    Updates4 = case Req#update_reservation_request.nodes of
+        <<>> -> Updates3;
+        NodeList ->
+            Nodes = try flurm_config_slurm:expand_hostlist(NodeList)
+                    catch _:_ -> binary:split(NodeList, <<",">>, [global])
+                    end,
+            maps:put(nodes, Nodes, Updates3)
+    end,
+
+    Updates5 = case Req#update_reservation_request.users of
+        <<>> -> Updates4;
+        UserList ->
+            Users = binary:split(UserList, <<",">>, [global]),
+            maps:put(users, Users, Updates4)
+    end,
+
+    Updates6 = case Req#update_reservation_request.accounts of
+        <<>> -> Updates5;
+        AccountList ->
+            Accounts = binary:split(AccountList, <<",">>, [global]),
+            maps:put(accounts, Accounts, Updates5)
+    end,
+
+    Updates7 = case Req#update_reservation_request.partition of
+        <<>> -> Updates6;
+        P -> maps:put(partition, P, Updates6)
+    end,
+
+    Updates8 = case Req#update_reservation_request.flags of
+        0 -> Updates7;
+        F -> maps:put(flags, parse_reservation_flags(F), Updates7)
+    end,
+
+    Updates8.
+
+%% @doc Determine reservation type from type string or flags
+-spec determine_reservation_type(binary(), non_neg_integer()) -> atom().
+determine_reservation_type(<<"maint">>, _) -> maint;
+determine_reservation_type(<<"MAINT">>, _) -> maint;
+determine_reservation_type(<<"maintenance">>, _) -> maintenance;
+determine_reservation_type(<<"flex">>, _) -> flex;
+determine_reservation_type(<<"FLEX">>, _) -> flex;
+determine_reservation_type(<<"user">>, _) -> user;
+determine_reservation_type(<<"USER">>, _) -> user;
+determine_reservation_type(<<>>, Flags) ->
+    %% Infer from flags
+    %% SLURM reservation flags:
+    %% RESERVE_FLAG_MAINT = 0x0001
+    %% RESERVE_FLAG_FLEX = 0x8000
+    case Flags band 16#0001 of
+        0 ->
+            case Flags band 16#8000 of
+                0 -> user;
+                _ -> flex
+            end;
+        _ -> maint
+    end;
+determine_reservation_type(_, _) -> user.
+
+%% @doc Parse reservation flags integer to list of atoms
+-spec parse_reservation_flags(non_neg_integer()) -> [atom()].
+parse_reservation_flags(0) -> [];
+parse_reservation_flags(Flags) ->
+    %% SLURM reservation flag definitions
+    FlagDefs = [
+        {16#0001, maint},
+        {16#0002, ignore_jobs},
+        {16#0004, daily},
+        {16#0008, weekly},
+        {16#0010, weekday},
+        {16#0020, weekend},
+        {16#0040, any},
+        {16#0080, first_cores},
+        {16#0100, time_float},
+        {16#0200, purge_comp},
+        {16#0400, part_nodes},
+        {16#0800, overlap},
+        {16#1000, no_hold_jobs_after},
+        {16#2000, static_alloc},
+        {16#4000, no_hold_jobs},
+        {16#8000, flex}
+    ],
+    lists:foldl(fun({Mask, Flag}, Acc) ->
+        case Flags band Mask of
+            0 -> Acc;
+            _ -> [Flag | Acc]
+        end
+    end, [], FlagDefs).
+
+%% @doc Generate a unique reservation name
+-spec generate_reservation_name() -> binary().
+generate_reservation_name() ->
+    Timestamp = erlang:system_time(microsecond),
+    Random = rand:uniform(9999),
+    iolist_to_binary(io_lib:format("resv_~p_~4..0B", [Timestamp, Random])).
 

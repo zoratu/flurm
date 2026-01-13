@@ -173,7 +173,7 @@ handle_info({'DOWN', _Ref, process, Pid, Reason}, #state{connections = Conns, pi
         {ok, Hostname} ->
             log(info, "Node ~s connection died: ~p", [Hostname, Reason]),
             %% Update node state in node manager
-            flurm_node_manager:update_node(Hostname, #{state => down}),
+            flurm_node_manager_server:update_node(Hostname, #{state => down}),
             State#state{
                 connections = maps:remove(Hostname, Conns),
                 pids_to_nodes = maps:remove(Pid, P2N)

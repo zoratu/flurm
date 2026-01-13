@@ -479,7 +479,9 @@ apply_single_change(nodes, Nodes) ->
     %% Update node registry with new node definitions
     log(info,"Node definitions updated: ~p nodes", [length(Nodes)]),
     %% Send direct notification to node registry if it's running
-    catch notify_node_registry(Nodes);
+    catch notify_node_registry(Nodes),
+    %% Also notify node manager for dynamic node handling
+    catch notify_node_manager(Nodes);
 apply_single_change(partitions, Partitions) ->
     %% Update partition registry with new partition definitions
     log(info,"Partition definitions updated: ~p partitions", [length(Partitions)]),
@@ -491,6 +493,13 @@ apply_single_change(Key, _Value) ->
 %% @doc Notify the node registry to update node definitions from config
 notify_node_registry(NodeDefs) ->
     case whereis(flurm_node_registry) of
+        undefined -> ok;
+        Pid -> Pid ! {config_reload_nodes, NodeDefs}
+    end.
+
+%% @doc Notify the node manager to handle dynamic node changes from config
+notify_node_manager(NodeDefs) ->
+    case whereis(flurm_node_manager) of
         undefined -> ok;
         Pid -> Pid ! {config_reload_nodes, NodeDefs}
     end.

@@ -64,7 +64,16 @@
     account = <<>> :: binary(),        % Account for accounting, fairshare, and limits
     qos = <<"normal">> :: binary(),    % Quality of Service for priority and resource limits
     %% Reservation fields
-    reservation = <<>> :: binary()     % Reservation name (empty for no reservation)
+    reservation = <<>> :: binary(),    % Reservation name (empty for no reservation)
+    %% License fields
+    licenses = [] :: [{binary(), non_neg_integer()}],  % List of {LicenseName, Count} tuples
+    %% GRES (Generic Resources) - GPU, FPGA, etc.
+    gres = <<>> :: binary(),           % GRES spec string (e.g., "gpu:2", "gpu:a100:4")
+    gres_per_node = <<>> :: binary(),  % GRES per node requirement
+    gres_per_task = <<>> :: binary(),  % GRES per task requirement
+    gpu_type = <<>> :: binary(),       % GPU type constraint (e.g., "a100", "v100")
+    gpu_memory_mb = 0 :: non_neg_integer(), % GPU memory requirement in MB
+    gpu_exclusive = true :: boolean()  % Whether GPUs should be exclusive to job
 }).
 
 %%====================================================================
@@ -84,7 +93,19 @@
     free_memory_mb :: non_neg_integer(),
     last_heartbeat :: non_neg_integer() | undefined,
     %% Resource allocation tracking: #{JobId => {CpusAllocated, MemoryAllocated}}
-    allocations = #{} :: #{job_id() => {pos_integer(), pos_integer()}}
+    allocations = #{} :: #{job_id() => {pos_integer(), pos_integer()}},
+    %% GRES (Generic Resources) - GPU, FPGA, etc.
+    %% gres_config: List of available GRES on this node
+    %%   Each entry: #{type => gpu, name => <<"a100">>, count => 4, memory_mb => 40960}
+    gres_config = [] :: [map()],
+    %% gres_available: Count of available GRES by type/name
+    %%   #{<<"gpu">> => 4, <<"gpu:a100">> => 4, <<"fpga">> => 2}
+    gres_available = #{} :: #{binary() => non_neg_integer()},
+    %% gres_total: Total GRES on node (for reporting)
+    gres_total = #{} :: #{binary() => non_neg_integer()},
+    %% gres_allocations: GRES allocated to jobs
+    %%   #{JobId => [{Type, Count, Indices}]}
+    gres_allocations = #{} :: #{job_id() => [{atom(), non_neg_integer(), [non_neg_integer()]}]}
 }).
 
 %%====================================================================

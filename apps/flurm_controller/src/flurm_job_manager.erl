@@ -20,6 +20,19 @@
 
 -include_lib("flurm_core/include/flurm_core.hrl").
 
+%% Array task record for pattern matching (must match flurm_job_array)
+-record(array_task, {
+    id,
+    array_job_id,
+    task_id,
+    job_id,
+    state,
+    exit_code,
+    start_time,
+    end_time,
+    node
+}).
+
 -record(state, {
     jobs = #{} :: #{job_id() => #job{}},
     job_counter = 1 :: pos_integer(),
@@ -77,33 +90,14 @@ init([]) ->
     {ok, #state{jobs = Jobs, job_counter = Counter, persistence_mode = Mode}}.
 
 handle_call({submit_job, JobSpec}, _From, #state{jobs = Jobs, job_counter = Counter} = State) ->
-    %% Check submit limits before accepting the job
-    LimitCheckSpec = build_limit_check_spec(JobSpec),
-    case flurm_limits:check_submit_limits(LimitCheckSpec) of
-        ok ->
-            %% Limits OK, create the job with the next available ID
-            Job = create_job(Counter, JobSpec),
-            JobId = Job#job.id,
-            lager:info("Job ~p submitted: ~p", [JobId, maps:get(name, JobSpec, <<"unnamed">>)]),
-
-            %% Record metrics
-            catch flurm_metrics:increment(flurm_jobs_submitted_total),
-
-            %% Persist the job
-            persist_job(Job),
-
-            %% Update in-memory cache
-            NewJobs = maps:put(JobId, Job, Jobs),
-
-            %% Notify scheduler about new job
-            flurm_scheduler:submit_job(JobId),
-
-            {reply, {ok, JobId}, State#state{jobs = NewJobs, job_counter = Counter + 1}};
-        {error, LimitReason} ->
-            %% Submit limits exceeded, reject the job
-            lager:warning("Job submission rejected due to limits: ~p", [LimitReason]),
-            catch flurm_metrics:increment(flurm_jobs_rejected_limits_total),
-            {reply, {error, {submit_limit_exceeded, LimitReason}}, State}
+    %% Check if this is an array job submission
+    case maps:get(array, JobSpec, undefined) of
+        undefined ->
+            %% Regular job submission
+            submit_regular_job(JobSpec, Jobs, Counter, State);
+        ArraySpec ->
+            %% Array job submission
+            submit_array_job(JobSpec, ArraySpec, Jobs, Counter, State)
     end;
 
 handle_call({cancel_job, JobId}, _From, #state{jobs = Jobs} = State) ->
@@ -127,8 +121,15 @@ handle_call({cancel_job, JobId}, _From, #state{jobs = Jobs} = State) ->
             case AllocatedNodes of
                 [] -> ok;
                 Nodes ->
-                    flurm_job_dispatcher:cancel_job(JobId, Nodes)
+                    flurm_job_dispatcher_server:cancel_job(JobId, Nodes)
             end,
+
+            %% Notify job dependencies module about cancellation
+            %% This releases dependent jobs with afternotok/afterany dependencies
+            notify_job_deps_state_change(JobId, cancelled),
+
+            %% Clean up any dependencies this job had
+            cleanup_job_dependencies(JobId),
 
             %% Notify scheduler to release resources
             flurm_scheduler:job_failed(JobId),
@@ -155,12 +156,27 @@ handle_call({update_job, JobId, Updates}, _From, #state{jobs = Jobs} = State) ->
             UpdatedJob = apply_job_updates(Job, Updates),
             NewJobs = maps:put(JobId, UpdatedJob, Jobs),
 
-            %% Record metrics for state changes
+            %% Record metrics for state changes and notify dependencies
             case maps:get(state, Updates, undefined) of
                 completed ->
-                    catch flurm_metrics:increment(flurm_jobs_completed_total);
+                    catch flurm_metrics:increment(flurm_jobs_completed_total),
+                    %% Notify dependencies module about completion
+                    notify_job_deps_state_change(JobId, completed),
+                    %% Clean up this job's own dependencies
+                    cleanup_job_dependencies(JobId);
                 failed ->
-                    catch flurm_metrics:increment(flurm_jobs_failed_total);
+                    catch flurm_metrics:increment(flurm_jobs_failed_total),
+                    %% Notify dependencies module about failure
+                    notify_job_deps_state_change(JobId, failed),
+                    %% Clean up this job's own dependencies
+                    cleanup_job_dependencies(JobId);
+                timeout ->
+                    %% Timeout is similar to failure for dependency purposes
+                    notify_job_deps_state_change(JobId, timeout),
+                    cleanup_job_dependencies(JobId);
+                running ->
+                    %% Job started running - satisfy 'after' dependencies
+                    notify_job_deps_state_change(JobId, running);
                 _ ->
                     ok
             end,
@@ -232,7 +248,7 @@ handle_call({requeue_job, JobId}, _From, #state{jobs = Jobs} = State) ->
             %% Cancel on nodes
             case AllocatedNodes of
                 [] -> ok;
-                Nodes -> flurm_job_dispatcher:cancel_job(JobId, Nodes)
+                Nodes -> flurm_job_dispatcher_server:cancel_job(JobId, Nodes)
             end,
             %% Release resources and resubmit to scheduler
             flurm_scheduler:job_failed(JobId),
@@ -263,6 +279,172 @@ terminate(_Reason, _State) ->
 %%====================================================================
 %% Internal functions
 %%====================================================================
+
+%% Submit a regular (non-array) job
+submit_regular_job(JobSpec, Jobs, Counter, State) ->
+    %% First, parse and validate licenses if specified
+    LicenseResult = case maps:get(licenses, JobSpec, <<>>) of
+        <<>> -> {ok, []};
+        LicenseSpec when is_binary(LicenseSpec) ->
+            case flurm_license:parse_license_spec(LicenseSpec) of
+                {ok, ParsedLicenses} ->
+                    %% Validate that all requested licenses exist
+                    case flurm_license:validate_licenses(ParsedLicenses) of
+                        ok -> {ok, ParsedLicenses};
+                        {error, LicErr} -> {error, LicErr}
+                    end;
+                {error, ParseErr} ->
+                    {error, ParseErr}
+            end;
+        LicenseList when is_list(LicenseList) ->
+            %% Already parsed, just validate
+            case flurm_license:validate_licenses(LicenseList) of
+                ok -> {ok, LicenseList};
+                {error, LicErr} -> {error, LicErr}
+            end
+    end,
+    case LicenseResult of
+        {error, LicenseError} ->
+            lager:warning("Job submission rejected due to invalid licenses: ~p", [LicenseError]),
+            catch flurm_metrics:increment(flurm_jobs_rejected_limits_total),
+            {reply, {error, {invalid_licenses, LicenseError}}, State};
+        {ok, Licenses} ->
+            %% Licenses OK, continue with limit check
+            LimitCheckSpec = build_limit_check_spec(JobSpec),
+            case flurm_limits:check_submit_limits(LimitCheckSpec) of
+                ok ->
+                    %% Check for dependency specification and validate before creating job
+                    DepSpec = maps:get(dependency, JobSpec, <<>>),
+                    case validate_dependencies(Counter, DepSpec) of
+                        ok ->
+                            %% Dependencies valid, create the job with the next available ID
+                            JobSpecWithLicenses = JobSpec#{licenses => Licenses},
+                            Job = create_job(Counter, JobSpecWithLicenses),
+                            JobId = Job#job.id,
+                            lager:info("Job ~p submitted: ~p (licenses: ~p)",
+                                       [JobId, maps:get(name, JobSpec, <<"unnamed">>), Licenses]),
+
+                            %% Record metrics
+                            catch flurm_metrics:increment(flurm_jobs_submitted_total),
+
+                            %% Persist the job
+                            persist_job(Job),
+
+                            %% Update in-memory cache
+                            NewJobs = maps:put(JobId, Job, Jobs),
+
+                            %% Register dependencies with flurm_job_deps
+                            HasDeps = register_job_dependencies(JobId, DepSpec),
+
+                            %% Notify scheduler about new job (unless held for dependencies)
+                            case HasDeps of
+                                true ->
+                                    %% Job has dependencies - it will be held
+                                    %% and released when deps are satisfied
+                                    lager:info("Job ~p has dependencies, held pending", [JobId]),
+                                    %% Still submit to scheduler queue but it will be skipped
+                                    %% until dependencies are satisfied
+                                    flurm_scheduler:submit_job(JobId);
+                                false ->
+                                    %% No dependencies, submit to scheduler immediately
+                                    flurm_scheduler:submit_job(JobId)
+                            end,
+
+                            {reply, {ok, JobId}, State#state{jobs = NewJobs, job_counter = Counter + 1}};
+                        {error, DepError} ->
+                            %% Dependency validation failed (e.g., circular dependency)
+                            lager:warning("Job submission rejected due to invalid dependencies: ~p", [DepError]),
+                            catch flurm_metrics:increment(flurm_jobs_rejected_deps_total),
+                            {reply, {error, {invalid_dependency, DepError}}, State}
+                    end;
+                {error, LimitReason} ->
+                    %% Submit limits exceeded, reject the job
+                    lager:warning("Job submission rejected due to limits: ~p", [LimitReason]),
+                    catch flurm_metrics:increment(flurm_jobs_rejected_limits_total),
+                    {reply, {error, {submit_limit_exceeded, LimitReason}}, State}
+            end
+    end.
+
+%% Submit an array job - creates the array job record and individual task jobs
+submit_array_job(JobSpec, ArraySpec, Jobs, Counter, State) ->
+    LimitCheckSpec = build_limit_check_spec(JobSpec),
+    case flurm_limits:check_submit_limits(LimitCheckSpec) of
+        ok ->
+            %% Parse the array spec if it's a binary string
+            case flurm_job_array:parse_array_spec(ArraySpec) of
+                {ok, ParsedSpec} ->
+                    %% Create the base job template
+                    BaseJob = create_job(Counter, JobSpec),
+
+                    %% Create the array job via flurm_job_array
+                    case flurm_job_array:create_array_job(BaseJob, ParsedSpec) of
+                        {ok, ArrayJobId} ->
+                            lager:info("Array job ~p submitted: ~p (base job ~p)",
+                                       [ArrayJobId, maps:get(name, JobSpec, <<"unnamed">>), Counter]),
+
+                            %% Record metrics
+                            catch flurm_metrics:increment(flurm_jobs_submitted_total),
+                            catch flurm_metrics:increment(flurm_array_jobs_submitted_total),
+
+                            %% Get array tasks and create individual jobs for scheduling
+                            ArrayTasks = flurm_job_array:get_schedulable_tasks(ArrayJobId),
+                            {NewJobs, NewCounter} = create_array_task_jobs(
+                                ArrayJobId, BaseJob, ArrayTasks, Jobs, Counter + 1
+                            ),
+
+                            %% Return the array job ID (formatted as "ArrayJobId_0" style for SLURM compat)
+                            {reply, {ok, {array, ArrayJobId}},
+                             State#state{jobs = NewJobs, job_counter = NewCounter}};
+                        {error, Reason} ->
+                            lager:error("Failed to create array job: ~p", [Reason]),
+                            {reply, {error, {array_creation_failed, Reason}}, State}
+                    end;
+                {error, ParseError} ->
+                    lager:error("Invalid array spec ~p: ~p", [ArraySpec, ParseError]),
+                    {reply, {error, {invalid_array_spec, ParseError}}, State}
+            end;
+        {error, LimitReason} ->
+            lager:warning("Array job submission rejected due to limits: ~p", [LimitReason]),
+            catch flurm_metrics:increment(flurm_jobs_rejected_limits_total),
+            {reply, {error, {submit_limit_exceeded, LimitReason}}, State}
+    end.
+
+%% Create individual jobs for array tasks that are schedulable
+create_array_task_jobs(ArrayJobId, BaseJob, Tasks, Jobs, Counter) ->
+    lists:foldl(
+        fun(Task, {AccJobs, AccCounter}) ->
+            TaskId = Task#array_task.task_id,
+
+            %% Modify job name to include array task ID (SLURM style: jobname_taskid)
+            TaskName = iolist_to_binary([
+                BaseJob#job.name, <<"_">>, integer_to_binary(TaskId)
+            ]),
+
+            %% Create the task job
+            %% Note: Array environment variables (SLURM_ARRAY_*) are injected
+            %% by the job dispatcher using flurm_job_array:get_task_env/2
+            TaskJob = BaseJob#job{
+                id = AccCounter,
+                name = TaskName
+            },
+
+            %% Update task with the job ID (task remains pending until actually scheduled)
+            flurm_job_array:update_task_state(ArrayJobId, TaskId, #{
+                job_id => AccCounter
+            }),
+
+            %% Persist and register the job
+            persist_job(TaskJob),
+            NewAccJobs = maps:put(AccCounter, TaskJob, AccJobs),
+
+            %% Notify scheduler
+            flurm_scheduler:submit_job(AccCounter),
+
+            {NewAccJobs, AccCounter + 1}
+        end,
+        {Jobs, Counter},
+        Tasks
+    ).
 
 %% Load persisted jobs from storage on startup
 load_persisted_jobs() ->
@@ -325,7 +507,8 @@ create_job(JobId, JobSpec) ->
         std_out = StdOut,
         std_err = maps:get(std_err, JobSpec, <<>>),  % Empty = merge with stdout
         account = maps:get(account, JobSpec, <<>>),
-        qos = maps:get(qos, JobSpec, <<"normal">>)
+        qos = maps:get(qos, JobSpec, <<"normal">>),
+        licenses = maps:get(licenses, JobSpec, [])
     }.
 
 %% Persist a new job
@@ -379,3 +562,139 @@ build_limit_check_spec(JobSpec) ->
         memory_mb => maps:get(memory_mb, JobSpec, 1024),
         time_limit => maps:get(time_limit, JobSpec, 3600)
     }.
+
+%%====================================================================
+%% Job Dependency Handling
+%%====================================================================
+
+%% @private
+%% Validate dependencies before job submission
+%% Checks for circular dependencies and that target jobs exist (for non-singleton deps)
+%% Returns ok if valid, {error, Reason} if invalid
+-spec validate_dependencies(job_id(), binary()) -> ok | {error, term()}.
+validate_dependencies(_JobId, <<>>) ->
+    ok;
+validate_dependencies(JobId, DepSpec) when is_binary(DepSpec) ->
+    case catch flurm_job_deps:parse_dependency_spec(DepSpec) of
+        {ok, []} ->
+            ok;
+        {ok, Deps} ->
+            %% Check each dependency
+            validate_dependency_list(JobId, Deps);
+        {error, ParseError} ->
+            {error, {parse_error, ParseError}};
+        {'EXIT', {noproc, _}} ->
+            %% flurm_job_deps not running, skip validation
+            ok;
+        {'EXIT', Reason} ->
+            {error, {validation_error, Reason}}
+    end.
+
+%% @private
+%% Validate a list of parsed dependencies
+validate_dependency_list(_JobId, []) ->
+    ok;
+validate_dependency_list(JobId, [{DepType, Target} | Rest]) ->
+    case validate_single_dependency(JobId, DepType, Target) of
+        ok ->
+            validate_dependency_list(JobId, Rest);
+        {error, _} = Error ->
+            Error
+    end.
+
+%% @private
+%% Validate a single dependency
+%% Checks for circular dependencies and that target job exists
+validate_single_dependency(_JobId, singleton, _Name) ->
+    %% Singleton dependencies are always valid at submission time
+    ok;
+validate_single_dependency(JobId, _DepType, TargetJobId) when is_integer(TargetJobId) ->
+    %% Check that target job exists
+    case get_job(TargetJobId) of
+        {ok, _Job} ->
+            %% Target exists, check for circular dependency
+            case catch flurm_job_deps:has_circular_dependency(JobId, TargetJobId) of
+                true ->
+                    {error, {circular_dependency, [JobId, TargetJobId]}};
+                false ->
+                    ok;
+                {'EXIT', _} ->
+                    %% flurm_job_deps not available, skip cycle check
+                    ok
+            end;
+        {error, not_found} ->
+            %% Target job doesn't exist
+            {error, {dependency_not_found, TargetJobId}}
+    end;
+validate_single_dependency(JobId, DepType, Targets) when is_list(Targets) ->
+    %% Multiple targets (job+job+job syntax)
+    Results = [validate_single_dependency(JobId, DepType, T) || T <- Targets],
+    case lists:filter(fun(R) -> R =/= ok end, Results) of
+        [] -> ok;
+        [Error | _] -> Error
+    end.
+
+%% @private
+%% Register job dependencies with flurm_job_deps
+%% Returns true if job has dependencies (and should be held), false otherwise
+-spec register_job_dependencies(job_id(), binary()) -> boolean().
+register_job_dependencies(_JobId, <<>>) ->
+    false;
+register_job_dependencies(JobId, DepSpec) when is_binary(DepSpec) ->
+    case catch flurm_job_deps:add_dependencies(JobId, DepSpec) of
+        ok ->
+            %% Check if there are unsatisfied dependencies
+            case catch flurm_job_deps:check_dependencies(JobId) of
+                {ok, []} ->
+                    %% All dependencies already satisfied
+                    lager:info("Job ~p dependencies already satisfied", [JobId]),
+                    false;
+                {waiting, Deps} ->
+                    lager:info("Job ~p waiting on ~p dependencies", [JobId, length(Deps)]),
+                    true;
+                {'EXIT', _} ->
+                    false
+            end;
+        {error, Reason} ->
+            lager:warning("Failed to register dependencies for job ~p: ~p", [JobId, Reason]),
+            false;
+        {'EXIT', {noproc, _}} ->
+            %% flurm_job_deps not running
+            lager:warning("flurm_job_deps not running, ignoring dependencies for job ~p", [JobId]),
+            false;
+        {'EXIT', Reason} ->
+            lager:warning("Error registering dependencies for job ~p: ~p", [JobId, Reason]),
+            false
+    end.
+
+%% @private
+%% Notify flurm_job_deps about a job state change
+%% This triggers dependency resolution for waiting jobs
+-spec notify_job_deps_state_change(job_id(), atom()) -> ok.
+notify_job_deps_state_change(JobId, NewState) ->
+    case catch flurm_job_deps:on_job_state_change(JobId, NewState) of
+        ok -> ok;
+        {'EXIT', {noproc, _}} ->
+            %% flurm_job_deps not running, ignore
+            ok;
+        {'EXIT', Reason} ->
+            lager:warning("Failed to notify job deps state change for job ~p: ~p",
+                         [JobId, Reason]),
+            ok
+    end.
+
+%% @private
+%% Clean up dependencies when a job completes/fails/is cancelled
+%% Removes all dependencies this job had on other jobs
+-spec cleanup_job_dependencies(job_id()) -> ok.
+cleanup_job_dependencies(JobId) ->
+    case catch flurm_job_deps:remove_all_dependencies(JobId) of
+        ok -> ok;
+        {'EXIT', {noproc, _}} ->
+            %% flurm_job_deps not running, ignore
+            ok;
+        {'EXIT', Reason} ->
+            lager:warning("Failed to cleanup dependencies for job ~p: ~p",
+                         [JobId, Reason]),
+            ok
+    end.
