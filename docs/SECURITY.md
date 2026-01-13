@@ -30,20 +30,33 @@ FLURM implements a multi-layered security model designed to provide:
 
 FLURM employs multiple security layers:
 
-```
-+--------------------------------------------------+
-|  Layer 1: Network Perimeter (Firewall/VPN)       |
-+--------------------------------------------------+
-|  Layer 2: Transport Security (TLS)               |
-+--------------------------------------------------+
-|  Layer 3: Authentication (MUNGE/Erlang Cookie)   |
-+--------------------------------------------------+
-|  Layer 4: Authorization (Accounts/QOS/Partitions)|
-+--------------------------------------------------+
-|  Layer 5: Resource Limits (TRES/Quotas)          |
-+--------------------------------------------------+
-|  Layer 6: Audit Logging                          |
-+--------------------------------------------------+
+```mermaid
+flowchart TB
+    subgraph L1["Layer 1: Network Perimeter"]
+        F1[Firewall/VPN]
+    end
+
+    subgraph L2["Layer 2: Transport Security"]
+        F2[TLS Encryption]
+    end
+
+    subgraph L3["Layer 3: Authentication"]
+        F3[MUNGE/Erlang Cookie]
+    end
+
+    subgraph L4["Layer 4: Authorization"]
+        F4[Accounts/QOS/Partitions]
+    end
+
+    subgraph L5["Layer 5: Resource Limits"]
+        F5[TRES/Quotas]
+    end
+
+    subgraph L6["Layer 6: Audit Logging"]
+        F6[Security Event Logs]
+    end
+
+    L1 --> L2 --> L3 --> L4 --> L5 --> L6
 ```
 
 **Key Security Components:**

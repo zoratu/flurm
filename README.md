@@ -145,12 +145,26 @@ flowchart TB
 
 ## Documentation
 
+### Core Documentation
 - [Architecture Overview](docs/architecture.md) - System design and OTP structure
 - [Protocol Reference](docs/protocol.md) - SLURM binary protocol details
-- [Testing Guide](docs/testing.md) - How to test FLURM
-- [Deployment Guide](docs/deployment.md) - Production deployment
 - [Development Guide](docs/development.md) - Contributing to FLURM
 - [AI Agent Guide](docs/AGENT_GUIDE.md) - Guide for AI-assisted development
+
+### Operations & Deployment
+- [Deployment Guide](docs/deployment.md) - Production deployment
+- [Operations Guide](docs/OPERATIONS.md) - Day-to-day operations and troubleshooting
+- [Security Guide](docs/SECURITY.md) - Security model, authentication, and hardening
+- [Migration Guide](docs/MIGRATION.md) - Migrating from SLURM to FLURM
+
+### Testing & Performance
+- [Testing Guide](docs/testing.md) - How to test FLURM
+- [SLURM Client Testing](docs/SLURM_CLIENT_TESTING.md) - Testing with real SLURM clients
+- [Benchmarks](docs/BENCHMARKS.md) - Performance benchmarks and results
+- [Code Coverage](docs/COVERAGE.md) - Coverage strategy and targets
+
+### Reference
+- [SLURM Differences](docs/SLURM_DIFFERENCES.md) - Key differences between SLURM and FLURM
 
 ## Project Status
 
