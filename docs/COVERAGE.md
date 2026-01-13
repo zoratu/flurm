@@ -178,45 +178,70 @@ test_case() ->
 
 ## Current Coverage Status
 
-As of the last run, overall coverage is approximately 15-25%. Key areas of focus:
+**Overall coverage: 15%**
 
-### High Coverage (Good)
-- `flurm_job_sup`: 100%
-- `flurm_license`: 88%
-- `flurm_job_registry`: 84%
-- `flurm_protocol_header`: 80%
-- `flurm_accounting`: 77%
-- `flurm_burst_buffer`: 72%
+### High Coverage Modules (>50%)
 
-### Needs Improvement
-- `flurm_controller_handler`: Currently 0% (tests written but need debugging)
-- `flurm_scheduler`: Currently 0% (complex dependencies)
-- `flurm_preemption`: Currently 34%
-- `flurm_reservation`: Currently 15%
-- `flurm_protocol_codec`: Currently 6%
+| Module | Coverage | Status |
+|--------|----------|--------|
+| `flurm_job_sup` | 100% | Meets target |
+| `flurm_license` | 88% | Meets target |
+| `flurm_job_registry` | 84% | Meets target |
+| `flurm_protocol_header` | 80% | Meets target |
+| `flurm_priority` | 69% | Meets target |
+| `flurm_metrics` | 69% | Meets target |
+| `flurm_protocol_pack` | 63% | Meets target |
+| `flurm_fairshare` | 63% | Meets target |
+| `flurm_db_ra_effects` | 63% | Meets target |
+| `flurm_db_ra` | 62% | Meets target |
+| `flurm_gres` | 57% | Close to target |
+| `flurm_rate_limiter` | 54% | Close to target |
+| `flurm_partition_registry` | 53% | Close to target |
+| `flurm_protocol` | 52% | Close to target |
 
-### Future Work
+### Needs Improvement (Critical Path)
 
-1. Increase coverage on critical path modules
-2. Add integration tests for multi-component scenarios
-3. Add property-based testing for protocol codec
-4. Add fault injection tests for resilience verification
+| Module | Coverage | Issue |
+|--------|----------|-------|
+| `flurm_controller_handler` | 0% | Tests written but need process lifecycle fixes |
+| `flurm_scheduler` | 0% | Complex dependencies, needs integration test approach |
+| `flurm_protocol_codec` | 6% | Core protocol - high priority |
+| `flurm_job_manager` | 0% | Requires running application |
+| `flurm_node_manager` | 0% | Requires running application |
+
+### Needs Improvement (Features)
+
+| Module | Coverage | Notes |
+|--------|----------|-------|
+| `flurm_reservation` | 15% | Tests written, coverage improving |
+| `flurm_preemption` | 34% | Tests enhanced, coverage improved |
+| `flurm_federation` | 36% | Adequate for current needs |
+| `flurm_power` | 34% | Lower priority |
+| `flurm_db_cluster` | 32% | Needs integration tests |
+
+### Outstanding Work
+
+1. **Fix test compilation issues** - `flurm_controller_handler_tests.erl` has record field name mismatches
+2. **Add integration test harness** - Many modules require running application context
+3. **Property-based testing** - Add PropEr tests for protocol codec round-trip
+4. **Fault injection tests** - Test resilience with chaos engineering
 
 ## Coverage Improvement Strategy
 
-### Phase 1: Critical Path (Q1)
+### Priority 1: Critical Path Modules
 Focus on achieving 80% coverage for:
-- Protocol codec modules
-- Job management modules
-- Scheduler core logic
+- Protocol codec modules (especially `flurm_protocol_codec`)
+- Job management modules (`flurm_job_manager`, `flurm_job`)
+- Scheduler core logic (`flurm_scheduler`)
+- Controller handler (`flurm_controller_handler`)
 
-### Phase 2: Features (Q2)
+### Priority 2: Feature Modules
 Achieve 60% coverage for:
 - Preemption and reservation
 - QoS and fair share
 - Priority calculation
 
-### Phase 3: Infrastructure (Q3)
+### Priority 3: Infrastructure
 Achieve 40% coverage for:
 - Database layer
 - Configuration system

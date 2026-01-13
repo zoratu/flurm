@@ -86,28 +86,37 @@ Based on baseline benchmarks and FLURM architecture:
 
 | Module Category | Coverage | Notes |
 |-----------------|----------|-------|
-| Protocol codec | 37-80% | Core paths well tested |
-| Job management | 33-84% | Critical paths covered |
-| Scheduler | 41% | Needs more integration tests |
-| Consensus (Ra) | 69% | Good coverage |
-| Node management | 36-55% | Adequate |
-| **Overall** | **24%** | Acceptable for beta |
+| Protocol codec | 6-80% | Header well tested, codec needs work |
+| Job management | 0-84% | Registry good, manager needs tests |
+| Scheduler | 0% | Needs integration tests |
+| Consensus (Ra) | 62-63% | Good coverage |
+| Node management | 0% | Requires integration tests |
+| **Overall** | **15%** | See docs/COVERAGE.md for strategy |
 
-### High Coverage Modules (>70%)
+### High Coverage Modules (>50%)
+- flurm_job_sup: 100%
 - flurm_license: 88%
 - flurm_job_registry: 84%
 - flurm_protocol_header: 80%
-- flurm_config_slurm: 80%
-- flurm_accounting: 77%
-- flurm_config_defaults: 77%
-- flurm_db_ra_effects: 74%
-- flurm_burst_buffer: 72%
+- flurm_priority: 69%
+- flurm_metrics: 69%
+- flurm_protocol_pack: 63%
+- flurm_fairshare: 63%
+- flurm_db_ra_effects: 63%
+- flurm_db_ra: 62%
+- flurm_gres: 57%
+- flurm_rate_limiter: 54%
+- flurm_partition_registry: 53%
+- flurm_protocol: 52%
 
 ### Coverage Improvement Priorities
-1. flurm_controller_handler (8%) - Critical path
-2. flurm_scheduler (41%) - Core logic
-3. flurm_preemption (13%) - Advanced feature
-4. flurm_reservation (1%) - Advanced feature
+1. flurm_controller_handler (0%) - Critical path, tests written but need debugging
+2. flurm_scheduler (0%) - Core logic, complex dependencies
+3. flurm_protocol_codec (6%) - Critical for SLURM compatibility
+4. flurm_reservation (15%) - Advanced feature
+5. flurm_preemption (34%) - Advanced feature
+
+See [docs/COVERAGE.md](COVERAGE.md) for the complete coverage strategy and justified exceptions.
 
 ## Running Benchmarks
 
