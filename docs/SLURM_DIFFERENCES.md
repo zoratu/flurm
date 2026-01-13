@@ -58,31 +58,26 @@ FLURM (Fault-tolerant Linux Utility for Resource Management) is a SLURM-compatib
 | **State Sync** | Shared filesystem or MySQL | Raft consensus with in-memory state |
 
 **SLURM Architecture:**
-```
-                    ┌─────────────────┐
-                    │   Primary       │
-                    │   slurmctld     │ ◄─── All operations
-                    └────────┬────────┘
-                             │
-                    (shared filesystem)
-                             │
-                    ┌────────▼────────┐
-                    │   Backup        │
-                    │   slurmctld     │ ◄─── Standby only
-                    └─────────────────┘
+
+```mermaid
+flowchart TD
+    subgraph SLURM["SLURM (Active/Passive)"]
+        A[Primary slurmctld<br/>All operations] --> |shared filesystem| B[Backup slurmctld<br/>Standby only]
+    end
 ```
 
 **FLURM Architecture:**
-```
-         ┌─────────────────┐   ┌─────────────────┐   ┌─────────────────┐
-         │   Controller 1  │   │   Controller 2  │   │   Controller 3  │
-         │   (Leader)      │◄──│   (Follower)    │──►│   (Follower)    │
-         │   Read + Write  │   │   Read only     │   │   Read only     │
-         └────────┬────────┘   └────────┬────────┘   └────────┬────────┘
-                  │                     │                     │
-                  └─────────────────────┼─────────────────────┘
-                                        │
-                              Raft Consensus (Ra)
+
+```mermaid
+flowchart TD
+    subgraph FLURM["FLURM (Active/Active)"]
+        C1[Controller 1<br/>Leader<br/>Read + Write]
+        C2[Controller 2<br/>Follower<br/>Read only]
+        C3[Controller 3<br/>Follower<br/>Read only]
+        C1 <--> |Raft Consensus| C2
+        C2 <--> |Raft Consensus| C3
+        C1 <--> |Raft Consensus| C3
+    end
 ```
 
 ### 2.2 Implementation Stack
@@ -107,26 +102,28 @@ FLURM (Fault-tolerant Linux Utility for Resource Management) is a SLURM-compatib
 ### 2.4 Process Architecture
 
 **FLURM Supervision Tree:**
-```
-flurmctld_app
-└── flurmctld_sup (one_for_one)
-    ├── flurm_cluster_sup (one_for_all)
-    │   ├── flurm_ra_server         # Raft consensus
-    │   └── flurm_cluster_monitor   # Node discovery
-    │
-    ├── flurm_network_sup (one_for_one)
-    │   ├── ranch_listener          # TCP acceptor pool
-    │   └── flurm_protocol_router   # Message routing
-    │
-    ├── flurm_domain_sup (rest_for_one)
-    │   ├── flurm_config_server     # Configuration
-    │   ├── flurm_partition_sup     # Per-partition processes
-    │   ├── flurm_node_sup          # Per-node processes
-    │   ├── flurm_job_sup           # Per-job state machines
-    │   └── flurm_account_manager   # Accounting entities
-    │
-    └── flurm_scheduler_sup (one_for_one)
-        └── flurm_scheduler_server  # Scheduler engine
+
+```mermaid
+graph TD
+    A[flurmctld_app] --> B[flurmctld_sup<br/>one_for_one]
+
+    B --> C[flurm_cluster_sup<br/>one_for_all]
+    C --> C1[flurm_ra_server]
+    C --> C2[flurm_cluster_monitor]
+
+    B --> D[flurm_network_sup<br/>one_for_one]
+    D --> D1[ranch_listener]
+    D --> D2[flurm_protocol_router]
+
+    B --> E[flurm_domain_sup<br/>rest_for_one]
+    E --> E1[flurm_config_server]
+    E --> E2[flurm_partition_sup]
+    E --> E3[flurm_node_sup]
+    E --> E4[flurm_job_sup]
+    E --> E5[flurm_account_manager]
+
+    B --> F[flurm_scheduler_sup<br/>one_for_one]
+    F --> F1[flurm_scheduler_server]
 ```
 
 Each job runs as its own Erlang process (gen_statem), enabling isolated failure handling and natural concurrency.

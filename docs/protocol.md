@@ -26,36 +26,22 @@ FLURM implements this protocol for full compatibility with SLURM clients and dae
 
 ### Message Header
 
-Every SLURM message begins with a fixed-size header:
+Every SLURM message begins with a fixed-size header (24 bytes):
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                          Message Header (24 bytes)                       │
-├─────────────┬──────────────┬──────────────────────────────────────────┬─┤
-│  Offset     │  Size        │  Field                                   │ │
-├─────────────┼──────────────┼──────────────────────────────────────────┼─┤
-│  0          │  2 bytes     │  Protocol Version (uint16, big-endian)   │ │
-│  2          │  2 bytes     │  Flags (uint16, big-endian)              │ │
-│  4          │  2 bytes     │  Message Type (uint16, big-endian)       │ │
-│  6          │  2 bytes     │  Reserved                                │ │
-│  8          │  4 bytes     │  Body Length (uint32, big-endian)        │ │
-│  12         │  4 bytes     │  Forward Count (uint32, big-endian)      │ │
-│  16         │  4 bytes     │  Return Code (uint32, big-endian)        │ │
-│  20         │  4 bytes     │  Message ID (uint32, big-endian)         │ │
-└─────────────┴──────────────┴──────────────────────────────────────────┴─┘
-```
+| Offset | Size | Field | Encoding |
+|--------|------|-------|----------|
+| 0 | 2 bytes | Protocol Version | uint16, big-endian |
+| 2 | 2 bytes | Flags | uint16, big-endian |
+| 4 | 2 bytes | Message Type | uint16, big-endian |
+| 6 | 2 bytes | Reserved | - |
+| 8 | 4 bytes | Body Length | uint32, big-endian |
+| 12 | 4 bytes | Forward Count | uint32, big-endian |
+| 16 | 4 bytes | Return Code | uint32, big-endian |
+| 20 | 4 bytes | Message ID | uint32, big-endian |
 
 ### Message Body
 
-The body follows immediately after the header and is `Body Length` bytes:
-
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                          Message Body (variable)                         │
-├─────────────────────────────────────────────────────────────────────────┤
-│  Type-specific payload (see Message Types section)                       │
-└─────────────────────────────────────────────────────────────────────────┘
-```
+The body follows immediately after the header and is `Body Length` bytes. Content is type-specific (see Message Types section).
 
 ### Header Flags
 
@@ -128,100 +114,83 @@ The body follows immediately after the header and is `Body Length` bytes:
 
 ### String Encoding
 
-Strings are length-prefixed:
+Strings are length-prefixed: `[Length: u32][UTF-8 Data: Length bytes]`
 
-```
-┌─────────────┬──────────────────────────────────┐
-│ Length (u32)│ UTF-8 Data (Length bytes)        │
-└─────────────┴──────────────────────────────────┘
-```
-
-If the string is null/empty, Length = 0xFFFFFFFF (NO_VAL marker).
+If the string is null/empty, Length = `0xFFFFFFFF` (NO_VAL marker).
 
 ### Array Encoding
 
-Arrays are count-prefixed:
-
-```
-┌─────────────┬──────────────────────────────────┐
-│ Count (u32) │ Elements (Count * element_size)  │
-└─────────────┴──────────────────────────────────┘
-```
+Arrays are count-prefixed: `[Count: u32][Elements: Count * element_size]`
 
 ### Job Submission Message
 
-```
-REQUEST_SUBMIT_BATCH_JOB Body:
-┌─────────────────────────────────────────────────────────────────────────┐
-│  Field              │  Type        │  Description                       │
-├─────────────────────┼──────────────┼────────────────────────────────────┤
-│  account            │  string      │  Account name                      │
-│  batch_features     │  string      │  Batch features                    │
-│  container          │  string      │  Container image                   │
-│  contiguous         │  uint16      │  Contiguous nodes required         │
-│  cpus_per_task      │  uint16      │  CPUs per task                     │
-│  dependency         │  string      │  Job dependencies                  │
-│  environment        │  string[]    │  Environment variables             │
-│  job_id             │  uint32      │  Requested job ID (0 = any)        │
-│  job_name           │  string      │  Job name                          │
-│  licenses           │  string      │  Required licenses                 │
-│  mail_type          │  uint16      │  Mail notification flags           │
-│  mail_user          │  string      │  Mail recipient                    │
-│  max_cpus           │  uint32      │  Maximum CPUs                      │
-│  max_nodes          │  uint32      │  Maximum nodes                     │
-│  mem_per_cpu        │  uint64      │  Memory per CPU (MB)               │
-│  min_cpus           │  uint32      │  Minimum CPUs                      │
-│  min_nodes          │  uint32      │  Minimum nodes                     │
-│  name               │  string      │  Job name                          │
-│  num_tasks          │  uint32      │  Number of tasks                   │
-│  partition          │  string      │  Partition name                    │
-│  priority           │  uint32      │  Job priority                      │
-│  qos                │  string      │  Quality of service                │
-│  script             │  string      │  Job script content                │
-│  std_err            │  string      │  Stderr path                       │
-│  std_in             │  string      │  Stdin path                        │
-│  std_out            │  string      │  Stdout path                       │
-│  time_limit         │  uint32      │  Time limit (minutes)              │
-│  user_id            │  uint32      │  Submitting user ID                │
-│  group_id           │  uint32      │  Submitting group ID               │
-│  work_dir           │  string      │  Working directory                 │
-└─────────────────────┴──────────────┴────────────────────────────────────┘
-```
+**REQUEST_SUBMIT_BATCH_JOB Body:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| account | string | Account name |
+| batch_features | string | Batch features |
+| container | string | Container image |
+| contiguous | uint16 | Contiguous nodes required |
+| cpus_per_task | uint16 | CPUs per task |
+| dependency | string | Job dependencies |
+| environment | string[] | Environment variables |
+| job_id | uint32 | Requested job ID (0 = any) |
+| job_name | string | Job name |
+| licenses | string | Required licenses |
+| mail_type | uint16 | Mail notification flags |
+| mail_user | string | Mail recipient |
+| max_cpus | uint32 | Maximum CPUs |
+| max_nodes | uint32 | Maximum nodes |
+| mem_per_cpu | uint64 | Memory per CPU (MB) |
+| min_cpus | uint32 | Minimum CPUs |
+| min_nodes | uint32 | Minimum nodes |
+| name | string | Job name |
+| num_tasks | uint32 | Number of tasks |
+| partition | string | Partition name |
+| priority | uint32 | Job priority |
+| qos | string | Quality of service |
+| script | string | Job script content |
+| std_err | string | Stderr path |
+| std_in | string | Stdin path |
+| std_out | string | Stdout path |
+| time_limit | uint32 | Time limit (minutes) |
+| user_id | uint32 | Submitting user ID |
+| group_id | uint32 | Submitting group ID |
+| work_dir | string | Working directory |
 
 ### Node Information Message
 
-```
-RESPONSE_NODE_INFO Body:
-┌─────────────────────────────────────────────────────────────────────────┐
-│  Field              │  Type        │  Description                       │
-├─────────────────────┼──────────────┼────────────────────────────────────┤
-│  record_count       │  uint32      │  Number of node records            │
-│  last_update        │  uint64      │  Timestamp of last update          │
-│  nodes[]            │  node_info[] │  Array of node info structures     │
-└─────────────────────┴──────────────┴────────────────────────────────────┘
+**RESPONSE_NODE_INFO Body:**
 
-node_info structure:
-┌─────────────────────────────────────────────────────────────────────────┐
-│  arch               │  string      │  Architecture                      │
-│  boards             │  uint16      │  Number of boards                  │
-│  boot_time          │  uint64      │  Boot timestamp                    │
-│  cores              │  uint16      │  Cores per socket                  │
-│  cpu_load           │  uint32      │  CPU load * 100                    │
-│  cpus               │  uint16      │  Total CPUs                        │
-│  features           │  string      │  Node features                     │
-│  free_mem           │  uint64      │  Free memory (MB)                  │
-│  gres               │  string      │  Generic resources                 │
-│  name               │  string      │  Node name                         │
-│  node_state         │  uint32      │  Node state flags                  │
-│  os                 │  string      │  Operating system                  │
-│  partitions         │  string      │  Partition membership              │
-│  real_memory        │  uint64      │  Total memory (MB)                 │
-│  sockets            │  uint16      │  Number of sockets                 │
-│  threads            │  uint16      │  Threads per core                  │
-│  tmp_disk           │  uint32      │  Temp disk space (MB)              │
-│  weight             │  uint32      │  Scheduling weight                 │
-└─────────────────────┴──────────────┴────────────────────────────────────┘
-```
+| Field | Type | Description |
+|-------|------|-------------|
+| record_count | uint32 | Number of node records |
+| last_update | uint64 | Timestamp of last update |
+| nodes[] | node_info[] | Array of node info structures |
+
+**node_info structure:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| arch | string | Architecture |
+| boards | uint16 | Number of boards |
+| boot_time | uint64 | Boot timestamp |
+| cores | uint16 | Cores per socket |
+| cpu_load | uint32 | CPU load * 100 |
+| cpus | uint16 | Total CPUs |
+| features | string | Node features |
+| free_mem | uint64 | Free memory (MB) |
+| gres | string | Generic resources |
+| name | string | Node name |
+| node_state | uint32 | Node state flags |
+| os | string | Operating system |
+| partitions | string | Partition membership |
+| real_memory | uint64 | Total memory (MB) |
+| sockets | uint16 | Number of sockets |
+| threads | uint16 | Threads per core |
+| tmp_disk | uint32 | Temp disk space (MB) |
+| weight | uint32 | Scheduling weight |
 
 ## Erlang Pattern Matching
 
@@ -516,18 +485,15 @@ create_munge_auth(Payload) ->
 
 ### Authentication Flow
 
-```
-Client                     Controller
-   │                           │
-   │  [Header + Munge Cred]    │
-   │ ─────────────────────────>│
-   │                           │
-   │                    Verify Munge
-   │                    Extract UID/GID
-   │                           │
-   │  [Response]               │
-   │ <─────────────────────────│
-   │                           │
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Controller
+
+    Client->>Controller: Header + Munge Credential
+    Note right of Controller: Verify Munge
+    Note right of Controller: Extract UID/GID
+    Controller-->>Client: Response
 ```
 
 ## Error Handling

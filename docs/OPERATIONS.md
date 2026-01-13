@@ -63,16 +63,16 @@ Storage backends: Mnesia (default) or ETS (in-memory)
 
 FLURM uses OTP supervision trees for automatic process restart:
 
-```
-flurm_controller_sup (one_for_one)
-  ├── flurm_job_manager
-  ├── flurm_node_manager_server
-  ├── flurm_scheduler
-  ├── flurm_partition_manager
-  ├── flurm_controller_cluster
-  ├── flurm_controller_failover
-  ├── flurm_metrics
-  └── ranch listeners (client + node connections)
+```mermaid
+graph TD
+    A[flurm_controller_sup<br/>one_for_one] --> B[flurm_job_manager]
+    A --> C[flurm_node_manager_server]
+    A --> D[flurm_scheduler]
+    A --> E[flurm_partition_manager]
+    A --> F[flurm_controller_cluster]
+    A --> G[flurm_controller_failover]
+    A --> H[flurm_metrics]
+    A --> I[ranch listeners]
 ```
 
 If any supervised process crashes, the supervisor automatically restarts it. The `one_for_one` strategy ensures only the failed process is restarted, not siblings.

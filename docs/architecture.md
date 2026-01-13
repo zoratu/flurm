@@ -6,40 +6,27 @@ This document describes the internal architecture of FLURM.
 
 FLURM is built as an Erlang/OTP umbrella application with the following apps:
 
-```
-flurm/
-├── apps/
-│   ├── flurm_protocol/      # SLURM binary protocol codec
-│   ├── flurm_core/          # Domain logic (jobs, nodes, scheduling)
-│   ├── flurm_controller/    # Controller daemon (slurmctld equivalent)
-│   ├── flurm_node_daemon/   # Node daemon (slurmd equivalent)
-│   ├── flurm_dbd/           # Accounting daemon (slurmdbd equivalent)
-│   ├── flurm_db/            # Persistence layer (Raft + Mnesia)
-│   └── flurm_config/        # Configuration management
-```
+| App | Description |
+|-----|-------------|
+| `flurm_protocol` | SLURM binary protocol codec |
+| `flurm_core` | Domain logic (jobs, nodes, scheduling) |
+| `flurm_controller` | Controller daemon (slurmctld equivalent) |
+| `flurm_node_daemon` | Node daemon (slurmd equivalent) |
+| `flurm_dbd` | Accounting daemon (slurmdbd equivalent) |
+| `flurm_db` | Persistence layer (Raft + Mnesia) |
+| `flurm_config` | Configuration management |
 
 ## Application Dependencies
 
-```
-                    ┌─────────────────┐
-                    │ flurm_controller│
-                    └────────┬────────┘
-                             │
-         ┌───────────────────┼───────────────────┐
-         │                   │                   │
-    ┌────▼─────┐       ┌─────▼────┐        ┌────▼─────┐
-    │flurm_core│       │ flurm_db │        │flurm_dbd │
-    └────┬─────┘       └─────┬────┘        └────┬─────┘
-         │                   │                   │
-         └───────────────────┼───────────────────┘
-                             │
-                    ┌────────▼────────┐
-                    │ flurm_protocol  │
-                    └────────┬────────┘
-                             │
-                    ┌────────▼────────┐
-                    │  flurm_config   │
-                    └─────────────────┘
+```mermaid
+graph TD
+    A[flurm_controller] --> B[flurm_core]
+    A --> C[flurm_db]
+    A --> D[flurm_dbd]
+    B --> E[flurm_protocol]
+    C --> E
+    D --> E
+    E --> F[flurm_config]
 ```
 
 ## Core Components
@@ -63,7 +50,7 @@ Core domain logic:
 - **flurm_job** - Job state machine (gen_statem)
   - States: pending → configuring → running → completing → completed/failed/cancelled
   - Handles job lifecycle transitions
-  
+
 - **flurm_scheduler** - Scheduling engine
   - FIFO and backfill scheduling
   - Priority-based ordering
@@ -105,135 +92,117 @@ Accounting daemon:
 
 ### Controller Supervision Tree
 
-```
-flurmctld_app
-└── flurmctld_sup (one_for_one)
-    ├── flurm_cluster_sup (one_for_all)
-    │   ├── flurm_ra_server         # Raft consensus
-    │   └── flurm_cluster_monitor   # Node discovery
-    │
-    ├── flurm_network_sup (one_for_one)
-    │   ├── ranch_listener          # TCP acceptor pool
-    │   └── flurm_protocol_router   # Message routing
-    │
-    ├── flurm_domain_sup (rest_for_one)
-    │   ├── flurm_config_server     # Configuration
-    │   ├── flurm_partition_sup (simple_one_for_one)
-    │   │   └── flurm_partition:*   # Per-partition processes
-    │   ├── flurm_node_sup (simple_one_for_one)
-    │   │   └── flurm_node:*        # Per-node processes
-    │   ├── flurm_job_sup (simple_one_for_one)
-    │   │   └── flurm_job:*         # Per-job state machines
-    │   └── flurm_account_manager   # Accounting entities
-    │
-    └── flurm_scheduler_sup (one_for_one)
-        └── flurm_scheduler_server  # Scheduler engine
+```mermaid
+graph TD
+    A[flurmctld_app] --> B[flurmctld_sup<br/>one_for_one]
+    B --> C[flurm_cluster_sup<br/>one_for_all]
+    B --> D[flurm_network_sup<br/>one_for_one]
+    B --> E[flurm_domain_sup<br/>rest_for_one]
+    B --> F[flurm_scheduler_sup<br/>one_for_one]
+
+    C --> C1[flurm_ra_server]
+    C --> C2[flurm_cluster_monitor]
+
+    D --> D1[ranch_listener]
+    D --> D2[flurm_protocol_router]
+
+    E --> E1[flurm_config_server]
+    E --> E2[flurm_partition_sup]
+    E --> E3[flurm_node_sup]
+    E --> E4[flurm_job_sup]
+    E --> E5[flurm_account_manager]
+
+    F --> F1[flurm_scheduler_server]
 ```
 
 ## Message Flow
 
 ### Job Submission
 
-```
-Client → [TCP] → Ranch Acceptor → Protocol Decoder
-                                        ↓
-                              Controller Handler
-                                        ↓
-                              Job Supervisor (spawn)
-                                        ↓
-                                   Job Process
-                                        ↓
-                              Scheduler (schedule)
-                                        ↓
-                               Node Process (allocate)
-                                        ↓
-                              Node Daemon (launch)
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Ranch as Ranch Acceptor
+    participant Decoder as Protocol Decoder
+    participant Handler as Controller Handler
+    participant JobSup as Job Supervisor
+    participant Job as Job Process
+    participant Sched as Scheduler
+    participant Node as Node Process
+    participant Daemon as Node Daemon
+
+    Client->>Ranch: TCP Connect
+    Ranch->>Decoder: Raw bytes
+    Decoder->>Handler: Decoded message
+    Handler->>JobSup: spawn job
+    JobSup->>Job: start_link
+    Job->>Sched: register pending
+    Sched->>Node: allocate resources
+    Node->>Daemon: launch task
+    Daemon-->>Client: Job started
 ```
 
 ### Consensus Replication
 
-```
-Leader Controller                 Follower Controller
-       │                                 │
-       ▼                                 │
-   Ra Server ─────── Raft Log ──────────▶ Ra Server
-       │                                 │
-       ▼                                 ▼
-   State Machine                    State Machine
-       │                                 │
-       ▼                                 ▼
-   Mnesia Tables                    Mnesia Tables
+```mermaid
+sequenceDiagram
+    participant Leader as Leader Controller
+    participant RaL as Ra Server (Leader)
+    participant Log as Raft Log
+    participant RaF as Ra Server (Follower)
+    participant Follower as Follower Controller
+
+    Leader->>RaL: Command
+    RaL->>Log: Append entry
+    Log->>RaF: Replicate
+    RaF->>Follower: Apply
+    RaF-->>RaL: Ack
+    RaL-->>Leader: Committed
 ```
 
 ## State Management
 
 ### Job States
 
-```
-                    ┌─────────────┐
-                    │   PENDING   │
-                    └──────┬──────┘
-                           │ allocate resources
-                    ┌──────▼──────┐
-                    │ CONFIGURING │
-                    └──────┬──────┘
-                           │ launch tasks
-           ┌───────────────┼───────────────┐
-           │               │               │
-    ┌──────▼──────┐ ┌──────▼──────┐ ┌──────▼──────┐
-    │   RUNNING   │ │   FAILED    │ │  CANCELLED  │
-    └──────┬──────┘ └─────────────┘ └─────────────┘
-           │ all tasks complete
-    ┌──────▼──────┐
-    │ COMPLETING  │
-    └──────┬──────┘
-           │ cleanup done
-    ┌──────▼──────┐
-    │  COMPLETED  │
-    └─────────────┘
+```mermaid
+stateDiagram-v2
+    [*] --> PENDING: submit
+    PENDING --> CONFIGURING: allocate resources
+    CONFIGURING --> RUNNING: launch tasks
+    CONFIGURING --> FAILED: launch error
+    CONFIGURING --> CANCELLED: user cancel
+    RUNNING --> COMPLETING: tasks done
+    RUNNING --> FAILED: task error
+    RUNNING --> CANCELLED: user cancel
+    COMPLETING --> COMPLETED: cleanup done
+    COMPLETED --> [*]
+    FAILED --> [*]
+    CANCELLED --> [*]
 ```
 
 ### Node States
 
-```
-    ┌───────────┐
-    │  UNKNOWN  │ ← Initial state
-    └─────┬─────┘
-          │ registration
-    ┌─────▼─────┐
-    │    UP     │ ← Normal operation
-    └─────┬─────┘
-          │
-    ┌─────┴─────┐
-    │           │
-┌───▼───┐   ┌───▼───┐
-│ DRAIN │   │ DOWN  │
-└───────┘   └───────┘
+```mermaid
+stateDiagram-v2
+    [*] --> UNKNOWN: initial
+    UNKNOWN --> UP: registration
+    UP --> DRAIN: admin drain
+    UP --> DOWN: failure/timeout
+    DRAIN --> UP: resume
+    DOWN --> UP: recovery
 ```
 
 ## Configuration Hot Reload
 
-FLURM supports live configuration reload:
-
-```
-scontrol reconfigure
-        │
-        ▼
-flurm_config_server:reload()
-        │
-        ▼
-Parse slurm.conf / sys.config
-        │
-        ▼
-Diff with current config
-        │
-        ├─────────────────┐
-        │                 │
-        ▼                 ▼
-Update partitions   Update nodes
-        │                 │
-        ▼                 ▼
-Notify scheduler   Update allocations
+```mermaid
+flowchart TD
+    A[scontrol reconfigure] --> B[flurm_config_server:reload]
+    B --> C[Parse slurm.conf / sys.config]
+    C --> D[Diff with current config]
+    D --> E[Update partitions]
+    D --> F[Update nodes]
+    E --> G[Notify scheduler]
+    F --> H[Update allocations]
 ```
 
 ## Fault Tolerance
@@ -266,8 +235,8 @@ Ra (Raft) ensures only one leader can exist:
 | Operation | Latency | Throughput |
 |-----------|---------|------------|
 | Job submission | < 1ms | 50,000/sec |
-| Scheduler decision | < 100µs | 10,000/sec |
-| Protocol encode | < 50µs | 100,000/sec |
+| Scheduler decision | < 100us | 10,000/sec |
+| Protocol encode | < 50us | 100,000/sec |
 | Raft commit | < 10ms | 1,000/sec |
 | Failover | < 1 sec | N/A |
 

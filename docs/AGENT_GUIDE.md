@@ -57,22 +57,20 @@ FLURM is a fault-tolerant job scheduler that:
 
 ### Architecture at a Glance
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                      Controller                          │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐     │
-│  │  Protocol   │  │    Core     │  │  Scheduler  │     │
-│  │  (decode/   │──│  (state     │──│  (plugins)  │     │
-│  │   encode)   │  │   mgmt)     │  │             │     │
-│  └─────────────┘  └─────────────┘  └─────────────┘     │
-│         │                │                │             │
-│         └────────────────┼────────────────┘             │
-│                          │                              │
-│                   ┌──────────────┐                      │
-│                   │  Consensus   │                      │
-│                   │   (Raft)     │                      │
-│                   └──────────────┘                      │
-└─────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph Controller
+        P[Protocol<br/>decode/encode]
+        C[Core<br/>state mgmt]
+        S[Scheduler<br/>plugins]
+        R[Consensus<br/>Raft]
+
+        P --> C
+        C --> S
+        P --> R
+        C --> R
+        S --> R
+    end
 ```
 
 ## Key Files and Their Purposes
