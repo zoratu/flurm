@@ -1,0 +1,98 @@
+# FLURM Docker Image for Migration Testing
+# Supports shadow mode for SLURM import
+# Based on Rocky Linux for Erlang compatibility
+
+FROM rockylinux:9 AS builder
+
+LABEL maintainer="FLURM Project"
+LABEL description="FLURM controller for migration testing"
+
+# Install Erlang and build dependencies
+RUN dnf install -y epel-release && \
+    dnf install -y --allowerasing \
+        erlang \
+        git \
+        make \
+        curl \
+        ca-certificates \
+    && dnf clean all
+
+# Install rebar3
+RUN curl -o /usr/local/bin/rebar3 https://s3.amazonaws.com/rebar3/rebar3 && \
+    chmod +x /usr/local/bin/rebar3
+
+# Set working directory for build
+WORKDIR /build
+
+# Copy source code
+COPY apps/ ./apps/
+COPY config/ ./config/
+COPY rebar.config ./
+COPY rebar.lock ./
+
+# Build FLURM
+RUN rebar3 compile
+
+# Runtime image
+FROM rockylinux:9
+
+# Install runtime dependencies
+RUN dnf install -y epel-release && \
+    dnf install -y --allowerasing \
+        erlang \
+        munge \
+        procps-ng \
+        iproute \
+        nc \
+        curl \
+        vim-minimal \
+        slurm \
+    && dnf clean all
+
+# Create flurm user and directories
+RUN useradd -r -s /bin/false flurm 2>/dev/null || true && \
+    mkdir -p \
+        /opt/flurm \
+        /var/lib/flurm \
+        /var/log/flurm \
+        /etc/flurm \
+        /shared/jobs \
+    && chown -R flurm:flurm /opt/flurm \
+    && chown -R flurm:flurm /var/lib/flurm \
+    && chown -R flurm:flurm /var/log/flurm \
+    && chown -R flurm:flurm /etc/flurm
+
+# Create MUNGE directories
+RUN mkdir -p /var/run/munge /var/log/munge \
+    && chown -R munge:munge /var/run/munge /var/log/munge
+
+# Copy built application from builder
+COPY --from=builder /build /opt/flurm/
+
+# Copy SLURM client config for import functionality
+COPY docker/config/slurm-client.conf /etc/slurm/slurm.conf
+
+# Copy FLURM configuration
+COPY docker/config/flurm-migration.config /etc/flurm/flurm.config
+COPY docker/config/vm.args.flurm /etc/flurm/vm.args
+
+# Copy startup scripts
+COPY docker/scripts/start-flurm-shadow.sh /usr/local/bin/start-flurm-shadow.sh
+COPY docker/scripts/start-flurm-active.sh /usr/local/bin/start-flurm-active.sh
+COPY docker/scripts/check-flurm-status.sh /usr/local/bin/check-flurm-status.sh
+COPY docker/scripts/trigger-import.sh /usr/local/bin/trigger-import.sh
+RUN chmod +x /usr/local/bin/*.sh
+
+# Expose FLURM ports
+# SLURM-compatible port: 6820
+# HTTP API/Metrics: 8080
+# Erlang distribution: 9100-9105
+EXPOSE 6820 8080 9100-9105
+
+# Environment variables
+ENV FLURM_CONFIG=/etc/flurm/flurm.config
+ENV FLURM_DATA=/var/lib/flurm
+ENV FLURM_LOG=/var/log/flurm
+
+# Start FLURM in shadow mode by default
+CMD ["/usr/local/bin/start-flurm-shadow.sh"]

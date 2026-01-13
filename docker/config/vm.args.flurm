@@ -1,0 +1,32 @@
+## FLURM VM Arguments for Migration Testing
+
+## Node name
+-name ${FLURM_NODE_NAME:-flurm@localhost}
+
+## Cookie for distribution
+-setcookie ${FLURM_COOKIE:-flurm_migration_test}
+
+## Heartbeat
+-heart
+
+## Enable SMP
+-smp auto
+
+## Async threads
++A 30
+
+## Max ports
++Q 65536
+
+## Max processes
++P 1048576
+
+## Kernel options
+-kernel inet_dist_listen_min 9100
+-kernel inet_dist_listen_max 9105
+
+## Logger config
+-kernel logger_level info
+
+## Shell history
+-kernel shell_history enabled

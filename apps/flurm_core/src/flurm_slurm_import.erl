@@ -138,7 +138,8 @@ handle_call({import_all, Opts}, _From, State) ->
         jobs => JobResult
     },
 
-    NewStats = State#state.stats#{
+    OldStats = State#state.stats,
+    NewStats = OldStats#{
         partitions_imported => count_imported(PartResult),
         nodes_imported => count_imported(NodeResult),
         jobs_imported => count_imported(JobResult),
@@ -354,9 +355,9 @@ import_jobs_to_flurm(Jobs) ->
         end
     end, Jobs),
 
-    Imported = length([R || {imported, _} <- Results]),
-    Updated = length([R || {updated, _} <- Results]),
-    Failed = length([R || {failed, _, _} <- Results]),
+    Imported = length([X || {imported, X} <- Results]),
+    Updated = length([X || {updated, X} <- Results]),
+    Failed = length([X || {failed, X, _} <- Results]),
 
     {ok, #{imported => Imported, updated => Updated, failed => Failed}}.
 
@@ -378,9 +379,9 @@ import_nodes_to_flurm(Nodes) ->
         end
     end, Nodes),
 
-    Imported = length([R || {imported, _} <- Results]),
-    Updated = length([R || {updated, _} <- Results]),
-    Failed = length([R || {failed, _, _} <- Results]),
+    Imported = length([X || {imported, X} <- Results]),
+    Updated = length([X || {updated, X} <- Results]),
+    Failed = length([X || {failed, X, _} <- Results]),
 
     {ok, #{imported => Imported, updated => Updated, failed => Failed}}.
 
@@ -399,9 +400,9 @@ import_partitions_to_flurm(Partitions) ->
         end
     end, Partitions),
 
-    Imported = length([R || {imported, _} <- Results]),
-    Updated = length([R || {updated, _} <- Results]),
-    Failed = length([R || {failed, _, _} <- Results]),
+    Imported = length([X || {imported, X} <- Results]),
+    Updated = length([X || {updated, X} <- Results]),
+    Failed = length([X || {failed, X, _} <- Results]),
 
     {ok, #{imported => Imported, updated => Updated, failed => Failed}}.
 

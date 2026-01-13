@@ -1,0 +1,100 @@
+# FLURM Docker Image for Migration Testing
+# Based on Debian slim with Erlang/OTP
+
+FROM debian:bookworm-slim AS builder
+
+LABEL maintainer="FLURM Project"
+LABEL description="FLURM controller for migration testing"
+
+# Avoid interactive prompts during package installation
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install Erlang and build dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    erlang \
+    erlang-dev \
+    erlang-dialyzer \
+    erlang-eunit \
+    rebar3 \
+    git \
+    make \
+    curl \
+    ca-certificates \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set working directory for build
+WORKDIR /build
+
+# Copy source code
+COPY apps/ ./apps/
+COPY config/ ./config/
+COPY rebar.config ./
+COPY rebar.lock ./
+
+# Build FLURM release
+RUN rebar3 as prod release -n flurmctld
+
+# Runtime image
+FROM debian:bookworm-slim
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    erlang-base \
+    erlang-crypto \
+    erlang-public-key \
+    erlang-ssl \
+    procps \
+    iproute2 \
+    netcat-openbsd \
+    curl \
+    vim-tiny \
+    # SLURM client tools for import
+    slurm-client \
+    munge \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create flurm user and directories
+RUN useradd -r -s /bin/false flurm \
+    && mkdir -p /opt/flurm \
+    /var/lib/flurm \
+    /var/log/flurm \
+    /etc/flurm \
+    && chown -R flurm:flurm /opt/flurm \
+    && chown -R flurm:flurm /var/lib/flurm \
+    && chown -R flurm:flurm /var/log/flurm \
+    && chown -R flurm:flurm /etc/flurm
+
+# Copy built release from builder
+COPY --from=builder /build/_build/prod/rel/flurmctld /opt/flurm/
+
+# Copy munge key for SLURM communication
+COPY config/munge.key /etc/munge/munge.key
+RUN chmod 400 /etc/munge/munge.key \
+    && chown munge:munge /etc/munge/munge.key
+
+# Copy configuration
+COPY config/flurm.config /etc/flurm/flurm.config
+COPY config/vm.args.docker /etc/flurm/vm.args
+
+# Copy startup scripts
+COPY scripts/start-flurm.sh /usr/local/bin/start-flurm.sh
+COPY scripts/check-flurm-status.sh /usr/local/bin/check-flurm-status.sh
+RUN chmod +x /usr/local/bin/*.sh
+
+# Expose FLURM ports
+# Controller: 6820
+# HTTP API: 8080
+# Erlang distribution: 9100-9105
+EXPOSE 6820 8080 9100-9105
+
+# Environment variables
+ENV FLURM_CONFIG=/etc/flurm/flurm.config
+ENV FLURM_DATA=/var/lib/flurm
+ENV FLURM_LOG=/var/log/flurm
+
+# Start FLURM
+CMD ["/usr/local/bin/start-flurm.sh"]

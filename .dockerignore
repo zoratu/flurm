@@ -8,4 +8,5 @@ rebar3.crashdump
 *.swo
 *~
 .DS_Store
-docker/
+docker/test-results/
+docker/*.log

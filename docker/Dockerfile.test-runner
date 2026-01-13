@@ -1,0 +1,65 @@
+# Test Runner Image for Migration Testing
+# Contains SLURM client tools and testing utilities
+
+FROM debian:bookworm-slim
+
+LABEL maintainer="FLURM Project"
+LABEL description="Test runner for SLURM to FLURM migration"
+
+# Avoid interactive prompts
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install SLURM client and testing tools
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    slurm-client \
+    munge \
+    curl \
+    jq \
+    netcat-openbsd \
+    procps \
+    vim-tiny \
+    bc \
+    bash \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create directories
+RUN mkdir -p \
+    /var/run/munge \
+    /var/log/munge \
+    /test-results \
+    /scripts \
+    /shared/jobs \
+    && chown -R munge:munge /var/run/munge /var/log/munge
+
+# Copy SLURM client configuration
+COPY config/slurm-client.conf /etc/slurm/slurm.conf
+
+# Copy test scripts
+COPY scripts/test-migration.sh /scripts/test-migration.sh
+COPY scripts/submit-test-jobs.sh /scripts/submit-test-jobs.sh
+COPY scripts/verify-import.sh /scripts/verify-import.sh
+COPY scripts/switch-traffic.sh /scripts/switch-traffic.sh
+RUN chmod +x /scripts/*.sh
+
+# Copy test job definitions
+COPY jobs/ /shared/jobs/
+RUN chmod +x /shared/jobs/*.sh 2>/dev/null || true
+
+# Create entrypoint that starts munge
+RUN echo '#!/bin/bash' > /entrypoint.sh && \
+    echo 'set -e' >> /entrypoint.sh && \
+    echo '# Fix munge permissions' >> /entrypoint.sh && \
+    echo 'chown -R munge:munge /etc/munge 2>/dev/null || true' >> /entrypoint.sh && \
+    echo 'chmod 700 /etc/munge 2>/dev/null || true' >> /entrypoint.sh && \
+    echo 'chmod 400 /etc/munge/munge.key 2>/dev/null || true' >> /entrypoint.sh && \
+    echo '# Start munge daemon' >> /entrypoint.sh && \
+    echo 'runuser -u munge -- /usr/sbin/munged 2>/dev/null || echo "MUNGE failed to start (may be OK)"' >> /entrypoint.sh && \
+    echo 'sleep 1' >> /entrypoint.sh && \
+    echo 'exec "$@"' >> /entrypoint.sh && \
+    chmod +x /entrypoint.sh
+
+WORKDIR /scripts
+
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["/bin/bash"]

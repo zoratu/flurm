@@ -1,0 +1,156 @@
+# FLURM Hot Migration Test Environment
+# Tests zero-downtime migration from SLURM to FLURM
+#
+# Usage:
+#   docker-compose -f docker-compose.migration.yml build
+#   docker-compose -f docker-compose.migration.yml up -d
+#   docker-compose -f docker-compose.migration.yml exec test-runner /scripts/test-migration.sh
+#   docker-compose -f docker-compose.migration.yml down -v
+
+services:
+  # ============================================
+  # SLURM CLUSTER
+  # ============================================
+
+  # SLURM Controller (slurmctld)
+  slurm-controller:
+    build:
+      context: .
+      dockerfile: Dockerfile.slurm-full
+    container_name: slurm-controller
+    hostname: slurm-controller
+    command: /usr/local/bin/start-slurm-controller.sh
+    volumes:
+      - slurm-state:/var/spool/slurm/ctld
+      - slurm-logs:/var/log/slurm
+      - munge-key:/etc/munge
+      - shared-jobs:/shared/jobs
+    networks:
+      migration-net:
+        ipv4_address: 172.30.0.10
+    ports:
+      - "6817:6817"
+    environment:
+      - SLURM_CLUSTER_NAME=migration-test
+    healthcheck:
+      test: ["CMD-SHELL", "scontrol ping 2>/dev/null | grep -q 'UP' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # SLURM Compute Node (slurmd)
+  slurm-node:
+    build:
+      context: .
+      dockerfile: Dockerfile.slurm-full
+    container_name: slurm-node
+    hostname: compute-node-1
+    command: /usr/local/bin/start-slurm-node.sh
+    volumes:
+      - slurm-logs:/var/log/slurm
+      - munge-key:/etc/munge
+      - shared-jobs:/shared/jobs
+    networks:
+      migration-net:
+        ipv4_address: 172.30.0.11
+    depends_on:
+      slurm-controller:
+        condition: service_healthy
+    environment:
+      - SLURM_CONTROLLER=slurm-controller
+    healthcheck:
+      test: ["CMD-SHELL", "sinfo -N -n compute-node-1 2>/dev/null | grep -q compute-node-1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  # ============================================
+  # FLURM CLUSTER
+  # ============================================
+
+  # FLURM Controller - starts in shadow mode
+  flurm-controller:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.flurm-migration
+    container_name: flurm-controller
+    hostname: flurm-controller
+    command: /usr/local/bin/start-flurm-shadow.sh
+    volumes:
+      - flurm-data:/var/lib/flurm
+      - flurm-logs:/var/log/flurm
+      - munge-key:/etc/munge
+      - shared-jobs:/shared/jobs
+    networks:
+      migration-net:
+        ipv4_address: 172.30.0.20
+    ports:
+      - "6820:6820"
+      - "8080:8080"
+    environment:
+      - FLURM_MODE=shadow
+      - SLURM_CONTROLLER_HOST=slurm-controller
+      - SLURM_CONTROLLER_PORT=6817
+      - FLURM_CLUSTER_NAME=migration-test
+      - FLURM_NODE_NAME=flurm@flurm-controller
+      - FLURM_COOKIE=flurm_migration_test
+    depends_on:
+      slurm-controller:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 45s
+
+  # ============================================
+  # TEST INFRASTRUCTURE
+  # ============================================
+
+  # Migration Test Runner
+  test-runner:
+    build:
+      context: .
+      dockerfile: Dockerfile.test-runner
+    container_name: test-runner
+    hostname: test-runner
+    volumes:
+      - ./scripts:/scripts:ro
+      - ./test-results:/test-results
+      - munge-key:/etc/munge
+      - shared-jobs:/shared/jobs
+    networks:
+      migration-net:
+        ipv4_address: 172.30.0.100
+    depends_on:
+      slurm-controller:
+        condition: service_healthy
+      slurm-node:
+        condition: service_healthy
+      flurm-controller:
+        condition: service_healthy
+    environment:
+      - SLURM_CONTROLLER=slurm-controller
+      - FLURM_CONTROLLER=flurm-controller
+      - TEST_RESULTS_DIR=/test-results
+    stdin_open: true
+    tty: true
+    command: ["sleep", "infinity"]
+
+networks:
+  migration-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.0.0/16
+
+volumes:
+  slurm-state:
+  slurm-logs:
+  flurm-data:
+  flurm-logs:
+  munge-key:
+  shared-jobs:
