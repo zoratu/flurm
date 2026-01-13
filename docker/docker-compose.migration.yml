@@ -47,10 +47,14 @@ services:
     container_name: slurm-node
     hostname: compute-node-1
     command: /usr/local/bin/start-slurm-node.sh
+    # Privileged mode for SLURM 22+ cgroup/v2 support
+    privileged: true
+    pid: host
     volumes:
       - slurm-logs:/var/log/slurm
       - munge-key:/etc/munge
       - shared-jobs:/shared/jobs
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
     networks:
       migration-net:
         ipv4_address: 172.30.0.11

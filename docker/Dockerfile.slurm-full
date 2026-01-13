@@ -12,6 +12,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # Install dependencies and SLURM
 # Note: Debian bookworm has SLURM 22.05 packages
+# dbus is required for SLURM 22+ cgroup/v2 support
 RUN apt-get update && apt-get install -y --no-install-recommends \
     slurm-wlm \
     slurm-client \
@@ -25,8 +26,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     vim-tiny \
     cgroup-tools \
+    dbus \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
+
+# Create dbus directories
+RUN mkdir -p /run/dbus && chmod 755 /run/dbus
 
 # Create necessary directories for SLURM
 RUN mkdir -p \

@@ -43,6 +43,22 @@ fi
 mkdir -p /var/spool/slurm/d /var/log/slurm /var/run/slurm
 chown -R slurm:slurm /var/spool/slurm /var/log/slurm /var/run/slurm
 
+# Start dbus daemon (required for SLURM 22+ cgroup/v2)
+echo "Starting D-Bus daemon..."
+mkdir -p /run/dbus
+dbus-daemon --system --fork 2>/dev/null || echo "D-Bus already running or not available"
+
+# Create cgroup directories for SLURM 22+ (workaround for non-systemd containers)
+echo "Setting up cgroup directories..."
+if [ -d /sys/fs/cgroup ]; then
+    # Create SLURM cgroup directories
+    mkdir -p /sys/fs/cgroup/system.slice/slurmstepd.scope 2>/dev/null || true
+    # Enable required controllers
+    if [ -f /sys/fs/cgroup/cgroup.subtree_control ]; then
+        echo "+cpu +memory +pids" > /sys/fs/cgroup/cgroup.subtree_control 2>/dev/null || true
+    fi
+fi
+
 # Wait for controller to be ready
 echo "Waiting for slurmctld to be ready..."
 for i in $(seq 1 30); do
