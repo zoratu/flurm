@@ -196,3 +196,183 @@ parse_line_test() ->
                  flurm_config_slurm:parse_line(<<"ClusterName=test">>)),
     ?assertEqual(comment, flurm_config_slurm:parse_line(<<"# comment">>)),
     ?assertEqual(empty, flurm_config_slurm:parse_line(<<"">>)).
+
+%%====================================================================
+%% File Parsing Tests
+%%====================================================================
+
+parse_file_test_() ->
+    {foreach,
+     fun() ->
+         file:make_dir("/tmp/flurm_slurm_test"),
+         ok
+     end,
+     fun(_) ->
+         file:del_dir_r("/tmp/flurm_slurm_test"),
+         ok
+     end,
+     [
+      {"Parse file - success", fun test_parse_file_success/0},
+      {"Parse file - error (not found)", fun test_parse_file_not_found/0},
+      {"Parse string as list (not binary)", fun test_parse_string_as_list/0}
+     ]}.
+
+test_parse_file_success() ->
+    TestFile = "/tmp/flurm_slurm_test/test.conf",
+    Content = "ClusterName=filetest\nSlurmctldPort=6817\n",
+    ok = file:write_file(TestFile, Content),
+    Result = flurm_config_slurm:parse_file(TestFile),
+    ?assertMatch({ok, _}, Result),
+    {ok, Config} = Result,
+    ?assertEqual(<<"filetest">>, maps:get(clustername, Config)),
+    ?assertEqual(6817, maps:get(slurmctldport, Config)).
+
+test_parse_file_not_found() ->
+    Result = flurm_config_slurm:parse_file("/tmp/flurm_slurm_test/nonexistent.conf"),
+    ?assertMatch({error, {file_error, _, enoent}}, Result).
+
+test_parse_string_as_list() ->
+    %% parse_string should accept list (string) input
+    Result = flurm_config_slurm:parse_string("ClusterName=listtest"),
+    ?assertMatch({ok, _}, Result),
+    {ok, Config} = Result,
+    ?assertEqual(<<"listtest">>, maps:get(clustername, Config)).
+
+%%====================================================================
+%% Additional Value Parsing Tests
+%%====================================================================
+
+additional_values_test_() ->
+    [
+     {"Parse UNLIMITED value", fun test_unlimited_value/0},
+     {"Parse Yes/No variants", fun test_yes_no_variants/0},
+     {"Parse FALSE boolean", fun test_false_boolean/0},
+     {"Parse invalid line (no equals)", fun test_invalid_line/0}
+    ].
+
+test_unlimited_value() ->
+    {ok, Config} = flurm_config_slurm:parse_string(<<"MaxJobCount=UNLIMITED">>),
+    ?assertEqual(unlimited, maps:get(maxjobcount, Config)).
+
+test_yes_no_variants() ->
+    %% Test lowercase yes/no
+    {ok, Config1} = flurm_config_slurm:parse_string(<<"Flag=yes">>),
+    ?assertEqual(true, maps:get(flag, Config1)),
+
+    {ok, Config2} = flurm_config_slurm:parse_string(<<"Flag=no">>),
+    ?assertEqual(false, maps:get(flag, Config2)),
+
+    %% Test mixed case Yes/No
+    {ok, Config3} = flurm_config_slurm:parse_string(<<"Flag=Yes">>),
+    ?assertEqual(true, maps:get(flag, Config3)),
+
+    {ok, Config4} = flurm_config_slurm:parse_string(<<"Flag=No">>),
+    ?assertEqual(false, maps:get(flag, Config4)).
+
+test_false_boolean() ->
+    {ok, Config} = flurm_config_slurm:parse_string(<<"Flag=FALSE">>),
+    ?assertEqual(false, maps:get(flag, Config)).
+
+test_invalid_line() ->
+    %% Lines without = should return error
+    Result = flurm_config_slurm:parse_line(<<"InvalidLineWithoutEquals">>),
+    ?assertMatch({error, {invalid_line, _}}, Result).
+
+%%====================================================================
+%% Line Continuation Tests
+%%====================================================================
+
+line_continuation_test_() ->
+    [
+     {"Simple line continuation", fun test_simple_continuation/0},
+     {"Multi-line continuation", fun test_multi_line_continuation/0}
+    ].
+
+test_simple_continuation() ->
+    Input = <<"ClusterName=\\\nmytest">>,
+    {ok, Config} = flurm_config_slurm:parse_string(Input),
+    ?assertEqual(<<"mytest">>, maps:get(clustername, Config)).
+
+test_multi_line_continuation() ->
+    Input = <<"Key1=value1\\\ncontinued">>,
+    {ok, Config} = flurm_config_slurm:parse_string(Input),
+    ?assertEqual(<<"value1continued">>, maps:get(key1, Config)).
+
+%%====================================================================
+%% Hostlist Expansion Edge Cases
+%%====================================================================
+
+hostlist_edge_cases_test_() ->
+    [
+     {"Expand hostlist with list input (not binary)", fun test_expand_list_input/0},
+     {"Expand hostlist without brackets", fun test_expand_no_brackets/0},
+     {"Expand hostlist with suffix", fun test_expand_with_suffix/0}
+    ].
+
+test_expand_list_input() ->
+    %% expand_hostlist should accept list (string) input
+    Result = flurm_config_slurm:expand_hostlist("node001"),
+    ?assertEqual([<<"node001">>], Result).
+
+test_expand_no_brackets() ->
+    Result = flurm_config_slurm:expand_hostlist("simplehost"),
+    ?assertEqual([<<"simplehost">>], Result).
+
+test_expand_with_suffix() ->
+    Result = flurm_config_slurm:expand_hostlist(<<"rack[1-3]-node01">>),
+    ?assertEqual([<<"rack1-node01">>, <<"rack2-node01">>, <<"rack3-node01">>], Result).
+
+%%====================================================================
+%% Time Parsing Edge Cases
+%%====================================================================
+
+time_parsing_test_() ->
+    [
+     {"Parse time with days and hours", fun test_time_days_hours/0},
+     {"Parse simple hours:minutes:seconds", fun test_time_hms/0},
+     {"String that looks like time but isn't", fun test_not_a_time/0}
+    ].
+
+test_time_days_hours() ->
+    %% 2 days, 3 hours, 30 minutes, 15 seconds
+    {ok, Config} = flurm_config_slurm:parse_string(<<"MaxTime=2-03:30:15">>),
+    Expected = 2 * 86400 + 3 * 3600 + 30 * 60 + 15,
+    ?assertEqual(Expected, maps:get(maxtime, Config)).
+
+test_time_hms() ->
+    %% 12 hours, 30 minutes, 45 seconds
+    {ok, Config} = flurm_config_slurm:parse_string(<<"MaxTime=12:30:45">>),
+    Expected = 12 * 3600 + 30 * 60 + 45,
+    ?assertEqual(Expected, maps:get(maxtime, Config)).
+
+test_not_a_time() ->
+    %% Something that looks like time but has invalid components
+    {ok, Config} = flurm_config_slurm:parse_string(<<"Key=abc:def:ghi">>),
+    %% Should be stored as binary since it's not a valid time
+    ?assertEqual(<<"abc:def:ghi">>, maps:get(key, Config)).
+
+%%====================================================================
+%% Node/Partition Definition Edge Cases
+%%====================================================================
+
+definition_edge_cases_test_() ->
+    [
+     {"Node definition with empty part", fun test_node_empty_part/0},
+     {"Partition definition parsing", fun test_partition_parsing/0}
+    ].
+
+test_node_empty_part() ->
+    %% Node definition where some parts might be invalid
+    Input = <<"NodeName=node001 CPUs=64  RealMemory=128000">>,  %% double space
+    {ok, Config} = flurm_config_slurm:parse_string(Input),
+    Nodes = maps:get(nodes, Config),
+    ?assertEqual(1, length(Nodes)).
+
+test_partition_parsing() ->
+    Input = <<"PartitionName=test State=UP Priority=1">>,
+    {ok, Config} = flurm_config_slurm:parse_string(Input),
+    Partitions = maps:get(partitions, Config),
+    ?assertEqual(1, length(Partitions)),
+    [Part] = Partitions,
+    ?assertEqual(<<"test">>, maps:get(partitionname, Part)),
+    ?assertEqual(1, maps:get(priority, Part)).

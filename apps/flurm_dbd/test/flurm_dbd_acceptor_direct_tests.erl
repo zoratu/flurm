@@ -1,0 +1,391 @@
+%%%-------------------------------------------------------------------
+%%% @doc Direct EUnit tests for flurm_dbd_acceptor module
+%%%
+%%% These tests call the actual flurm_dbd_acceptor functions directly
+%%% to achieve code coverage. External dependencies like ranch and
+%%% flurm_protocol_codec are mocked.
+%%%
+%%% @end
+%%%-------------------------------------------------------------------
+-module(flurm_dbd_acceptor_direct_tests).
+
+-include_lib("eunit/include/eunit.hrl").
+-include_lib("flurm_protocol/include/flurm_protocol.hrl").
+
+%%====================================================================
+%% Test fixtures
+%%====================================================================
+
+flurm_dbd_acceptor_test_() ->
+    {foreach,
+     fun setup/0,
+     fun cleanup/1,
+     [
+      {"start_link creates process", fun test_start_link/0}
+     ]}.
+
+setup() ->
+    %% Ensure meck is not already mocking
+    catch meck:unload(lager),
+
+    %% Mock lager
+    meck:new(lager, [no_link, non_strict]),
+    meck:expect(lager, debug, fun(_) -> ok end),
+    meck:expect(lager, debug, fun(_, _) -> ok end),
+    meck:expect(lager, info, fun(_) -> ok end),
+    meck:expect(lager, info, fun(_, _) -> ok end),
+    meck:expect(lager, warning, fun(_) -> ok end),
+    meck:expect(lager, warning, fun(_, _) -> ok end),
+    meck:expect(lager, error, fun(_, _) -> ok end),
+    ok.
+
+cleanup(_) ->
+    catch meck:unload(lager),
+    ok.
+
+%%====================================================================
+%% Basic Tests
+%%====================================================================
+
+test_start_link() ->
+    %% Mock ranch
+    catch meck:unload(ranch),
+    meck:new(ranch, [passthrough, unstick, no_link]),
+    meck:expect(ranch, handshake, fun(_) -> {ok, fake_socket} end),
+
+    %% Mock transport
+    catch meck:unload(ranch_tcp),
+    meck:new(ranch_tcp, [passthrough, unstick, no_link]),
+    meck:expect(ranch_tcp, setopts, fun(_, _) -> ok end),
+    meck:expect(ranch_tcp, peername, fun(_) -> {ok, {{127,0,0,1}, 12345}} end),
+    meck:expect(ranch_tcp, close, fun(_) -> ok end),
+
+    %% start_link spawns a process that immediately enters init
+    {ok, Pid} = flurm_dbd_acceptor:start_link(test_ref, ranch_tcp, #{}),
+    ?assert(is_pid(Pid)),
+
+    %% Give the process time to initialize, then check it started
+    timer:sleep(50),
+    %% The process will be in the loop waiting for tcp messages
+    %% Send tcp_closed to terminate cleanly
+    Pid ! {tcp_closed, fake_socket},
+    timer:sleep(20),
+
+    catch meck:unload(ranch_tcp),
+    catch meck:unload(ranch).
+
+%%====================================================================
+%% Message Handling Tests
+%%====================================================================
+
+message_handling_test_() ->
+    {foreach,
+     fun setup_message_handling/0,
+     fun cleanup_message_handling/1,
+     [
+      {"handle tcp_closed message", fun test_tcp_closed/0},
+      {"handle tcp_error message", fun test_tcp_error/0},
+      {"handle tcp data message", fun test_tcp_data/0},
+      {"handle unknown message", fun test_unknown_message/0},
+      {"process incomplete buffer", fun test_incomplete_buffer/0}
+     ]}.
+
+setup_message_handling() ->
+    catch meck:unload(lager),
+    catch meck:unload(ranch),
+    catch meck:unload(ranch_tcp),
+
+    meck:new(lager, [no_link, non_strict]),
+    meck:expect(lager, debug, fun(_) -> ok end),
+    meck:expect(lager, debug, fun(_, _) -> ok end),
+    meck:expect(lager, info, fun(_) -> ok end),
+    meck:expect(lager, info, fun(_, _) -> ok end),
+    meck:expect(lager, warning, fun(_) -> ok end),
+    meck:expect(lager, warning, fun(_, _) -> ok end),
+    meck:expect(lager, error, fun(_, _) -> ok end),
+
+    meck:new(ranch, [passthrough, unstick, no_link]),
+    meck:expect(ranch, handshake, fun(_) -> {ok, fake_socket} end),
+
+    meck:new(ranch_tcp, [passthrough, unstick, no_link]),
+    meck:expect(ranch_tcp, setopts, fun(_, _) -> ok end),
+    meck:expect(ranch_tcp, peername, fun(_) -> {ok, {{127,0,0,1}, 54321}} end),
+    meck:expect(ranch_tcp, close, fun(_) -> ok end),
+    meck:expect(ranch_tcp, send, fun(_, _) -> ok end),
+    ok.
+
+cleanup_message_handling(_) ->
+    catch meck:unload(ranch_tcp),
+    catch meck:unload(ranch),
+    catch meck:unload(lager),
+    catch meck:unload(flurm_protocol_codec),
+    ok.
+
+test_tcp_closed() ->
+    Pid = spawn(fun() ->
+        flurm_dbd_acceptor:init(test_ref, ranch_tcp, #{})
+    end),
+    timer:sleep(30),
+    Pid ! {tcp_closed, fake_socket},
+    timer:sleep(50),
+    ?assert(not is_process_alive(Pid)).
+
+test_tcp_error() ->
+    Pid = spawn(fun() ->
+        flurm_dbd_acceptor:init(test_ref, ranch_tcp, #{})
+    end),
+    timer:sleep(30),
+    Pid ! {tcp_error, fake_socket, econnreset},
+    timer:sleep(50),
+    ?assert(not is_process_alive(Pid)).
+
+test_tcp_data() ->
+    %% Mock protocol codec
+    catch meck:unload(flurm_protocol_codec),
+    meck:new(flurm_protocol_codec, [passthrough, no_link]),
+    meck:expect(flurm_protocol_codec, decode, fun(_) ->
+        {error, incomplete}
+    end),
+
+    Pid = spawn(fun() ->
+        flurm_dbd_acceptor:init(test_ref, ranch_tcp, #{})
+    end),
+    timer:sleep(30),
+
+    %% Send some data that's too small (less than 4 bytes for length)
+    Pid ! {tcp, fake_socket, <<1, 2>>},
+    timer:sleep(30),
+
+    %% Should still be alive waiting for more data
+    ?assert(is_process_alive(Pid)),
+
+    %% Close connection
+    Pid ! {tcp_closed, fake_socket},
+    timer:sleep(30).
+
+test_unknown_message() ->
+    Pid = spawn(fun() ->
+        flurm_dbd_acceptor:init(test_ref, ranch_tcp, #{})
+    end),
+    timer:sleep(30),
+
+    %% Send unknown message
+    Pid ! {unknown, message, type},
+    timer:sleep(30),
+
+    %% Should still be alive
+    ?assert(is_process_alive(Pid)),
+
+    %% Cleanup
+    Pid ! {tcp_closed, fake_socket},
+    timer:sleep(30).
+
+test_incomplete_buffer() ->
+    Pid = spawn(fun() ->
+        flurm_dbd_acceptor:init(test_ref, ranch_tcp, #{})
+    end),
+    timer:sleep(30),
+
+    %% Send partial length header (only 2 bytes of 4)
+    Pid ! {tcp, fake_socket, <<0, 0>>},
+    timer:sleep(30),
+
+    %% Should still be alive waiting for more
+    ?assert(is_process_alive(Pid)),
+
+    Pid ! {tcp_closed, fake_socket},
+    timer:sleep(30).
+
+%%====================================================================
+%% Protocol Message Type Tests
+%%====================================================================
+
+protocol_handling_test_() ->
+    {foreach,
+     fun setup_protocol/0,
+     fun cleanup_protocol/1,
+     [
+      {"handle ping request", fun test_handle_ping/0},
+      {"handle accounting update - job start", fun test_accounting_update_job_start/0},
+      {"handle accounting update - job end", fun test_accounting_update_job_end/0},
+      {"handle accounting update - step", fun test_accounting_update_step/0},
+      {"handle controller registration", fun test_controller_registration/0},
+      {"handle unsupported message", fun test_unsupported_message/0},
+      {"handle decode error", fun test_decode_error/0}
+     ]}.
+
+setup_protocol() ->
+    catch meck:unload(lager),
+    catch meck:unload(ranch),
+    catch meck:unload(ranch_tcp),
+    catch meck:unload(flurm_dbd_server),
+    catch meck:unload(flurm_protocol_codec),
+
+    meck:new(lager, [no_link, non_strict]),
+    meck:expect(lager, debug, fun(_) -> ok end),
+    meck:expect(lager, debug, fun(_, _) -> ok end),
+    meck:expect(lager, info, fun(_) -> ok end),
+    meck:expect(lager, info, fun(_, _) -> ok end),
+    meck:expect(lager, warning, fun(_) -> ok end),
+    meck:expect(lager, warning, fun(_, _) -> ok end),
+    meck:expect(lager, error, fun(_, _) -> ok end),
+
+    meck:new(ranch, [passthrough, unstick, no_link]),
+    meck:expect(ranch, handshake, fun(_) -> {ok, fake_socket} end),
+
+    meck:new(ranch_tcp, [passthrough, unstick, no_link]),
+    meck:expect(ranch_tcp, setopts, fun(_, _) -> ok end),
+    meck:expect(ranch_tcp, peername, fun(_) -> {ok, {{127,0,0,1}, 54321}} end),
+    meck:expect(ranch_tcp, close, fun(_) -> ok end),
+    meck:expect(ranch_tcp, send, fun(_, _) -> ok end),
+
+    meck:new(flurm_dbd_server, [passthrough, no_link]),
+    meck:expect(flurm_dbd_server, record_job_start, fun(_) -> ok end),
+    meck:expect(flurm_dbd_server, record_job_end, fun(_) -> ok end),
+    meck:expect(flurm_dbd_server, record_job_step, fun(_) -> ok end),
+
+    meck:new(flurm_protocol_codec, [passthrough, no_link]),
+    meck:expect(flurm_protocol_codec, message_type_name, fun(_) -> unknown end),
+    meck:expect(flurm_protocol_codec, encode, fun(_, _) -> {ok, <<0,0,0,4,"resp">>} end),
+    ok.
+
+cleanup_protocol(_) ->
+    catch meck:unload(flurm_protocol_codec),
+    catch meck:unload(flurm_dbd_server),
+    catch meck:unload(ranch_tcp),
+    catch meck:unload(ranch),
+    catch meck:unload(lager),
+    ok.
+
+make_msg(MsgType, Body) ->
+    %% Build message using proper records
+    Header = #slurm_header{msg_type = MsgType},
+    #slurm_msg{header = Header, body = Body}.
+
+test_handle_ping() ->
+    meck:expect(flurm_protocol_codec, decode, fun(_) ->
+        {ok, make_msg(?REQUEST_PING, #{}), <<>>}
+    end),
+
+    Pid = spawn(fun() ->
+        flurm_dbd_acceptor:init(test_ref, ranch_tcp, #{})
+    end),
+    timer:sleep(30),
+
+    Pid ! {tcp, fake_socket, <<0, 0, 0, 4, 0, 0, 0, 1>>},
+    timer:sleep(50),
+
+    Pid ! {tcp_closed, fake_socket},
+    timer:sleep(30).
+
+test_accounting_update_job_start() ->
+    meck:expect(flurm_protocol_codec, decode, fun(_) ->
+        Body = #{type => job_start, job_id => 1},
+        {ok, make_msg(?ACCOUNTING_UPDATE_MSG, Body), <<>>}
+    end),
+
+    Pid = spawn(fun() ->
+        flurm_dbd_acceptor:init(test_ref, ranch_tcp, #{})
+    end),
+    timer:sleep(30),
+
+    Pid ! {tcp, fake_socket, <<0, 0, 0, 10, "job_start_">>},
+    timer:sleep(50),
+
+    ?assert(meck:called(flurm_dbd_server, record_job_start, '_')),
+
+    Pid ! {tcp_closed, fake_socket},
+    timer:sleep(30).
+
+test_accounting_update_job_end() ->
+    meck:expect(flurm_protocol_codec, decode, fun(_) ->
+        Body = #{type => job_end, job_id => 1, exit_code => 0},
+        {ok, make_msg(?ACCOUNTING_UPDATE_MSG, Body), <<>>}
+    end),
+
+    Pid = spawn(fun() ->
+        flurm_dbd_acceptor:init(test_ref, ranch_tcp, #{})
+    end),
+    timer:sleep(30),
+
+    Pid ! {tcp, fake_socket, <<0, 0, 0, 8, "job_end_">>},
+    timer:sleep(50),
+
+    ?assert(meck:called(flurm_dbd_server, record_job_end, '_')),
+
+    Pid ! {tcp_closed, fake_socket},
+    timer:sleep(30).
+
+test_accounting_update_step() ->
+    meck:expect(flurm_protocol_codec, decode, fun(_) ->
+        Body = #{type => step, job_id => 1, step_id => 0},
+        {ok, make_msg(?ACCOUNTING_UPDATE_MSG, Body), <<>>}
+    end),
+
+    Pid = spawn(fun() ->
+        flurm_dbd_acceptor:init(test_ref, ranch_tcp, #{})
+    end),
+    timer:sleep(30),
+
+    Pid ! {tcp, fake_socket, <<0, 0, 0, 8, "step____">>},
+    timer:sleep(50),
+
+    ?assert(meck:called(flurm_dbd_server, record_job_step, '_')),
+
+    Pid ! {tcp_closed, fake_socket},
+    timer:sleep(30).
+
+test_controller_registration() ->
+    meck:expect(flurm_protocol_codec, decode, fun(_) ->
+        {ok, make_msg(?ACCOUNTING_REGISTER_CTLD, #{}), <<>>}
+    end),
+
+    Pid = spawn(fun() ->
+        flurm_dbd_acceptor:init(test_ref, ranch_tcp, #{})
+    end),
+    timer:sleep(30),
+
+    Pid ! {tcp, fake_socket, <<0, 0, 0, 4, "ctld">>},
+    timer:sleep(50),
+
+    %% Process should still be alive after handling controller registration
+    ?assert(is_process_alive(Pid)),
+
+    Pid ! {tcp_closed, fake_socket},
+    timer:sleep(30).
+
+test_unsupported_message() ->
+    meck:expect(flurm_protocol_codec, decode, fun(_) ->
+        {ok, make_msg(9999, #{}), <<>>}
+    end),
+
+    Pid = spawn(fun() ->
+        flurm_dbd_acceptor:init(test_ref, ranch_tcp, #{})
+    end),
+    timer:sleep(30),
+
+    Pid ! {tcp, fake_socket, <<0, 0, 0, 4, "unkn">>},
+    timer:sleep(50),
+
+    %% Process should still be alive after handling unsupported message
+    %% The response with return_code=-1 is sent back
+    ?assert(is_process_alive(Pid)),
+
+    Pid ! {tcp_closed, fake_socket},
+    timer:sleep(30).
+
+test_decode_error() ->
+    meck:expect(flurm_protocol_codec, decode, fun(_) ->
+        {error, invalid_message}
+    end),
+
+    Pid = spawn(fun() ->
+        flurm_dbd_acceptor:init(test_ref, ranch_tcp, #{})
+    end),
+    timer:sleep(30),
+
+    Pid ! {tcp, fake_socket, <<0, 0, 0, 4, "bad!">>},
+    timer:sleep(50),
+
+    %% Connection should be closed on decode error
+    ?assert(not is_process_alive(Pid)).

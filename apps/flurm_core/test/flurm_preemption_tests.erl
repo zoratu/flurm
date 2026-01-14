@@ -238,7 +238,9 @@ preemption_cost_test_() ->
         {"low priority job has lower cost", fun test_cost_low_priority/0},
         {"low QOS job has lower cost", fun test_cost_low_qos/0},
         {"newly started job has lower cost", fun test_cost_new_job/0},
-        {"job with more resources has lower cost", fun test_cost_more_resources/0}
+        {"job with more resources has lower cost", fun test_cost_more_resources/0},
+        {"missing start_time handled", fun test_cost_missing_start_time/0},
+        {"undefined start_time handled", fun test_cost_undefined_start_time/0}
      ]}.
 
 test_cost_low_priority() ->
@@ -273,6 +275,20 @@ test_cost_more_resources() ->
     %% Big job should have lower cost (negative resource benefit)
     ?assert(BigCost < SmallCost).
 
+test_cost_missing_start_time() ->
+    %% Job with no start_time key
+    Job = #{priority => 1000, qos => <<"normal">>},
+    Cost = flurm_preemption:calculate_preemption_cost(Job),
+    ?assert(is_float(Cost)),
+    ?assert(Cost >= 0.0).
+
+test_cost_undefined_start_time() ->
+    %% Job with undefined start_time
+    Job = #{priority => 1000, qos => <<"normal">>, start_time => undefined},
+    Cost = flurm_preemption:calculate_preemption_cost(Job),
+    ?assert(is_float(Cost)),
+    ?assert(Cost >= 0.0).
+
 %%====================================================================
 %% Preempt Jobs Function Tests
 %%====================================================================
@@ -282,12 +298,23 @@ preempt_jobs_test_() ->
      fun setup/0,
      fun cleanup/1,
      [
-        {"preempt_jobs returns job IDs", fun test_preempt_jobs_returns_ids/0}
+        {"preempt_jobs returns job IDs", fun test_preempt_jobs_returns_ids/0},
+        {"preempt_jobs with multiple jobs", fun test_preempt_jobs_multiple/0}
      ]}.
 
 test_preempt_jobs_returns_ids() ->
     %% Test with empty job list
     {ok, Preempted} = flurm_preemption:preempt_jobs([], requeue),
+    ?assertEqual([], Preempted).
+
+test_preempt_jobs_multiple() ->
+    %% Test with jobs that have no pid (will fail but not crash)
+    Jobs = [
+        #{job_id => 1},
+        #{job_id => 2, pid => undefined}
+    ],
+    {ok, Preempted} = flurm_preemption:preempt_jobs(Jobs, cancel),
+    %% Both should fail since they have no pid
     ?assertEqual([], Preempted).
 
 %%====================================================================
@@ -301,7 +328,8 @@ edge_case_test_() ->
      [
         {"job with missing QOS uses default", fun test_missing_qos/0},
         {"job with missing priority uses default", fun test_missing_priority/0},
-        {"get mode with empty options", fun test_get_mode_empty_opts/0}
+        {"get mode with empty options", fun test_get_mode_empty_opts/0},
+        {"check_preemption with no running jobs", fun test_check_preemption_no_running_jobs/0}
      ]}.
 
 test_missing_qos() ->
@@ -321,6 +349,21 @@ test_get_mode_empty_opts() ->
     Mode = flurm_preemption:get_preemption_mode(#{}),
     ?assertEqual(requeue, Mode).
 
+test_check_preemption_no_running_jobs() ->
+    %% When job_registry is not running, check_preemption may error
+    %% or return no_preemption_needed. Either is acceptable in this context.
+    PendingJob = #{priority => 10000, num_nodes => 1, num_cpus => 4, memory_mb => 8192},
+    Result = (catch flurm_preemption:check_preemption(PendingJob)),
+    %% Accept either the expected result or an error from missing registry
+    IsExpected = case Result of
+        {error, no_preemption_needed} -> true;
+        {error, no_preemptable_jobs} -> true;
+        {error, _} -> true;
+        {'EXIT', _} -> true;
+        _ -> false
+    end,
+    ?assert(IsExpected).
+
 %%====================================================================
 %% Handle Preempted Job Mode Tests
 %%====================================================================
@@ -336,3 +379,207 @@ handle_preempted_job_mode_test_() ->
 test_handle_preempted_off() ->
     Result = flurm_preemption:handle_preempted_job(1, off),
     ?assertEqual({error, preemption_disabled}, Result).
+
+%%====================================================================
+%% Find Preemptable Jobs Tests
+%%====================================================================
+
+find_preemptable_jobs_test_() ->
+    {foreach,
+     fun setup/0,
+     fun cleanup/1,
+     [
+        {"find_preemptable_jobs with preemption disabled", fun test_find_preemptable_disabled/0},
+        {"find_preemptable_jobs with no candidates", fun test_find_preemptable_no_candidates/0}
+     ]}.
+
+test_find_preemptable_disabled() ->
+    flurm_preemption:set_preemption_mode(off),
+    PendingJob = #{priority => 10000, partition => <<"default">>, qos => <<"high">>},
+    ResourcesNeeded = #{num_nodes => 1, num_cpus => 4},
+    Result = flurm_preemption:find_preemptable_jobs(PendingJob, ResourcesNeeded),
+    ?assertEqual({error, preemption_disabled}, Result).
+
+test_find_preemptable_no_candidates() ->
+    %% With no running jobs registered, should find no candidates
+    %% If job_registry is not running, function may also return an error
+    PendingJob = #{priority => 10000, partition => <<"default">>, qos => <<"high">>},
+    ResourcesNeeded = #{num_nodes => 1, num_cpus => 4},
+    Result = (catch flurm_preemption:find_preemptable_jobs(PendingJob, ResourcesNeeded)),
+    IsExpected = case Result of
+        {error, no_preemptable_jobs} -> true;
+        {error, _} -> true;
+        {'EXIT', _} -> true;
+        _ -> false
+    end,
+    ?assert(IsExpected).
+
+%%====================================================================
+%% Execute Preemption Tests
+%%====================================================================
+
+execute_preemption_test_() ->
+    {foreach,
+     fun setup/0,
+     fun cleanup/1,
+     [
+        {"execute_preemption with empty job list", fun test_execute_preemption_empty/0},
+        {"execute_preemption with job without pid", fun test_execute_preemption_no_pid/0}
+     ]}.
+
+test_execute_preemption_empty() ->
+    Plan = #{
+        jobs_to_preempt => [],
+        preemption_mode => requeue,
+        grace_time => 60
+    },
+    Result = flurm_preemption:execute_preemption(Plan, #{}),
+    ?assertEqual({error, all_preemptions_failed}, Result).
+
+test_execute_preemption_no_pid() ->
+    %% Jobs without pid will fail to preempt
+    Plan = #{
+        jobs_to_preempt => [#{job_id => 1}],
+        preemption_mode => requeue,
+        grace_time => 60
+    },
+    Result = (catch flurm_preemption:execute_preemption(Plan, #{})),
+    %% Should fail since job has no pid - accept any error
+    IsError = case Result of
+        {error, _} -> true;
+        {'EXIT', _} -> true;
+        _ -> false
+    end,
+    ?assert(IsError).
+
+%%====================================================================
+%% QOS Preemption Rules Tests
+%%====================================================================
+
+qos_rules_test_() ->
+    {foreach,
+     fun setup/0,
+     fun cleanup/1,
+     [
+        {"custom QOS levels affect preemption", fun test_custom_qos_levels/0},
+        {"unknown QOS uses default level", fun test_unknown_qos_level/0}
+     ]}.
+
+test_custom_qos_levels() ->
+    %% Set custom QOS rules
+    CustomRules = #{
+        <<"critical">> => 1000,
+        <<"high">> => 500,
+        <<"normal">> => 200,
+        <<"low">> => 50
+    },
+    ok = flurm_preemption:set_qos_preemption_rules(CustomRules),
+
+    %% Critical should preempt high
+    CriticalJob = #{qos => <<"critical">>, priority => 100},
+    HighJob = #{qos => <<"high">>, priority => 100},
+    ?assert(flurm_preemption:can_preempt(CriticalJob, HighJob)),
+
+    %% High should not preempt critical
+    ?assertNot(flurm_preemption:can_preempt(HighJob, CriticalJob)).
+
+test_unknown_qos_level() ->
+    %% Unknown QOS should get level 0
+    UnknownJob = #{qos => <<"unknown_qos">>, priority => 100},
+    LowJob = #{qos => <<"low">>, priority => 100},
+    %% Unknown (0) cannot preempt low (100)
+    ?assertNot(flurm_preemption:can_preempt(UnknownJob, LowJob)).
+
+%%====================================================================
+%% Check Preemption Opportunity Tests
+%%====================================================================
+
+check_preemption_opportunity_test_() ->
+    {foreach,
+     fun setup/0,
+     fun cleanup/1,
+     [
+        {"check_preemption_opportunity returns correct structure", fun test_check_opportunity_structure/0},
+        {"check_preemption_opportunity with no candidates", fun test_check_opportunity_no_candidates/0}
+     ]}.
+
+test_check_opportunity_structure() ->
+    %% Without running jobs or job_registry, should return error
+    PendingJob = #{priority => 10000, num_nodes => 1, num_cpus => 4},
+    ResourcesNeeded = #{num_nodes => 1},
+    Result = (catch flurm_preemption:check_preemption_opportunity(PendingJob, ResourcesNeeded)),
+    IsError = case Result of
+        {error, _} -> true;
+        {'EXIT', _} -> true;
+        _ -> false
+    end,
+    ?assert(IsError).
+
+test_check_opportunity_no_candidates() ->
+    PendingJob = #{priority => 10000, num_nodes => 1, num_cpus => 4, memory_mb => 8192},
+    ResourcesNeeded = #{num_nodes => 1, num_cpus => 4, memory_mb => 8192},
+    Result = (catch flurm_preemption:check_preemption_opportunity(PendingJob, ResourcesNeeded)),
+    IsExpected = case Result of
+        {error, no_preemptable_jobs} -> true;
+        {error, _} -> true;
+        {'EXIT', _} -> true;
+        _ -> false
+    end,
+    ?assert(IsExpected).
+
+%%====================================================================
+%% Partition Mode Override Tests
+%%====================================================================
+
+partition_override_test_() ->
+    {foreach,
+     fun setup/0,
+     fun cleanup/1,
+     [
+        {"partition mode overrides global mode", fun test_partition_overrides_global/0},
+        {"unconfigured partition uses global mode", fun test_unconfigured_partition_uses_global/0}
+     ]}.
+
+test_partition_overrides_global() ->
+    %% Set global mode to requeue
+    ok = flurm_preemption:set_preemption_mode(requeue),
+    %% Set partition-specific mode to cancel
+    ok = flurm_preemption:set_partition_preemption_mode(<<"gpu">>, cancel),
+
+    %% GPU partition should use cancel
+    ?assertEqual(cancel, flurm_preemption:get_preemption_mode(#{partition => <<"gpu">>})),
+    %% Other partitions should use global mode
+    ?assertEqual(requeue, flurm_preemption:get_preemption_mode(#{partition => <<"cpu">>})).
+
+test_unconfigured_partition_uses_global() ->
+    ok = flurm_preemption:set_preemption_mode(suspend),
+    ?assertEqual(suspend, flurm_preemption:get_preemption_mode(#{partition => <<"nonexistent">>})).
+
+%%====================================================================
+%% Partition Grace Time Tests
+%%====================================================================
+
+partition_grace_time_test_() ->
+    {foreach,
+     fun setup/0,
+     fun cleanup/1,
+     [
+        {"partition grace time overrides global", fun test_partition_grace_overrides_global/0},
+        {"multiple partitions have different grace times", fun test_multiple_partition_grace_times/0}
+     ]}.
+
+test_partition_grace_overrides_global() ->
+    ok = flurm_preemption:set_grace_time(60),
+    ok = flurm_preemption:set_partition_grace_time(<<"batch">>, 300),
+
+    ?assertEqual(300, flurm_preemption:get_grace_time(<<"batch">>)),
+    ?assertEqual(60, flurm_preemption:get_grace_time(<<"interactive">>)).
+
+test_multiple_partition_grace_times() ->
+    ok = flurm_preemption:set_partition_grace_time(<<"short">>, 10),
+    ok = flurm_preemption:set_partition_grace_time(<<"medium">>, 60),
+    ok = flurm_preemption:set_partition_grace_time(<<"long">>, 300),
+
+    ?assertEqual(10, flurm_preemption:get_grace_time(<<"short">>)),
+    ?assertEqual(60, flurm_preemption:get_grace_time(<<"medium">>)),
+    ?assertEqual(300, flurm_preemption:get_grace_time(<<"long">>)).

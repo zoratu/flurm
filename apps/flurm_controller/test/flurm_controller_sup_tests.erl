@@ -1,0 +1,211 @@
+%%%-------------------------------------------------------------------
+%%% @doc Tests for flurm_controller_sup module
+%%%
+%%% Tests the supervisor init/1, listener management, and configuration
+%%% parsing functions.
+%%% @end
+%%%-------------------------------------------------------------------
+-module(flurm_controller_sup_tests).
+
+-include_lib("eunit/include/eunit.hrl").
+
+%%====================================================================
+%% Test Fixtures
+%%====================================================================
+
+sup_test_() ->
+    {setup,
+     fun setup/0,
+     fun cleanup/1,
+     [
+         {"init/1 returns valid supervisor config", fun test_init/0},
+         {"start_link/0 starts supervisor", fun test_start_link/0},
+         {"listener functions work correctly", fun test_listener_functions/0},
+         {"node_listener functions work correctly", fun test_node_listener_functions/0}
+     ]}.
+
+setup() ->
+    %% Ensure required applications are started
+    application:ensure_all_started(lager),
+    application:ensure_all_started(ranch),
+
+    %% Disable cluster mode for tests
+    application:set_env(flurm_controller, enable_cluster, false),
+    application:unset_env(flurm_controller, cluster_nodes),
+
+    %% Set test configuration
+    TestPort = 28817 + (erlang:unique_integer([positive]) rem 1000),
+    NodePort = 28818 + (erlang:unique_integer([positive]) rem 1000),
+
+    application:set_env(flurm_controller, listen_port, TestPort),
+    application:set_env(flurm_controller, node_listen_port, NodePort),
+    application:set_env(flurm_controller, listen_address, "127.0.0.1"),
+    application:set_env(flurm_controller, num_acceptors, 2),
+    application:set_env(flurm_controller, max_connections, 50),
+    application:set_env(flurm_controller, max_node_connections, 25),
+
+    #{test_port => TestPort, node_port => NodePort}.
+
+cleanup(_) ->
+    %% Stop supervisor if running
+    case whereis(flurm_controller_sup) of
+        undefined -> ok;
+        Pid ->
+            %% Stop listeners first
+            catch flurm_controller_sup:stop_listener(),
+            catch flurm_controller_sup:stop_node_listener(),
+            catch exit(Pid, shutdown)
+    end,
+    timer:sleep(100),
+    ok.
+
+%%====================================================================
+%% Test Cases
+%%====================================================================
+
+test_init() ->
+    %% Call init/1 directly to test supervisor config
+    {ok, {SupFlags, Children}} = flurm_controller_sup:init([]),
+
+    %% Verify supervisor flags
+    ?assertMatch(#{strategy := one_for_one}, SupFlags),
+    ?assertMatch(#{intensity := _, period := _}, SupFlags),
+
+    %% Verify we have children
+    ?assert(is_list(Children)),
+    ?assert(length(Children) > 0),
+
+    %% Verify each child spec is valid
+    lists:foreach(fun(ChildSpec) ->
+        ?assert(maps:is_key(id, ChildSpec)),
+        ?assert(maps:is_key(start, ChildSpec)),
+        ?assert(maps:is_key(restart, ChildSpec)),
+        ?assert(maps:is_key(type, ChildSpec))
+    end, Children),
+
+    ok.
+
+test_start_link() ->
+    %% Check if supervisor already running
+    case whereis(flurm_controller_sup) of
+        undefined ->
+            %% Start the supervisor
+            {ok, Pid} = flurm_controller_sup:start_link(),
+            ?assert(is_pid(Pid)),
+            ?assertEqual(Pid, whereis(flurm_controller_sup));
+        Pid ->
+            %% Already running, just verify
+            ?assert(is_pid(Pid)),
+            ?assertEqual(Pid, whereis(flurm_controller_sup))
+    end,
+    ok.
+
+test_listener_functions() ->
+    %% Ensure supervisor is running
+    ensure_supervisor_running(),
+
+    %% Stop any existing listener
+    catch flurm_controller_sup:stop_listener(),
+    timer:sleep(100),
+
+    %% Start listener
+    {ok, ListenerPid} = flurm_controller_sup:start_listener(),
+    ?assert(is_pid(ListenerPid)),
+
+    %% Get listener info
+    Info = flurm_controller_sup:listener_info(),
+    ?assert(is_map(Info)),
+    ?assert(maps:is_key(port, Info)),
+    ?assertEqual(running, maps:get(status, Info)),
+
+    %% Stop listener
+    ok = flurm_controller_sup:stop_listener(),
+    timer:sleep(100),
+
+    %% Info should return error now
+    ?assertEqual({error, not_found}, flurm_controller_sup:listener_info()),
+
+    ok.
+
+test_node_listener_functions() ->
+    %% Ensure supervisor is running
+    ensure_supervisor_running(),
+
+    %% Stop any existing node listener
+    catch flurm_controller_sup:stop_node_listener(),
+    timer:sleep(100),
+
+    %% Start node listener
+    {ok, ListenerPid} = flurm_controller_sup:start_node_listener(),
+    ?assert(is_pid(ListenerPid)),
+
+    %% Get node listener info
+    Info = flurm_controller_sup:node_listener_info(),
+    ?assert(is_map(Info)),
+    ?assert(maps:is_key(port, Info)),
+    ?assertEqual(running, maps:get(status, Info)),
+
+    %% Stop node listener
+    ok = flurm_controller_sup:stop_node_listener(),
+    timer:sleep(100),
+
+    %% Info should return error now
+    ?assertEqual({error, not_found}, flurm_controller_sup:node_listener_info()),
+
+    ok.
+
+%%====================================================================
+%% Helper Functions
+%%====================================================================
+
+ensure_supervisor_running() ->
+    case whereis(flurm_controller_sup) of
+        undefined ->
+            {ok, _} = flurm_controller_sup:start_link();
+        _Pid ->
+            ok
+    end.
+
+%%====================================================================
+%% Additional Unit Tests
+%%====================================================================
+
+%% Test address parsing
+parse_address_test_() ->
+    [
+        {"Parse 0.0.0.0", fun() ->
+            ?assertEqual({0, 0, 0, 0}, flurm_controller_sup:parse_address("0.0.0.0"))
+        end},
+        {"Parse :: (IPv6)", fun() ->
+            ?assertEqual({0, 0, 0, 0, 0, 0, 0, 0}, flurm_controller_sup:parse_address("::"))
+        end},
+        {"Parse IPv4 address", fun() ->
+            ?assertEqual({127, 0, 0, 1}, flurm_controller_sup:parse_address("127.0.0.1"))
+        end},
+        {"Parse tuple passthrough", fun() ->
+            ?assertEqual({192, 168, 1, 1}, flurm_controller_sup:parse_address({192, 168, 1, 1}))
+        end},
+        {"Invalid address falls back to 0.0.0.0", fun() ->
+            ?assertEqual({0, 0, 0, 0}, flurm_controller_sup:parse_address("invalid"))
+        end}
+    ].
+
+%% Test cluster enabled detection
+cluster_enabled_test_() ->
+    {setup,
+     fun() ->
+         application:set_env(flurm_controller, enable_cluster, false)
+     end,
+     fun(_) ->
+         application:unset_env(flurm_controller, enable_cluster)
+     end,
+     fun(_) ->
+         {"Cluster disabled returns false in init children", fun() ->
+             {ok, {_, Children}} = flurm_controller_sup:init([]),
+             %% When cluster disabled, should not have cluster children
+             ClusterChild = lists:filter(fun(C) ->
+                 maps:get(id, C) =:= flurm_controller_cluster
+             end, Children),
+             ?assertEqual([], ClusterChild)
+         end}
+     end}.

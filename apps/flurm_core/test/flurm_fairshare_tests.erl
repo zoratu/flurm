@@ -1,8 +1,18 @@
 %%%-------------------------------------------------------------------
-%%% @doc Tests for flurm_fairshare module
+%%% @doc Comprehensive Tests for flurm_fairshare module
+%%%
+%%% Tests the fair-share scheduling system including:
+%%% - Share allocation and retrieval
+%%% - Usage tracking and recording
+%%% - Priority factor calculation
+%%% - Usage decay mechanism
+%%% - Gen_server callbacks
+%%%
+%%% @end
 %%%-------------------------------------------------------------------
 -module(flurm_fairshare_tests).
 -include_lib("eunit/include/eunit.hrl").
+-include("flurm_core.hrl").
 
 %%====================================================================
 %% Test Setup/Teardown
@@ -18,87 +28,126 @@ setup() ->
             {existing, Pid}
     end.
 
-cleanup({started, _Pid}) ->
+cleanup({started, Pid}) ->
+    %% Stop the server first
+    catch gen_server:stop(Pid, shutdown, 5000),
     %% Clean up ETS tables
     catch ets:delete(flurm_fairshare_usage),
     catch ets:delete(flurm_fairshare_shares),
-    gen_server:stop(flurm_fairshare);
+    ok;
 cleanup({existing, _Pid}) ->
     ok.
 
-fairshare_test_() ->
+%%====================================================================
+%% Basic Shares Tests
+%%====================================================================
+
+shares_test_() ->
     {foreach,
      fun setup/0,
      fun cleanup/1,
      [
-      {"initial priority factor", fun test_initial_priority/0},
-      {"set and get shares", fun test_set_get_shares/0},
-      {"record usage", fun test_record_usage/0},
-      {"priority factor after usage", fun test_priority_after_usage/0},
-      {"reset usage", fun test_reset_usage/0}
+        {"default shares value", fun test_default_shares/0},
+        {"set and get shares", fun test_set_get_shares/0},
+        {"multiple users different shares", fun test_multiple_users_shares/0},
+        {"update existing shares", fun test_update_shares/0}
      ]}.
 
-%%====================================================================
-%% Test Cases
-%%====================================================================
-
-test_initial_priority() ->
-    %% New user with no usage should have high priority factor
-    Factor = flurm_fairshare:get_priority_factor(<<"newuser">>, <<"account">>),
-    %% With no total usage, should be close to 1.0
-    ?assert(Factor >= 0.0),
-    ?assert(Factor =< 1.0).
+test_default_shares() ->
+    User = <<"newuser">>,
+    Account = <<"newaccount">>,
+    %% User with no configured shares should get default (1)
+    {ok, Shares} = flurm_fairshare:get_shares(User, Account),
+    ?assertEqual(1, Shares).
 
 test_set_get_shares() ->
     User = <<"testuser">>,
     Account = <<"testaccount">>,
 
-    %% Default shares should be 1
-    {ok, DefaultShares} = flurm_fairshare:get_shares(User, Account),
-    ?assertEqual(1, DefaultShares),
-
-    %% Set custom shares
+    %% Set shares
     ok = flurm_fairshare:set_shares(User, Account, 100),
 
     %% Retrieve should match
+    {ok, Shares} = flurm_fairshare:get_shares(User, Account),
+    ?assertEqual(100, Shares).
+
+test_multiple_users_shares() ->
+    User1 = <<"user1">>,
+    User2 = <<"user2">>,
+    Account = <<"account">>,
+
+    ok = flurm_fairshare:set_shares(User1, Account, 50),
+    ok = flurm_fairshare:set_shares(User2, Account, 150),
+
+    {ok, Shares1} = flurm_fairshare:get_shares(User1, Account),
+    {ok, Shares2} = flurm_fairshare:get_shares(User2, Account),
+
+    ?assertEqual(50, Shares1),
+    ?assertEqual(150, Shares2).
+
+test_update_shares() ->
+    User = <<"updateuser">>,
+    Account = <<"updateaccount">>,
+
+    %% Set initial shares
+    ok = flurm_fairshare:set_shares(User, Account, 10),
+    {ok, InitShares} = flurm_fairshare:get_shares(User, Account),
+    ?assertEqual(10, InitShares),
+
+    %% Update shares
+    ok = flurm_fairshare:set_shares(User, Account, 500),
     {ok, NewShares} = flurm_fairshare:get_shares(User, Account),
-    ?assertEqual(100, NewShares).
+    ?assertEqual(500, NewShares).
+
+%%====================================================================
+%% Usage Recording Tests
+%%====================================================================
+
+usage_test_() ->
+    {foreach,
+     fun setup/0,
+     fun cleanup/1,
+     [
+        {"initial usage is zero", fun test_initial_usage_zero/0},
+        {"record usage increases total", fun test_record_usage/0},
+        {"cumulative usage", fun test_cumulative_usage/0},
+        {"reset usage", fun test_reset_usage/0},
+        {"reset nonexistent usage", fun test_reset_nonexistent_usage/0}
+     ]}.
+
+test_initial_usage_zero() ->
+    User = <<"freshuser">>,
+    Account = <<"freshaccount">>,
+    {ok, Usage} = flurm_fairshare:get_usage(User, Account),
+    ?assertEqual(0.0, Usage).
 
 test_record_usage() ->
     User = <<"usageuser">>,
     Account = <<"usageaccount">>,
 
-    %% Initial usage should be 0
-    {ok, InitUsage} = flurm_fairshare:get_usage(User, Account),
-    ?assertEqual(0.0, InitUsage),
-
-    %% Record some CPU usage
+    %% Record CPU usage
     flurm_fairshare:record_usage(User, Account, 1000, 100),
+    timer:sleep(50),  % Allow cast to complete
 
     %% Usage should increase
-    {ok, NewUsage} = flurm_fairshare:get_usage(User, Account),
-    ?assertEqual(1000.0, NewUsage).
+    {ok, Usage} = flurm_fairshare:get_usage(User, Account),
+    ?assertEqual(1000.0, Usage).
 
-test_priority_after_usage() ->
-    User1 = <<"heavyuser">>,
-    User2 = <<"lightuser">>,
-    Account = <<"sharedaccount">>,
+test_cumulative_usage() ->
+    User = <<"cumulativeuser">>,
+    Account = <<"cumulativeaccount">>,
 
-    %% Set equal shares
-    flurm_fairshare:set_shares(User1, Account, 100),
-    flurm_fairshare:set_shares(User2, Account, 100),
+    %% Record multiple usages
+    flurm_fairshare:record_usage(User, Account, 100, 10),
+    timer:sleep(50),
+    flurm_fairshare:record_usage(User, Account, 200, 20),
+    timer:sleep(50),
+    flurm_fairshare:record_usage(User, Account, 300, 30),
+    timer:sleep(50),
 
-    %% Record heavy usage for User1
-    flurm_fairshare:record_usage(User1, Account, 10000, 1000),
-
-    %% Record light usage for User2
-    flurm_fairshare:record_usage(User2, Account, 100, 10),
-
-    %% Heavy user should have lower priority
-    Factor1 = flurm_fairshare:get_priority_factor(User1, Account),
-    Factor2 = flurm_fairshare:get_priority_factor(User2, Account),
-
-    ?assert(Factor2 > Factor1).
+    %% Usage should be cumulative
+    {ok, Usage} = flurm_fairshare:get_usage(User, Account),
+    ?assertEqual(600.0, Usage).
 
 test_reset_usage() ->
     User = <<"resetuser">>,
@@ -106,6 +155,7 @@ test_reset_usage() ->
 
     %% Record some usage
     flurm_fairshare:record_usage(User, Account, 5000, 500),
+    timer:sleep(50),
 
     %% Verify usage exists
     {ok, Usage} = flurm_fairshare:get_usage(User, Account),
@@ -113,7 +163,329 @@ test_reset_usage() ->
 
     %% Reset
     flurm_fairshare:reset_usage(User, Account),
+    timer:sleep(50),
 
     %% Should be back to 0
     {ok, ResetUsage} = flurm_fairshare:get_usage(User, Account),
     ?assertEqual(0.0, ResetUsage).
+
+test_reset_nonexistent_usage() ->
+    %% Reset on non-existent user should not crash
+    flurm_fairshare:reset_usage(<<"nonexistent">>, <<"account">>),
+    timer:sleep(50),
+    %% Server should still be responsive
+    {ok, _} = flurm_fairshare:get_usage(<<"other">>, <<"account">>).
+
+%%====================================================================
+%% Priority Factor Tests
+%%====================================================================
+
+priority_factor_test_() ->
+    {foreach,
+     fun setup/0,
+     fun cleanup/1,
+     [
+        {"initial priority factor", fun test_initial_priority/0},
+        {"priority factor range", fun test_priority_factor_range/0},
+        {"heavy user gets lower priority", fun test_heavy_user_lower_priority/0},
+        {"light user gets higher priority", fun test_light_user_higher_priority/0},
+        {"equal usage equal priority", fun test_equal_usage_equal_priority/0}
+     ]}.
+
+test_initial_priority() ->
+    %% New user with no usage should have valid priority factor
+    Factor = flurm_fairshare:get_priority_factor(<<"newuser">>, <<"newaccount">>),
+    ?assert(Factor >= 0.0),
+    ?assert(Factor =< 1.0).
+
+test_priority_factor_range() ->
+    User = <<"rangeuser">>,
+    Account = <<"rangeaccount">>,
+
+    %% Set shares and record various usage levels
+    ok = flurm_fairshare:set_shares(User, Account, 100),
+
+    %% Check that factor is always in valid range
+    Factor1 = flurm_fairshare:get_priority_factor(User, Account),
+    ?assert(Factor1 >= 0.0 andalso Factor1 =< 1.0),
+
+    %% Record usage
+    flurm_fairshare:record_usage(User, Account, 10000, 1000),
+    timer:sleep(50),
+
+    Factor2 = flurm_fairshare:get_priority_factor(User, Account),
+    ?assert(Factor2 >= 0.0 andalso Factor2 =< 1.0).
+
+test_heavy_user_lower_priority() ->
+    HeavyUser = <<"heavyuser">>,
+    LightUser = <<"lightuser">>,
+    Account = <<"sharedaccount">>,
+
+    %% Set equal shares
+    ok = flurm_fairshare:set_shares(HeavyUser, Account, 100),
+    ok = flurm_fairshare:set_shares(LightUser, Account, 100),
+
+    %% Record heavy usage for one user
+    flurm_fairshare:record_usage(HeavyUser, Account, 50000, 5000),
+    timer:sleep(50),
+
+    %% Record light usage for other
+    flurm_fairshare:record_usage(LightUser, Account, 100, 10),
+    timer:sleep(50),
+
+    %% Heavy user should have lower priority
+    HeavyFactor = flurm_fairshare:get_priority_factor(HeavyUser, Account),
+    LightFactor = flurm_fairshare:get_priority_factor(LightUser, Account),
+
+    ?assert(LightFactor > HeavyFactor).
+
+test_light_user_higher_priority() ->
+    User1 = <<"user1">>,
+    User2 = <<"user2">>,
+    Account = <<"account">>,
+
+    %% User1 has more shares
+    ok = flurm_fairshare:set_shares(User1, Account, 500),
+    ok = flurm_fairshare:set_shares(User2, Account, 100),
+
+    %% Same usage
+    flurm_fairshare:record_usage(User1, Account, 1000, 100),
+    flurm_fairshare:record_usage(User2, Account, 1000, 100),
+    timer:sleep(50),
+
+    %% User with more shares should have higher priority
+    Factor1 = flurm_fairshare:get_priority_factor(User1, Account),
+    Factor2 = flurm_fairshare:get_priority_factor(User2, Account),
+
+    %% User1 used less of their share, should have higher factor
+    ?assert(Factor1 > Factor2).
+
+test_equal_usage_equal_priority() ->
+    User1 = <<"equaluser1">>,
+    User2 = <<"equaluser2">>,
+    Account = <<"equalaccount">>,
+
+    %% Equal shares
+    ok = flurm_fairshare:set_shares(User1, Account, 100),
+    ok = flurm_fairshare:set_shares(User2, Account, 100),
+
+    %% Equal usage
+    flurm_fairshare:record_usage(User1, Account, 5000, 500),
+    flurm_fairshare:record_usage(User2, Account, 5000, 500),
+    timer:sleep(50),
+
+    %% Should have approximately equal priority
+    Factor1 = flurm_fairshare:get_priority_factor(User1, Account),
+    Factor2 = flurm_fairshare:get_priority_factor(User2, Account),
+
+    %% Allow small tolerance for floating point
+    ?assert(abs(Factor1 - Factor2) < 0.01).
+
+%%====================================================================
+%% Decay Tests
+%%====================================================================
+
+decay_test_() ->
+    {foreach,
+     fun setup/0,
+     fun cleanup/1,
+     [
+        {"manual decay doesn't crash", fun test_manual_decay/0},
+        {"decay reduces usage", fun test_decay_reduces_usage/0}
+     ]}.
+
+test_manual_decay() ->
+    %% Manual decay should not crash
+    ok = flurm_fairshare:decay_usage(),
+    timer:sleep(50),
+    %% Server should still be responsive
+    {ok, _} = flurm_fairshare:get_shares(<<"user">>, <<"account">>).
+
+test_decay_reduces_usage() ->
+    User = <<"decayuser">>,
+    Account = <<"decayaccount">>,
+
+    %% Record some usage
+    flurm_fairshare:record_usage(User, Account, 10000, 1000),
+    timer:sleep(50),
+
+    {ok, InitUsage} = flurm_fairshare:get_usage(User, Account),
+    ?assertEqual(10000.0, InitUsage),
+
+    %% Trigger decay
+    ok = flurm_fairshare:decay_usage(),
+    timer:sleep(50),
+
+    %% Usage should decrease (or be deleted if < 0.01)
+    {ok, NewUsage} = flurm_fairshare:get_usage(User, Account),
+    ?assert(NewUsage < InitUsage).
+
+%%====================================================================
+%% Get All Accounts Tests
+%%====================================================================
+
+all_accounts_test_() ->
+    {foreach,
+     fun setup/0,
+     fun cleanup/1,
+     [
+        {"get all accounts empty", fun test_get_all_accounts_empty/0},
+        {"get all accounts with data", fun test_get_all_accounts_with_data/0}
+     ]}.
+
+test_get_all_accounts_empty() ->
+    Accounts = flurm_fairshare:get_all_accounts(),
+    ?assert(is_list(Accounts)),
+    ?assertEqual([], Accounts).
+
+test_get_all_accounts_with_data() ->
+    User1 = <<"account1user">>,
+    User2 = <<"account2user">>,
+    Account1 = <<"account1">>,
+    Account2 = <<"account2">>,
+
+    %% Set up some accounts
+    ok = flurm_fairshare:set_shares(User1, Account1, 100),
+    ok = flurm_fairshare:set_shares(User2, Account2, 200),
+
+    flurm_fairshare:record_usage(User1, Account1, 1000, 100),
+    flurm_fairshare:record_usage(User2, Account2, 2000, 200),
+    timer:sleep(50),
+
+    %% Get all accounts
+    Accounts = flurm_fairshare:get_all_accounts(),
+    ?assert(is_list(Accounts)),
+    ?assertEqual(2, length(Accounts)),
+
+    %% Check structure of returned data
+    lists:foreach(fun({User, Account, Usage, Shares}) ->
+        ?assert(is_binary(User)),
+        ?assert(is_binary(Account)),
+        ?assert(is_float(Usage) orelse is_integer(Usage)),
+        ?assert(is_integer(Shares))
+    end, Accounts).
+
+%%====================================================================
+%% Gen Server Callback Tests
+%%====================================================================
+
+gen_server_callback_test_() ->
+    {foreach,
+     fun setup/0,
+     fun cleanup/1,
+     [
+        {"unknown call returns error", fun test_unknown_call/0},
+        {"unknown cast doesn't crash", fun test_unknown_cast/0},
+        {"unknown info doesn't crash", fun test_unknown_info/0}
+     ]}.
+
+test_unknown_call() ->
+    Result = gen_server:call(flurm_fairshare, {unknown_request}),
+    ?assertEqual({error, unknown_request}, Result).
+
+test_unknown_cast() ->
+    gen_server:cast(flurm_fairshare, {unknown_message}),
+    timer:sleep(50),
+    %% Should not crash - verify server still responds
+    {ok, _} = flurm_fairshare:get_shares(<<"user">>, <<"account">>).
+
+test_unknown_info() ->
+    flurm_fairshare ! unknown_message,
+    timer:sleep(50),
+    %% Should not crash - verify server still responds
+    {ok, _} = flurm_fairshare:get_shares(<<"user">>, <<"account">>).
+
+%%====================================================================
+%% Edge Case Tests
+%%====================================================================
+
+edge_case_test_() ->
+    {foreach,
+     fun setup/0,
+     fun cleanup/1,
+     [
+        {"zero shares handling", fun test_zero_shares/0},
+        {"very large usage", fun test_large_usage/0},
+        {"multiple accounts same user", fun test_multiple_accounts_same_user/0}
+     ]}.
+
+test_zero_shares() ->
+    %% Test with very small shares (shouldn't be exactly zero but test edge case)
+    User = <<"zeroshareuser">>,
+    Account = <<"zeroshareaccount">>,
+
+    %% Record usage without setting shares (will use default of 1)
+    flurm_fairshare:record_usage(User, Account, 1000, 100),
+    timer:sleep(50),
+
+    %% Should still get valid factor
+    Factor = flurm_fairshare:get_priority_factor(User, Account),
+    ?assert(Factor >= 0.0),
+    ?assert(Factor =< 1.0).
+
+test_large_usage() ->
+    User = <<"largeuseuser">>,
+    Account = <<"largeusageaccount">>,
+
+    ok = flurm_fairshare:set_shares(User, Account, 100),
+
+    %% Record very large usage
+    flurm_fairshare:record_usage(User, Account, 1000000000, 100000000),
+    timer:sleep(50),
+
+    %% Should still get valid factor
+    Factor = flurm_fairshare:get_priority_factor(User, Account),
+    ?assert(Factor >= 0.0),
+    ?assert(Factor =< 1.0).
+
+test_multiple_accounts_same_user() ->
+    User = <<"multiaccountuser">>,
+    Account1 = <<"multiaccount1">>,
+    Account2 = <<"multiaccount2">>,
+
+    ok = flurm_fairshare:set_shares(User, Account1, 100),
+    ok = flurm_fairshare:set_shares(User, Account2, 200),
+
+    flurm_fairshare:record_usage(User, Account1, 1000, 100),
+    flurm_fairshare:record_usage(User, Account2, 2000, 200),
+    timer:sleep(50),
+
+    %% Each account should have independent usage tracking
+    {ok, Usage1} = flurm_fairshare:get_usage(User, Account1),
+    {ok, Usage2} = flurm_fairshare:get_usage(User, Account2),
+
+    ?assertEqual(1000.0, Usage1),
+    ?assertEqual(2000.0, Usage2).
+
+%%====================================================================
+%% Lifecycle Tests
+%%====================================================================
+
+lifecycle_test_() ->
+    {setup,
+     fun() -> ok end,
+     fun(_) -> ok end,
+     fun(_) ->
+         [
+             {"start and stop cleanly", fun test_lifecycle/0}
+         ]
+     end}.
+
+test_lifecycle() ->
+    %% Start fresh
+    catch ets:delete(flurm_fairshare_usage),
+    catch ets:delete(flurm_fairshare_shares),
+    catch gen_server:stop(flurm_fairshare, shutdown, 5000),
+    timer:sleep(100),
+
+    %% Start server
+    {ok, Pid} = flurm_fairshare:start_link(),
+    ?assert(is_pid(Pid)),
+    ?assert(is_process_alive(Pid)),
+
+    %% Should be able to use it
+    {ok, _} = flurm_fairshare:get_shares(<<"user">>, <<"account">>),
+
+    %% Stop cleanly
+    ok = gen_server:stop(Pid, shutdown, 5000),
+    ?assertNot(is_process_alive(Pid)).

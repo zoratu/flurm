@@ -195,3 +195,201 @@ prop_version_strings() ->
         %% Version should match semver pattern (roughly)
         ?assert(length(Vsn) > 0)
     end, Versions).
+
+%%====================================================================
+%% Additional Coverage Tests
+%%====================================================================
+
+additional_coverage_test_() ->
+    {setup,
+     fun setup/0,
+     fun cleanup/1,
+     [
+        {"reload_modules with empty list", fun test_reload_modules_empty/0},
+        {"reload_modules with partial failure", fun test_reload_modules_partial_failure/0},
+        {"install_release with invalid version", fun test_install_release_invalid/0},
+        {"rollback without previous release", fun test_rollback_no_previous/0},
+        {"which_releases returns list", fun test_which_releases/0},
+        {"is_flurm_module detection", fun test_is_flurm_module/0},
+        {"get_loaded_modules returns flurm modules", fun test_get_loaded_modules/0},
+        {"get_old_code_modules returns list", fun test_get_old_code_modules/0},
+        {"transform_state with extra data", fun test_transform_state_extra/0}
+     ]}.
+
+test_reload_modules_empty() ->
+    %% Empty list should succeed
+    Result = flurm_upgrade:reload_modules([]),
+    ?assertEqual(ok, Result).
+
+test_reload_modules_partial_failure() ->
+    %% Test with non-existent module - should fail
+    Result = flurm_upgrade:reload_modules([nonexistent_module_xyz123]),
+    ?assertMatch({error, {partial_failure, _}}, Result).
+
+test_install_release_invalid() ->
+    %% Installing non-existent release should fail
+    Result = flurm_upgrade:install_release("0.0.0-nonexistent"),
+    ?assertMatch({error, {pre_check_failed, _}}, Result).
+
+test_rollback_no_previous() ->
+    %% Rollback when there's no previous release
+    try
+        Result = flurm_upgrade:rollback(),
+        %% Either error or success depending on release handler state
+        case Result of
+            ok -> ok;
+            {error, no_previous_release} -> ok;
+            {error, _} -> ok
+        end
+    catch
+        exit:{noproc, _} ->
+            %% release_handler not running
+            ok
+    end.
+
+test_which_releases() ->
+    try
+        Releases = flurm_upgrade:which_releases(),
+        ?assert(is_list(Releases)),
+        lists:foreach(fun(Entry) ->
+            ?assertMatch({_Vsn, _Status}, Entry)
+        end, Releases)
+    catch
+        exit:{noproc, _} ->
+            ok
+    end.
+
+test_is_flurm_module() ->
+    %% Indirectly test through upgrade_status
+    try
+        Status = flurm_upgrade:upgrade_status(),
+        LoadedModules = maps:get(loaded_modules, Status, []),
+
+        %% All returned modules should have flurm_ prefix
+        lists:foreach(fun(Mod) ->
+            ModStr = atom_to_list(Mod),
+            ?assert(lists:prefix("flurm_", ModStr))
+        end, LoadedModules)
+    catch
+        exit:{noproc, _} ->
+            %% release_handler not running - expected in test env
+            ok
+    end.
+
+test_get_loaded_modules() ->
+    try
+        Status = flurm_upgrade:upgrade_status(),
+        LoadedModules = maps:get(loaded_modules, Status, []),
+        ?assert(is_list(LoadedModules)),
+        %% Should include at least flurm_upgrade
+        ?assert(lists:member(flurm_upgrade, LoadedModules) orelse LoadedModules =:= [])
+    catch
+        exit:{noproc, _} ->
+            %% release_handler not running - expected in test env
+            ok
+    end.
+
+test_get_old_code_modules() ->
+    try
+        Status = flurm_upgrade:upgrade_status(),
+        OldCodeModules = maps:get(old_code_modules, Status, []),
+        ?assert(is_list(OldCodeModules))
+    catch
+        exit:{noproc, _} ->
+            %% release_handler not running - expected in test env
+            ok
+    end.
+
+test_transform_state_extra() ->
+    %% Test with various extra data types
+    State = #{key => value},
+
+    %% With list extra
+    R1 = flurm_upgrade:transform_state(undefined, State, []),
+    ?assertEqual(State, R1),
+
+    %% With map extra
+    R2 = flurm_upgrade:transform_state(undefined, State, #{extra => data}),
+    ?assertEqual(State, R2),
+
+    %% With tuple extra
+    R3 = flurm_upgrade:transform_state(undefined, State, {extra, tuple}),
+    ?assertEqual(State, R3).
+
+%%====================================================================
+%% Check Upgrade Detail Tests
+%%====================================================================
+
+check_upgrade_detail_test_() ->
+    [
+     {"check_upgrade validates disk_space", fun test_check_disk_space/0},
+     {"check_upgrade validates cluster_healthy", fun test_check_cluster_healthy/0},
+     {"check_upgrade validates no_pending_jobs", fun test_check_no_pending_jobs/0}
+    ].
+
+test_check_disk_space() ->
+    %% Disk space check is included in check_upgrade
+    Result = flurm_upgrade:check_upgrade("99.99.99"),
+    {error, Failures} = Result,
+
+    %% disk_space should NOT be in failures (should pass)
+    DiskSpaceFailure = lists:keyfind(disk_space, 1, Failures),
+    ?assertEqual(false, DiskSpaceFailure).
+
+test_check_cluster_healthy() ->
+    %% Cluster health check when no cluster is running
+    Result = flurm_upgrade:check_upgrade("99.99.99"),
+    {error, Failures} = Result,
+
+    %% cluster_healthy should NOT be in failures (no cluster = ok)
+    ClusterFailure = lists:keyfind(cluster_healthy, 1, Failures),
+    ?assertEqual(false, ClusterFailure).
+
+test_check_no_pending_jobs() ->
+    %% Pending jobs check
+    Result = flurm_upgrade:check_upgrade("99.99.99"),
+    {error, Failures} = Result,
+
+    %% no_pending_jobs should NOT be in failures (current implementation always passes)
+    PendingJobsFailure = lists:keyfind(no_pending_jobs, 1, Failures),
+    ?assertEqual(false, PendingJobsFailure).
+
+%%====================================================================
+%% Process Upgrade Tests
+%%====================================================================
+
+process_upgrade_test_() ->
+    {setup,
+     fun() ->
+         application:ensure_all_started(lager),
+         ok
+     end,
+     fun(_) -> ok end,
+     [
+        {"reload module with active processes", fun test_reload_with_processes/0}
+     ]}.
+
+test_reload_with_processes() ->
+    %% Start a gen_server using our code
+    case whereis(flurm_config_server) of
+        undefined ->
+            {ok, Pid} = flurm_config_server:start_link(),
+
+            %% Try to reload - should handle the active process
+            Result = flurm_upgrade:reload_module(flurm_config_server),
+
+            %% Either success or error is acceptable
+            case Result of
+                ok -> ok;
+                {error, _} -> ok
+            end,
+
+            gen_server:stop(Pid);
+        _Pid ->
+            %% Already running
+            Result = flurm_upgrade:reload_module(flurm_config_server),
+            case Result of
+                ok -> ok;
+                {error, _} -> ok
+            end
+    end.

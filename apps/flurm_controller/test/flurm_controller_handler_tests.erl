@@ -41,19 +41,23 @@ setup() ->
     %% Start required applications
     application:ensure_all_started(sasl),
 
-    %% Start core dependencies
-    {ok, JobRegistryPid} = flurm_job_registry:start_link(),
-    {ok, JobSupPid} = flurm_job_sup:start_link(),
-    {ok, NodeRegistryPid} = flurm_node_registry:start_link(),
-    {ok, NodeSupPid} = flurm_node_sup:start_link(),
-    {ok, LimitsPid} = flurm_limits:start_link(),
-    {ok, LicensePid} = flurm_license:start_link(),
-    {ok, JobManagerPid} = flurm_job_manager:start_link(),
-    {ok, SchedulerPid} = flurm_scheduler:start_link(),
-    {ok, StepManagerPid} = flurm_step_manager:start_link(),
-    {ok, NodeManagerPid} = flurm_node_manager:start_link(),
-    {ok, PartitionManagerPid} = flurm_partition_manager:start_link(),
-    {ok, AccountManagerPid} = flurm_account_manager:start_link(),
+    %% Disable cluster mode
+    application:set_env(flurm_controller, enable_cluster, false),
+    application:unset_env(flurm_controller, cluster_nodes),
+
+    %% Start core dependencies - handle already_started gracefully
+    JobRegistryPid = start_or_get(flurm_job_registry, fun flurm_job_registry:start_link/0),
+    JobSupPid = start_or_get(flurm_job_sup, fun flurm_job_sup:start_link/0),
+    NodeRegistryPid = start_or_get(flurm_node_registry, fun flurm_node_registry:start_link/0),
+    NodeSupPid = start_or_get(flurm_node_sup, fun flurm_node_sup:start_link/0),
+    LimitsPid = start_or_get(flurm_limits, fun flurm_limits:start_link/0),
+    LicensePid = start_or_get(flurm_license, fun flurm_license:start_link/0),
+    JobManagerPid = start_or_get(flurm_job_manager, fun flurm_job_manager:start_link/0),
+    SchedulerPid = start_or_get(flurm_scheduler, fun flurm_scheduler:start_link/0),
+    StepManagerPid = start_or_get(flurm_step_manager, fun flurm_step_manager:start_link/0),
+    NodeManagerPid = start_or_get(flurm_node_manager_server, fun flurm_node_manager_server:start_link/0),
+    PartitionManagerPid = start_or_get(flurm_partition_manager, fun flurm_partition_manager:start_link/0),
+    AccountManagerPid = start_or_get(flurm_account_manager, fun flurm_account_manager:start_link/0),
 
     #{
         job_registry => JobRegistryPid,
@@ -70,17 +74,26 @@ setup() ->
         account_manager => AccountManagerPid
     }.
 
+%% Helper to start a process or return existing pid
+start_or_get(Name, StartFun) ->
+    case whereis(Name) of
+        undefined ->
+            case StartFun() of
+                {ok, Pid} -> Pid;
+                {error, {already_started, Pid}} -> Pid
+            end;
+        Pid -> Pid
+    end.
+
 cleanup(Pids) ->
     %% Stop all jobs first
     catch [flurm_job_sup:stop_job(Pid) || Pid <- flurm_job_sup:which_jobs()],
     %% Stop all nodes
     catch [flurm_node_sup:stop_node(Pid) || Pid <- flurm_node_sup:which_nodes()],
 
-    %% Unlink and stop all processes
-    lists:foreach(fun({_Key, Pid}) ->
-        catch unlink(Pid),
-        catch gen_server:stop(Pid, shutdown, 5000)
-    end, maps:to_list(Pids)),
+    %% Don't stop processes that might be shared with other tests
+    %% Just let them continue running
+    _ = Pids,
     ok.
 
 %%====================================================================
