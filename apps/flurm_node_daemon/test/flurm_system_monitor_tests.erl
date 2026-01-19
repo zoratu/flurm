@@ -10,9 +10,8 @@
 %%====================================================================
 
 setup() ->
-    %% Stop any existing system monitor
-    catch gen_server:stop(flurm_system_monitor),
-    timer:sleep(20),
+    %% Clean up any leftover state from previous test runs
+    cleanup_all(),
     %% Start lager for logging
     application:ensure_all_started(lager),
     %% Start fresh
@@ -20,9 +19,32 @@ setup() ->
     {started, Pid}.
 
 cleanup({started, _Pid}) ->
-    catch gen_server:stop(flurm_system_monitor),
-    timer:sleep(20);
+    cleanup_all();
 cleanup(_) ->
+    cleanup_all().
+
+%% Comprehensive cleanup function to ensure test isolation
+cleanup_all() ->
+    %% Stop the gen_server if running
+    catch gen_server:stop(flurm_system_monitor, normal, 5000),
+    %% Also try exit in case stop doesn't work
+    case whereis(flurm_system_monitor) of
+        undefined -> ok;
+        Pid when is_pid(Pid) ->
+            catch exit(Pid, kill),
+            timer:sleep(10)
+    end,
+    %% Delete any ETS tables that might have been created
+    catch ets:delete(flurm_system_monitor),
+    catch ets:delete(flurm_system_monitor_metrics),
+    catch ets:delete(flurm_system_monitor_gpus),
+    catch ets:delete(flurm_gpu_allocation),
+    %% Unload any meck mocks
+    catch meck:unload(flurm_system_monitor),
+    catch meck:unload(os),
+    catch meck:unload(file),
+    %% Give time for cleanup to complete
+    timer:sleep(20),
     ok.
 
 %%====================================================================
@@ -48,8 +70,7 @@ system_monitor_test_() ->
       {"Handle unknown call", fun test_unknown_call/0},
       {"Handle unknown cast", fun test_unknown_cast/0},
       {"Handle unknown info", fun test_unknown_info/0},
-      {"Collect timer fires", fun test_collect_timer/0},
-      {"Terminate callback", fun test_terminate/0}
+      {"Collect timer fires", fun test_collect_timer/0}
      ]}.
 
 %%====================================================================
@@ -183,12 +204,30 @@ test_collect_timer() ->
     timer:sleep(100),
     ?assert(is_pid(whereis(flurm_system_monitor))).
 
-test_terminate() ->
-    Pid = whereis(flurm_system_monitor),
-    ?assert(is_pid(Pid)),
-    gen_server:stop(flurm_system_monitor),
-    timer:sleep(50),
-    ?assertEqual(undefined, whereis(flurm_system_monitor)).
+%%====================================================================
+%% Terminate Test - separate fixture since it stops the server
+%%====================================================================
+
+terminate_test_() ->
+    {setup,
+     fun() ->
+         cleanup_all(),
+         application:ensure_all_started(lager),
+         {ok, Pid} = flurm_system_monitor:start_link(),
+         Pid
+     end,
+     fun(_) ->
+         cleanup_all()
+     end,
+     [
+      {"Terminate callback", fun() ->
+          Pid = whereis(flurm_system_monitor),
+          ?assert(is_pid(Pid)),
+          gen_server:stop(flurm_system_monitor),
+          timer:sleep(50),
+          ?assertEqual(undefined, whereis(flurm_system_monitor))
+      end}
+     ]}.
 
 %%====================================================================
 %% GPU Allocation Workflow Tests
@@ -197,15 +236,13 @@ test_terminate() ->
 gpu_workflow_test_() ->
     {setup,
      fun() ->
-         catch gen_server:stop(flurm_system_monitor),
-         timer:sleep(20),
+         cleanup_all(),
          application:ensure_all_started(lager),
          {ok, Pid} = flurm_system_monitor:start_link(),
          Pid
      end,
-     fun(Pid) ->
-         catch gen_server:stop(Pid),
-         timer:sleep(20)
+     fun(_Pid) ->
+         cleanup_all()
      end,
      [
       {"Multiple jobs can allocate GPUs", fun() ->
@@ -241,57 +278,61 @@ gpu_workflow_test_() ->
 %%====================================================================
 
 platform_test_() ->
-    [
-     {"CPU count is positive", fun() ->
-         catch gen_server:stop(flurm_system_monitor),
-         timer:sleep(20),
-         {ok, _} = flurm_system_monitor:start_link(),
-         Metrics = flurm_system_monitor:get_metrics(),
-         CPUs = maps:get(cpus, Metrics),
-         ?assert(is_integer(CPUs)),
-         ?assert(CPUs > 0),
-         gen_server:stop(flurm_system_monitor)
-     end},
-     {"Total memory is positive", fun() ->
-         catch gen_server:stop(flurm_system_monitor),
-         timer:sleep(20),
-         {ok, _} = flurm_system_monitor:start_link(),
-         Metrics = flurm_system_monitor:get_metrics(),
-         TotalMem = maps:get(total_memory_mb, Metrics),
-         ?assert(is_integer(TotalMem)),
-         ?assert(TotalMem > 0),
-         gen_server:stop(flurm_system_monitor)
-     end},
-     {"Load average is float", fun() ->
-         catch gen_server:stop(flurm_system_monitor),
-         timer:sleep(20),
-         {ok, _} = flurm_system_monitor:start_link(),
-         %% Wait for collect timer
-         timer:sleep(5500),
-         Metrics = flurm_system_monitor:get_metrics(),
-         LoadAvg = maps:get(load_avg, Metrics),
-         ?assert(is_float(LoadAvg)),
-         gen_server:stop(flurm_system_monitor)
-     end}
-    ].
+    {foreach,
+     fun() ->
+         cleanup_all(),
+         application:ensure_all_started(lager),
+         {ok, Pid} = flurm_system_monitor:start_link(),
+         Pid
+     end,
+     fun(_) ->
+         cleanup_all()
+     end,
+     [
+      {"CPU count is positive", fun() ->
+          Metrics = flurm_system_monitor:get_metrics(),
+          CPUs = maps:get(cpus, Metrics),
+          ?assert(is_integer(CPUs)),
+          ?assert(CPUs > 0)
+      end},
+      {"Total memory is positive", fun() ->
+          Metrics = flurm_system_monitor:get_metrics(),
+          TotalMem = maps:get(total_memory_mb, Metrics),
+          ?assert(is_integer(TotalMem)),
+          ?assert(TotalMem > 0)
+      end},
+      {"Load average is float", fun() ->
+          %% Wait for collect timer
+          timer:sleep(5500),
+          Metrics = flurm_system_monitor:get_metrics(),
+          LoadAvg = maps:get(load_avg, Metrics),
+          ?assert(is_float(LoadAvg))
+      end}
+     ]}.
 
 %%====================================================================
 %% Memory Info Tests
 %%====================================================================
 
 memory_info_test_() ->
-    {timeout, 10,
-     [
-      {"Free memory is reasonable", fun() ->
-          catch gen_server:stop(flurm_system_monitor),
-          timer:sleep(20),
-          {ok, _} = flurm_system_monitor:start_link(),
-          timer:sleep(5500), % Wait for collection
-          Metrics = flurm_system_monitor:get_metrics(),
-          FreeMem = maps:get(free_memory_mb, Metrics),
-          TotalMem = maps:get(total_memory_mb, Metrics),
-          ?assert(is_integer(FreeMem)),
-          ?assert(FreeMem =< TotalMem),
-          gen_server:stop(flurm_system_monitor)
-      end}
-     ]}.
+    {setup,
+     fun() ->
+         cleanup_all(),
+         application:ensure_all_started(lager),
+         {ok, Pid} = flurm_system_monitor:start_link(),
+         Pid
+     end,
+     fun(_) ->
+         cleanup_all()
+     end,
+     {timeout, 10,
+      [
+       {"Free memory is reasonable", fun() ->
+           timer:sleep(5500), % Wait for collection
+           Metrics = flurm_system_monitor:get_metrics(),
+           FreeMem = maps:get(free_memory_mb, Metrics),
+           TotalMem = maps:get(total_memory_mb, Metrics),
+           ?assert(is_integer(FreeMem)),
+           ?assert(FreeMem =< TotalMem)
+       end}
+      ]}}.

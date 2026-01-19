@@ -29,18 +29,14 @@
 
 setup() ->
     %% Clean up weights table to ensure fresh state
-    case ets:whereis(flurm_priority_weights) of
-        undefined -> ok;
-        _ -> ets:delete(flurm_priority_weights)
-    end,
+    %% Use catch to handle both existing and non-existing table cases
+    catch ets:delete(flurm_priority_weights),
     ok.
 
 cleanup(_) ->
     %% Clean up weights table
-    case ets:whereis(flurm_priority_weights) of
-        undefined -> ok;
-        _ -> ets:delete(flurm_priority_weights)
-    end,
+    %% Use catch to handle both existing and non-existing table cases
+    catch ets:delete(flurm_priority_weights),
     ok.
 
 %%====================================================================
@@ -139,6 +135,7 @@ test_get_weights_returns_set() ->
 
 test_get_weights_empty_table() ->
     %% Create an empty table manually
+    %% Setup already deleted any existing table, so this is safe
     ets:new(flurm_priority_weights, [named_table, public, set]),
 
     %% Should return defaults since no weights key exists
@@ -898,7 +895,7 @@ test_recalc_empty_list() ->
         Result = flurm_priority:recalculate_all(),
         ?assertEqual(ok, Result)
     after
-        ets:delete(flurm_jobs_by_state)
+        catch ets:delete(flurm_jobs_by_state)
     end.
 
 test_recalc_with_jobs() ->
@@ -917,8 +914,8 @@ test_recalc_with_jobs() ->
         ?assertEqual(ok, Result)
     after
         FakePid ! stop,
-        ets:delete(flurm_jobs_by_state),
-        ets:delete(flurm_jobs)
+        catch ets:delete(flurm_jobs_by_state),
+        catch ets:delete(flurm_jobs)
     end.
 
 %%====================================================================

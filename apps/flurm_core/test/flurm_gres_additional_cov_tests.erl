@@ -14,24 +14,25 @@
 %%%===================================================================
 
 gres_test_() ->
-    {setup,
+    {foreach,
      fun setup/0,
      fun cleanup/1,
-     {foreach,
-      fun per_test_setup/0,
-      fun per_test_cleanup/1,
-      [
-       fun type_management_tests/1,
-       fun node_gres_tests/1,
-       fun allocation_tests/1,
-       fun spec_parsing_tests/1,
-       fun scheduler_integration_tests/1,
-       fun legacy_api_tests/1,
-       fun message_handling_tests/1
-      ]}}.
+     [
+      fun type_management_tests/1,
+      fun node_gres_tests/1,
+      fun allocation_tests/1,
+      fun spec_parsing_tests/1,
+      fun scheduler_integration_tests/1,
+      fun legacy_api_tests/1,
+      fun message_handling_tests/1
+     ]}.
 
 setup() ->
+    %% Clean up any leftover state from previous test runs
+    cleanup_gres_state(),
+
     %% Mock lager
+    catch meck:unload(lager),
     meck:new(lager, [non_strict, no_link]),
     meck:expect(lager, debug, fun(_) -> ok end),
     meck:expect(lager, debug, fun(_, _) -> ok end),
@@ -39,18 +40,71 @@ setup() ->
     meck:expect(lager, info, fun(_, _) -> ok end),
     meck:expect(lager, warning, fun(_, _) -> ok end),
     meck:expect(lager, error, fun(_, _) -> ok end),
-    ok.
 
-cleanup(_) ->
-    catch meck:unload(lager),
-    ok.
-
-per_test_setup() ->
+    %% Start the GRES server
     {ok, Pid} = flurm_gres:start_link(),
     Pid.
 
-per_test_cleanup(Pid) ->
-    catch gen_server:stop(Pid),
+cleanup(Pid) ->
+    %% Stop the GRES server gracefully
+    stop_gres_server(Pid),
+
+    %% Clean up ETS tables
+    cleanup_gres_state(),
+
+    %% Unload meck mocks
+    catch meck:unload(lager),
+    ok.
+
+%% Helper to stop the GRES server safely
+stop_gres_server(Pid) when is_pid(Pid) ->
+    case is_process_alive(Pid) of
+        true ->
+            %% Unlink first to avoid test process crash if gen_server:stop fails
+            catch unlink(Pid),
+            catch gen_server:stop(Pid, normal, 5000),
+            %% Wait for the process to terminate
+            wait_for_process_death(Pid, 100);
+        false ->
+            ok
+    end;
+stop_gres_server(_) ->
+    %% Also try to stop by registered name in case Pid is invalid
+    case whereis(flurm_gres) of
+        undefined -> ok;
+        RegPid ->
+            catch unlink(RegPid),
+            catch gen_server:stop(RegPid, normal, 5000),
+            wait_for_process_death(RegPid, 100)
+    end.
+
+%% Wait for a process to die with timeout
+wait_for_process_death(Pid, Timeout) when Timeout > 0 ->
+    case is_process_alive(Pid) of
+        false -> ok;
+        true ->
+            timer:sleep(10),
+            wait_for_process_death(Pid, Timeout - 10)
+    end;
+wait_for_process_death(Pid, _Timeout) ->
+    %% Force kill if still alive
+    catch exit(Pid, kill),
+    timer:sleep(10),
+    ok.
+
+%% Clean up GRES state (ETS tables and registered process)
+cleanup_gres_state() ->
+    %% Stop any registered process
+    case whereis(flurm_gres) of
+        undefined -> ok;
+        Pid ->
+            catch unlink(Pid),
+            catch gen_server:stop(Pid, normal, 1000),
+            catch exit(Pid, kill),
+            timer:sleep(10)
+    end,
+
+    %% Delete ETS tables
     catch ets:delete(flurm_gres_types),
     catch ets:delete(flurm_gres_nodes),
     catch ets:delete(flurm_gres_allocations),

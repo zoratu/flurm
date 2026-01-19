@@ -17,7 +17,12 @@
 %%====================================================================
 
 setup() ->
+    %% Start sasl if needed
     application:ensure_all_started(sasl),
+
+    %% Kill any lingering flurm_job processes from previous tests
+    kill_all_flurm_job_processes(),
+
     %% Clean up any existing mocks
     catch meck:unload(flurm_job_registry),
     catch meck:unload(flurm_job_dispatcher),
@@ -53,11 +58,62 @@ setup() ->
     ok.
 
 cleanup(_) ->
+    %% Kill any flurm_job processes started during the test
+    kill_all_flurm_job_processes(),
+
+    %% Unload all mocks
     catch meck:unload(flurm_job_registry),
     catch meck:unload(flurm_job_dispatcher),
     catch meck:unload(flurm_metrics),
     catch meck:unload(flurm_scheduler),
     catch meck:unload(flurm_node_manager),
+    ok.
+
+%% @doc Kill all processes running the flurm_job module
+kill_all_flurm_job_processes() ->
+    lists:foreach(
+        fun(Pid) ->
+            case erlang:process_info(Pid, [dictionary]) of
+                [{dictionary, Dict}] ->
+                    case proplists:get_value('$initial_call', Dict) of
+                        {flurm_job, _, _} ->
+                            catch gen_statem:stop(Pid, shutdown, 100);
+                        _ ->
+                            ok
+                    end;
+                _ ->
+                    ok
+            end
+        end,
+        erlang:processes()),
+    %% Also try to find processes by their registered module in sys info
+    lists:foreach(
+        fun(Pid) ->
+            try
+                case sys:get_status(Pid, 50) of
+                    {status, _, {module, gen_statem}, [_, _, _, _, [_, {data, Data} | _]]} ->
+                        case proplists:get_value("StateName", Data) of
+                            State when State =/= undefined ->
+                                %% Likely a gen_statem, check if it's flurm_job
+                                catch gen_statem:stop(Pid, shutdown, 100);
+                            _ ->
+                                ok
+                        end;
+                    _ ->
+                        ok
+                end
+            catch
+                _:_ -> ok
+            end
+        end,
+        erlang:processes()),
+    ok.
+
+%% @doc Helper to safely stop a process
+safe_stop(Pid) when is_pid(Pid) ->
+    catch gen_statem:stop(Pid, shutdown, 1000),
+    ok;
+safe_stop(_) ->
     ok.
 
 %%====================================================================
@@ -120,7 +176,7 @@ test_start_link() ->
     {ok, State} = flurm_job:get_state(Pid),
     ?assertEqual(pending, State),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_submit() ->
@@ -132,7 +188,7 @@ test_submit() ->
     {ok, State} = flurm_job:get_state(Pid),
     ?assertEqual(pending, State),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_callback_mode() ->
@@ -147,7 +203,7 @@ test_init() ->
     {ok, Info} = flurm_job:get_info(Pid),
     ?assertEqual(500, maps:get(priority, Info)),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_init_undefined_priority() ->
@@ -166,7 +222,7 @@ test_init_undefined_priority() ->
     {ok, Info} = flurm_job:get_info(Pid),
     ?assertEqual(?DEFAULT_PRIORITY, maps:get(priority, Info)),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_init_clamped_priority() ->
@@ -175,14 +231,14 @@ test_init_clamped_priority() ->
     {ok, Pid1} = flurm_job:start_link(JobSpec1),
     {ok, Info1} = flurm_job:get_info(Pid1),
     ?assertEqual(?MAX_PRIORITY, maps:get(priority, Info1)),
-    gen_statem:stop(Pid1),
+    safe_stop(Pid1),
 
     %% Test min clamping
     JobSpec2 = make_job_spec(#{priority => -100}),
     {ok, Pid2} = flurm_job:start_link(JobSpec2),
     {ok, Info2} = flurm_job:get_info(Pid2),
     ?assertEqual(?MIN_PRIORITY, maps:get(priority, Info2)),
-    gen_statem:stop(Pid2),
+    safe_stop(Pid2),
     ok.
 
 %%====================================================================
@@ -214,7 +270,7 @@ test_pending_enter() ->
 
     {ok, pending} = flurm_job:get_state(Pid),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_pending_get_info() ->
@@ -227,7 +283,7 @@ test_pending_get_info() ->
     ?assertEqual(<<"compute">>, maps:get(partition, Info)),
     ?assertEqual([], maps:get(allocated_nodes, Info)),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_pending_get_state() ->
@@ -237,7 +293,7 @@ test_pending_get_state() ->
     {ok, State} = flurm_job:get_state(Pid),
     ?assertEqual(pending, State),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_pending_get_job_id() ->
@@ -247,7 +303,7 @@ test_pending_get_job_id() ->
     Result = gen_statem:call(Pid, get_job_id),
     ?assertEqual(JobId, Result),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_pending_allocate_success() ->
@@ -257,7 +313,7 @@ test_pending_allocate_success() ->
     ok = flurm_job:allocate(Pid, [<<"node1">>]),
     {ok, configuring} = flurm_job:get_state(Pid),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_pending_allocate_insufficient() ->
@@ -267,7 +323,7 @@ test_pending_allocate_insufficient() ->
     {error, insufficient_nodes} = flurm_job:allocate(Pid, [<<"node1">>]),
     {ok, pending} = flurm_job:get_state(Pid),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_pending_cancel() ->
@@ -277,7 +333,7 @@ test_pending_cancel() ->
     ok = flurm_job:cancel(Pid),
     {ok, cancelled} = flurm_job:get_state(Pid),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_pending_set_priority() ->
@@ -288,7 +344,7 @@ test_pending_set_priority() ->
     {ok, Info} = flurm_job:get_info(Pid),
     ?assertEqual(500, maps:get(priority, Info)),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_pending_invalid_operation() ->
@@ -298,7 +354,7 @@ test_pending_invalid_operation() ->
     %% Signal config complete in pending is invalid
     {error, invalid_operation} = gen_statem:call(Pid, signal_config_complete),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_pending_ignored_cast() ->
@@ -312,7 +368,7 @@ test_pending_ignored_cast() ->
 
     {ok, pending} = flurm_job:get_state(Pid),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_pending_ignored_info() ->
@@ -325,7 +381,7 @@ test_pending_ignored_info() ->
 
     {ok, pending} = flurm_job:get_state(Pid),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_pending_timeout() ->
@@ -337,7 +393,7 @@ test_pending_timeout() ->
     timer:sleep(100),
     {ok, pending} = flurm_job:get_state(Pid),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 %%====================================================================
@@ -368,7 +424,7 @@ test_configuring_enter() ->
     ok = flurm_job:allocate(Pid, [<<"node1">>]),
     {ok, configuring} = flurm_job:get_state(Pid),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_configuring_get_info() ->
@@ -380,7 +436,7 @@ test_configuring_get_info() ->
     ?assertEqual(configuring, maps:get(state, Info)),
     ?assertEqual([<<"node1">>, <<"node2">>], maps:get(allocated_nodes, Info)),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_configuring_complete() ->
@@ -391,7 +447,7 @@ test_configuring_complete() ->
     ok = flurm_job:signal_config_complete(Pid),
     {ok, running} = flurm_job:get_state(Pid),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_configuring_cancel() ->
@@ -402,7 +458,7 @@ test_configuring_cancel() ->
     ok = flurm_job:cancel(Pid),
     {ok, cancelled} = flurm_job:get_state(Pid),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_configuring_node_failure_allocated() ->
@@ -413,7 +469,7 @@ test_configuring_node_failure_allocated() ->
     ok = flurm_job:signal_node_failure(Pid, <<"node1">>),
     {ok, node_fail} = flurm_job:get_state(Pid),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_configuring_node_failure_not_allocated() ->
@@ -424,7 +480,7 @@ test_configuring_node_failure_not_allocated() ->
     ok = flurm_job:signal_node_failure(Pid, <<"node3">>),
     {ok, configuring} = flurm_job:get_state(Pid),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_configuring_invalid_allocate() ->
@@ -434,7 +490,7 @@ test_configuring_invalid_allocate() ->
     ok = flurm_job:allocate(Pid, [<<"node1">>]),
     {error, invalid_operation} = flurm_job:allocate(Pid, [<<"node2">>]),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_configuring_set_priority() ->
@@ -444,7 +500,7 @@ test_configuring_set_priority() ->
     ok = flurm_job:allocate(Pid, [<<"node1">>]),
     {error, invalid_operation} = gen_statem:call(Pid, {set_priority, 500}),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_configuring_ignored_cast() ->
@@ -458,7 +514,7 @@ test_configuring_ignored_cast() ->
 
     {ok, configuring} = flurm_job:get_state(Pid),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_configuring_ignored_info() ->
@@ -471,7 +527,7 @@ test_configuring_ignored_info() ->
 
     {ok, configuring} = flurm_job:get_state(Pid),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 %%====================================================================
@@ -508,7 +564,7 @@ test_running_enter() ->
     ok = flurm_job:signal_config_complete(Pid),
     {ok, running} = flurm_job:get_state(Pid),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_running_get_info() ->
@@ -522,7 +578,7 @@ test_running_get_info() ->
     ?assertEqual(running, maps:get(state, Info)),
     ?assertNotEqual(undefined, maps:get(start_time, Info)),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_running_complete_zero() ->
@@ -534,7 +590,7 @@ test_running_complete_zero() ->
     ok = flurm_job:signal_job_complete(Pid, 0),
     {ok, completing} = flurm_job:get_state(Pid),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_running_complete_nonzero() ->
@@ -546,7 +602,7 @@ test_running_complete_nonzero() ->
     ok = flurm_job:signal_job_complete(Pid, 127),
     {ok, completing} = flurm_job:get_state(Pid),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_running_cancel() ->
@@ -558,7 +614,7 @@ test_running_cancel() ->
     ok = flurm_job:cancel(Pid),
     {ok, cancelled} = flurm_job:get_state(Pid),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_running_node_failure_allocated() ->
@@ -570,7 +626,7 @@ test_running_node_failure_allocated() ->
     ok = flurm_job:signal_node_failure(Pid, <<"node1">>),
     {ok, node_fail} = flurm_job:get_state(Pid),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_running_node_failure_not_allocated() ->
@@ -582,7 +638,7 @@ test_running_node_failure_not_allocated() ->
     ok = flurm_job:signal_node_failure(Pid, <<"other_node">>),
     {ok, running} = flurm_job:get_state(Pid),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_running_suspend() ->
@@ -594,7 +650,7 @@ test_running_suspend() ->
     ok = flurm_job:suspend(Pid),
     {ok, suspended} = flurm_job:get_state(Pid),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_running_preempt_requeue() ->
@@ -606,7 +662,7 @@ test_running_preempt_requeue() ->
     ok = flurm_job:preempt(Pid, requeue, 30),
     {ok, pending} = flurm_job:get_state(Pid),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_running_preempt_cancel() ->
@@ -618,7 +674,7 @@ test_running_preempt_cancel() ->
     ok = flurm_job:preempt(Pid, cancel, 30),
     {ok, cancelled} = flurm_job:get_state(Pid),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_running_preempt_checkpoint() ->
@@ -630,7 +686,7 @@ test_running_preempt_checkpoint() ->
     ok = flurm_job:preempt(Pid, checkpoint, 30),
     {ok, pending} = flurm_job:get_state(Pid),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_running_set_priority() ->
@@ -644,7 +700,7 @@ test_running_set_priority() ->
     {ok, Info} = flurm_job:get_info(Pid),
     ?assertEqual(500, maps:get(priority, Info)),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_running_timeout() ->
@@ -657,7 +713,7 @@ test_running_timeout() ->
     timer:sleep(1500),
     {ok, timeout} = flurm_job:get_state(Pid),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_running_ignored_cast() ->
@@ -672,7 +728,7 @@ test_running_ignored_cast() ->
 
     {ok, running} = flurm_job:get_state(Pid),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_running_ignored_info() ->
@@ -686,7 +742,7 @@ test_running_ignored_info() ->
 
     {ok, running} = flurm_job:get_state(Pid),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 %%====================================================================
@@ -717,7 +773,7 @@ test_completing_enter() ->
     ok = flurm_job:signal_job_complete(Pid, 0),
     {ok, completing} = flurm_job:get_state(Pid),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_completing_get_info() ->
@@ -732,7 +788,7 @@ test_completing_get_info() ->
     ?assertEqual(completing, maps:get(state, Info)),
     ?assertEqual(42, maps:get(exit_code, Info)),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_completing_to_completed() ->
@@ -745,7 +801,7 @@ test_completing_to_completed() ->
     ok = flurm_job:signal_cleanup_complete(Pid),
     {ok, completed} = flurm_job:get_state(Pid),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_completing_to_failed() ->
@@ -758,7 +814,7 @@ test_completing_to_failed() ->
     ok = flurm_job:signal_cleanup_complete(Pid),
     {ok, failed} = flurm_job:get_state(Pid),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_completing_cancel() ->
@@ -772,7 +828,7 @@ test_completing_cancel() ->
     %% Cancel is acknowledged but stays in completing
     {ok, completing} = flurm_job:get_state(Pid),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_completing_set_priority() ->
@@ -784,7 +840,7 @@ test_completing_set_priority() ->
     ok = flurm_job:signal_job_complete(Pid, 0),
     {error, invalid_operation} = gen_statem:call(Pid, {set_priority, 500}),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_completing_ignored_cast() ->
@@ -799,7 +855,7 @@ test_completing_ignored_cast() ->
 
     {ok, completing} = flurm_job:get_state(Pid),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_completing_ignored_info() ->
@@ -814,7 +870,7 @@ test_completing_ignored_info() ->
 
     {ok, completing} = flurm_job:get_state(Pid),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 %%====================================================================
@@ -849,7 +905,7 @@ test_suspended_enter() ->
     ok = flurm_job:suspend(Pid),
     {ok, suspended} = flurm_job:get_state(Pid),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_suspended_get_info() ->
@@ -863,7 +919,7 @@ test_suspended_get_info() ->
     {ok, Info} = flurm_job:get_info(Pid),
     ?assertEqual(suspended, maps:get(state, Info)),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_suspended_resume() ->
@@ -876,7 +932,7 @@ test_suspended_resume() ->
     ok = flurm_job:resume(Pid),
     {ok, running} = flurm_job:get_state(Pid),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_suspended_cancel() ->
@@ -889,7 +945,7 @@ test_suspended_cancel() ->
     ok = flurm_job:cancel(Pid),
     {ok, cancelled} = flurm_job:get_state(Pid),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_suspended_preempt_requeue() ->
@@ -902,7 +958,7 @@ test_suspended_preempt_requeue() ->
     ok = flurm_job:preempt(Pid, requeue, 30),
     {ok, pending} = flurm_job:get_state(Pid),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_suspended_preempt_cancel() ->
@@ -915,7 +971,7 @@ test_suspended_preempt_cancel() ->
     ok = flurm_job:preempt(Pid, cancel, 30),
     {ok, cancelled} = flurm_job:get_state(Pid),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_suspended_node_failure_allocated() ->
@@ -928,7 +984,7 @@ test_suspended_node_failure_allocated() ->
     ok = flurm_job:signal_node_failure(Pid, <<"node1">>),
     {ok, node_fail} = flurm_job:get_state(Pid),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_suspended_node_failure_not_allocated() ->
@@ -941,7 +997,7 @@ test_suspended_node_failure_not_allocated() ->
     ok = flurm_job:signal_node_failure(Pid, <<"other_node">>),
     {ok, suspended} = flurm_job:get_state(Pid),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_suspended_set_priority() ->
@@ -956,7 +1012,7 @@ test_suspended_set_priority() ->
     {ok, Info} = flurm_job:get_info(Pid),
     ?assertEqual(300, maps:get(priority, Info)),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_suspended_allocate_invalid() ->
@@ -968,7 +1024,7 @@ test_suspended_allocate_invalid() ->
     ok = flurm_job:suspend(Pid),
     {error, invalid_operation} = flurm_job:allocate(Pid, [<<"node2">>]),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_suspended_ignored_cast() ->
@@ -983,7 +1039,7 @@ test_suspended_ignored_cast() ->
 
     {ok, suspended} = flurm_job:get_state(Pid),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_suspended_ignored_info() ->
@@ -998,7 +1054,7 @@ test_suspended_ignored_info() ->
 
     {ok, suspended} = flurm_job:get_state(Pid),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 %%====================================================================
@@ -1047,7 +1103,7 @@ test_completed_enter() ->
     ok = flurm_job:signal_cleanup_complete(Pid),
     {ok, completed} = flurm_job:get_state(Pid),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_completed_cancel() ->
@@ -1060,7 +1116,7 @@ test_completed_cancel() ->
     ok = flurm_job:signal_cleanup_complete(Pid),
     {error, already_completed} = flurm_job:cancel(Pid),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_completed_allocate() ->
@@ -1073,7 +1129,7 @@ test_completed_allocate() ->
     ok = flurm_job:signal_cleanup_complete(Pid),
     {error, job_completed} = flurm_job:allocate(Pid, [<<"node2">>]),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_completed_set_priority() ->
@@ -1086,7 +1142,7 @@ test_completed_set_priority() ->
     ok = flurm_job:signal_cleanup_complete(Pid),
     {error, job_completed} = gen_statem:call(Pid, {set_priority, 500}),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_completed_get_job_id() ->
@@ -1101,7 +1157,7 @@ test_completed_get_job_id() ->
     Result = gen_statem:call(Pid, get_job_id),
     ?assertEqual(JobId, Result),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_completed_ignored_cast() ->
@@ -1117,7 +1173,7 @@ test_completed_ignored_cast() ->
 
     {ok, completed} = flurm_job:get_state(Pid),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_completed_ignored_info() ->
@@ -1133,7 +1189,7 @@ test_completed_ignored_info() ->
 
     {ok, completed} = flurm_job:get_state(Pid),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_failed_enter() ->
@@ -1146,7 +1202,7 @@ test_failed_enter() ->
     ok = flurm_job:signal_cleanup_complete(Pid),
     {ok, failed} = flurm_job:get_state(Pid),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_failed_cancel() ->
@@ -1159,7 +1215,7 @@ test_failed_cancel() ->
     ok = flurm_job:signal_cleanup_complete(Pid),
     {error, already_failed} = flurm_job:cancel(Pid),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_failed_suspend() ->
@@ -1172,7 +1228,7 @@ test_failed_suspend() ->
     ok = flurm_job:signal_cleanup_complete(Pid),
     {error, job_failed} = flurm_job:suspend(Pid),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_failed_set_priority() ->
@@ -1185,7 +1241,7 @@ test_failed_set_priority() ->
     ok = flurm_job:signal_cleanup_complete(Pid),
     {error, job_failed} = gen_statem:call(Pid, {set_priority, 500}),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_cancelled_enter() ->
@@ -1195,7 +1251,7 @@ test_cancelled_enter() ->
     ok = flurm_job:cancel(Pid),
     {ok, cancelled} = flurm_job:get_state(Pid),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_cancelled_cancel() ->
@@ -1205,7 +1261,7 @@ test_cancelled_cancel() ->
     ok = flurm_job:cancel(Pid),
     {error, already_cancelled} = flurm_job:cancel(Pid),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_cancelled_set_priority() ->
@@ -1215,7 +1271,7 @@ test_cancelled_set_priority() ->
     ok = flurm_job:cancel(Pid),
     {error, job_cancelled} = gen_statem:call(Pid, {set_priority, 500}),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_timeout_enter() ->
@@ -1227,7 +1283,7 @@ test_timeout_enter() ->
     timer:sleep(1500),
     {ok, timeout} = flurm_job:get_state(Pid),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_timeout_cancel() ->
@@ -1239,7 +1295,7 @@ test_timeout_cancel() ->
     timer:sleep(1500),
     {error, already_timed_out} = flurm_job:cancel(Pid),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_timeout_set_priority() ->
@@ -1251,7 +1307,7 @@ test_timeout_set_priority() ->
     timer:sleep(1500),
     {error, job_timed_out} = gen_statem:call(Pid, {set_priority, 500}),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_node_fail_enter() ->
@@ -1263,7 +1319,7 @@ test_node_fail_enter() ->
     ok = flurm_job:signal_node_failure(Pid, <<"node1">>),
     {ok, node_fail} = flurm_job:get_state(Pid),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_node_fail_cancel() ->
@@ -1275,7 +1331,7 @@ test_node_fail_cancel() ->
     ok = flurm_job:signal_node_failure(Pid, <<"node1">>),
     {error, already_failed} = flurm_job:cancel(Pid),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_node_fail_resume() ->
@@ -1287,7 +1343,7 @@ test_node_fail_resume() ->
     ok = flurm_job:signal_node_failure(Pid, <<"node1">>),
     {error, node_failure} = flurm_job:resume(Pid),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_node_fail_set_priority() ->
@@ -1299,7 +1355,7 @@ test_node_fail_set_priority() ->
     ok = flurm_job:signal_node_failure(Pid, <<"node1">>),
     {error, node_failure} = gen_statem:call(Pid, {set_priority, 500}),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 %%====================================================================
@@ -1335,7 +1391,7 @@ test_get_info_by_job_id() ->
     {ok, Info} = flurm_job:get_info(JobId),
     ?assertEqual(pending, maps:get(state, Info)),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_get_state_by_job_id() ->
@@ -1347,7 +1403,7 @@ test_get_state_by_job_id() ->
     {ok, State} = flurm_job:get_state(JobId),
     ?assertEqual(pending, State),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_allocate_by_job_id() ->
@@ -1359,7 +1415,7 @@ test_allocate_by_job_id() ->
     ok = flurm_job:allocate(JobId, [<<"node1">>]),
     {ok, configuring} = flurm_job:get_state(Pid),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_cancel_by_job_id() ->
@@ -1371,7 +1427,7 @@ test_cancel_by_job_id() ->
     ok = flurm_job:cancel(JobId),
     {ok, cancelled} = flurm_job:get_state(Pid),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_signal_config_complete_by_job_id() ->
@@ -1384,7 +1440,7 @@ test_signal_config_complete_by_job_id() ->
     ok = flurm_job:signal_config_complete(JobId),
     {ok, running} = flurm_job:get_state(Pid),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_signal_job_complete_by_job_id() ->
@@ -1398,7 +1454,7 @@ test_signal_job_complete_by_job_id() ->
     ok = flurm_job:signal_job_complete(JobId, 0),
     {ok, completing} = flurm_job:get_state(Pid),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_signal_cleanup_complete_by_job_id() ->
@@ -1413,7 +1469,7 @@ test_signal_cleanup_complete_by_job_id() ->
     ok = flurm_job:signal_cleanup_complete(JobId),
     {ok, completed} = flurm_job:get_state(Pid),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_signal_node_failure_by_job_id() ->
@@ -1427,7 +1483,7 @@ test_signal_node_failure_by_job_id() ->
     ok = flurm_job:signal_node_failure(JobId, <<"node1">>),
     {ok, node_fail} = flurm_job:get_state(Pid),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_preempt_by_job_id() ->
@@ -1441,7 +1497,7 @@ test_preempt_by_job_id() ->
     ok = flurm_job:preempt(JobId, requeue, 30),
     {ok, pending} = flurm_job:get_state(Pid),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_suspend_by_job_id() ->
@@ -1455,7 +1511,7 @@ test_suspend_by_job_id() ->
     ok = flurm_job:suspend(JobId),
     {ok, suspended} = flurm_job:get_state(Pid),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_resume_by_job_id() ->
@@ -1470,7 +1526,7 @@ test_resume_by_job_id() ->
     ok = flurm_job:resume(JobId),
     {ok, running} = flurm_job:get_state(Pid),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_set_priority_by_job_id() ->
@@ -1483,7 +1539,7 @@ test_set_priority_by_job_id() ->
     {ok, Info} = flurm_job:get_info(Pid),
     ?assertEqual(500, maps:get(priority, Info)),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_not_found_by_job_id() ->
@@ -1524,7 +1580,7 @@ test_set_priority_clamps_max() ->
     {ok, Info} = flurm_job:get_info(Pid),
     ?assertEqual(?MAX_PRIORITY, maps:get(priority, Info)),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.
 
 test_set_priority_clamps_min() ->
@@ -1535,5 +1591,5 @@ test_set_priority_clamps_min() ->
     {ok, Info} = flurm_job:get_info(Pid),
     ?assertEqual(?MIN_PRIORITY, maps:get(priority, Info)),
 
-    gen_statem:stop(Pid),
+    safe_stop(Pid),
     ok.

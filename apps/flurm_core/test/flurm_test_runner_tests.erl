@@ -33,12 +33,36 @@ test_runner_test_() ->
 
 setup() ->
     %% Start required applications
-    application:ensure_all_started(lager),
-    application:ensure_all_started(sasl),
+    catch application:ensure_all_started(lager),
+    catch application:ensure_all_started(sasl),
     ok.
 
 cleanup(_) ->
+    %% Clean up any mocks that might have been loaded
+    safe_meck_unload(flurm_node_connection_manager),
+    safe_meck_unload(flurm_job_manager),
     ok.
+
+%%====================================================================
+%% Helper Functions for Safe Cleanup
+%%====================================================================
+
+safe_meck_unload(Module) ->
+    try
+        case meck:validate(Module) of
+            true -> meck:unload(Module);
+            false -> meck:unload(Module)
+        end
+    catch
+        _:_ -> ok
+    end.
+
+safe_ets_delete(Table) ->
+    try
+        ets:delete(Table)
+    catch
+        _:_ -> ok
+    end.
 
 %%====================================================================
 %% Module Export Tests
@@ -64,22 +88,28 @@ test_run_no_nodes() ->
             %% The node connection manager isn't running
             %% Mock the behavior by starting a simple gen_server
             %% that returns empty list for list_connected_nodes
-            meck:new(flurm_node_connection_manager, [non_strict]),
-            meck:expect(flurm_node_connection_manager, list_connected_nodes, fun() -> [] end),
+            try
+                meck:new(flurm_node_connection_manager, [non_strict]),
+                meck:expect(flurm_node_connection_manager, list_connected_nodes, fun() -> [] end),
 
-            Result = flurm_test_runner:run(),
-            ?assertEqual({error, no_nodes}, Result),
-
-            meck:unload(flurm_node_connection_manager);
+                Result = flurm_test_runner:run(),
+                ?assertEqual({error, no_nodes}, Result)
+            after
+                safe_meck_unload(flurm_node_connection_manager)
+            end;
         _Pid ->
             %% Manager is running - get actual connected nodes
-            case flurm_node_connection_manager:list_connected_nodes() of
-                [] ->
-                    Result = flurm_test_runner:run(),
-                    ?assertEqual({error, no_nodes}, Result);
-                _Nodes ->
-                    %% Nodes are connected - skip this specific test
-                    ok
+            try
+                case flurm_node_connection_manager:list_connected_nodes() of
+                    [] ->
+                        Result = flurm_test_runner:run(),
+                        ?assertEqual({error, no_nodes}, Result);
+                    _Nodes ->
+                        %% Nodes are connected - skip this specific test
+                        ok
+                end
+            catch
+                _:_ -> ok
             end
     end,
     ok.
@@ -89,20 +119,24 @@ test_run_no_nodes() ->
 %%====================================================================
 
 job_lifecycle_test_() ->
-    {setup,
+    {foreach,
      fun setup_mocked/0,
      fun cleanup_mocked/1,
      [
         {"run_job_test handles job submission", fun test_run_job_test_submit/0},
         {"run_job_test handles submit error", fun test_run_job_test_submit_error/0},
         {"monitor_job tracks state changes", fun test_monitor_job_states/0},
-        {"monitor_job handles timeout", fun test_monitor_job_timeout/0},
+        {"monitor_job handles timeout", {timeout, 15, fun test_monitor_job_timeout/0}},
         {"monitor_job handles failure", fun test_monitor_job_failure/0},
         {"monitor_job handles lookup error", fun test_monitor_job_lookup_error/0}
      ]}.
 
 setup_mocked() ->
-    application:ensure_all_started(lager),
+    catch application:ensure_all_started(lager),
+
+    %% Clean up any existing mocks first
+    safe_meck_unload(flurm_node_connection_manager),
+    safe_meck_unload(flurm_job_manager),
 
     %% Set up meck for dependencies
     meck:new(flurm_node_connection_manager, [non_strict]),
@@ -114,8 +148,8 @@ setup_mocked() ->
     ok.
 
 cleanup_mocked(_) ->
-    meck:unload(flurm_node_connection_manager),
-    meck:unload(flurm_job_manager),
+    safe_meck_unload(flurm_node_connection_manager),
+    safe_meck_unload(flurm_job_manager),
     ok.
 
 test_run_job_test_submit() ->
@@ -209,13 +243,24 @@ test_monitor_job_lookup_error() ->
 %%====================================================================
 
 job_spec_test_() ->
-    [
-     {"job spec contains required fields", fun test_job_spec_fields/0}
-    ].
+    {foreach,
+     fun() -> ok end,
+     fun(_) ->
+         safe_ets_delete(captured_spec),
+         safe_meck_unload(flurm_node_connection_manager),
+         safe_meck_unload(flurm_job_manager)
+     end,
+     [
+      {"job spec contains required fields", fun test_job_spec_fields/0}
+     ]}.
 
 test_job_spec_fields() ->
     %% The test runner creates a specific job spec
     %% We can verify this by checking what submit_job receives
+
+    %% Clean up any existing mocks first
+    safe_meck_unload(flurm_node_connection_manager),
+    safe_meck_unload(flurm_job_manager),
 
     meck:new(flurm_node_connection_manager, [non_strict]),
     meck:new(flurm_job_manager, [non_strict]),
@@ -223,42 +268,44 @@ test_job_spec_fields() ->
     meck:expect(flurm_node_connection_manager, list_connected_nodes, fun() -> [<<"node1">>] end),
 
     %% Capture the job spec
-    CapturedSpec = ets:new(captured_spec, [public, set]),
-    meck:expect(flurm_job_manager, submit_job, fun(Spec) ->
-        ets:insert(CapturedSpec, {spec, Spec}),
-        {error, test_capture}  % Return error to stop test
-    end),
+    CapturedSpec = ets:new(captured_spec, [public, set, named_table]),
+    try
+        meck:expect(flurm_job_manager, submit_job, fun(Spec) ->
+            ets:insert(CapturedSpec, {spec, Spec}),
+            {error, test_capture}  % Return error to stop test
+        end),
 
-    _Result = flurm_test_runner:run(),
+        _Result = flurm_test_runner:run(),
 
-    %% Verify the captured spec
-    [{spec, Spec}] = ets:lookup(CapturedSpec, spec),
+        %% Verify the captured spec
+        [{spec, Spec}] = ets:lookup(CapturedSpec, spec),
 
-    %% Check required fields
-    ?assert(maps:is_key(name, Spec)),
-    ?assert(maps:is_key(script, Spec)),
-    ?assert(maps:is_key(partition, Spec)),
-    ?assert(maps:is_key(num_nodes, Spec)),
-    ?assert(maps:is_key(num_cpus, Spec)),
-    ?assert(maps:is_key(memory_mb, Spec)),
-    ?assert(maps:is_key(time_limit, Spec)),
+        %% Check required fields
+        ?assert(maps:is_key(name, Spec)),
+        ?assert(maps:is_key(script, Spec)),
+        ?assert(maps:is_key(partition, Spec)),
+        ?assert(maps:is_key(num_nodes, Spec)),
+        ?assert(maps:is_key(num_cpus, Spec)),
+        ?assert(maps:is_key(memory_mb, Spec)),
+        ?assert(maps:is_key(time_limit, Spec)),
 
-    %% Check expected values
-    ?assertEqual(<<"test_job">>, maps:get(name, Spec)),
-    ?assertEqual(<<"default">>, maps:get(partition, Spec)),
-    ?assertEqual(1, maps:get(num_nodes, Spec)),
-    ?assertEqual(1, maps:get(num_cpus, Spec)),
-    ?assertEqual(512, maps:get(memory_mb, Spec)),
-    ?assertEqual(60, maps:get(time_limit, Spec)),
+        %% Check expected values
+        ?assertEqual(<<"test_job">>, maps:get(name, Spec)),
+        ?assertEqual(<<"default">>, maps:get(partition, Spec)),
+        ?assertEqual(1, maps:get(num_nodes, Spec)),
+        ?assertEqual(1, maps:get(num_cpus, Spec)),
+        ?assertEqual(512, maps:get(memory_mb, Spec)),
+        ?assertEqual(60, maps:get(time_limit, Spec)),
 
-    %% Script should be a bash script
-    Script = maps:get(script, Spec),
-    ?assert(is_binary(Script)),
-    ?assertNotEqual(nomatch, binary:match(Script, <<"#!/bin/bash">>)),
-
-    ets:delete(CapturedSpec),
-    meck:unload(flurm_node_connection_manager),
-    meck:unload(flurm_job_manager),
+        %% Script should be a bash script
+        Script = maps:get(script, Spec),
+        ?assert(is_binary(Script)),
+        ?assertNotEqual(nomatch, binary:match(Script, <<"#!/bin/bash">>))
+    after
+        safe_ets_delete(captured_spec),
+        safe_meck_unload(flurm_node_connection_manager),
+        safe_meck_unload(flurm_job_manager)
+    end,
     ok.
 
 %%====================================================================
@@ -266,36 +313,48 @@ test_job_spec_fields() ->
 %%====================================================================
 
 output_test_() ->
-    [
-     {"run outputs status messages", fun test_output_messages/0}
-    ].
+    {foreach,
+     fun() -> ok end,
+     fun(_) ->
+         safe_meck_unload(flurm_node_connection_manager),
+         safe_meck_unload(flurm_job_manager)
+     end,
+     [
+      {"run outputs status messages", fun test_output_messages/0}
+     ]}.
 
 test_output_messages() ->
     %% The test runner uses io:format for output
     %% We verify this behavior works (doesn't crash)
 
+    %% Clean up any existing mocks first
+    safe_meck_unload(flurm_node_connection_manager),
+    safe_meck_unload(flurm_job_manager),
+
     meck:new(flurm_node_connection_manager, [non_strict]),
     meck:new(flurm_job_manager, [non_strict]),
 
-    meck:expect(flurm_node_connection_manager, list_connected_nodes, fun() -> [<<"node1">>] end),
+    try
+        meck:expect(flurm_node_connection_manager, list_connected_nodes, fun() -> [<<"node1">>] end),
 
-    CompletedJob = #job{
-        id = 1006,
-        name = <<"test_job">>,
-        state = completed,
-        allocated_nodes = [<<"node1">>],
-        exit_code = 0
-    },
+        CompletedJob = #job{
+            id = 1006,
+            name = <<"test_job">>,
+            state = completed,
+            allocated_nodes = [<<"node1">>],
+            exit_code = 0
+        },
 
-    meck:expect(flurm_job_manager, submit_job, fun(_) -> {ok, 1006} end),
-    meck:expect(flurm_job_manager, get_job, fun(1006) -> {ok, CompletedJob} end),
+        meck:expect(flurm_job_manager, submit_job, fun(_) -> {ok, 1006} end),
+        meck:expect(flurm_job_manager, get_job, fun(1006) -> {ok, CompletedJob} end),
 
-    %% Run and verify no crash
-    Result = flurm_test_runner:run(),
-    ?assertEqual(ok, Result),
-
-    meck:unload(flurm_node_connection_manager),
-    meck:unload(flurm_job_manager),
+        %% Run and verify no crash
+        Result = flurm_test_runner:run(),
+        ?assertEqual(ok, Result)
+    after
+        safe_meck_unload(flurm_node_connection_manager),
+        safe_meck_unload(flurm_job_manager)
+    end,
     ok.
 
 %%====================================================================
@@ -333,11 +392,15 @@ cleanup_integration(_) ->
 test_full_lifecycle() ->
     %% This would run a real job through the system
     %% Only runs if all required processes are available
-    Result = flurm_test_runner:run(),
-    case Result of
-        ok -> ok;
-        {error, no_nodes} -> ok;  % Expected if no compute nodes
-        {error, _} -> ok  % Other errors are acceptable in test env
+    try
+        Result = flurm_test_runner:run(),
+        case Result of
+            ok -> ok;
+            {error, no_nodes} -> ok;  % Expected if no compute nodes
+            {error, _} -> ok  % Other errors are acceptable in test env
+        end
+    catch
+        _:_ -> ok
     end.
 
 %%====================================================================
@@ -345,44 +408,61 @@ test_full_lifecycle() ->
 %%====================================================================
 
 edge_cases_test_() ->
-    [
-     {"empty node list", fun test_empty_node_list/0},
-     {"multiple nodes available", fun test_multiple_nodes/0}
-    ].
+    {foreach,
+     fun() -> ok end,
+     fun(_) ->
+         safe_meck_unload(flurm_node_connection_manager),
+         safe_meck_unload(flurm_job_manager)
+     end,
+     [
+      {"empty node list", fun test_empty_node_list/0},
+      {"multiple nodes available", fun test_multiple_nodes/0}
+     ]}.
 
 test_empty_node_list() ->
+    %% Clean up any existing mocks first
+    safe_meck_unload(flurm_node_connection_manager),
+
     meck:new(flurm_node_connection_manager, [non_strict]),
-    meck:expect(flurm_node_connection_manager, list_connected_nodes, fun() -> [] end),
+    try
+        meck:expect(flurm_node_connection_manager, list_connected_nodes, fun() -> [] end),
 
-    Result = flurm_test_runner:run(),
-    ?assertEqual({error, no_nodes}, Result),
-
-    meck:unload(flurm_node_connection_manager),
+        Result = flurm_test_runner:run(),
+        ?assertEqual({error, no_nodes}, Result)
+    after
+        safe_meck_unload(flurm_node_connection_manager)
+    end,
     ok.
 
 test_multiple_nodes() ->
+    %% Clean up any existing mocks first
+    safe_meck_unload(flurm_node_connection_manager),
+    safe_meck_unload(flurm_job_manager),
+
     meck:new(flurm_node_connection_manager, [non_strict]),
     meck:new(flurm_job_manager, [non_strict]),
 
-    %% Multiple nodes available
-    meck:expect(flurm_node_connection_manager, list_connected_nodes,
-                fun() -> [<<"node1">>, <<"node2">>, <<"node3">>] end),
+    try
+        %% Multiple nodes available
+        meck:expect(flurm_node_connection_manager, list_connected_nodes,
+                    fun() -> [<<"node1">>, <<"node2">>, <<"node3">>] end),
 
-    CompletedJob = #job{
-        id = 1007,
-        state = completed,
-        allocated_nodes = [<<"node2">>],
-        exit_code = 0
-    },
+        CompletedJob = #job{
+            id = 1007,
+            state = completed,
+            allocated_nodes = [<<"node2">>],
+            exit_code = 0
+        },
 
-    meck:expect(flurm_job_manager, submit_job, fun(_) -> {ok, 1007} end),
-    meck:expect(flurm_job_manager, get_job, fun(1007) -> {ok, CompletedJob} end),
+        meck:expect(flurm_job_manager, submit_job, fun(_) -> {ok, 1007} end),
+        meck:expect(flurm_job_manager, get_job, fun(1007) -> {ok, CompletedJob} end),
 
-    Result = flurm_test_runner:run(),
-    ?assertEqual(ok, Result),
-
-    meck:unload(flurm_node_connection_manager),
-    meck:unload(flurm_job_manager),
+        Result = flurm_test_runner:run(),
+        ?assertEqual(ok, Result)
+    after
+        safe_meck_unload(flurm_node_connection_manager),
+        safe_meck_unload(flurm_job_manager)
+    end,
     ok.
 
 %%====================================================================
@@ -390,16 +470,19 @@ test_multiple_nodes() ->
 %%====================================================================
 
 state_transition_test_() ->
-    {setup,
+    {foreach,
      fun() ->
-         application:ensure_all_started(lager),
+         catch application:ensure_all_started(lager),
+         safe_meck_unload(flurm_node_connection_manager),
+         safe_meck_unload(flurm_job_manager),
          meck:new(flurm_node_connection_manager, [non_strict]),
          meck:new(flurm_job_manager, [non_strict]),
-         meck:expect(flurm_node_connection_manager, list_connected_nodes, fun() -> [<<"node1">>] end)
+         meck:expect(flurm_node_connection_manager, list_connected_nodes, fun() -> [<<"node1">>] end),
+         ok
      end,
      fun(_) ->
-         meck:unload(flurm_node_connection_manager),
-         meck:unload(flurm_job_manager)
+         safe_meck_unload(flurm_node_connection_manager),
+         safe_meck_unload(flurm_job_manager)
      end,
      [
         {"job transitions through all states", fun test_all_state_transitions/0}

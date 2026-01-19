@@ -7,37 +7,33 @@
 -include_lib("eunit/include/eunit.hrl").
 
 %%====================================================================
-%% Test Setup/Teardown
+%% Test Setup/Teardown Helpers
 %%====================================================================
 
-setup() ->
-    %% Stop any existing rate limiter
+%% Common cleanup function to ensure clean state
+cleanup_rate_limiter() ->
     catch gen_server:stop(flurm_rate_limiter),
     catch ets:delete(flurm_rate_buckets),
     catch ets:delete(flurm_rate_limits),
     catch ets:delete(flurm_rate_stats),
+    %% Small delay to ensure cleanup completes
     timer:sleep(50),
-    %% Start fresh
+    ok.
+
+%% Common setup function to start with clean state
+setup_rate_limiter() ->
+    cleanup_rate_limiter(),
     {ok, Pid} = flurm_rate_limiter:start_link(),
     {started, Pid}.
 
-cleanup({started, _Pid}) ->
-    catch gen_server:stop(flurm_rate_limiter),
-    catch ets:delete(flurm_rate_buckets),
-    catch ets:delete(flurm_rate_limits),
-    catch ets:delete(flurm_rate_stats),
-    timer:sleep(50);
-cleanup(_) ->
-    ok.
-
 %%====================================================================
-%% Test Generator
+%% Main Test Generator
 %%====================================================================
 
 rate_limiter_test_() ->
     {foreach,
-     fun setup/0,
-     fun cleanup/1,
+     fun setup_rate_limiter/0,
+     fun cleanup_fixture/1,
      [
       {"Server starts correctly", fun test_server_starts/0},
       {"Enable and disable", fun test_enable_disable/0},
@@ -58,13 +54,17 @@ rate_limiter_test_() ->
       {"Handle unknown call", fun test_unknown_call/0},
       {"Handle unknown cast", fun test_unknown_cast/0},
       {"Handle unknown info", fun test_unknown_info/0},
-      {"Code change callback", fun test_code_change/0},
-      {"Terminate callback", fun test_terminate/0},
-      {"Is enabled check", fun test_is_enabled/0}
+      {"Code change callback", fun test_code_change/0}
      ]}.
 
+%% Cleanup function for foreach fixture
+cleanup_fixture({started, _Pid}) ->
+    cleanup_rate_limiter();
+cleanup_fixture(_) ->
+    cleanup_rate_limiter().
+
 %%====================================================================
-%% Test Cases
+%% Test Cases for Main Generator
 %%====================================================================
 
 test_server_starts() ->
@@ -241,6 +241,16 @@ test_code_change() ->
     {ok, NewState} = flurm_rate_limiter:code_change(old_vsn, State, extra),
     ?assertEqual(State, NewState).
 
+%%====================================================================
+%% Terminate Test - Needs special handling as it stops the server
+%%====================================================================
+
+terminate_test_() ->
+    {setup,
+     fun setup_rate_limiter/0,
+     fun cleanup_fixture/1,
+     [{"Terminate callback", fun test_terminate/0}]}.
+
 test_terminate() ->
     %% Test terminate by stopping the server
     Pid = whereis(flurm_rate_limiter),
@@ -249,13 +259,23 @@ test_terminate() ->
     timer:sleep(50),
     ?assertEqual(undefined, whereis(flurm_rate_limiter)).
 
+%%====================================================================
+%% Is Enabled Test - Needs special handling as it deletes ETS tables
+%%====================================================================
+
+is_enabled_test_() ->
+    {setup,
+     fun setup_rate_limiter/0,
+     fun cleanup_fixture/1,
+     [{"Is enabled check", fun test_is_enabled/0}]}.
+
 test_is_enabled() ->
     %% When server is running, should be enabled by default
     ?assert(flurm_rate_limiter:is_enabled()),
 
     %% Stop server and delete table
-    gen_server:stop(flurm_rate_limiter),
-    ets:delete(flurm_rate_limits),
+    catch gen_server:stop(flurm_rate_limiter),
+    catch ets:delete(flurm_rate_limits),
     timer:sleep(20),
 
     %% With no table, should return false
@@ -267,33 +287,24 @@ test_is_enabled() ->
 
 timer_tests_() ->
     {setup,
-     fun() ->
-         catch gen_server:stop(flurm_rate_limiter),
-         catch ets:delete(flurm_rate_buckets),
-         catch ets:delete(flurm_rate_limits),
-         catch ets:delete(flurm_rate_stats),
-         timer:sleep(50),
-         {ok, Pid} = flurm_rate_limiter:start_link(),
-         Pid
-     end,
-     fun(Pid) ->
-         catch gen_server:stop(Pid),
-         timer:sleep(50)
-     end,
+     fun setup_rate_limiter/0,
+     fun cleanup_fixture/1,
      [
-      {"Refill timer fires", fun() ->
-          %% Wait for refill timer to fire (100ms interval)
-          timer:sleep(150),
-          ?assert(is_pid(whereis(flurm_rate_limiter)))
-      end},
-      {"Load check timer fires", fun() ->
-          %% Wait for load check timer to fire (1000ms interval)
-          timer:sleep(1100),
-          Stats = flurm_rate_limiter:get_stats(),
-          %% current_load should have been calculated
-          ?assert(is_float(maps:get(current_load, Stats)))
-      end}
+      {"Refill timer fires", fun test_refill_timer/0},
+      {"Load check timer fires", fun test_load_check_timer/0}
      ]}.
+
+test_refill_timer() ->
+    %% Wait for refill timer to fire (100ms interval)
+    timer:sleep(150),
+    ?assert(is_pid(whereis(flurm_rate_limiter))).
+
+test_load_check_timer() ->
+    %% Wait for load check timer to fire (1000ms interval)
+    timer:sleep(1100),
+    Stats = flurm_rate_limiter:get_stats(),
+    %% current_load should have been calculated
+    ?assert(is_float(maps:get(current_load, Stats))).
 
 %%====================================================================
 %% Backpressure Tests
@@ -301,68 +312,47 @@ timer_tests_() ->
 
 backpressure_test_() ->
     {setup,
-     fun() ->
-         catch gen_server:stop(flurm_rate_limiter),
-         catch ets:delete(flurm_rate_buckets),
-         catch ets:delete(flurm_rate_limits),
-         catch ets:delete(flurm_rate_stats),
-         timer:sleep(50),
-         {ok, Pid} = flurm_rate_limiter:start_link(),
-         Pid
-     end,
-     fun(Pid) ->
-         catch gen_server:stop(Pid),
-         timer:sleep(50)
-     end,
-     [
-      {"Backpressure activates under high load", fun() ->
-          %% Set a very low global limit to trigger backpressure
-          ok = flurm_rate_limiter:set_limit(global, default, 10),
-          timer:sleep(50),
+     fun setup_rate_limiter/0,
+     fun cleanup_fixture/1,
+     [{"Backpressure activates under high load", fun test_backpressure/0}]}.
 
-          %% Consume most of the global bucket
-          _ = [flurm_rate_limiter:check_rate(global, global, 1) || _ <- lists:seq(1, 100)],
+test_backpressure() ->
+    %% Set a very low global limit to trigger backpressure
+    ok = flurm_rate_limiter:set_limit(global, default, 10),
+    timer:sleep(50),
 
-          %% Wait for load check
-          timer:sleep(1200),
+    %% Consume most of the global bucket
+    _ = [flurm_rate_limiter:check_rate(global, global, 1) || _ <- lists:seq(1, 100)],
 
-          %% Stats should show high load
-          Stats = flurm_rate_limiter:get_stats(),
-          ?assert(is_float(maps:get(current_load, Stats)))
-      end}
-     ]}.
+    %% Wait for load check
+    timer:sleep(1200),
+
+    %% Stats should show high load
+    Stats = flurm_rate_limiter:get_stats(),
+    ?assert(is_float(maps:get(current_load, Stats))).
 
 %%====================================================================
 %% Default Limits Fallback Tests
 %%====================================================================
 
 default_limits_test_() ->
-    {setup,
-     fun() ->
-         catch gen_server:stop(flurm_rate_limiter),
-         catch ets:delete(flurm_rate_buckets),
-         catch ets:delete(flurm_rate_limits),
-         catch ets:delete(flurm_rate_stats),
-         timer:sleep(50),
-         {ok, Pid} = flurm_rate_limiter:start_link(),
-         Pid
-     end,
-     fun(Pid) ->
-         catch gen_server:stop(Pid),
-         timer:sleep(50)
-     end,
+    {foreach,
+     fun setup_rate_limiter/0,
+     fun cleanup_fixture/1,
      [
-      {"Fallback to type default for unknown key", fun() ->
-          %% Should fall back to {user, default} limit
-          Limit = flurm_rate_limiter:get_limit(user, <<"completely_new_user">>),
-          ?assertEqual(100, Limit)
-      end},
-      {"Fallback to hardcoded default if type default missing", fun() ->
-          %% Delete the type default from ETS
-          ets:delete(flurm_rate_limits, {user, default}),
-
-          %% Should fall back to hardcoded DEFAULT_USER_LIMIT (100)
-          Limit = flurm_rate_limiter:get_limit(user, <<"another_user">>),
-          ?assertEqual(100, Limit)
-      end}
+      {"Fallback to type default for unknown key", fun test_fallback_to_type_default/0},
+      {"Fallback to hardcoded default if type default missing", fun test_fallback_to_hardcoded/0}
      ]}.
+
+test_fallback_to_type_default() ->
+    %% Should fall back to {user, default} limit
+    Limit = flurm_rate_limiter:get_limit(user, <<"completely_new_user">>),
+    ?assertEqual(100, Limit).
+
+test_fallback_to_hardcoded() ->
+    %% Delete the type default from ETS
+    catch ets:delete(flurm_rate_limits, {user, default}),
+
+    %% Should fall back to hardcoded DEFAULT_USER_LIMIT (100)
+    Limit = flurm_rate_limiter:get_limit(user, <<"another_user">>),
+    ?assertEqual(100, Limit).
