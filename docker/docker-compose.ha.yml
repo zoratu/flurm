@@ -1,28 +1,42 @@
-version: '3.8'
-
 # High-Availability FLURM cluster configuration
 # 3 controllers with Ra consensus for fault tolerance testing
+#
+# Used by:
+#   - docker/scripts/test_ha_failover.sh - Leader failover testing
+#   - docker/scripts/test_split_brain.sh - Network partition testing
 
 services:
-  # Controller 1 (initial leader)
+  # Controller 1 (initial leader candidate)
   flurm-ctrl-1:
     build:
       context: ..
       dockerfile: docker/Dockerfile.flurm-server-ha
     hostname: flurm-ctrl-1
+    container_name: ${COMPOSE_PROJECT_NAME:-flurm-ha}-ctrl-1
     environment:
       - FLURM_NODE_NAME=flurm@flurm-ctrl-1
       - FLURM_COOKIE=flurm_cluster_secret
       - FLURM_CLUSTER_NODES=flurm@flurm-ctrl-1,flurm@flurm-ctrl-2,flurm@flurm-ctrl-3
       - FLURM_RA_DATA_DIR=/var/lib/flurm/ra
     ports:
-      - "6817:6817"
+      - "6817:6817"   # SLURM protocol port
+      - "9090:9090"   # Metrics/health endpoint
     volumes:
       - munge-key:/etc/munge
       - ctrl1-data:/var/lib/flurm
     networks:
       flurm-ha-net:
         ipv4_address: 172.28.0.10
+    # Required for split-brain testing (iptables rules)
+    cap_add:
+      - NET_ADMIN
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:9090/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
 
   # Controller 2
   flurm-ctrl-2:
@@ -30,21 +44,33 @@ services:
       context: ..
       dockerfile: docker/Dockerfile.flurm-server-ha
     hostname: flurm-ctrl-2
+    container_name: ${COMPOSE_PROJECT_NAME:-flurm-ha}-ctrl-2
     environment:
       - FLURM_NODE_NAME=flurm@flurm-ctrl-2
       - FLURM_COOKIE=flurm_cluster_secret
       - FLURM_CLUSTER_NODES=flurm@flurm-ctrl-1,flurm@flurm-ctrl-2,flurm@flurm-ctrl-3
       - FLURM_RA_DATA_DIR=/var/lib/flurm/ra
     ports:
-      - "6827:6817"
+      - "6827:6817"   # SLURM protocol port
+      - "9091:9090"   # Metrics/health endpoint
     volumes:
       - munge-key:/etc/munge
       - ctrl2-data:/var/lib/flurm
     networks:
       flurm-ha-net:
         ipv4_address: 172.28.0.11
+    cap_add:
+      - NET_ADMIN
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:9090/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     depends_on:
-      - flurm-ctrl-1
+      flurm-ctrl-1:
+        condition: service_started
+    restart: unless-stopped
 
   # Controller 3
   flurm-ctrl-3:
@@ -52,59 +78,88 @@ services:
       context: ..
       dockerfile: docker/Dockerfile.flurm-server-ha
     hostname: flurm-ctrl-3
+    container_name: ${COMPOSE_PROJECT_NAME:-flurm-ha}-ctrl-3
     environment:
       - FLURM_NODE_NAME=flurm@flurm-ctrl-3
       - FLURM_COOKIE=flurm_cluster_secret
       - FLURM_CLUSTER_NODES=flurm@flurm-ctrl-1,flurm@flurm-ctrl-2,flurm@flurm-ctrl-3
       - FLURM_RA_DATA_DIR=/var/lib/flurm/ra
     ports:
-      - "6837:6817"
+      - "6837:6817"   # SLURM protocol port
+      - "9092:9090"   # Metrics/health endpoint
     volumes:
       - munge-key:/etc/munge
       - ctrl3-data:/var/lib/flurm
     networks:
       flurm-ha-net:
         ipv4_address: 172.28.0.12
+    cap_add:
+      - NET_ADMIN
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:9090/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     depends_on:
-      - flurm-ctrl-1
+      flurm-ctrl-1:
+        condition: service_started
+    restart: unless-stopped
 
-  # Compute nodes
+  # Compute node 1
   flurm-node-1:
     build:
       context: ..
       dockerfile: docker/Dockerfile.flurm-node
     hostname: flurm-node-1
+    container_name: ${COMPOSE_PROJECT_NAME:-flurm-ha}-node-1
     environment:
       - FLURM_CONTROLLER_HOST=flurm-ctrl-1
       - FLURM_CONTROLLER_PORT=6818
+      # Backup controllers for failover
+      - FLURM_BACKUP_CONTROLLERS=flurm-ctrl-2:6818,flurm-ctrl-3:6818
+    volumes:
+      - munge-key:/etc/munge
     networks:
       flurm-ha-net:
         ipv4_address: 172.28.0.20
     depends_on:
-      - flurm-ctrl-1
+      flurm-ctrl-1:
+        condition: service_started
+    restart: unless-stopped
 
+  # Compute node 2
   flurm-node-2:
     build:
       context: ..
       dockerfile: docker/Dockerfile.flurm-node
     hostname: flurm-node-2
+    container_name: ${COMPOSE_PROJECT_NAME:-flurm-ha}-node-2
     environment:
       - FLURM_CONTROLLER_HOST=flurm-ctrl-1
       - FLURM_CONTROLLER_PORT=6818
+      - FLURM_BACKUP_CONTROLLERS=flurm-ctrl-2:6818,flurm-ctrl-3:6818
+    volumes:
+      - munge-key:/etc/munge
     networks:
       flurm-ha-net:
         ipv4_address: 172.28.0.21
     depends_on:
-      - flurm-ctrl-1
+      flurm-ctrl-1:
+        condition: service_started
+    restart: unless-stopped
 
-  # SLURM client for testing
+  # SLURM client for testing job submission
   slurm-client:
     build:
       context: .
       dockerfile: Dockerfile.slurm-client-munge
     hostname: slurm-client
+    container_name: ${COMPOSE_PROJECT_NAME:-flurm-ha}-slurm-client
     environment:
       - SLURM_CONF=/etc/slurm/slurm.conf
+      # Connect to first controller by default
+      - SLURMCTLD_HOST=flurm-ctrl-1
     volumes:
       - munge-key:/etc/munge
     networks:
@@ -113,17 +168,25 @@ services:
     stdin_open: true
     tty: true
     depends_on:
-      - flurm-ctrl-1
+      flurm-ctrl-1:
+        condition: service_started
+    restart: unless-stopped
 
 volumes:
   munge-key:
+    driver: local
   ctrl1-data:
+    driver: local
   ctrl2-data:
+    driver: local
   ctrl3-data:
+    driver: local
 
 networks:
   flurm-ha-net:
     driver: bridge
     ipam:
+      driver: default
       config:
         - subnet: 172.28.0.0/16
+          gateway: 172.28.0.1

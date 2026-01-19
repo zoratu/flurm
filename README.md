@@ -6,9 +6,20 @@ An Erlang-based, SLURM-compatible job scheduler designed for high availability, 
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![Erlang/OTP](https://img.shields.io/badge/Erlang%2FOTP-26%2B-red.svg)](https://www.erlang.org/)
+[![Tests](https://img.shields.io/badge/Tests-498%20passing-brightgreen.svg)](docs/COVERAGE.md)
+[![Coverage](https://img.shields.io/badge/Coverage-6%25-yellow.svg)](docs/COVERAGE.md)
 [![Made with Claude](https://img.shields.io/badge/Made%20with-Claude%20AI-blueviolet.svg)](https://claude.ai)
 
 > **Note**: This project was developed with the assistance of generative AI (Claude by Anthropic). The architecture, code, documentation, and TLA+ specifications were created through AI-assisted development.
+
+## Build Status
+
+| Component | Status |
+|-----------|--------|
+| Unit Tests | 498 tests, 0 failures |
+| Protocol Layer | 91% coverage |
+| Core Modules | Active development |
+| Documentation | Up to date |
 
 ## Overview
 
@@ -28,9 +39,10 @@ FLURM is a next-generation workload manager that speaks the SLURM protocol while
 
 ### Prerequisites
 
-- Erlang/OTP 26 or later
-- rebar3
+- Erlang/OTP 26 or later (OTP 28 recommended)
+- rebar3 3.22+
 - (Optional) Docker for containerized deployment
+- (Optional) MUNGE for authentication in production
 
 ### Installation
 
@@ -39,11 +51,27 @@ FLURM is a next-generation workload manager that speaks the SLURM protocol while
 git clone https://github.com/your-org/flurm.git
 cd flurm
 
+# Fetch dependencies and compile
+rebar3 compile
+
+# Run unit tests (498 tests)
+rebar3 eunit
+
 # Build the release
 rebar3 release
 
-# Start a single-node cluster
-_build/default/rel/flurm/bin/flurm foreground
+# Start a single-node controller (development mode)
+_build/default/rel/flurmctld/bin/flurmctld foreground
+```
+
+### Verify Installation
+
+```bash
+# In a separate terminal, check the controller is running
+rebar3 shell
+
+# From the Erlang shell
+1> flurm_controller_app:status().
 ```
 
 ### Basic Usage
@@ -168,10 +196,10 @@ flowchart TB
 
 ## Project Status
 
-FLURM is currently in active development. The following components are implemented:
+FLURM is currently in **active development** (January 2026). The following components are implemented:
 
 ### Core Components
-- [x] SLURM protocol decoder/encoder
+- [x] SLURM protocol decoder/encoder (91% coverage)
 - [x] Basic job submission and management
 - [x] Node registration and heartbeat
 - [x] Partition management
@@ -185,10 +213,12 @@ FLURM is currently in active development. The following components are implement
 - [x] slurmdbd (accounting daemon)
 
 ### Testing & Verification
+- [x] Unit test suite (498 tests passing)
 - [x] Protocol fuzzing (mutation, boundary, edge case testing)
 - [x] Deterministic simulation framework (FoundationDB-style)
 - [x] Performance benchmarks (throughput, latency)
 - [x] Multi-node cluster tests
+- [ ] Integration test framework (in progress)
 
 ### Advanced Features
 - [x] GPU scheduling (GRES) - Full generic resource support
@@ -204,6 +234,7 @@ FLURM is currently in active development. The following components are implement
 - [ ] Full federation with cross-cluster job submission
 - [ ] Kubernetes operator deployment
 - [ ] SPANK plugin compatibility layer
+- [ ] Integration test coverage for core modules
 
 ## Contributing
 

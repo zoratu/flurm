@@ -1,5 +1,63 @@
 # FLURM Performance Benchmarks
 
+## Quick Start
+
+Run the benchmark suite with a single command:
+
+```bash
+# Default benchmarks (recommended)
+./scripts/run_benchmarks.escript
+
+# Quick benchmarks (faster, less accurate)
+./scripts/run_benchmarks.escript --quick
+
+# Full benchmarks (slower, more accurate)
+./scripts/run_benchmarks.escript --full
+
+# Save results to a file
+./scripts/run_benchmarks.escript --output results.txt
+
+# Save results in JSON format
+./scripts/run_benchmarks.escript --json --output results.json
+```
+
+Or run benchmarks from the Erlang shell:
+
+```erlang
+%% Compile first
+rebar3 compile
+
+%% Start Erlang shell
+erl -pa _build/default/lib/*/ebin
+
+%% Run all benchmarks
+flurm_benchmark:run_all_benchmarks().
+
+%% Run individual benchmarks
+flurm_benchmark:benchmark_job_submission(1000).
+flurm_benchmark:benchmark_scheduler_cycle(100).
+flurm_benchmark:benchmark_protocol_encoding(10000).
+flurm_benchmark:benchmark_state_persistence(1000).
+
+%% Format results for output
+Results = flurm_benchmark:run_all_benchmarks().
+Report = flurm_benchmark:format_results(Results).
+io:format("~s", [Report]).
+```
+
+## Benchmark API
+
+The benchmark module (`flurm_benchmark`) provides the following primary functions:
+
+| Function | Description |
+|----------|-------------|
+| `run_all_benchmarks()` | Run complete benchmark suite with default parameters |
+| `benchmark_job_submission(N)` | Submit N jobs and measure throughput |
+| `benchmark_scheduler_cycle(N)` | Measure scheduler performance with N pending jobs |
+| `benchmark_protocol_encoding(N)` | Measure protocol encode/decode speed |
+| `benchmark_state_persistence(N)` | Measure state save/load performance |
+| `format_results(Results)` | Format results for human-readable output |
+
 ## Test Environment
 
 - **Platform**: macOS Darwin 24.6.0
@@ -86,45 +144,77 @@ Based on baseline benchmarks and FLURM architecture:
 
 | Module Category | Coverage | Notes |
 |-----------------|----------|-------|
-| Protocol codec | 6-80% | Header well tested, codec needs work |
-| Job management | 0-84% | Registry good, manager needs tests |
-| Scheduler | 0% | Needs integration tests |
-| Consensus (Ra) | 62-63% | Good coverage |
-| Node management | 0% | Requires integration tests |
-| **Overall** | **15%** | See docs/COVERAGE.md for strategy |
+| Protocol layer | 31-100% | Header 100%, codec 31%, overall strong |
+| Infrastructure | 50-100% | Supervisors and apps well tested |
+| Job management | 0-50% | Executor tested, manager needs integration tests |
+| Scheduler | 0% | Requires full application context |
+| Node management | 0-58% | Node daemon app 58%, server needs tests |
+| **Overall** | **6%** | See docs/COVERAGE.md for explanation |
 
 ### High Coverage Modules (>50%)
-- flurm_job_sup: 100%
-- flurm_license: 88%
-- flurm_job_registry: 84%
-- flurm_protocol_header: 80%
-- flurm_priority: 69%
-- flurm_metrics: 69%
-- flurm_protocol_pack: 63%
-- flurm_fairshare: 63%
-- flurm_db_ra_effects: 63%
-- flurm_db_ra: 62%
-- flurm_gres: 57%
-- flurm_rate_limiter: 54%
-- flurm_partition_registry: 53%
-- flurm_protocol: 52%
+- flurm_protocol_header: 100%
+- flurm_job_executor_sup: 100%
+- flurm_node_daemon_sup: 100%
+- flurm_protocol: 91%
+- flurm_state_persistence: 88%
+- flurm_protocol_pack: 86%
+- flurm_protocol_auth: 84%
+- flurm_munge: 83%
+- flurm_node_daemon_app: 58%
+- flurm_system_monitor: 54%
+- flurm_job_executor: 50%
 
 ### Coverage Improvement Priorities
-1. flurm_controller_handler (0%) - Critical path, tests written but need debugging
-2. flurm_scheduler (0%) - Core logic, complex dependencies
-3. flurm_protocol_codec (6%) - Critical for SLURM compatibility
-4. flurm_reservation (15%) - Advanced feature
-5. flurm_preemption (34%) - Advanced feature
+1. flurm_protocol_codec (31%) - Increase to 60% with more message type tests
+2. flurm_scheduler (0%) - Add integration test framework
+3. flurm_job_manager (0%) - Add integration tests with supervision tree
+4. flurm_controller_handler (0%) - Fix test mocking issues
+5. flurm_dbd_* (31%) - Improve database daemon coverage
 
-See [docs/COVERAGE.md](COVERAGE.md) for the complete coverage strategy and justified exceptions.
+See [docs/COVERAGE.md](COVERAGE.md) for the complete coverage strategy, justified exceptions, and improvement roadmap.
 
 ## Running Benchmarks
 
-```bash
-# Run basic benchmarks
-cd /path/to/flurm
-escript run_benchmarks.escript
+### Command Line
 
+```bash
+# Navigate to FLURM directory
+cd /path/to/flurm
+
+# Run default benchmarks
+./scripts/run_benchmarks.escript
+
+# Run quick benchmarks (fewer iterations, faster)
+./scripts/run_benchmarks.escript --quick
+
+# Run full benchmarks (more iterations, more accurate)
+./scripts/run_benchmarks.escript --full
+
+# Save results to a file
+./scripts/run_benchmarks.escript --output benchmark_results.txt
+
+# Save as JSON for automated processing
+./scripts/run_benchmarks.escript --json --output benchmark_results.json
+```
+
+### Programmatic Access
+
+```erlang
+%% From Erlang shell or within tests
+Results = flurm_benchmark:run_all_benchmarks().
+
+%% Get formatted report
+Report = flurm_benchmark:format_results(Results).
+
+%% Compare two runs
+OldResults = [...],
+NewResults = [...],
+Comparison = flurm_benchmark:compare_reports(OldResults, NewResults).
+```
+
+### Coverage Testing
+
+```bash
 # Run with coverage
 rebar3 cover --verbose
 
@@ -134,10 +224,53 @@ rebar3 proper
 
 ## Benchmark Scripts
 
-- `run_benchmarks.escript` - Basic Erlang/OTP benchmarks
-- `apps/flurm_core/test/flurm_bench.erl` - Full FLURM benchmarks
-- `apps/flurm_core/test/flurm_latency_bench.erl` - Latency measurements
-- `apps/flurm_core/test/flurm_throughput_bench.erl` - Throughput tests
+| Script | Description |
+|--------|-------------|
+| `scripts/run_benchmarks.escript` | Primary benchmark runner with CLI options |
+| `apps/flurm_core/src/flurm_benchmark.erl` | Core benchmark module with API functions |
+
+## Expected Baseline Numbers
+
+When running benchmarks, you should see approximately these numbers on modern hardware:
+
+| Benchmark | Expected Throughput | Expected Latency (avg) |
+|-----------|---------------------|------------------------|
+| Job Submission | 500,000+ ops/sec | < 5 us |
+| Scheduler Cycle | 1,000+ cycles/sec | < 1000 us |
+| Protocol Encoding | 100,000+ ops/sec | < 50 us |
+| State Persistence (Store) | 5,000,000+ ops/sec | < 1 us |
+| State Persistence (Lookup) | 10,000,000+ ops/sec | < 0.5 us |
+
+**Note**: These numbers vary significantly based on:
+- Hardware (CPU speed, memory bandwidth)
+- System load
+- Erlang/OTP version
+- Number of iterations (more iterations = more accurate but slower)
+
+## Comparison Methodology
+
+To compare FLURM performance between versions or configurations:
+
+1. **Establish Baseline**: Run `--full` benchmarks on clean system
+2. **Make Changes**: Apply code changes or configuration updates
+3. **Run Comparison**: Run benchmarks again with same parameters
+4. **Analyze Results**: Use `compare_reports/2` to see percentage changes
+
+```erlang
+%% Example comparison workflow
+Baseline = flurm_benchmark:run_all_benchmarks().
+%% ... make changes ...
+NewResults = flurm_benchmark:run_all_benchmarks().
+Comparison = flurm_benchmark:compare_reports(Baseline, NewResults).
+io:format("~s", [Comparison]).
+```
+
+### Interpretation Guidelines
+
+- **< 5% change**: Within noise, not significant
+- **5-20% improvement**: Meaningful optimization
+- **> 20% improvement**: Significant optimization
+- **Any regression**: Investigate before merging
 
 ## Recommendations
 

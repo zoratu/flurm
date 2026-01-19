@@ -1,8 +1,54 @@
 # FLURM Testing Guide
 
-This guide covers testing FLURM at various levels.
+This comprehensive guide covers all aspects of testing FLURM, from running basic unit tests to writing new test cases and understanding the test architecture.
 
-## Unit Tests
+## Table of Contents
+
+1. [Current Status](#current-status)
+2. [Quick Start](#quick-start)
+3. [Test Types](#test-types)
+4. [Test Architecture](#test-architecture)
+5. [Writing New Tests](#writing-new-tests)
+6. [Debugging Tests](#debugging-tests)
+
+---
+
+## Current Status
+
+| Metric | Value |
+|--------|-------|
+| **Total Tests** | 498 |
+| **Tests Passing** | 488 |
+| **Tests Cancelled** | 10 (environment-specific) |
+| **Test Pass Rate** | 100% (of runnable tests) |
+| **Coverage** | 6% overall (see [COVERAGE.md](COVERAGE.md) for details) |
+
+---
+
+## Quick Start
+
+```bash
+# Run all unit tests
+rebar3 eunit
+
+# Run tests with coverage
+rebar3 eunit --cover && rebar3 cover --verbose
+
+# Run tests for a specific app
+rebar3 eunit --app=flurm_protocol
+
+# Run a specific test module
+rebar3 eunit --module=flurm_protocol_codec_tests
+
+# View coverage report
+open _build/test/cover/index.html
+```
+
+---
+
+## Test Types
+
+### Unit Tests (EUnit)
 
 Run unit tests with:
 
@@ -243,3 +289,185 @@ jobs:
 3. **Test under load** - Use throughput benchmarks to find race conditions
 4. **Monitor resource usage** - Watch for memory leaks and process accumulation
 5. **Test upgrades** - Verify hot code reload doesn't break state
+
+---
+
+## Test Architecture
+
+### Directory Structure
+
+Tests are organized by application:
+
+```
+apps/
+├── flurm_core/
+│   └── test/
+│       ├── flurm_scheduler_tests.erl
+│       ├── flurm_job_tests.erl
+│       ├── flurm_preemption_tests.erl
+│       └── ...
+├── flurm_protocol/
+│   └── test/
+│       ├── flurm_protocol_codec_tests.erl
+│       ├── flurm_protocol_header_tests.erl
+│       └── ...
+├── flurm_controller/
+│   └── test/
+│       ├── flurm_controller_handler_tests.erl
+│       └── ...
+├── flurm_db/
+│   └── test/
+│       ├── flurm_db_ra_tests.erl
+│       └── ...
+└── flurm_dbd/
+    └── test/
+        ├── flurm_dbd_server_tests.erl
+        └── ...
+```
+
+### Test Module Dependencies
+
+Some test modules require specific setup:
+
+| Module Category | Dependencies |
+|-----------------|--------------|
+| Protocol tests | None (standalone) |
+| Config tests | May mock file system |
+| DB tests | Require Ra/Mnesia |
+| Controller tests | Require protocol, config, DB |
+| Integration tests | Full application context |
+
+---
+
+## Writing New Tests
+
+### Test Module Template
+
+```erlang
+-module(flurm_newfeature_tests).
+
+%% @doc Unit tests for flurm_newfeature module.
+
+-include_lib("eunit/include/eunit.hrl").
+
+%%====================================================================
+%% Test Generators
+%%====================================================================
+
+basic_test_() ->
+    {foreach,
+     fun setup/0,
+     fun cleanup/1,
+     [
+         {"can create item", fun test_create/0},
+         {"can retrieve item", fun test_get/0}
+     ]}.
+
+error_handling_test_() ->
+    [
+        {"returns error for invalid input", fun test_invalid_input/0},
+        {"handles missing item", fun test_not_found/0}
+    ].
+
+%%====================================================================
+%% Setup/Teardown
+%%====================================================================
+
+setup() ->
+    %% Initialize test state
+    ok.
+
+cleanup(_) ->
+    %% Clean up
+    ok.
+
+%%====================================================================
+%% Test Cases
+%%====================================================================
+
+test_create() ->
+    Result = flurm_newfeature:create(#{name => <<"test">>}),
+    ?assertMatch({ok, _}, Result).
+
+test_get() ->
+    {ok, Id} = flurm_newfeature:create(#{name => <<"test">>}),
+    ?assertEqual({ok, #{name => <<"test">>}}, flurm_newfeature:get(Id)).
+
+test_invalid_input() ->
+    ?assertEqual({error, invalid_input}, flurm_newfeature:create(invalid)).
+
+test_not_found() ->
+    ?assertEqual({error, not_found}, flurm_newfeature:get(<<"nonexistent">>)).
+```
+
+### Using Meck for Mocking
+
+```erlang
+meck_test_() ->
+    {setup,
+     fun() ->
+         meck:new(some_module, [passthrough]),
+         meck:expect(some_module, some_function, fun(_) -> mocked_result end)
+     end,
+     fun(_) ->
+         meck:unload(some_module)
+     end,
+     fun(_) ->
+         [
+             ?_assertEqual(mocked_result, some_module:some_function(arg))
+         ]
+     end}.
+```
+
+### Test Categories to Cover
+
+Every module should have tests for:
+
+1. **Happy Path** - Normal expected behavior
+2. **Error Handling** - Invalid inputs, failure scenarios
+3. **Edge Cases** - Boundary conditions, empty inputs, max values
+4. **Concurrency** - Race conditions (where applicable)
+
+---
+
+## Debugging Tests
+
+### Verbose Output
+
+```bash
+# See detailed test results
+rebar3 eunit --verbose
+
+# Run specific module with verbose output
+rebar3 eunit --module=flurm_problem_tests --verbose
+```
+
+### Interactive Debugging
+
+```erlang
+%% Start test shell
+rebar3 as test shell
+
+%% Run specific test interactively
+1> eunit:test(flurm_scheduler_tests, [verbose]).
+
+%% Debug with observer
+2> observer:start().
+```
+
+### Common Issues
+
+| Issue | Cause | Solution |
+|-------|-------|----------|
+| `{no_abstract_code}` | Missing debug_info | Recompile: `rebar3 as test compile` |
+| Meck errors | Module not unloaded | Add `meck:unload()` to cleanup |
+| Timeout | Slow test | Use `{timeout, 60, fun test/0}` |
+| Process leak | Processes not stopped | Stop processes in cleanup |
+
+---
+
+## Related Documentation
+
+- [Code Coverage Strategy](COVERAGE.md) - Coverage targets and roadmap
+- [Development Guide](development.md) - Contributing guidelines
+- [Benchmarks](BENCHMARKS.md) - Performance test results

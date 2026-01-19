@@ -1,8 +1,9 @@
 FROM rockylinux:9
 
 # Install Erlang/OTP and build tools
+# Including curl for health checks and iptables for split-brain testing
 RUN dnf install -y epel-release && \
-    dnf install -y erlang git munge make iproute iputils && \
+    dnf install -y erlang git munge make iproute iputils curl iptables iproute-tc && \
     dnf clean all
 
 # Install rebar3 manually (not in EPEL)
@@ -24,8 +25,8 @@ COPY . /flurm/
 # Build FLURM
 RUN rebar3 compile
 
-# Copy HA startup script
-COPY docker/start_controller_ha.erl /flurm/start_controller_ha.erl
+# Copy HA startup script (from escripts directory)
+COPY escripts/start_controller_ha.erl /flurm/start_controller_ha.erl
 
 # Create entrypoint for HA controller
 RUN echo '#!/bin/bash' > /entrypoint-ha.sh && \
@@ -57,6 +58,12 @@ RUN echo '#!/bin/bash' > /entrypoint-ha.sh && \
     echo 'exec escript start_controller_ha.erl' >> /entrypoint-ha.sh && \
     chmod +x /entrypoint-ha.sh
 
-EXPOSE 6817 6818 4369 9100-9110
+# Expose ports:
+# 6817 - SLURM protocol (client commands)
+# 6818 - SLURM node communication
+# 4369 - EPMD (Erlang Port Mapper Daemon)
+# 9090 - Metrics/health HTTP endpoint
+# 9100-9110 - Erlang distribution ports
+EXPOSE 6817 6818 4369 9090 9100-9110
 
 CMD ["/entrypoint-ha.sh"]

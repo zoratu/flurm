@@ -2,6 +2,12 @@
 
 This document covers day-to-day operations, monitoring, troubleshooting, and maintenance tasks for FLURM workload manager deployments.
 
+## Document Status
+
+| Version | Last Updated | Status |
+|---------|--------------|--------|
+| 1.0 | January 2026 | Current |
+
 ## Table of Contents
 
 1. [Operational Overview](#operational-overview)
@@ -12,6 +18,7 @@ This document covers day-to-day operations, monitoring, troubleshooting, and mai
 6. [Backup and Recovery](#backup-and-recovery)
 7. [Maintenance Tasks](#maintenance-tasks)
 8. [Performance Tuning](#performance-tuning)
+9. [Quick Reference](#quick-reference)
 
 ---
 
