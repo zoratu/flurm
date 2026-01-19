@@ -22,6 +22,17 @@
     code_change/3
 ]).
 
+-ifdef(TEST).
+-export([
+    handle_request/1,
+    drain_headers/1,
+    send_metrics_response/1,
+    send_index_response/1,
+    send_health_response/1,
+    send_404_response/1
+]).
+-endif.
+
 -define(SERVER, ?MODULE).
 -define(DEFAULT_PORT, 9090).
 

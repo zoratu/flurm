@@ -22,6 +22,11 @@
 -export([get_state/0]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
+-ifdef(TEST).
+-export([decode_messages/2, find_job_by_pid/2, cancel_timer/1,
+         detect_features/0, check_cpu_flag/1]).
+-endif.
+
 -define(INITIAL_RECONNECT_INTERVAL, 1000).  % 1 second
 -define(MAX_RECONNECT_INTERVAL, 60000).     % 60 seconds
 -define(BACKOFF_MULTIPLIER, 2).

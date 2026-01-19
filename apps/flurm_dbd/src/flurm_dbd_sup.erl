@@ -17,6 +17,13 @@
 
 -export([start_listener/0, stop_listener/0, listener_info/0]).
 
+-ifdef(TEST).
+-export([
+    get_listener_config/0,
+    parse_address/1
+]).
+-endif.
+
 -define(SERVER, ?MODULE).
 -define(LISTENER_NAME, flurm_dbd_listener).
 -define(DEFAULT_PORT, 6819).

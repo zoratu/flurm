@@ -45,6 +45,22 @@
     flurm_node_daemon
 ]).
 
+%% Test exports for coverage
+-ifdef(TEST).
+-export([
+    get_process_modules/1,
+    get_module_version/1,
+    check_release_exists/1,
+    check_no_pending_jobs/0,
+    check_cluster_healthy/0,
+    check_disk_space/0,
+    disk_free/1,
+    get_loaded_modules/0,
+    get_old_code_modules/0,
+    is_flurm_module/1
+]).
+-endif.
+
 %%====================================================================
 %% API Functions
 %%====================================================================

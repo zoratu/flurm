@@ -33,6 +33,14 @@
     server_id/1
 ]).
 
+%% TEST exports for coverage of internal helper functions
+-ifdef(TEST).
+-export([
+    start_default_system/0,
+    format_status/1
+]).
+-endif.
+
 -define(CLUSTER_NAME, ?RA_CLUSTER_NAME).
 
 %%====================================================================

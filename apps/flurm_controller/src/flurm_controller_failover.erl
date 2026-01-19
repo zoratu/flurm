@@ -25,6 +25,12 @@
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
 
+-ifdef(TEST).
+-export([handle_became_leader/1, handle_lost_leadership/1,
+         handle_recovery_complete/2, do_health_check/1,
+         calculate_leader_uptime/1]).
+-endif.
+
 -define(SERVER, ?MODULE).
 -define(RECOVERY_TIMEOUT, 30000).
 -define(HEALTH_CHECK_INTERVAL, 5000).

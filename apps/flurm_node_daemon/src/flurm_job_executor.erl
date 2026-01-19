@@ -20,6 +20,29 @@
 -export([get_current_power/0, get_rapl_power/0]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
+-ifdef(TEST).
+-export([
+    create_script_file/2,
+    build_environment/1,
+    setup_cgroup/3,
+    setup_cgroup_v2/3,
+    setup_cgroup_v1/3,
+    cleanup_cgroup/1,
+    cleanup_job/1,
+    write_output_files/4,
+    report_completion/3,
+    report_completion/4,
+    cancel_timeout/1,
+    now_ms/0,
+    execute_prolog/2,
+    execute_epilog/3,
+    execute_script/4,
+    read_current_energy/0,
+    read_rapl_energy/0,
+    sum_rapl_energies/3
+]).
+-endif.
+
 %% Suppress warnings for power monitoring internal functions
 %% sum_rapl_powers is a helper called by get_rapl_power
 -compile([{nowarn_unused_function, [{sum_rapl_powers, 3}]}]).

@@ -11,6 +11,10 @@
 -export([start_link/3]).
 -export([init/3]).
 
+-ifdef(TEST).
+-export([process_buffer/1, handle_message/1, job_to_map/1]).
+-endif.
+
 -include_lib("flurm_protocol/include/flurm_protocol.hrl").
 
 %%====================================================================

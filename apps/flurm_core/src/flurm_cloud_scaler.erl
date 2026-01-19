@@ -75,6 +75,35 @@
     pending_scale_ops = [] :: [map()]
 }).
 
+%% Test exports for coverage
+-ifdef(TEST).
+-export([
+    collect_scaling_metrics/0,
+    collect_resource_utilization/0,
+    estimate_pending_demand/0,
+    determine_scaling_action/2,
+    calculate_scale_up_count/2,
+    calculate_scale_down_count/2,
+    find_idle_nodes/1,
+    %% Export record constructor for tests
+    test_state/1
+]).
+
+%% Helper to create test state records
+test_state(Opts) ->
+    #state{
+        enabled = proplists:get_value(enabled, Opts, false),
+        provider = proplists:get_value(provider, Opts, undefined),
+        config = proplists:get_value(config, Opts, #{}),
+        eval_timer = proplists:get_value(eval_timer, Opts, undefined),
+        last_scale_up = proplists:get_value(last_scale_up, Opts, undefined),
+        last_scale_down = proplists:get_value(last_scale_down, Opts, undefined),
+        min_nodes = proplists:get_value(min_nodes, Opts, 0),
+        max_nodes = proplists:get_value(max_nodes, Opts, 100),
+        pending_scale_ops = proplists:get_value(pending_scale_ops, Opts, [])
+    }.
+-endif.
+
 %%====================================================================
 %% API
 %%====================================================================

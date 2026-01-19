@@ -62,6 +62,15 @@
     list_keys/1
 ]).
 
+%% TEST exports for coverage of internal helper functions
+-ifdef(TEST).
+-export([
+    ensure_tables/0,
+    ensure_table/1,
+    table_name/1
+]).
+-endif.
+
 %%====================================================================
 %% Job Operations
 %%====================================================================

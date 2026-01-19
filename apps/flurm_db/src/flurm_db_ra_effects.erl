@@ -39,6 +39,22 @@
     unsubscribe/1
 ]).
 
+%% TEST exports for coverage of internal helper functions
+-ifdef(TEST).
+-export([
+    log_event/2,
+    notify_scheduler/1,
+    notify_node_manager/1,
+    release_nodes/2,
+    maybe_start_scheduler/0,
+    maybe_stop_scheduler/0,
+    notify_failover_handler/1,
+    notify_subscribers/1,
+    job_to_map/1,
+    node_to_map/1
+]).
+-endif.
+
 %%====================================================================
 %% Effect Handlers
 %%====================================================================

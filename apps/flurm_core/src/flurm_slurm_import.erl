@@ -45,6 +45,28 @@
 
 -define(DEFAULT_SYNC_INTERVAL, 5000).
 
+%% Test exports for coverage
+-ifdef(TEST).
+-export([
+    parse_squeue_output/2,
+    parse_squeue_line/1,
+    parse_job_state/1,
+    parse_sinfo_output/2,
+    parse_sinfo_line/1,
+    parse_node_state/1,
+    parse_partition_output/1,
+    parse_partition_line/1,
+    parse_int/1,
+    parse_memory/1,
+    parse_time/1,
+    parse_timestamp/1,
+    parse_features/1,
+    parse_gres/1,
+    update_stats/3,
+    count_imported/1
+]).
+-endif.
+
 %%%===================================================================
 %%% API
 %%%===================================================================

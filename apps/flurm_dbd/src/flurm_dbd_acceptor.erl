@@ -13,6 +13,18 @@
 -export([start_link/3]).
 -export([init/3]).
 
+-ifdef(TEST).
+-export([
+    loop/1,
+    process_buffer/2,
+    handle_message/2,
+    process_request/3,
+    handle_dbd_request/2,
+    send_response/2,
+    peername/2
+]).
+-endif.
+
 -include_lib("flurm_protocol/include/flurm_protocol.hrl").
 
 -record(conn_state, {

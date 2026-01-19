@@ -61,6 +61,13 @@
     make_partition_record/1
 ]).
 
+%% TEST exports for coverage of internal helper functions
+-ifdef(TEST).
+-export([
+    update_job_state_record/2
+]).
+-endif.
+
 %% DEFAULT_PRIORITY comes from flurm_core.hrl via flurm_db.hrl
 -define(CLUSTER_NAME, ?RA_CLUSTER_NAME).
 

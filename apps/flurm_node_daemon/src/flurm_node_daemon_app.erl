@@ -17,6 +17,17 @@
 
 -export([start/2, stop/1, prep_stop/1]).
 
+-ifdef(TEST).
+-export([
+    save_current_state/0,
+    handle_restored_state/1,
+    cleanup_orphaned_resources/0,
+    cleanup_orphaned_cgroups/0,
+    cleanup_cgroup/1,
+    cleanup_orphaned_scripts/0
+]).
+-endif.
+
 %%====================================================================
 %% Application callbacks
 %%====================================================================

@@ -138,6 +138,32 @@
 
 -export_type([provider/0, instance_type/0]).
 
+%% Test exports for coverage
+-ifdef(TEST).
+-export([
+    validate_provider_config/2,
+    update_policy/2,
+    format_policy/1,
+    collect_stats/1,
+    generate_action_id/0,
+    generate_instance_id/1,
+    default_instance_costs/0,
+    get_instance_cost/2,
+    calculate_budget_status/1,
+    date_to_binary/1,
+    month_to_binary/1,
+    format_instance/1,
+    format_cloud_instances/1,
+    add_security_groups/3,
+    add_instance_ids/3,
+    build_query_string/1,
+    uri_encode/1,
+    extract_host/1,
+    format_canonical_headers/1,
+    binary_to_hex/1
+]).
+-endif.
+
 %%====================================================================
 %% API
 %%====================================================================

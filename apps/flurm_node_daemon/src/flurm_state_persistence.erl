@@ -20,6 +20,10 @@
     clear_state/0
 ]).
 
+-ifdef(TEST).
+-export([validate_state/1]).
+-endif.
+
 -define(STATE_FILE_ENV, state_file).
 -define(DEFAULT_STATE_FILE, "/var/lib/flurm/node_state.dat").
 
