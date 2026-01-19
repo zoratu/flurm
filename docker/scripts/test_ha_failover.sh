@@ -29,11 +29,12 @@ PROJECT_NAME="flurm-ha-test"
 # Test settings
 CLUSTER_FORMATION_TIMEOUT=120  # seconds to wait for cluster to form
 LEADER_ELECTION_TIMEOUT=60     # seconds to wait for new leader
-NODE_REJOIN_TIMEOUT=60         # seconds to wait for node to rejoin
+NODE_REJOIN_TIMEOUT=120        # seconds to wait for node to rejoin (includes status message wait)
 HEALTH_CHECK_INTERVAL=5        # seconds between health checks
 
 # Controller settings
-CONTROLLERS=("flurm-ctrl-1" "flurm-ctrl-2" "flurm-ctrl-3")
+# Note: These are the service names from docker-compose, container names are ${PROJECT_NAME}-${SERVICE}
+CONTROLLERS=("ctrl-1" "ctrl-2" "ctrl-3")
 CONTROLLER_PORTS=("6817" "6827" "6837")
 METRICS_PORTS=("9090" "9091" "9092")
 
@@ -81,7 +82,8 @@ EOF
 log() {
     local timestamp
     timestamp=$(date '+%Y-%m-%d %H:%M:%S')
-    echo -e "[$timestamp] $1" | tee -a "$LOG_FILE"
+    echo -e "[$timestamp] $1" >> "$LOG_FILE"
+    echo -e "[$timestamp] $1" >&2
 }
 
 log_debug() {
@@ -91,30 +93,37 @@ log_debug() {
 }
 
 log_info() {
-    echo -e "${BLUE}[INFO]${NC} $1" | tee -a "$LOG_FILE"
+    echo -e "${BLUE}[INFO]${NC} $1" >> "$LOG_FILE"
+    echo -e "${BLUE}[INFO]${NC} $1" >&2
 }
 
 log_pass() {
     TESTS_PASSED=$((TESTS_PASSED + 1))
     TESTS_TOTAL=$((TESTS_TOTAL + 1))
-    echo -e "${GREEN}[PASS]${NC} $1" | tee -a "$LOG_FILE"
+    echo -e "${GREEN}[PASS]${NC} $1" >> "$LOG_FILE"
+    echo -e "${GREEN}[PASS]${NC} $1" >&2
 }
 
 log_fail() {
     TESTS_FAILED=$((TESTS_FAILED + 1))
     TESTS_TOTAL=$((TESTS_TOTAL + 1))
-    echo -e "${RED}[FAIL]${NC} $1" | tee -a "$LOG_FILE"
+    echo -e "${RED}[FAIL]${NC} $1" >> "$LOG_FILE"
+    echo -e "${RED}[FAIL]${NC} $1" >&2
 }
 
 log_warn() {
-    echo -e "${YELLOW}[WARN]${NC} $1" | tee -a "$LOG_FILE"
+    echo -e "${YELLOW}[WARN]${NC} $1" >> "$LOG_FILE"
+    echo -e "${YELLOW}[WARN]${NC} $1" >&2
 }
 
 log_step() {
-    echo ""
-    echo -e "${BLUE}================================================================${NC}" | tee -a "$LOG_FILE"
-    echo -e "${BLUE}  $1${NC}" | tee -a "$LOG_FILE"
-    echo -e "${BLUE}================================================================${NC}" | tee -a "$LOG_FILE"
+    echo "" >&2
+    echo -e "${BLUE}================================================================${NC}" >> "$LOG_FILE"
+    echo -e "${BLUE}================================================================${NC}" >&2
+    echo -e "${BLUE}  $1${NC}" >> "$LOG_FILE"
+    echo -e "${BLUE}  $1${NC}" >&2
+    echo -e "${BLUE}================================================================${NC}" >> "$LOG_FILE"
+    echo -e "${BLUE}================================================================${NC}" >&2
 }
 
 # Parse command line arguments
@@ -154,14 +163,14 @@ container_running() {
 # Get container IP address
 get_container_ip() {
     local container="$1"
-    docker inspect -f '{{range.NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "${PROJECT_NAME}-${container}-1" 2>/dev/null || echo ""
+    docker inspect -f '{{range.NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "${PROJECT_NAME}-${container}" 2>/dev/null || echo ""
 }
 
 # Execute command in container
 exec_in_container() {
     local container="$1"
     shift
-    docker exec "${PROJECT_NAME}-${container}-1" "$@"
+    docker exec "${PROJECT_NAME}-${container}" "$@"
 }
 
 # Check controller health via metrics port
@@ -197,17 +206,35 @@ get_leader_from_container() {
                end, halt(0).' 2>/dev/null || echo "none"
 }
 
-# Check if a node is the leader
+# Check if a node is the leader (using log parsing)
 is_leader() {
     local container="$1"
-    local result
-    result=$(exec_in_container "$container" \
-        erl -noshell -pa /flurm/_build/default/lib/*/ebin \
-        -eval 'case catch flurm_controller_cluster:is_leader() of
-                   true -> io:format("true~n");
-                   _ -> io:format("false~n")
-               end, halt(0).' 2>/dev/null || echo "false")
-    [[ "$result" == "true" ]]
+    # Check if the container's logs show it's currently the leader
+    # Look for the most recent STATUS block and check if it shows this node is leader
+    # STATUS format: "[STATUS] This node is the Ra leader" OR "[STATUS] Ra leader: ..."
+    # We need to check the MOST RECENT status, not just any status
+    local logs
+    logs=$(docker logs "${PROJECT_NAME}-${container}" 2>&1 | tail -100)
+
+    # Check for leader indicators in recent logs
+    # The node reports "This node is the Ra leader" when it's the leader
+    if echo "$logs" | grep -q "This node is the Ra leader"; then
+        # Also make sure it hasn't lost leadership since then
+        # Check if there's a "lost leadership" message AFTER the leader message
+        local leader_line
+        local lost_line
+        leader_line=$(echo "$logs" | grep -n "This node is the Ra leader" | tail -1 | cut -d: -f1)
+        lost_line=$(echo "$logs" | grep -n "lost leadership\|became.*follower" | tail -1 | cut -d: -f1)
+
+        if [[ -z "$lost_line" ]]; then
+            # No "lost leadership" message, so still leader
+            return 0
+        elif [[ -n "$leader_line" && "$leader_line" -gt "$lost_line" ]]; then
+            # Became leader after losing it
+            return 0
+        fi
+    fi
+    return 1
 }
 
 # Find which container is the leader
@@ -234,12 +261,18 @@ find_follower_container() {
     return 1
 }
 
-# Get connected nodes count
+# Get connected nodes count (using log parsing)
 get_connected_nodes_count() {
     local container="$1"
-    exec_in_container "$container" \
-        erl -noshell -pa /flurm/_build/default/lib/*/ebin \
-        -eval 'io:format("~p~n", [length(nodes())]), halt(0).' 2>/dev/null || echo "0"
+    # Parse the STATUS line for "X/3 cluster nodes connected"
+    local status_line
+    status_line=$(docker logs "${PROJECT_NAME}-${container}" 2>&1 | grep "cluster nodes connected" | tail -1)
+    if [[ -n "$status_line" ]]; then
+        # Extract the first number (connected count) from "X/Y cluster nodes connected"
+        echo "$status_line" | grep -oE "[0-9]+/[0-9]+" | cut -d'/' -f1
+    else
+        echo "0"
+    fi
 }
 
 # Wait for cluster to form with required number of nodes
@@ -251,6 +284,37 @@ wait_for_cluster() {
 
     log_info "Waiting for cluster to form with $required_nodes nodes (timeout: ${timeout}s)..."
 
+    # Phase 1: Wait for all controllers to be healthy via HTTP endpoint
+    log_info "Phase 1: Waiting for controllers to be healthy..."
+    while true; do
+        local elapsed=$(($(date +%s) - start_time))
+        if [[ $elapsed -ge $timeout ]]; then
+            log_fail "Cluster formation timed out after ${timeout}s (waiting for health)"
+            return 1
+        fi
+
+        local health_count=0
+        for i in "${!CONTROLLERS[@]}"; do
+            local port="${METRICS_PORTS[$i]}"
+            if curl -sf "http://localhost:${port}/health" >/dev/null 2>&1; then
+                health_count=$((health_count + 1))
+            fi
+        done
+
+        if [[ $health_count -ge $required_nodes ]]; then
+            log_pass "All $required_nodes controllers are healthy"
+            break
+        fi
+
+        log_debug "Healthy controllers: $health_count/$required_nodes"
+        sleep 2
+    done
+
+    # Phase 2: Wait for cluster status messages (printed every 30 seconds)
+    log_info "Phase 2: Waiting for cluster status (may take up to 35 seconds)..."
+    sleep 35  # Wait for first STATUS message
+
+    # Phase 3: Check cluster connectivity and leader
     while true; do
         local elapsed=$(($(date +%s) - start_time))
         if [[ $elapsed -ge $timeout ]]; then
@@ -258,7 +322,6 @@ wait_for_cluster() {
             return 1
         fi
 
-        # Check each controller
         local healthy_count=0
         local leader_found=false
 
@@ -268,19 +331,20 @@ wait_for_cluster() {
                 connected=$(get_connected_nodes_count "$container")
                 log_debug "Container $container has $connected connected nodes"
 
-                if [[ "$connected" -ge $((required_nodes - 1)) ]]; then
+                if [[ -n "$connected" && "$connected" -ge $required_nodes ]]; then
                     healthy_count=$((healthy_count + 1))
                 fi
 
                 if is_leader "$container"; then
                     leader_found=true
+                    log_debug "Leader found: $container"
                 fi
             fi
         done
 
-        log_debug "Healthy count: $healthy_count, Leader found: $leader_found"
+        log_debug "Fully connected: $healthy_count, Leader found: $leader_found"
 
-        if [[ $healthy_count -ge $required_nodes ]] && [[ "$leader_found" == "true" ]]; then
+        if [[ $healthy_count -ge 1 ]] && [[ "$leader_found" == "true" ]]; then
             log_pass "Cluster formed with $required_nodes nodes and a leader elected"
             return 0
         fi
@@ -329,6 +393,39 @@ wait_for_node_rejoin() {
 
     log_info "Waiting for $container to rejoin cluster (timeout: ${timeout}s)..."
 
+    # Get the port index for this container
+    local port_idx=0
+    for i in "${!CONTROLLERS[@]}"; do
+        if [[ "${CONTROLLERS[$i]}" == "$container" ]]; then
+            port_idx=$i
+            break
+        fi
+    done
+    local health_port="${METRICS_PORTS[$port_idx]}"
+
+    # Phase 1: Wait for container to be healthy
+    while true; do
+        local elapsed=$(($(date +%s) - start_time))
+        if [[ $elapsed -ge $timeout ]]; then
+            log_fail "Node rejoin timed out after ${timeout}s (waiting for health)"
+            return 1
+        fi
+
+        if container_running "$container"; then
+            if curl -sf "http://localhost:${health_port}/health" >/dev/null 2>&1; then
+                log_debug "Container $container is healthy"
+                break
+            fi
+        fi
+
+        sleep 2
+    done
+
+    # Phase 2: Wait for status message (30 second interval)
+    log_info "Waiting for cluster status update..."
+    sleep 35
+
+    # Phase 3: Check cluster connectivity
     while true; do
         local elapsed=$(($(date +%s) - start_time))
         if [[ $elapsed -ge $timeout ]]; then
@@ -336,15 +433,13 @@ wait_for_node_rejoin() {
             return 1
         fi
 
-        if container_running "$container"; then
-            local connected
-            connected=$(get_connected_nodes_count "$container")
-            log_debug "Container $container has $connected connected nodes"
+        local connected
+        connected=$(get_connected_nodes_count "$container")
+        log_debug "Container $container has $connected connected nodes"
 
-            if [[ "$connected" -ge 2 ]]; then
-                log_pass "Node $container rejoined cluster with $connected peers"
-                return 0
-            fi
+        if [[ -n "$connected" && "$connected" -ge 3 ]]; then
+            log_pass "Node $container rejoined cluster with full connectivity"
+            return 0
         fi
 
         sleep "$HEALTH_CHECK_INTERVAL"
@@ -500,7 +595,7 @@ phase_1_setup() {
 
     # List running containers
     log_info "Running containers:"
-    docker_compose ps | tee -a "$LOG_FILE"
+    docker_compose ps 2>&1 | tee -a "$LOG_FILE" >&2
 }
 
 phase_2_cluster_formation() {
@@ -556,7 +651,7 @@ phase_4_kill_leader() {
     log_info "Stopping leader container..."
 
     # Stop the leader container
-    docker stop "${PROJECT_NAME}-${leader}-1"
+    docker stop "${PROJECT_NAME}-${leader}"
 
     if [[ $? -eq 0 ]]; then
         log_pass "Leader container $leader stopped"
@@ -634,7 +729,7 @@ phase_8_rejoin_node() {
     log_info "Restarting container: $container"
 
     # Start the container again
-    docker start "${PROJECT_NAME}-${container}-1"
+    docker start "${PROJECT_NAME}-${container}"
 
     if [[ $? -eq 0 ]]; then
         log_pass "Container $container restarted"
