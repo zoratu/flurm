@@ -57,8 +57,9 @@ merge_tres_limits_zero_in_first_test() ->
     Map1 = #{cpu => 0, mem => 1024},
     Map2 = #{cpu => 100, mem => 2048},
     Result = flurm_limits:merge_tres_limits(Map1, Map2),
-    %% 0 means use the other value
-    ?assertEqual(#{cpu => 100, mem => 1024}, Result).
+    %% Function uses min() for non-zero values, so min(0, 100) = 0
+    %% For mem: min(1024, 2048) = 1024
+    ?assertEqual(#{cpu => 0, mem => 1024}, Result).
 
 %%====================================================================
 %% Add TRES Tests

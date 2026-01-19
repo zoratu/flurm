@@ -126,9 +126,9 @@ create_bucket_tokens_test() ->
     Now = erlang:monotonic_time(millisecond),
     Bucket = flurm_rate_limiter:create_bucket(user, <<"tokentest">>, Now),
     %% Tokens should be limit * capacity_multiplier (10)
-    %% For limit 100, tokens = 100 * 10 = 1000.0
+    %% For limit 100, tokens = 100 * 10 = 1000
     Tokens = element(3, Bucket),
-    ?assertEqual(1000.0, Tokens).
+    ?assertEqual(1000, Tokens).
 
 %%====================================================================
 %% Collect Key Stats Tests
@@ -236,7 +236,7 @@ do_refill_buckets_capped_test() ->
 
     %% Verify tokens are capped at max (100 * 10 = 1000)
     [{bucket, _, NewTokens, _, _}] = ets:lookup(?BUCKETS_TABLE, {user, <<"cap_test">>}),
-    ?assertEqual(1000.0, NewTokens).
+    ?assertEqual(1000, NewTokens).
 
 %%====================================================================
 %% Do Check Load Tests
@@ -244,14 +244,16 @@ do_refill_buckets_capped_test() ->
 
 do_check_load_normal_test() ->
     %% Set up a global bucket with plenty of tokens (low load)
+    %% With limit=10000 and multiplier=10, MaxTokens=100000
+    %% For Load < 0.5, need tokens > 50000
     Now = erlang:monotonic_time(millisecond),
-    GlobalBucket = {bucket, {global, global}, 9000.0, Now, 10000},
+    GlobalBucket = {bucket, {global, global}, 60000.0, Now, 10000},
     ets:insert(?BUCKETS_TABLE, GlobalBucket),
 
     State = {state, true, undefined, undefined, 0.0, false},
     NewState = flurm_rate_limiter:do_check_load(State),
 
-    %% Load should be low (1 - 9000/100000 = 0.1)
+    %% Load should be low (1 - 60000/100000 = 0.4)
     Load = element(5, NewState),
     ?assert(Load < 0.5),
     ?assertNot(element(6, NewState)).  % Backpressure should be false

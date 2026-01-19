@@ -73,7 +73,11 @@ do_create_with_options() ->
         usage_factor => 2.0
     },
     flurm_qos:do_create(<<"custom_qos">>, Options),
-    [{qos, Name, Desc, Priority, _, _, _, MaxJobsPU, _, _, _, _, _, _, MaxWall,
+    %% qos record: {qos, name, desc, priority, flags, grace_time, max_jobs_pa, max_jobs_pu,
+    %%              max_submit_jobs_pa, max_submit_jobs_pu, max_tres_pa, max_tres_pu,
+    %%              max_tres_per_job, max_tres_per_node, max_tres_per_user, max_wall_per_job,
+    %%              min_tres_per_job, preempt, preempt_mode, usage_factor, usage_threshold}
+    [{qos, Name, Desc, Priority, _, _, _, MaxJobsPU, _, _, _, _, _, _, _, MaxWall,
       _, Preempt, PreemptMode, UsageFactor, _}] = ets:lookup(?QOS_TABLE, <<"custom_qos">>),
     ?assertEqual(<<"custom_qos">>, Name),
     ?assertEqual(<<"High priority QOS">>, Desc),
@@ -86,7 +90,7 @@ do_create_with_options() ->
 
 do_create_defaults_test() ->
     flurm_qos:do_create(<<"default_test">>, #{}),
-    [{qos, _, _, Priority, Flags, GraceTime, _, _, _, _, _, _, _, _, MaxWall,
+    [{qos, _, _, Priority, Flags, GraceTime, _, _, _, _, _, _, _, _, _, MaxWall,
       _, Preempt, PreemptMode, UsageFactor, _}] = ets:lookup(?QOS_TABLE, <<"default_test">>),
     ?assertEqual(0, Priority),
     ?assertEqual([], Flags),
@@ -107,7 +111,7 @@ do_update_not_found_test() ->
 do_update_priority_test() ->
     flurm_qos:do_create(<<"update_test">>, #{priority => 100}),
     ok = flurm_qos:do_update(<<"update_test">>, #{priority => 500}),
-    [{qos, _, _, Priority, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _}] =
+    [{qos, _, _, Priority, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _}] =
         ets:lookup(?QOS_TABLE, <<"update_test">>),
     ?assertEqual(500, Priority).
 
@@ -118,7 +122,7 @@ do_update_multiple_fields_test() ->
         max_jobs_pu => 50,
         usage_factor => 1.5
     }),
-    [{qos, _, _, Priority, _, _, _, MaxJobsPU, _, _, _, _, _, _, _, _, _, _, UsageFactor, _}] =
+    [{qos, _, _, Priority, _, _, _, MaxJobsPU, _, _, _, _, _, _, _, _, _, _, _, UsageFactor, _}] =
         ets:lookup(?QOS_TABLE, <<"multi_update">>),
     ?assertEqual(200, Priority),
     ?assertEqual(50, MaxJobsPU),
@@ -141,8 +145,9 @@ apply_updates_priority_test() ->
 apply_updates_preempt_test() ->
     QOS = {qos, <<"test">>, <<>>, 0, [], 0, 0, 0, 0, 0, #{}, #{}, #{}, #{}, #{}, 0, #{}, [], off, 1.0, 0.0},
     Updated = flurm_qos:apply_updates(QOS, #{preempt => [<<"low">>], preempt_mode => cancel}),
-    ?assertEqual([<<"low">>], element(17, Updated)),
-    ?assertEqual(cancel, element(18, Updated)).
+    %% preempt is at position 18, preempt_mode at position 19
+    ?assertEqual([<<"low">>], element(18, Updated)),
+    ?assertEqual(cancel, element(19, Updated)).
 
 apply_updates_unknown_key_test() ->
     QOS = {qos, <<"test">>, <<>>, 0, [], 0, 0, 0, 0, 0, #{}, #{}, #{}, #{}, #{}, 0, #{}, [], off, 1.0, 0.0},
@@ -237,13 +242,13 @@ create_default_qos_entries_test() ->
 create_default_qos_priorities_test() ->
     flurm_qos:create_default_qos_entries(),
 
-    [{qos, _, _, NormalPriority, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _}] =
+    [{qos, _, _, NormalPriority, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _}] =
         ets:lookup(?QOS_TABLE, <<"normal">>),
-    [{qos, _, _, HighPriority, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _}] =
+    [{qos, _, _, HighPriority, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _}] =
         ets:lookup(?QOS_TABLE, <<"high">>),
-    [{qos, _, _, LowPriority, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _}] =
+    [{qos, _, _, LowPriority, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _}] =
         ets:lookup(?QOS_TABLE, <<"low">>),
-    [{qos, _, _, StandbyPriority, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _}] =
+    [{qos, _, _, StandbyPriority, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _}] =
         ets:lookup(?QOS_TABLE, <<"standby">>),
 
     ?assertEqual(0, NormalPriority),
