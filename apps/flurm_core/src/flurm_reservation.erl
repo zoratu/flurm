@@ -115,6 +115,32 @@
 
 -export_type([reservation_type/0]).
 
+%% Test exports
+-ifdef(TEST).
+-export([
+    %% Validation and building
+    validate_spec/1,
+    build_reservation/1,
+    %% Conflict checking
+    times_overlap/4,
+    nodes_overlap/2,
+    %% State management
+    maybe_activate_reservation/1,
+    apply_reservation_updates/2,
+    extend_recurring/2,
+    %% Access checking
+    check_type_access/6,
+    check_user_access/4,
+    %% Helper lookups
+    node_in_partition/2,
+    user_in_accounts/2,
+    %% Window finding
+    find_gap/3,
+    %% Reservation name generation
+    generate_reservation_name/0
+]).
+-endif.
+
 %%====================================================================
 %% API
 %%====================================================================

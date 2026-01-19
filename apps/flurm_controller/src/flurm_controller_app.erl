@@ -33,6 +33,12 @@
 %% API exports
 -export([status/0, config/0, cluster_status/0]).
 
+-ifdef(TEST).
+-export([get_config/2,
+         count_jobs_by_state/2,
+         count_nodes_by_state/2]).
+-endif.
+
 %%====================================================================
 %% Application callbacks
 %%====================================================================

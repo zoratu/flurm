@@ -209,3 +209,139 @@ cluster_enabled_test_() ->
              ?assertEqual([], ClusterChild)
          end}
      end}.
+
+%%====================================================================
+%% Tests for Internal Helper Functions (exported via -ifdef(TEST))
+%%====================================================================
+
+helper_functions_test_() ->
+    {setup,
+     fun() ->
+         %% Set up test configuration
+         application:set_env(flurm_controller, listen_port, 16817),
+         application:set_env(flurm_controller, listen_address, "192.168.1.100"),
+         application:set_env(flurm_controller, num_acceptors, 8),
+         application:set_env(flurm_controller, max_connections, 500),
+         application:set_env(flurm_controller, node_listen_port, 16818),
+         application:set_env(flurm_controller, max_node_connections, 250)
+     end,
+     fun(_) ->
+         %% Clean up
+         application:unset_env(flurm_controller, listen_port),
+         application:unset_env(flurm_controller, listen_address),
+         application:unset_env(flurm_controller, num_acceptors),
+         application:unset_env(flurm_controller, max_connections),
+         application:unset_env(flurm_controller, node_listen_port),
+         application:unset_env(flurm_controller, max_node_connections)
+     end,
+     [
+         {"get_listener_config/0 returns configured values", fun test_get_listener_config/0},
+         {"get_node_listener_config/0 returns configured values", fun test_get_node_listener_config/0},
+         {"is_cluster_enabled/0 returns false when disabled", fun test_is_cluster_disabled/0}
+     ]}.
+
+test_get_listener_config() ->
+    {Port, Address, NumAcceptors, MaxConns} = flurm_controller_sup:get_listener_config(),
+
+    ?assertEqual(16817, Port),
+    ?assertEqual("192.168.1.100", Address),
+    ?assertEqual(8, NumAcceptors),
+    ?assertEqual(500, MaxConns),
+    ok.
+
+test_get_node_listener_config() ->
+    {Port, Address, NumAcceptors, MaxConns} = flurm_controller_sup:get_node_listener_config(),
+
+    ?assertEqual(16818, Port),
+    ?assertEqual("192.168.1.100", Address),  %% Same as listen_address
+    ?assertEqual(8, NumAcceptors),           %% Same as num_acceptors
+    ?assertEqual(250, MaxConns),
+    ok.
+
+test_is_cluster_disabled() ->
+    %% Test with cluster explicitly disabled
+    application:set_env(flurm_controller, enable_cluster, false),
+    ?assertEqual(false, flurm_controller_sup:is_cluster_enabled()),
+
+    %% Clean up
+    application:unset_env(flurm_controller, enable_cluster),
+    ok.
+
+%% Test get_listener_config with defaults
+listener_config_defaults_test_() ->
+    {setup,
+     fun() ->
+         %% Clear all config to test defaults
+         application:unset_env(flurm_controller, listen_port),
+         application:unset_env(flurm_controller, listen_address),
+         application:unset_env(flurm_controller, num_acceptors),
+         application:unset_env(flurm_controller, max_connections)
+     end,
+     fun(_) -> ok end,
+     [
+         {"get_listener_config/0 uses defaults", fun() ->
+             {Port, Address, NumAcceptors, MaxConns} = flurm_controller_sup:get_listener_config(),
+             %% Check defaults: 6817, "0.0.0.0", 10, 1000
+             ?assertEqual(6817, Port),
+             ?assertEqual("0.0.0.0", Address),
+             ?assertEqual(10, NumAcceptors),
+             ?assertEqual(1000, MaxConns)
+         end}
+     ]}.
+
+%% Test get_node_listener_config with defaults
+node_listener_config_defaults_test_() ->
+    {setup,
+     fun() ->
+         %% Clear all config to test defaults
+         application:unset_env(flurm_controller, node_listen_port),
+         application:unset_env(flurm_controller, listen_address),
+         application:unset_env(flurm_controller, num_acceptors),
+         application:unset_env(flurm_controller, max_node_connections)
+     end,
+     fun(_) -> ok end,
+     [
+         {"get_node_listener_config/0 uses defaults", fun() ->
+             {Port, Address, NumAcceptors, MaxConns} = flurm_controller_sup:get_node_listener_config(),
+             %% Check defaults: 6818, "0.0.0.0", 10, 500
+             ?assertEqual(6818, Port),
+             ?assertEqual("0.0.0.0", Address),
+             ?assertEqual(10, NumAcceptors),
+             ?assertEqual(500, MaxConns)
+         end}
+     ]}.
+
+%% Test is_cluster_enabled with different configurations
+cluster_enabled_detailed_test_() ->
+    [
+        {"is_cluster_enabled with enable_cluster=true and distributed node",
+         {setup,
+          fun() ->
+              application:set_env(flurm_controller, enable_cluster, true)
+          end,
+          fun(_) ->
+              application:unset_env(flurm_controller, enable_cluster)
+          end,
+          fun(_) ->
+              %% On nonode@nohost, should return false even if enabled
+              Result = flurm_controller_sup:is_cluster_enabled(),
+              case node() of
+                  'nonode@nohost' ->
+                      ?assertEqual(false, Result);
+                  _ ->
+                      ?assertEqual(true, Result)
+              end
+          end}},
+
+        {"is_cluster_enabled with enable_cluster=false",
+         {setup,
+          fun() ->
+              application:set_env(flurm_controller, enable_cluster, false)
+          end,
+          fun(_) ->
+              application:unset_env(flurm_controller, enable_cluster)
+          end,
+          fun(_) ->
+              ?assertEqual(false, flurm_controller_sup:is_cluster_enabled())
+          end}}
+    ].

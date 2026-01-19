@@ -179,6 +179,16 @@
 
 -export_type([power_state/0, power_method/0, power_policy/0]).
 
+%% Test exports for internal functions
+-ifdef(TEST).
+-export([
+    validate_transition/2,
+    get_policy_settings/1,
+    parse_mac_address/1,
+    build_wol_packet/1
+]).
+-endif.
+
 %%====================================================================
 %% API - Power Management Infrastructure
 %%====================================================================

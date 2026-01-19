@@ -22,6 +22,15 @@
     get_default/2
 ]).
 
+-ifdef(TEST).
+-export([
+    daemon_defaults/0,
+    scheduler_defaults/0,
+    priority_defaults/0,
+    misc_defaults/0
+]).
+-endif.
+
 %%====================================================================
 %% API
 %%====================================================================

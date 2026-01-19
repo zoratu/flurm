@@ -179,6 +179,27 @@
 
 -export_type([cluster_name/0, federation_name/0, routing_policy/0]).
 
+%% Test exports for internal functions
+-ifdef(TEST).
+-export([
+    build_url/3,
+    build_auth_headers/1,
+    headers_to_proplist/1,
+    cluster_to_map/1,
+    generate_local_ref/0,
+    generate_federation_id/0,
+    get_job_partition/1,
+    get_job_features/1,
+    get_job_cpus/1,
+    get_job_memory/1,
+    job_to_map/1,
+    map_to_job/1,
+    has_required_features/2,
+    aggregate_resources/1,
+    calculate_load/1
+]).
+-endif.
+
 %%====================================================================
 %% API - Cluster Management
 %%====================================================================

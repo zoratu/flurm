@@ -32,6 +32,10 @@
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
 
+-ifdef(TEST).
+-export([is_this_node_leader/1]).
+-endif.
+
 -define(SERVER, ?MODULE).
 -define(RA_CLUSTER_NAME, flurm_controller).
 -define(RA_MACHINE, flurm_controller_ra_machine).

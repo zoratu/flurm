@@ -174,6 +174,24 @@
 
 -export_type([bb_pool_name/0, bb_type/0]).
 
+%% Test exports for internal functions
+-ifdef(TEST).
+-export([
+    normalize_type/1,
+    parse_size/1,
+    format_size/1,
+    round_to_granularity/2,
+    generate_bb_path/2,
+    map_to_request/1,
+    parse_bb_part/2,
+    parse_directive_opts/1,
+    pool_to_map/1,
+    allocation_to_map/1,
+    reservation_to_map/1,
+    format_if_set/2
+]).
+-endif.
+
 %%====================================================================
 %% API - Buffer Pool Management
 %%====================================================================

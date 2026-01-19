@@ -91,6 +91,85 @@ test_cluster_status() ->
     ok.
 
 %%====================================================================
+%% Tests for Internal Helper Functions (exported via -ifdef(TEST))
+%%====================================================================
+
+helper_functions_test_() ->
+    [
+        {"get_config/2 returns app env value", fun test_get_config_existing/0},
+        {"get_config/2 returns default when not set", fun test_get_config_default/0},
+        {"count_jobs_by_state/2 counts correctly", fun test_count_jobs_by_state/0},
+        {"count_jobs_by_state/2 handles empty list", fun test_count_jobs_empty/0},
+        {"count_nodes_by_state/2 counts correctly", fun test_count_nodes_by_state/0},
+        {"count_nodes_by_state/2 handles empty list", fun test_count_nodes_empty/0}
+    ].
+
+test_get_config_existing() ->
+    %% Set a test value
+    application:set_env(flurm_controller, test_key, test_value),
+
+    Result = flurm_controller_app:get_config(test_key, default_value),
+    ?assertEqual(test_value, Result),
+
+    %% Cleanup
+    application:unset_env(flurm_controller, test_key),
+    ok.
+
+test_get_config_default() ->
+    %% Ensure key doesn't exist
+    application:unset_env(flurm_controller, nonexistent_key),
+
+    Result = flurm_controller_app:get_config(nonexistent_key, my_default),
+    ?assertEqual(my_default, Result),
+    ok.
+
+test_count_jobs_by_state() ->
+    %% Create mock job tuples (element 5 is state based on the code)
+    %% Looking at count_jobs_by_state: element(5, J) =:= State
+    Jobs = [
+        {job, 1, <<"job1">>, <<"user1">>, pending, <<"script">>},
+        {job, 2, <<"job2">>, <<"user2">>, running, <<"script">>},
+        {job, 3, <<"job3">>, <<"user3">>, pending, <<"script">>},
+        {job, 4, <<"job4">>, <<"user4">>, completed, <<"script">>},
+        {job, 5, <<"job5">>, <<"user5">>, running, <<"script">>},
+        {job, 6, <<"job6">>, <<"user6">>, pending, <<"script">>}
+    ],
+
+    ?assertEqual(3, flurm_controller_app:count_jobs_by_state(Jobs, pending)),
+    ?assertEqual(2, flurm_controller_app:count_jobs_by_state(Jobs, running)),
+    ?assertEqual(1, flurm_controller_app:count_jobs_by_state(Jobs, completed)),
+    ?assertEqual(0, flurm_controller_app:count_jobs_by_state(Jobs, failed)),
+    ok.
+
+test_count_jobs_empty() ->
+    ?assertEqual(0, flurm_controller_app:count_jobs_by_state([], pending)),
+    ?assertEqual(0, flurm_controller_app:count_jobs_by_state([], running)),
+    ok.
+
+test_count_nodes_by_state() ->
+    %% Create mock node tuples (element 4 is state based on the code)
+    %% Looking at count_nodes_by_state: element(4, N) =:= State
+    Nodes = [
+        {node, <<"node1">>, 16, idle, 65536},
+        {node, <<"node2">>, 16, allocated, 65536},
+        {node, <<"node3">>, 16, idle, 65536},
+        {node, <<"node4">>, 16, down, 65536},
+        {node, <<"node5">>, 16, mixed, 65536}
+    ],
+
+    ?assertEqual(2, flurm_controller_app:count_nodes_by_state(Nodes, idle)),
+    ?assertEqual(1, flurm_controller_app:count_nodes_by_state(Nodes, allocated)),
+    ?assertEqual(1, flurm_controller_app:count_nodes_by_state(Nodes, down)),
+    ?assertEqual(1, flurm_controller_app:count_nodes_by_state(Nodes, mixed)),
+    ?assertEqual(0, flurm_controller_app:count_nodes_by_state(Nodes, unknown)),
+    ok.
+
+test_count_nodes_empty() ->
+    ?assertEqual(0, flurm_controller_app:count_nodes_by_state([], idle)),
+    ?assertEqual(0, flurm_controller_app:count_nodes_by_state([], down)),
+    ok.
+
+%%====================================================================
 %% Application Start/Stop Tests
 %%====================================================================
 

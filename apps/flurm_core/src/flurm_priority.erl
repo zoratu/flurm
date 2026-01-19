@@ -36,6 +36,16 @@
     nice_factor/1
 ]).
 
+%% Additional test exports for internal functions
+-ifdef(TEST).
+-export([
+    calculate_factors/3,
+    qos_factor/1,
+    fairshare_factor/2,
+    ensure_weights_table/0
+]).
+-endif.
+
 %% Priority weight configuration (ETS table)
 -define(WEIGHTS_TABLE, flurm_priority_weights).
 

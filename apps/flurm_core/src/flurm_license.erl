@@ -69,6 +69,28 @@
 
 -record(state, {}).
 
+%% Test exports
+-ifdef(TEST).
+-export([
+    %% License management
+    load_configured_licenses/0,
+    do_add_license/2,
+    do_remove_license/1,
+    %% Allocation internals
+    do_allocate/2,
+    allocate_license/3,
+    do_deallocate/2,
+    deallocate_license/3,
+    %% Reservation internals
+    do_reserve/2,
+    do_unreserve/2,
+    %% Parsing
+    parse_single_license/1,
+    %% Conversion
+    license_to_map/1
+]).
+-endif.
+
 %%====================================================================
 %% API
 %%====================================================================

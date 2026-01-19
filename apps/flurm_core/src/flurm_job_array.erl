@@ -106,6 +106,20 @@
 
 -export_type([array_job_id/0, task_id/0, task_state/0]).
 
+%% Test exports for internal functions
+-ifdef(TEST).
+-export([
+    do_parse_array_spec/1,
+    parse_range_spec/2,
+    parse_list_spec/2,
+    parse_list_element/1,
+    generate_task_ids/1,
+    apply_task_updates/2
+]).
+%% Export records for testing
+-export_type([]).
+-endif.
+
 %%====================================================================
 %% API
 %%====================================================================

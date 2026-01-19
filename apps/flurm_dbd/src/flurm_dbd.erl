@@ -67,6 +67,11 @@
     get_stats/0
 ]).
 
+%% Test exports for internal function testing
+-ifdef(TEST).
+-export([]).  % No internal functions - this is a pure delegation module
+-endif.
+
 %%====================================================================
 %% Job Accounting API
 %%====================================================================

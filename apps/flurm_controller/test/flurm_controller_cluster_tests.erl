@@ -63,6 +63,9 @@ cluster_simulation_test_() ->
 %% Unit tests for individual functions
 unit_test_() ->
     [
+     {"is_this_node_leader with undefined", fun test_is_this_node_leader_undefined/0},
+     {"is_this_node_leader with this node", fun test_is_this_node_leader_this_node/0},
+     {"is_this_node_leader with other node", fun test_is_this_node_leader_other_node/0},
      {"Handler detects cluster mode", fun test_handler_cluster_detection/0},
      {"Ra machine state initialization", fun test_ra_machine_init/0},
      {"Ra machine apply submit_job", fun test_ra_machine_submit_job/0},
@@ -343,6 +346,25 @@ test_cluster_status_members() ->
 %%====================================================================
 %% Unit Tests
 %%====================================================================
+
+test_is_this_node_leader_undefined() ->
+    %% Test with undefined leader - should return false
+    ?assertEqual(false, flurm_controller_cluster:is_this_node_leader(undefined)),
+    ok.
+
+test_is_this_node_leader_this_node() ->
+    %% Test with this node as leader - should return true
+    ThisNode = node(),
+    ?assertEqual(true, flurm_controller_cluster:is_this_node_leader({flurm_controller, ThisNode})),
+    ?assertEqual(true, flurm_controller_cluster:is_this_node_leader({any_cluster_name, ThisNode})),
+    ok.
+
+test_is_this_node_leader_other_node() ->
+    %% Test with another node as leader - should return false
+    OtherNode = 'other@somehost',
+    ?assertEqual(false, flurm_controller_cluster:is_this_node_leader({flurm_controller, OtherNode})),
+    ?assertEqual(false, flurm_controller_cluster:is_this_node_leader({custom_cluster, OtherNode})),
+    ok.
 
 test_handler_cluster_detection() ->
     %% Test the is_cluster_enabled logic in the handler

@@ -56,6 +56,30 @@
 
 -export_type([preemption_mode/0, preemption_result/0]).
 
+%% Test exports
+-ifdef(TEST).
+-export([
+    %% Configuration helpers
+    ensure_config_table/0,
+    get_qos_preemption_mode/1,
+    %% Preemption set finding
+    find_preemption_set/4,
+    find_sufficient_set/8,
+    %% Resource calculation
+    calculate_freed_resources/1,
+    %% Job preemption internals
+    preempt_single_job/4,
+    preempt_single_job_with_handling/4,
+    preempt_requeue/3,
+    preempt_cancel/3,
+    preempt_checkpoint/3,
+    preempt_suspend/2,
+    %% Graceful preemption
+    do_graceful_preempt/4,
+    wait_for_job_exit/3
+]).
+-endif.
+
 %% Configuration (could be moved to ETS/config)
 -define(DEFAULT_PREEMPTION_MODE, requeue).
 -define(DEFAULT_GRACE_TIME, 60).  % Seconds to allow graceful shutdown

@@ -43,6 +43,19 @@
 
 -include("flurm_config.hrl").
 
+-ifdef(TEST).
+-export([
+    find_default_config/0,
+    find_changes/2,
+    validate_port_numbers/1,
+    validate_node_definitions/1,
+    validate_required_keys/1,
+    run_validators/2,
+    find_node/2,
+    find_partition/2
+]).
+-endif.
+
 -record(state, {
     config :: map(),
     config_file :: string() | undefined,

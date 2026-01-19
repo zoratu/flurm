@@ -26,6 +26,10 @@
 %% Supervisor callbacks
 -export([init/1]).
 
+-ifdef(TEST).
+-export([get_data_dir/0]).
+-endif.
+
 -define(SERVER, ?MODULE).
 
 %%====================================================================

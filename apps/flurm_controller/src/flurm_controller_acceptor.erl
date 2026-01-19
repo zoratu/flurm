@@ -21,6 +21,10 @@
 
 -include_lib("flurm_protocol/include/flurm_protocol.hrl").
 
+-ifdef(TEST).
+-export([binary_to_hex/1]).
+-endif.
+
 %% Minimum data needed to determine message length
 -define(LENGTH_PREFIX_SIZE, 4).
 %% Receive timeout (30 seconds)

@@ -47,6 +47,15 @@
 
 -define(SERVER, ?MODULE).
 
+%% Test exports for internal functions
+-ifdef(TEST).
+-export([
+    insert_by_priority/3,
+    recalculate_priorities/1,
+    cancel_timer/1
+]).
+-endif.
+
 %% Scheduler types
 -define(SCHED_FIFO, fifo).
 -define(SCHED_PRIORITY, priority).

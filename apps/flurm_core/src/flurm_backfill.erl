@@ -43,6 +43,19 @@
 -define(BACKFILL_WINDOW, 86400).       % Look ahead window (24 hours)
 -define(MIN_BACKFILL_TIME, 60).        % Minimum job time to consider (1 min)
 
+%% Test exports for internal functions
+-ifdef(TEST).
+-export([
+    find_fitting_jobs/5,
+    find_backfill_nodes/5,
+    find_shadow_time/5,
+    find_nth_end_time/3,
+    timestamp_to_seconds/1,
+    reserve_nodes_in_timeline/3,
+    job_record_to_map/1
+]).
+-endif.
+
 %%====================================================================
 %% API
 %%====================================================================

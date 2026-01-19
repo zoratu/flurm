@@ -25,6 +25,14 @@
 
 -include_lib("flurm_core/include/flurm_core.hrl").
 
+-ifdef(TEST).
+-export([create_job/2,
+         update_job_state_internal/2,
+         apply_job_updates/2,
+         apply_heartbeat/2,
+         apply_partition_updates/2]).
+-endif.
+
 %% State machine state
 -record(state, {
     jobs = #{} :: #{job_id() => #job{}},

@@ -62,6 +62,26 @@
     default_qos :: binary()
 }).
 
+%% Test exports
+-ifdef(TEST).
+-export([
+    %% QOS creation and updates
+    create_default_qos_entries/0,
+    do_create/2,
+    do_update/2,
+    apply_updates/2,
+    %% Limit checking
+    do_check_limits/2,
+    check_job_count_limits/2,
+    check_user_tres/3,
+    check_tres_map/2,
+    %% TRES helpers
+    combine_tres/2,
+    get_user_job_counts/1,
+    get_user_tres_usage/1
+]).
+-endif.
+
 %%====================================================================
 %% API
 %%====================================================================

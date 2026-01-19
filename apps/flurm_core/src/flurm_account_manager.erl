@@ -65,6 +65,27 @@
 
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
+%% Test exports for internal functions
+-ifdef(TEST).
+-export([
+    normalize_account/1,
+    normalize_user/1,
+    normalize_association/1,
+    normalize_qos/1,
+    normalize_cluster/1,
+    normalize_tres/1,
+    apply_account_updates/2,
+    apply_user_updates/2,
+    apply_association_updates/2,
+    apply_qos_updates/2,
+    matches_pattern/2,
+    build_tres_request/1,
+    check_tres_limits/3,
+    combine_tres_maps/2,
+    run_checks/1
+]).
+-endif.
+
 -include_lib("flurm_core/include/flurm_core.hrl").
 
 %% Local copy of usage record from flurm_limits for pattern matching

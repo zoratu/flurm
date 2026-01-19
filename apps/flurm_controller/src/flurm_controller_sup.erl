@@ -21,6 +21,13 @@
 -export([start_listener/0, stop_listener/0, listener_info/0]).
 -export([start_node_listener/0, stop_node_listener/0, node_listener_info/0]).
 
+-ifdef(TEST).
+-export([get_listener_config/0,
+         get_node_listener_config/0,
+         parse_address/1,
+         is_cluster_enabled/0]).
+-endif.
+
 -define(SERVER, ?MODULE).
 -define(LISTENER_NAME, flurm_controller_listener).
 -define(NODE_LISTENER_NAME, flurm_node_listener).

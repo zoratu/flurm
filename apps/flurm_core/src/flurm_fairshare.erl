@@ -67,6 +67,13 @@
     total_usage :: float()
 }).
 
+%% Test exports for internal functions
+-ifdef(TEST).
+-export([
+    calculate_priority_factor/3
+]).
+-endif.
+
 %%====================================================================
 %% API
 %%====================================================================

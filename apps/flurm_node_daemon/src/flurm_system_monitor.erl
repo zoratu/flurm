@@ -17,6 +17,29 @@
 -export([get_gpu_allocation/0, allocate_gpus/2, release_gpus/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
+-ifdef(TEST).
+-export([
+    detect_platform/0,
+    get_system_hostname/0,
+    get_cpu_count/0,
+    get_total_memory/1,
+    get_memory_info/1,
+    get_load_average/1,
+    parse_meminfo_field/2,
+    parse_vm_stat_line/2,
+    erlang_memory_fallback/0,
+    binary_to_float_safe/1,
+    list_to_float_safe/1,
+    detect_gpus/0,
+    detect_nvidia_gpus/0,
+    parse_nvidia_gpu/1,
+    detect_amd_gpus/0,
+    check_amd_vendor/1,
+    get_disk_info/0,
+    get_mount_usage/1
+]).
+-endif.
+
 -define(COLLECT_INTERVAL, 5000). % 5 seconds
 
 -record(state, {

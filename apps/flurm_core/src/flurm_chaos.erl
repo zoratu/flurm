@@ -130,6 +130,27 @@
 
 -export_type([scenario/0]).
 
+%% Test exports for internal functions
+-ifdef(TEST).
+-export([
+    increment_stat/2,
+    is_system_process/1,
+    is_supervisor/1,
+    shuffle_list/1,
+    map_to_delay_config/1,
+    map_to_kill_config/1,
+    map_to_partition_config/1,
+    map_to_gc_config/1,
+    map_to_scheduler_config/1,
+    delay_config_to_map/1,
+    kill_config_to_map/1,
+    partition_config_to_map/1,
+    gc_config_to_map/1,
+    scheduler_config_to_map/1,
+    should_delay_module/2
+]).
+-endif.
+
 %%====================================================================
 %% Default Scenarios
 %%====================================================================

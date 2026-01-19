@@ -85,6 +85,32 @@
 
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
+%% Test exports for internal function testing
+-ifdef(TEST).
+-export([
+    %% Record conversion functions
+    job_info_to_record/1,
+    update_job_record/2,
+    step_info_to_record/1,
+    job_record_to_map/1,
+    assoc_record_to_map/1,
+    update_assoc_record/2,
+    %% Filtering functions
+    filter_job_records/2,
+    matches_job_filters/2,
+    %% Formatting functions
+    format_sacct_row/1,
+    format_elapsed/1,
+    format_exit_code/1,
+    %% Calculation functions
+    calculate_tres_usage/1,
+    %% Utility functions
+    current_period/0
+]).
+%% Export record definitions for tests
+-export_type([]).
+-endif.
+
 -include_lib("flurm_core/include/flurm_core.hrl").
 
 %% Job accounting record

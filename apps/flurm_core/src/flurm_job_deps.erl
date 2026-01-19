@@ -73,6 +73,20 @@
 
 -export_type([dep_type/0]).
 
+%% Test exports for internal functions
+-ifdef(TEST).
+-export([
+    parse_single_dep/1,
+    parse_dep_type/1,
+    parse_target/1,
+    format_single_dep/1,
+    format_dep_type/1,
+    state_satisfies/2,
+    is_terminal_state/1,
+    find_path/3
+]).
+-endif.
+
 %%====================================================================
 %% API
 %%====================================================================

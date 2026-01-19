@@ -22,6 +22,41 @@
 
 -export([handle/2]).
 
+%% Exports for unit testing pure helper functions
+-ifdef(TEST).
+-export([
+    %% Type conversion helpers
+    ensure_binary/1,
+    error_to_binary/1,
+    default_time/1,
+    %% Formatting helpers
+    format_allocated_nodes/1,
+    format_features/1,
+    format_partitions/1,
+    format_node_list/1,
+    format_licenses/1,
+    %% Job ID parsing
+    parse_job_id_str/1,
+    safe_binary_to_integer/1,
+    build_job_updates/3,
+    %% State conversions
+    job_state_to_slurm/1,
+    node_state_to_slurm/1,
+    partition_state_to_slurm/1,
+    step_state_to_slurm/1,
+    %% Default value helpers
+    default_partition/1,
+    default_time_limit/1,
+    default_priority/1,
+    default_work_dir/1,
+    %% Reservation helpers
+    reservation_state_to_flags/1,
+    determine_reservation_type/2,
+    parse_reservation_flags/1,
+    generate_reservation_name/0,
+    extract_reservation_fields/1
+]).
+-endif.
 
 -include_lib("flurm_protocol/include/flurm_protocol.hrl").
 -include_lib("flurm_core/include/flurm_core.hrl").

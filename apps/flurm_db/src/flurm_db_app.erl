@@ -24,6 +24,10 @@
 %% Application callbacks
 -export([start/2, stop/1]).
 
+-ifdef(TEST).
+-export([build_config/0]).
+-endif.
+
 %%====================================================================
 %% Application callbacks
 %%====================================================================

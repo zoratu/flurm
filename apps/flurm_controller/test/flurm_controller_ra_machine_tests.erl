@@ -458,6 +458,180 @@ test_apply_unknown_command() ->
     ok.
 
 %%====================================================================
+%% Tests for Internal Helper Functions (exported via -ifdef(TEST))
+%%====================================================================
+
+helper_functions_test_() ->
+    [
+        {"create_job/2 creates job with defaults", fun test_create_job_defaults/0},
+        {"create_job/2 uses provided values", fun test_create_job_provided_values/0},
+        {"update_job_state_internal/2 sets start_time for running", fun test_update_job_state_running/0},
+        {"update_job_state_internal/2 sets end_time for completed", fun test_update_job_state_completed/0},
+        {"update_job_state_internal/2 sets end_time for failed", fun test_update_job_state_failed/0},
+        {"apply_job_updates/2 applies multiple updates", fun test_apply_job_updates/0},
+        {"apply_heartbeat/2 updates node fields", fun test_apply_heartbeat/0},
+        {"apply_partition_updates/2 applies partition updates", fun test_apply_partition_updates/0}
+    ].
+
+test_create_job_defaults() ->
+    JobId = 42,
+    JobSpec = #{},
+    Job = flurm_controller_ra_machine:create_job(JobId, JobSpec),
+
+    ?assertEqual(42, Job#job.id),
+    ?assertEqual(<<"unnamed">>, Job#job.name),
+    ?assertEqual(<<>>, Job#job.user),
+    ?assertEqual(<<"default">>, Job#job.partition),
+    ?assertEqual(pending, Job#job.state),
+    ?assertEqual(<<>>, Job#job.script),
+    ?assertEqual(1, Job#job.num_nodes),
+    ?assertEqual(1, Job#job.num_cpus),
+    ?assertEqual(1024, Job#job.memory_mb),
+    ?assertEqual(3600, Job#job.time_limit),
+    ?assertEqual(100, Job#job.priority),
+    ?assert(is_integer(Job#job.submit_time)),
+    ok.
+
+test_create_job_provided_values() ->
+    JobId = 123,
+    JobSpec = #{
+        name => <<"my_custom_job">>,
+        user => <<"testuser">>,
+        partition => <<"gpu">>,
+        script => <<"#!/bin/bash\necho test">>,
+        num_nodes => 4,
+        num_cpus => 16,
+        memory_mb => 32768,
+        time_limit => 86400,
+        priority => 500
+    },
+    Job = flurm_controller_ra_machine:create_job(JobId, JobSpec),
+
+    ?assertEqual(123, Job#job.id),
+    ?assertEqual(<<"my_custom_job">>, Job#job.name),
+    ?assertEqual(<<"testuser">>, Job#job.user),
+    ?assertEqual(<<"gpu">>, Job#job.partition),
+    ?assertEqual(pending, Job#job.state),
+    ?assertEqual(<<"#!/bin/bash\necho test">>, Job#job.script),
+    ?assertEqual(4, Job#job.num_nodes),
+    ?assertEqual(16, Job#job.num_cpus),
+    ?assertEqual(32768, Job#job.memory_mb),
+    ?assertEqual(86400, Job#job.time_limit),
+    ?assertEqual(500, Job#job.priority),
+    ok.
+
+test_update_job_state_running() ->
+    Job = #job{id = 1, state = pending, start_time = undefined},
+    UpdatedJob = flurm_controller_ra_machine:update_job_state_internal(Job, running),
+
+    ?assertEqual(running, UpdatedJob#job.state),
+    ?assert(is_integer(UpdatedJob#job.start_time)),
+    ok.
+
+test_update_job_state_completed() ->
+    Job = #job{id = 1, state = running, end_time = undefined},
+    UpdatedJob = flurm_controller_ra_machine:update_job_state_internal(Job, completed),
+
+    ?assertEqual(completed, UpdatedJob#job.state),
+    ?assert(is_integer(UpdatedJob#job.end_time)),
+    ok.
+
+test_update_job_state_failed() ->
+    Job = #job{id = 1, state = running, end_time = undefined},
+
+    %% Test all terminal states that should set end_time
+    FailedJob = flurm_controller_ra_machine:update_job_state_internal(Job, failed),
+    ?assertEqual(failed, FailedJob#job.state),
+    ?assert(is_integer(FailedJob#job.end_time)),
+
+    CancelledJob = flurm_controller_ra_machine:update_job_state_internal(Job, cancelled),
+    ?assertEqual(cancelled, CancelledJob#job.state),
+    ?assert(is_integer(CancelledJob#job.end_time)),
+
+    TimeoutJob = flurm_controller_ra_machine:update_job_state_internal(Job, timeout),
+    ?assertEqual(timeout, TimeoutJob#job.state),
+    ?assert(is_integer(TimeoutJob#job.end_time)),
+
+    NodeFailJob = flurm_controller_ra_machine:update_job_state_internal(Job, node_fail),
+    ?assertEqual(node_fail, NodeFailJob#job.state),
+    ?assert(is_integer(NodeFailJob#job.end_time)),
+    ok.
+
+test_apply_job_updates() ->
+    Job = #job{
+        id = 1,
+        state = pending,
+        priority = 100,
+        allocated_nodes = [],
+        exit_code = undefined
+    },
+    Updates = #{
+        state => running,
+        priority => 200,
+        allocated_nodes => [<<"node1">>, <<"node2">>],
+        exit_code => 0,
+        unknown_field => should_be_ignored
+    },
+    UpdatedJob = flurm_controller_ra_machine:apply_job_updates(Job, Updates),
+
+    ?assertEqual(running, UpdatedJob#job.state),
+    ?assertEqual(200, UpdatedJob#job.priority),
+    ?assertEqual([<<"node1">>, <<"node2">>], UpdatedJob#job.allocated_nodes),
+    ?assertEqual(0, UpdatedJob#job.exit_code),
+    ok.
+
+test_apply_heartbeat() ->
+    Node = #node{
+        hostname = <<"test-node">>,
+        load_avg = 0.0,
+        free_memory_mb = 8192,
+        running_jobs = [],
+        last_heartbeat = 0
+    },
+    HeartbeatData = #{
+        load_avg => 2.5,
+        free_memory_mb => 4096,
+        running_jobs => [1, 2, 3]
+    },
+    UpdatedNode = flurm_controller_ra_machine:apply_heartbeat(Node, HeartbeatData),
+
+    ?assertEqual(2.5, UpdatedNode#node.load_avg),
+    ?assertEqual(4096, UpdatedNode#node.free_memory_mb),
+    ?assertEqual([1, 2, 3], UpdatedNode#node.running_jobs),
+    ?assert(is_integer(UpdatedNode#node.last_heartbeat)),
+    ?assert(UpdatedNode#node.last_heartbeat > 0),
+    ok.
+
+test_apply_partition_updates() ->
+    Partition = #partition{
+        name = <<"test-part">>,
+        state = up,
+        nodes = [],
+        max_time = 3600,
+        default_time = 1800,
+        max_nodes = 10,
+        priority = 1
+    },
+    Updates = #{
+        state => down,
+        nodes => [<<"node1">>, <<"node2">>],
+        max_time => 7200,
+        default_time => 3600,
+        max_nodes => 20,
+        priority => 5,
+        unknown_field => should_be_ignored
+    },
+    UpdatedPartition = flurm_controller_ra_machine:apply_partition_updates(Partition, Updates),
+
+    ?assertEqual(down, UpdatedPartition#partition.state),
+    ?assertEqual([<<"node1">>, <<"node2">>], UpdatedPartition#partition.nodes),
+    ?assertEqual(7200, UpdatedPartition#partition.max_time),
+    ?assertEqual(3600, UpdatedPartition#partition.default_time),
+    ?assertEqual(20, UpdatedPartition#partition.max_nodes),
+    ?assertEqual(5, UpdatedPartition#partition.priority),
+    ok.
+
+%%====================================================================
 %% Additional Tests - Job State Transitions
 %%====================================================================
 

@@ -149,6 +149,39 @@
 
 -export_type([gres_type/0, gres_name/0, gres_spec/0, gpu_vendor/0]).
 
+%% Test exports
+-ifdef(TEST).
+-export([
+    %% Parsing helpers
+    parse_single_gres/1,
+    extract_flags/1,
+    parse_gres_type/1,
+    parse_count/1,
+    parse_count_safe/1,
+    parse_memory_constraint/1,
+    format_single_gres/1,
+    format_with_flags/2,
+    format_type/1,
+    %% GPU matching
+    matches_gpu_model/2,
+    check_gpu_aliases/2,
+    %% Conversion helpers
+    device_to_map/1,
+    job_alloc_to_map/1,
+    map_to_gres_spec/1,
+    determine_allocation_mode/1,
+    %% Topology helpers
+    sort_by_topology/1,
+    select_best_devices/3,
+    %% Scoring
+    calculate_topology_score/2,
+    calculate_fit_score/2,
+    calculate_memory_score/2,
+    %% Availability checking
+    can_satisfy_spec/2
+]).
+-endif.
+
 %%====================================================================
 %% API - GRES Type Management
 %%====================================================================

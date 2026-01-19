@@ -19,6 +19,15 @@
 -export([import_job/1]).  %% For SLURM migration
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
+%% Test exports for internal functions
+-ifdef(TEST).
+-export([
+    create_job/2,
+    apply_job_updates/2,
+    build_limit_check_spec/1
+]).
+-endif.
+
 -include_lib("flurm_core/include/flurm_core.hrl").
 
 %% Array task record for pattern matching (must match flurm_job_array)

@@ -98,10 +98,22 @@ test_init_failed_handshake() ->
     ok.
 
 test_binary_to_hex() ->
-    %% Test the binary_to_hex helper function indirectly
-    %% by checking that the module compiles and exports properly
-    ?assert(erlang:function_exported(flurm_controller_acceptor, start_link, 3)),
-    ?assert(erlang:function_exported(flurm_controller_acceptor, init, 3)),
+    %% Test the binary_to_hex helper function directly
+    %% Empty binary
+    ?assertEqual(<<>>, flurm_controller_acceptor:binary_to_hex(<<>>)),
+
+    %% Single byte
+    ?assertEqual(<<"00">>, flurm_controller_acceptor:binary_to_hex(<<0>>)),
+    ?assertEqual(<<"FF">>, flurm_controller_acceptor:binary_to_hex(<<255>>)),
+    ?assertEqual(<<"0A">>, flurm_controller_acceptor:binary_to_hex(<<10>>)),
+
+    %% Multiple bytes
+    ?assertEqual(<<"0102030405">>, flurm_controller_acceptor:binary_to_hex(<<1,2,3,4,5>>)),
+    ?assertEqual(<<"DEADBEEF">>, flurm_controller_acceptor:binary_to_hex(<<222,173,190,239>>)),
+
+    %% Typical message header prefix
+    ?assertEqual(<<"000A00000014">>,
+                 flurm_controller_acceptor:binary_to_hex(<<0,10,0,0,0,20>>)),
     ok.
 
 %%====================================================================

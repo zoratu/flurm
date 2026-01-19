@@ -27,6 +27,20 @@
 
 -include("flurm_config.hrl").
 
+-ifdef(TEST).
+-export([
+    parse_trimmed_line/1,
+    normalize_key/1,
+    parse_value/1,
+    parse_memory_value/1,
+    parse_time_value/1,
+    parse_hms/1,
+    expand_range/3,
+    format_host/4,
+    finalize_config/1
+]).
+-endif.
+
 -type parse_result() :: {ok, #{atom() => term()}} | {error, term()}.
 -type line_result() :: {key_value, atom(), term()} |
                        {node_def, map()} |

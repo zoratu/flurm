@@ -24,6 +24,14 @@
 ]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
+%% Test exports for internal functions
+-ifdef(TEST).
+-export([
+    build_job_launch_message/2,
+    signal_to_name/1
+]).
+-endif.
+
 -record(state, {
     dispatched_jobs = #{} :: #{pos_integer() => [binary()]}  % JobId => [Hostnames]
 }).

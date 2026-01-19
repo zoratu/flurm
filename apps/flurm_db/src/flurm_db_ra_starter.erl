@@ -25,6 +25,10 @@
     code_change/3
 ]).
 
+-ifdef(TEST).
+-export([init_or_join_cluster/1, find_existing_cluster/1]).
+-endif.
+
 -record(state, {
     config :: map()
 }).

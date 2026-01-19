@@ -40,6 +40,18 @@
 
 -define(SERVER, ?MODULE).
 
+%% Test exports for internal functions
+-ifdef(TEST).
+-export([
+    job_to_info/1,
+    job_to_limit_spec/1,
+    job_to_backfill_map/1,
+    build_limit_info/1,
+    calculate_resources_to_free/1,
+    remove_jobs_from_queue/2
+]).
+-endif.
+
 %% Internal state
 -record(scheduler_state, {
     pending_jobs    :: queue:queue(pos_integer()),

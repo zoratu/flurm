@@ -79,6 +79,25 @@
     limit :: pos_integer()
 }).
 
+%% Test exports
+-ifdef(TEST).
+-export([
+    %% Rate checking internals
+    do_check_rate/4,
+    check_bucket/3,
+    check_global_limit/1,
+    %% Bucket management
+    create_bucket/3,
+    get_limit_for/2,
+    do_refill_buckets/0,
+    %% Load checking
+    do_check_load/1,
+    %% Stats collection
+    collect_stats/1,
+    collect_key_stats/1
+]).
+-endif.
+
 %%====================================================================
 %% API
 %%====================================================================

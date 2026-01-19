@@ -85,6 +85,34 @@
 
 -record(state, {}).
 
+%% Test exports
+-ifdef(TEST).
+-export([
+    %% Limit computation
+    compute_effective_limits/3,
+    merge_limits/1,
+    min_nonzero/2,
+    merge_tres_limits/2,
+    %% Limit checking
+    check_max_jobs/2,
+    check_grp_jobs/2,
+    check_job_resources/2,
+    check_resources/2,
+    get_limit_field/2,
+    %% Usage management
+    get_or_create_usage/1,
+    update_usage/2,
+    %% TRES helpers
+    add_tres/2,
+    subtract_tres/2,
+    add_tres_mins/3,
+    %% Limit setting
+    set_limit_field/3,
+    %% Initialization
+    init_default_limits/0
+]).
+-endif.
+
 %%====================================================================
 %% API
 %%====================================================================

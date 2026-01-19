@@ -62,6 +62,14 @@
     node_fail/3
 ]).
 
+%% Test exports for internal functions
+-ifdef(TEST).
+-export([
+    build_job_info/2,
+    maybe_upgrade_state_data/1
+]).
+-endif.
+
 %%====================================================================
 %% API
 %%====================================================================
