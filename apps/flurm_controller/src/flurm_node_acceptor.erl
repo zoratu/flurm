@@ -15,6 +15,18 @@
 -export([start_link/3]).
 -export([init/3]).
 
+-ifdef(TEST).
+-export([
+    build_node_spec/1,
+    build_heartbeat_data/1,
+    exit_code_to_state/1,
+    failure_reason_to_state/1,
+    build_register_ack_payload/1,
+    extract_message_from_buffer/1,
+    frame_message/1
+]).
+-endif.
+
 %%====================================================================
 %% API
 %%====================================================================
@@ -243,6 +255,69 @@ send_message(Socket, Transport, Message) ->
         {error, Reason} ->
             {error, Reason}
     end.
+
+%%====================================================================
+%% Pure Helper Functions (exported for testing under -ifdef(TEST))
+%%====================================================================
+
+%% @doc Build a node specification map from registration payload.
+%% Extracts hostname, cpus, memory with defaults.
+-spec build_node_spec(map()) -> map().
+build_node_spec(Payload) ->
+    #{
+        hostname => maps:get(<<"hostname">>, Payload),
+        cpus => maps:get(<<"cpus">>, Payload, 1),
+        memory_mb => maps:get(<<"memory_mb">>, Payload, 1024),
+        state => idle,
+        partitions => [<<"default">>]
+    }.
+
+%% @doc Build heartbeat data map from payload.
+%% Extracts hostname, load_avg, free_memory_mb, running_jobs with defaults.
+-spec build_heartbeat_data(map()) -> map().
+build_heartbeat_data(Payload) ->
+    #{
+        hostname => maps:get(<<"hostname">>, Payload),
+        load_avg => maps:get(<<"load_avg">>, Payload, 0.0),
+        free_memory_mb => maps:get(<<"free_memory_mb">>, Payload, 0),
+        running_jobs => maps:get(<<"running_jobs">>, Payload, [])
+    }.
+
+%% @doc Convert exit code to job state.
+%% Exit code 0 means completed, anything else means failed.
+-spec exit_code_to_state(integer()) -> completed | failed.
+exit_code_to_state(0) -> completed;
+exit_code_to_state(_) -> failed.
+
+%% @doc Convert failure reason to job state.
+%% Timeout reason results in timeout state, others result in failed.
+-spec failure_reason_to_state(binary()) -> timeout | failed.
+failure_reason_to_state(<<"timeout">>) -> timeout;
+failure_reason_to_state(_) -> failed.
+
+%% @doc Build a node registration acknowledgment payload.
+-spec build_register_ack_payload(binary()) -> map().
+build_register_ack_payload(Hostname) ->
+    #{
+        <<"node_id">> => Hostname,
+        <<"status">> => <<"accepted">>
+    }.
+
+%% @doc Extract a complete message from a buffer if available.
+%% Returns {ok, MessageData, Remaining} or {incomplete, Buffer}.
+-spec extract_message_from_buffer(binary()) ->
+    {ok, binary(), binary()} | {incomplete, binary()}.
+extract_message_from_buffer(<<Len:32, Data/binary>> = Buffer) when byte_size(Data) >= Len ->
+    <<MsgData:Len/binary, Rest/binary>> = Data,
+    {ok, MsgData, Rest};
+extract_message_from_buffer(Buffer) ->
+    {incomplete, Buffer}.
+
+%% @doc Frame a message with length prefix for sending.
+-spec frame_message(binary()) -> binary().
+frame_message(Binary) ->
+    Len = byte_size(Binary),
+    <<Len:32, Binary/binary>>.
 
 %% Logging helpers
 log(Level, Fmt, Args) ->

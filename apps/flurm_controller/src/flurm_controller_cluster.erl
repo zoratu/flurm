@@ -33,7 +33,12 @@
          terminate/2, code_change/3]).
 
 -ifdef(TEST).
--export([is_this_node_leader/1]).
+-export([
+    is_this_node_leader/1,
+    update_leader_status/1,
+    get_ra_members/1,
+    handle_local_operation/2
+]).
 -endif.
 
 -define(SERVER, ?MODULE).

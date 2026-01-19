@@ -23,6 +23,20 @@
 -export([get_available_nodes_with_gres/4]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
+-ifdef(TEST).
+-export([
+    apply_node_updates/2,
+    get_available_resources/1,
+    config_to_node_spec/2,
+    do_remove_node/3,
+    apply_property_updates/2,
+    build_gres_maps/1,
+    atom_to_gres_key/1,
+    check_node_gres_availability/2,
+    build_updates_from_config/2
+]).
+-endif.
+
 -include_lib("flurm_core/include/flurm_core.hrl").
 
 -define(HEARTBEAT_TIMEOUT, 30000). % 30 seconds

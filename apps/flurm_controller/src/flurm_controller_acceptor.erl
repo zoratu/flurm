@@ -22,7 +22,14 @@
 -include_lib("flurm_protocol/include/flurm_protocol.hrl").
 
 -ifdef(TEST).
--export([binary_to_hex/1]).
+-export([
+    binary_to_hex/1,
+    get_hex_prefix/1,
+    create_initial_state/3,
+    check_buffer_status/1,
+    extract_message/1,
+    calculate_duration/2
+]).
 -endif.
 
 %% Minimum data needed to determine message length
@@ -239,6 +246,57 @@ send_response(Socket, Transport, MsgType, Body) ->
 %% Helper to convert binary to hex string
 binary_to_hex(Bin) ->
     list_to_binary([[io_lib:format("~2.16.0B", [B]) || B <- binary_to_list(Bin)]]).
+
+%%====================================================================
+%% Pure Helper Functions (exported for testing under -ifdef(TEST))
+%%====================================================================
+
+%% @doc Get hex prefix of data (first 24 bytes or entire data if smaller).
+-spec get_hex_prefix(binary()) -> binary().
+get_hex_prefix(Data) when byte_size(Data) >= 24 ->
+    <<First24:24/binary, _/binary>> = Data,
+    binary_to_hex(First24);
+get_hex_prefix(Data) ->
+    binary_to_hex(Data).
+
+%% @doc Create initial connection state.
+-spec create_initial_state(inet:socket(), module(), map()) -> map().
+create_initial_state(Socket, Transport, Opts) ->
+    #{
+        socket => Socket,
+        transport => Transport,
+        opts => Opts,
+        buffer => <<>>,
+        request_count => 0,
+        start_time => erlang:system_time(millisecond)
+    }.
+
+%% @doc Check the status of a buffer for message completeness.
+%% Returns: need_more_data | invalid_length | {complete, Length}
+-spec check_buffer_status(binary()) -> need_more_data | invalid_length | {complete, non_neg_integer()}.
+check_buffer_status(Buffer) when byte_size(Buffer) < ?LENGTH_PREFIX_SIZE ->
+    need_more_data;
+check_buffer_status(<<Length:32/big, _Rest/binary>>) when Length < ?SLURM_HEADER_SIZE ->
+    invalid_length;
+check_buffer_status(<<Length:32/big, Rest/binary>>) when byte_size(Rest) < Length ->
+    need_more_data;
+check_buffer_status(<<Length:32/big, _Rest/binary>>) ->
+    {complete, Length}.
+
+%% @doc Extract a complete message from buffer.
+%% Returns {ok, FullMessage, Remaining} or {incomplete, Buffer}.
+-spec extract_message(binary()) -> {ok, binary(), binary()} | {incomplete, binary()}.
+extract_message(<<Length:32/big, Rest/binary>> = Buffer) when byte_size(Rest) >= Length ->
+    <<MessageData:Length/binary, Remaining/binary>> = Rest,
+    FullMessage = <<Length:32/big, MessageData/binary>>,
+    {ok, FullMessage, Remaining};
+extract_message(Buffer) ->
+    {incomplete, Buffer}.
+
+%% @doc Calculate connection duration from start time.
+-spec calculate_duration(integer(), integer()) -> integer().
+calculate_duration(EndTime, StartTime) ->
+    EndTime - StartTime.
 
 %%====================================================================
 %% Connection Management
