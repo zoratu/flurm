@@ -23,7 +23,7 @@ RUN echo '#!/bin/bash' > /entrypoint.sh && \
     echo 'CONTROLLER_PORT=${FLURM_CONTROLLER_PORT:-6818}' >> /entrypoint.sh && \
     echo 'echo "Starting FLURM node daemon..."' >> /entrypoint.sh && \
     echo 'echo "Connecting to controller at $CONTROLLER_HOST:$CONTROLLER_PORT"' >> /entrypoint.sh && \
-    echo 'cd /flurm && escript start_node.erl $CONTROLLER_HOST' >> /entrypoint.sh && \
+    echo 'cd /flurm && escript escripts/start_node.erl $CONTROLLER_HOST' >> /entrypoint.sh && \
     chmod +x /entrypoint.sh
 
 CMD ["/entrypoint.sh"]

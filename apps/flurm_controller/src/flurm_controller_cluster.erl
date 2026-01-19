@@ -328,7 +328,24 @@ do_init_ra_cluster(#state{cluster_name = ClusterName,
 try_start_ra_cluster(ClusterName, ThisServer, OtherServers, Machine, State) ->
     AllServers = [ThisServer | OtherServers],
 
-    %% First, try to start as a new cluster
+    %% First, check if Ra server is already running
+    case ra:members(ThisServer) of
+        {ok, _Members, _Leader} ->
+            lager:info("Ra cluster already running, reusing existing cluster"),
+            {ok, State#state{ra_cluster_id = ThisServer}};
+        {error, noproc} ->
+            %% Server not running, try to start the cluster
+            do_start_ra_cluster(ClusterName, ThisServer, AllServers, OtherServers, Machine, State);
+        {timeout, _} ->
+            %% Server might be starting up, try anyway
+            do_start_ra_cluster(ClusterName, ThisServer, AllServers, OtherServers, Machine, State);
+        {error, _} ->
+            %% Other error, try to start
+            do_start_ra_cluster(ClusterName, ThisServer, AllServers, OtherServers, Machine, State)
+    end.
+
+%% @doc Actually start the Ra cluster.
+do_start_ra_cluster(ClusterName, ThisServer, AllServers, OtherServers, Machine, State) ->
     %% ra:start_cluster/4 expects: SystemName (atom), ClusterName (atom), Machine, Servers
     case ra:start_cluster(default, ClusterName, Machine, AllServers) of
         {ok, Started, _Failed} ->
@@ -340,6 +357,10 @@ try_start_ra_cluster(ClusterName, ThisServer, OtherServers, Machine, State) ->
         {error, {already_started, _}} ->
             %% Already running, that's fine
             lager:info("Ra server already started"),
+            {ok, State#state{ra_cluster_id = ThisServer}};
+        {error, {shutdown, {failed_to_start_child, _, {already_started, _}}}} ->
+            %% Server already started via supervisor - this is fine
+            lager:info("Ra server already started (via supervisor)"),
             {ok, State#state{ra_cluster_id = ThisServer}};
         {error, Reason} ->
             lager:warning("Failed to start Ra cluster: ~p", [Reason]),

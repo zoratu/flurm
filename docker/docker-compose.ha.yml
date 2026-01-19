@@ -8,9 +8,7 @@
 services:
   # Controller 1 (initial leader candidate)
   flurm-ctrl-1:
-    build:
-      context: ..
-      dockerfile: docker/Dockerfile.flurm-server-ha
+    image: flurm-server-ha:latest
     hostname: flurm-ctrl-1
     container_name: ${COMPOSE_PROJECT_NAME:-flurm-ha}-ctrl-1
     environment:
@@ -40,9 +38,7 @@ services:
 
   # Controller 2
   flurm-ctrl-2:
-    build:
-      context: ..
-      dockerfile: docker/Dockerfile.flurm-server-ha
+    image: flurm-server-ha:latest
     hostname: flurm-ctrl-2
     container_name: ${COMPOSE_PROJECT_NAME:-flurm-ha}-ctrl-2
     environment:
@@ -74,9 +70,7 @@ services:
 
   # Controller 3
   flurm-ctrl-3:
-    build:
-      context: ..
-      dockerfile: docker/Dockerfile.flurm-server-ha
+    image: flurm-server-ha:latest
     hostname: flurm-ctrl-3
     container_name: ${COMPOSE_PROJECT_NAME:-flurm-ha}-ctrl-3
     environment:

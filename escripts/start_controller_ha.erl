@@ -133,8 +133,8 @@ start_distribution(NodeNameStr, CookieStr) ->
     %% Check if already distributed
     case node() of
         'nonode@nohost' ->
-            %% Start distribution
-            case net_kernel:start([NodeName, longnames]) of
+            %% Start distribution with shortnames (Docker containers don't have FQDNs)
+            case net_kernel:start([NodeName, shortnames]) of
                 {ok, _} ->
                     erlang:set_cookie(node(), Cookie),
                     ok;

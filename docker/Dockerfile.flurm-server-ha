@@ -1,13 +1,12 @@
-FROM rockylinux:9
+FROM erlang:26-slim
 
-# Install Erlang/OTP and build tools
-# Including curl for health checks and iptables for split-brain testing
-RUN dnf install -y epel-release && \
-    dnf install -y erlang git munge make iproute iputils curl iptables iproute-tc && \
-    dnf clean all
+# Install tools for HA testing (curl for health checks, iptables for split-brain)
+RUN apt-get update && \
+    apt-get install -y git munge libmunge-dev curl iproute2 iputils-ping iptables && \
+    rm -rf /var/lib/apt/lists/*
 
-# Install rebar3 manually (not in EPEL)
-RUN curl -o /usr/local/bin/rebar3 https://s3.amazonaws.com/rebar3/rebar3 && \
+# Install rebar3 from GitHub releases
+RUN curl -L -o /usr/local/bin/rebar3 https://github.com/erlang/rebar3/releases/download/3.24.0/rebar3 && \
     chmod +x /usr/local/bin/rebar3
 
 # Create munge directories
@@ -22,6 +21,9 @@ RUN mkdir -p /var/lib/flurm/ra && chmod 755 /var/lib/flurm
 WORKDIR /flurm
 COPY . /flurm/
 
+# Clean any pre-built beam files (may be incompatible OTP version)
+RUN rm -rf _build
+
 # Build FLURM
 RUN rebar3 compile
 
@@ -32,8 +34,8 @@ COPY escripts/start_controller_ha.erl /flurm/start_controller_ha.erl
 RUN echo '#!/bin/bash' > /entrypoint-ha.sh && \
     echo 'set -e' >> /entrypoint-ha.sh && \
     echo '' >> /entrypoint-ha.sh && \
-    echo '# Fix munge ownership' >> /entrypoint-ha.sh && \
-    echo 'chown -R munge:munge /etc/munge /var/run/munge /var/log/munge' >> /entrypoint-ha.sh && \
+    echo '# Fix munge ownership (may fail on shared volume, continue anyway)' >> /entrypoint-ha.sh && \
+    echo 'chown -R munge:munge /etc/munge /var/run/munge /var/log/munge 2>/dev/null || true' >> /entrypoint-ha.sh && \
     echo 'chmod 700 /etc/munge' >> /entrypoint-ha.sh && \
     echo '' >> /entrypoint-ha.sh && \
     echo '# Create munge key if needed' >> /entrypoint-ha.sh && \
@@ -41,12 +43,17 @@ RUN echo '#!/bin/bash' > /entrypoint-ha.sh && \
     echo '  echo "Creating MUNGE key..."' >> /entrypoint-ha.sh && \
     echo '  dd if=/dev/urandom bs=1 count=1024 > /etc/munge/munge.key 2>/dev/null' >> /entrypoint-ha.sh && \
     echo 'fi' >> /entrypoint-ha.sh && \
-    echo 'chown munge:munge /etc/munge/munge.key' >> /entrypoint-ha.sh && \
+    echo 'chown munge:munge /etc/munge/munge.key 2>/dev/null || true' >> /entrypoint-ha.sh && \
     echo 'chmod 400 /etc/munge/munge.key' >> /entrypoint-ha.sh && \
     echo '' >> /entrypoint-ha.sh && \
     echo '# Start munge' >> /entrypoint-ha.sh && \
     echo 'echo "Starting munged..."' >> /entrypoint-ha.sh && \
-    echo 'runuser -u munge -- /usr/sbin/munged' >> /entrypoint-ha.sh && \
+    echo 'su -s /bin/bash munge -c /usr/sbin/munged || echo "MUNGE start failed (continuing)"' >> /entrypoint-ha.sh && \
+    echo 'sleep 1' >> /entrypoint-ha.sh && \
+    echo '' >> /entrypoint-ha.sh && \
+    echo '# Start EPMD (Erlang Port Mapper Daemon) for distributed Erlang' >> /entrypoint-ha.sh && \
+    echo 'echo "Starting EPMD..."' >> /entrypoint-ha.sh && \
+    echo 'epmd -daemon' >> /entrypoint-ha.sh && \
     echo 'sleep 1' >> /entrypoint-ha.sh && \
     echo '' >> /entrypoint-ha.sh && \
     echo '# Wait for other nodes to be reachable (for cluster formation)' >> /entrypoint-ha.sh && \
