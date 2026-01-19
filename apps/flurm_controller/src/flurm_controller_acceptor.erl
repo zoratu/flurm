@@ -247,8 +247,9 @@ send_response(Socket, Transport, MsgType, Body) ->
 binary_to_hex(Bin) ->
     list_to_binary([[io_lib:format("~2.16.0B", [B]) || B <- binary_to_list(Bin)]]).
 
+-ifdef(TEST).
 %%====================================================================
-%% Pure Helper Functions (exported for testing under -ifdef(TEST))
+%% Pure Helper Functions (exported for testing)
 %%====================================================================
 
 %% @doc Get hex prefix of data (first 24 bytes or entire data if smaller).
@@ -286,7 +287,7 @@ check_buffer_status(<<Length:32/big, _Rest/binary>>) ->
 %% @doc Extract a complete message from buffer.
 %% Returns {ok, FullMessage, Remaining} or {incomplete, Buffer}.
 -spec extract_message(binary()) -> {ok, binary(), binary()} | {incomplete, binary()}.
-extract_message(<<Length:32/big, Rest/binary>> = Buffer) when byte_size(Rest) >= Length ->
+extract_message(<<Length:32/big, Rest/binary>> = _Buffer) when byte_size(Rest) >= Length ->
     <<MessageData:Length/binary, Remaining/binary>> = Rest,
     FullMessage = <<Length:32/big, MessageData/binary>>,
     {ok, FullMessage, Remaining};
@@ -297,6 +298,7 @@ extract_message(Buffer) ->
 -spec calculate_duration(integer(), integer()) -> integer().
 calculate_duration(EndTime, StartTime) ->
     EndTime - StartTime.
+-endif.
 
 %%====================================================================
 %% Connection Management

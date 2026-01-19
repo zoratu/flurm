@@ -1,12 +1,19 @@
+# Ignore build artifacts
 _build/
-deps/
-.git/
-*.beam
-erl_crash.dump
+.rebar3/
 rebar3.crashdump
+*.coverdata
+*.beam
+**/ebin/
+**/test_ebin/
+
+# Ignore IDE/editor files
+.idea/
 *.swp
-*.swo
 *~
-.DS_Store
-docker/test-results/
-docker/*.log
+
+# Ignore git
+.git/
+
+# Ignore local config
+.claude/

@@ -256,8 +256,9 @@ send_message(Socket, Transport, Message) ->
             {error, Reason}
     end.
 
+-ifdef(TEST).
 %%====================================================================
-%% Pure Helper Functions (exported for testing under -ifdef(TEST))
+%% Pure Helper Functions (exported for testing)
 %%====================================================================
 
 %% @doc Build a node specification map from registration payload.
@@ -318,6 +319,7 @@ extract_message_from_buffer(Buffer) ->
 frame_message(Binary) ->
     Len = byte_size(Binary),
     <<Len:32, Binary/binary>>.
+-endif.
 
 %% Logging helpers
 log(Level, Fmt, Args) ->

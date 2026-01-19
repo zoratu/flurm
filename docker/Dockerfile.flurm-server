@@ -1,12 +1,12 @@
-FROM rockylinux:9
+FROM erlang:26-slim
 
-# Install Erlang/OTP and build tools
-RUN dnf install -y epel-release && \
-    dnf install -y erlang git munge make && \
-    dnf clean all
+# Install build tools and munge
+RUN apt-get update && \
+    apt-get install -y git munge libmunge-dev curl && \
+    rm -rf /var/lib/apt/lists/*
 
-# Install rebar3 manually (not in EPEL)
-RUN curl -o /usr/local/bin/rebar3 https://s3.amazonaws.com/rebar3/rebar3 && \
+# Install rebar3 from GitHub releases
+RUN curl -L -o /usr/local/bin/rebar3 https://github.com/erlang/rebar3/releases/download/3.24.0/rebar3 && \
     chmod +x /usr/local/bin/rebar3
 
 # Create munge directories (key will be created at runtime in shared volume)
@@ -30,6 +30,9 @@ RUN mkdir -p /etc/flurm && \
 WORKDIR /flurm
 COPY . /flurm/
 
+# Clean any pre-built beam files (may be incompatible OTP version)
+RUN rm -rf _build
+
 # Build FLURM
 RUN rebar3 compile
 
@@ -37,24 +40,24 @@ RUN rebar3 compile
 RUN echo '#!/bin/bash' > /entrypoint.sh && \
     echo 'set -e' >> /entrypoint.sh && \
     echo '# Always fix ownership (shared volume may have wrong ownership)' >> /entrypoint.sh && \
-    echo 'chown -R munge:munge /etc/munge /var/run/munge /var/log/munge' >> /entrypoint.sh && \
+    echo 'chown -R munge:munge /etc/munge /var/run/munge /var/log/munge 2>/dev/null || true' >> /entrypoint.sh && \
     echo 'chmod 700 /etc/munge' >> /entrypoint.sh && \
     echo 'if [ ! -f /etc/munge/munge.key ]; then' >> /entrypoint.sh && \
     echo '  echo "Creating MUNGE key..."' >> /entrypoint.sh && \
     echo '  dd if=/dev/urandom bs=1 count=1024 > /etc/munge/munge.key 2>/dev/null' >> /entrypoint.sh && \
     echo 'fi' >> /entrypoint.sh && \
-    echo 'chown munge:munge /etc/munge/munge.key' >> /entrypoint.sh && \
+    echo 'chown munge:munge /etc/munge/munge.key 2>/dev/null || true' >> /entrypoint.sh && \
     echo 'chmod 400 /etc/munge/munge.key' >> /entrypoint.sh && \
     echo 'echo "Starting munged..."' >> /entrypoint.sh && \
-    echo 'runuser -u munge -- /usr/sbin/munged' >> /entrypoint.sh && \
+    echo 'su -s /bin/bash munge -c /usr/sbin/munged || echo "MUNGE start failed (continuing)"' >> /entrypoint.sh && \
     echo 'sleep 1' >> /entrypoint.sh && \
     echo '# Verify munge is working' >> /entrypoint.sh && \
     echo 'if munge -n </dev/null >/dev/null 2>&1; then' >> /entrypoint.sh && \
     echo '  echo "MUNGE is working"' >> /entrypoint.sh && \
     echo 'else' >> /entrypoint.sh && \
-    echo '  echo "WARNING: MUNGE test failed"' >> /entrypoint.sh && \
+    echo '  echo "WARNING: MUNGE test failed (continuing without auth)"' >> /entrypoint.sh && \
     echo 'fi' >> /entrypoint.sh && \
-    echo 'cd /flurm && escript start_controller.erl' >> /entrypoint.sh && \
+    echo 'cd /flurm && escript escripts/start_controller.erl' >> /entrypoint.sh && \
     chmod +x /entrypoint.sh
 
 EXPOSE 6817 6818

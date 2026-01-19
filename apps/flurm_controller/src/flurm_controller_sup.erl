@@ -207,6 +207,15 @@ init([]) ->
             type => worker,
             modules => [flurm_metrics_http]
         },
+        %% Limits Manager - tracks resource limits (must start before job_manager)
+        #{
+            id => flurm_limits,
+            start => {flurm_limits, start_link, []},
+            restart => permanent,
+            shutdown => 5000,
+            type => worker,
+            modules => [flurm_limits]
+        },
         %% Job Manager - handles job lifecycle
         #{
             id => flurm_job_manager,
