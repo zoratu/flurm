@@ -30,6 +30,14 @@
 ]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
+%% Test exports - internal helpers for direct callback testing
+-ifdef(TEST).
+-export([
+    step_to_map/1,
+    apply_step_updates/2
+]).
+-endif.
+
 -include_lib("flurm_core/include/flurm_core.hrl").
 
 -record(step, {

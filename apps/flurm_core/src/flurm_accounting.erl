@@ -22,6 +22,14 @@
     record_job_cancelled/2
 ]).
 
+%% Test exports for internal functions
+-ifdef(TEST).
+-export([
+    safe_call/3,
+    job_data_to_map/1
+]).
+-endif.
+
 %%====================================================================
 %% API
 %%====================================================================

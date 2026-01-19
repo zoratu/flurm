@@ -15,6 +15,13 @@
 -export([add_node/2, remove_node/2]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
+%% Test exports - internal helpers for direct callback testing
+-ifdef(TEST).
+-export([
+    apply_partition_updates/2
+]).
+-endif.
+
 -include_lib("flurm_core/include/flurm_core.hrl").
 
 -record(state, {

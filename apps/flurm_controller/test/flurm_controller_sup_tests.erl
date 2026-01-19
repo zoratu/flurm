@@ -323,14 +323,16 @@ cluster_enabled_detailed_test_() ->
               application:unset_env(flurm_controller, enable_cluster)
           end,
           fun(_) ->
-              %% On nonode@nohost, should return false even if enabled
-              Result = flurm_controller_sup:is_cluster_enabled(),
-              case node() of
-                  'nonode@nohost' ->
-                      ?assertEqual(false, Result);
-                  _ ->
-                      ?assertEqual(true, Result)
-              end
+              [{"check cluster enabled result", fun() ->
+                  %% On nonode@nohost, should return false even if enabled
+                  Result = flurm_controller_sup:is_cluster_enabled(),
+                  case node() of
+                      'nonode@nohost' ->
+                          ?assertEqual(false, Result);
+                      _ ->
+                          ?assertEqual(true, Result)
+                  end
+              end}]
           end}},
 
         {"is_cluster_enabled with enable_cluster=false",
@@ -342,6 +344,214 @@ cluster_enabled_detailed_test_() ->
               application:unset_env(flurm_controller, enable_cluster)
           end,
           fun(_) ->
-              ?assertEqual(false, flurm_controller_sup:is_cluster_enabled())
+              [{"returns false when disabled", fun() ->
+                  ?assertEqual(false, flurm_controller_sup:is_cluster_enabled())
+              end}]
           end}}
     ].
+
+%%====================================================================
+%% Comprehensive Supervisor Spec Validation Tests
+%%====================================================================
+
+%% These tests thoroughly validate the supervisor init/1 return value
+%% according to OTP supervisor specification requirements.
+
+init_spec_validation_test_() ->
+    {setup,
+     fun() ->
+         application:set_env(flurm_controller, enable_cluster, false)
+     end,
+     fun(_) ->
+         application:unset_env(flurm_controller, enable_cluster)
+     end,
+     [
+         {"init/1 returns valid {ok, {SupFlags, ChildSpecs}} tuple",
+          fun test_init_returns_valid_tuple/0},
+         {"SupFlags contains valid strategy",
+          fun test_sup_flags_strategy/0},
+         {"SupFlags contains valid intensity",
+          fun test_sup_flags_intensity/0},
+         {"SupFlags contains valid period",
+          fun test_sup_flags_period/0},
+         {"All child specs have valid id",
+          fun test_child_specs_id/0},
+         {"All child specs have valid start MFA",
+          fun test_child_specs_start/0},
+         {"All child specs have valid restart",
+          fun test_child_specs_restart/0},
+         {"All child specs have valid shutdown",
+          fun test_child_specs_shutdown/0},
+         {"All child specs have valid type",
+          fun test_child_specs_type/0},
+         {"All child specs have valid modules",
+          fun test_child_specs_modules/0}
+     ]}.
+
+test_init_returns_valid_tuple() ->
+    Result = flurm_controller_sup:init([]),
+    ?assertMatch({ok, {_, _}}, Result),
+    {ok, {SupFlags, ChildSpecs}} = Result,
+    ?assert(is_map(SupFlags)),
+    ?assert(is_list(ChildSpecs)),
+    ok.
+
+test_sup_flags_strategy() ->
+    {ok, {SupFlags, _}} = flurm_controller_sup:init([]),
+    Strategy = maps:get(strategy, SupFlags),
+    ValidStrategies = [one_for_one, one_for_all, rest_for_one, simple_one_for_one],
+    ?assert(lists:member(Strategy, ValidStrategies),
+            io_lib:format("Invalid strategy: ~p", [Strategy])),
+    ok.
+
+test_sup_flags_intensity() ->
+    {ok, {SupFlags, _}} = flurm_controller_sup:init([]),
+    Intensity = maps:get(intensity, SupFlags),
+    ?assert(is_integer(Intensity)),
+    ?assert(Intensity >= 0),
+    ok.
+
+test_sup_flags_period() ->
+    {ok, {SupFlags, _}} = flurm_controller_sup:init([]),
+    Period = maps:get(period, SupFlags),
+    ?assert(is_integer(Period)),
+    ?assert(Period > 0),
+    ok.
+
+test_child_specs_id() ->
+    {ok, {_, ChildSpecs}} = flurm_controller_sup:init([]),
+    lists:foreach(fun(Spec) ->
+        Id = maps:get(id, Spec),
+        ?assert(is_atom(Id) orelse is_binary(Id) orelse is_list(Id),
+                io_lib:format("Invalid id: ~p", [Id]))
+    end, ChildSpecs),
+    ok.
+
+test_child_specs_start() ->
+    {ok, {_, ChildSpecs}} = flurm_controller_sup:init([]),
+    lists:foreach(fun(Spec) ->
+        Start = maps:get(start, Spec),
+        ?assertMatch({M, F, A} when is_atom(M) andalso is_atom(F) andalso is_list(A), Start,
+                     io_lib:format("Invalid start MFA: ~p", [Start]))
+    end, ChildSpecs),
+    ok.
+
+test_child_specs_restart() ->
+    {ok, {_, ChildSpecs}} = flurm_controller_sup:init([]),
+    ValidRestart = [permanent, transient, temporary],
+    lists:foreach(fun(Spec) ->
+        Restart = maps:get(restart, Spec),
+        ?assert(lists:member(Restart, ValidRestart),
+                io_lib:format("Invalid restart: ~p", [Restart]))
+    end, ChildSpecs),
+    ok.
+
+test_child_specs_shutdown() ->
+    {ok, {_, ChildSpecs}} = flurm_controller_sup:init([]),
+    lists:foreach(fun(Spec) ->
+        Shutdown = maps:get(shutdown, Spec),
+        ValidShutdown = is_integer(Shutdown) andalso Shutdown >= 0
+                        orelse Shutdown =:= brutal_kill
+                        orelse Shutdown =:= infinity,
+        ?assert(ValidShutdown,
+                io_lib:format("Invalid shutdown: ~p", [Shutdown]))
+    end, ChildSpecs),
+    ok.
+
+test_child_specs_type() ->
+    {ok, {_, ChildSpecs}} = flurm_controller_sup:init([]),
+    ValidTypes = [worker, supervisor],
+    lists:foreach(fun(Spec) ->
+        Type = maps:get(type, Spec),
+        ?assert(lists:member(Type, ValidTypes),
+                io_lib:format("Invalid type: ~p", [Type]))
+    end, ChildSpecs),
+    ok.
+
+test_child_specs_modules() ->
+    {ok, {_, ChildSpecs}} = flurm_controller_sup:init([]),
+    lists:foreach(fun(Spec) ->
+        Modules = maps:get(modules, Spec),
+        ValidModules = (Modules =:= dynamic)
+                       orelse (is_list(Modules) andalso
+                               lists:all(fun is_atom/1, Modules)),
+        ?assert(ValidModules,
+                io_lib:format("Invalid modules: ~p", [Modules]))
+    end, ChildSpecs),
+    ok.
+
+%%====================================================================
+%% Validate All Child Specs Helper
+%%====================================================================
+
+validate_child_spec_test_() ->
+    {setup,
+     fun() ->
+         application:set_env(flurm_controller, enable_cluster, false)
+     end,
+     fun(_) ->
+         application:unset_env(flurm_controller, enable_cluster)
+     end,
+     [
+         {"Each child spec passes comprehensive validation",
+          fun test_all_child_specs_valid/0}
+     ]}.
+
+test_all_child_specs_valid() ->
+    {ok, {SupFlags, ChildSpecs}} = flurm_controller_sup:init([]),
+
+    %% Validate SupFlags
+    ?assertMatch(#{strategy := _, intensity := _, period := _}, SupFlags),
+
+    %% Validate each child spec
+    ?assert(is_list(ChildSpecs)),
+    ?assert(length(ChildSpecs) > 0),
+
+    lists:foreach(fun(Spec) ->
+        validate_child_spec(Spec)
+    end, ChildSpecs),
+    ok.
+
+validate_child_spec(#{id := Id, start := {M, F, A}, restart := Restart,
+                      shutdown := Shutdown, type := Type, modules := Modules}) ->
+    %% Validate id
+    ?assert(is_atom(Id) orelse is_binary(Id) orelse is_list(Id)),
+
+    %% Validate MFA
+    ?assert(is_atom(M)),
+    ?assert(is_atom(F)),
+    ?assert(is_list(A)),
+
+    %% Validate restart
+    ?assert(lists:member(Restart, [permanent, transient, temporary])),
+
+    %% Validate shutdown
+    ValidShutdown = (is_integer(Shutdown) andalso Shutdown >= 0)
+                    orelse Shutdown =:= brutal_kill
+                    orelse Shutdown =:= infinity,
+    ?assert(ValidShutdown),
+
+    %% Validate type
+    ?assert(lists:member(Type, [worker, supervisor])),
+
+    %% Validate modules
+    ValidModules = (Modules =:= dynamic)
+                   orelse (is_list(Modules) andalso lists:all(fun is_atom/1, Modules)),
+    ?assert(ValidModules),
+    ok;
+validate_child_spec({Id, {M, F, A}, Restart, Shutdown, Type, Modules}) ->
+    %% Tuple format (legacy)
+    ?assert(is_atom(Id) orelse is_binary(Id) orelse is_list(Id)),
+    ?assert(is_atom(M)),
+    ?assert(is_atom(F)),
+    ?assert(is_list(A)),
+    ?assert(lists:member(Restart, [permanent, transient, temporary])),
+    ValidShutdown = (is_integer(Shutdown) andalso Shutdown >= 0)
+                    orelse Shutdown =:= brutal_kill
+                    orelse Shutdown =:= infinity,
+    ?assert(ValidShutdown),
+    ?assert(lists:member(Type, [worker, supervisor])),
+    ValidModules = (Modules =:= dynamic)
+                   orelse (is_list(Modules) andalso lists:all(fun is_atom/1, Modules)),
+    ?assert(ValidModules),
+    ok.

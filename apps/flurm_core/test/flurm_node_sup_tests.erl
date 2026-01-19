@@ -551,3 +551,184 @@ api_spec_test_() ->
             ?assert(lists:member({count_nodes, 0}, Exports))
         end}
     ].
+
+%%====================================================================
+%% Comprehensive Supervisor Spec Validation Tests
+%%====================================================================
+
+%% These tests thoroughly validate the supervisor init/1 return value
+%% according to OTP supervisor specification requirements.
+
+comprehensive_init_validation_test_() ->
+    [
+        {"init/1 returns valid {ok, {SupFlags, ChildSpecs}} tuple",
+         fun test_init_comprehensive_tuple/0},
+        {"SupFlags contains all required keys",
+         fun test_sup_flags_required_keys/0},
+        {"SupFlags strategy is valid for simple_one_for_one",
+         fun test_sup_flags_valid_strategy/0},
+        {"SupFlags intensity is non-negative",
+         fun test_sup_flags_valid_intensity/0},
+        {"SupFlags period is positive",
+         fun test_sup_flags_valid_period/0},
+        {"Child spec has valid id field",
+         fun test_child_spec_valid_id/0},
+        {"Child spec has valid start MFA",
+         fun test_child_spec_valid_start/0},
+        {"Child spec has valid restart type",
+         fun test_child_spec_valid_restart/0},
+        {"Child spec has valid shutdown value",
+         fun test_child_spec_valid_shutdown/0},
+        {"Child spec has valid type",
+         fun test_child_spec_valid_type/0},
+        {"Child spec has valid modules list",
+         fun test_child_spec_valid_modules/0},
+        {"Complete child spec validation",
+         fun test_complete_child_spec_validation/0}
+    ].
+
+test_init_comprehensive_tuple() ->
+    Result = flurm_node_sup:init([]),
+    ?assertMatch({ok, {_, _}}, Result),
+    {ok, {SupFlags, ChildSpecs}} = Result,
+    ?assert(is_map(SupFlags)),
+    ?assert(is_list(ChildSpecs)),
+    ok.
+
+test_sup_flags_required_keys() ->
+    {ok, {SupFlags, _}} = flurm_node_sup:init([]),
+    ?assert(maps:is_key(strategy, SupFlags)),
+    ?assert(maps:is_key(intensity, SupFlags)),
+    ?assert(maps:is_key(period, SupFlags)),
+    ok.
+
+test_sup_flags_valid_strategy() ->
+    {ok, {SupFlags, _}} = flurm_node_sup:init([]),
+    Strategy = maps:get(strategy, SupFlags),
+    ValidStrategies = [one_for_one, one_for_all, rest_for_one, simple_one_for_one],
+    ?assert(lists:member(Strategy, ValidStrategies),
+            io_lib:format("Invalid strategy: ~p", [Strategy])),
+    ok.
+
+test_sup_flags_valid_intensity() ->
+    {ok, {SupFlags, _}} = flurm_node_sup:init([]),
+    Intensity = maps:get(intensity, SupFlags),
+    ?assert(is_integer(Intensity)),
+    ?assert(Intensity >= 0, "Intensity must be non-negative"),
+    ok.
+
+test_sup_flags_valid_period() ->
+    {ok, {SupFlags, _}} = flurm_node_sup:init([]),
+    Period = maps:get(period, SupFlags),
+    ?assert(is_integer(Period)),
+    ?assert(Period > 0, "Period must be positive"),
+    ok.
+
+test_child_spec_valid_id() ->
+    {ok, {_, [ChildSpec]}} = flurm_node_sup:init([]),
+    Id = maps:get(id, ChildSpec),
+    ?assert(is_atom(Id) orelse is_binary(Id) orelse is_list(Id),
+            io_lib:format("Invalid id type: ~p", [Id])),
+    ok.
+
+test_child_spec_valid_start() ->
+    {ok, {_, [ChildSpec]}} = flurm_node_sup:init([]),
+    Start = maps:get(start, ChildSpec),
+    ?assertMatch({M, F, A} when is_atom(M) andalso is_atom(F) andalso is_list(A), Start,
+                 io_lib:format("Invalid start MFA: ~p", [Start])),
+    ok.
+
+test_child_spec_valid_restart() ->
+    {ok, {_, [ChildSpec]}} = flurm_node_sup:init([]),
+    Restart = maps:get(restart, ChildSpec),
+    ValidRestartTypes = [permanent, transient, temporary],
+    ?assert(lists:member(Restart, ValidRestartTypes),
+            io_lib:format("Invalid restart type: ~p", [Restart])),
+    ok.
+
+test_child_spec_valid_shutdown() ->
+    {ok, {_, [ChildSpec]}} = flurm_node_sup:init([]),
+    Shutdown = maps:get(shutdown, ChildSpec),
+    ValidShutdown = (is_integer(Shutdown) andalso Shutdown >= 0)
+                    orelse Shutdown =:= brutal_kill
+                    orelse Shutdown =:= infinity,
+    ?assert(ValidShutdown,
+            io_lib:format("Invalid shutdown value: ~p", [Shutdown])),
+    ok.
+
+test_child_spec_valid_type() ->
+    {ok, {_, [ChildSpec]}} = flurm_node_sup:init([]),
+    Type = maps:get(type, ChildSpec),
+    ValidTypes = [worker, supervisor],
+    ?assert(lists:member(Type, ValidTypes),
+            io_lib:format("Invalid type: ~p", [Type])),
+    ok.
+
+test_child_spec_valid_modules() ->
+    {ok, {_, [ChildSpec]}} = flurm_node_sup:init([]),
+    Modules = maps:get(modules, ChildSpec),
+    ValidModules = (Modules =:= dynamic)
+                   orelse (is_list(Modules) andalso
+                           lists:all(fun is_atom/1, Modules)),
+    ?assert(ValidModules,
+            io_lib:format("Invalid modules: ~p", [Modules])),
+    ok.
+
+test_complete_child_spec_validation() ->
+    {ok, {SupFlags, ChildSpecs}} = flurm_node_sup:init([]),
+
+    %% Validate SupFlags
+    ?assertMatch(#{strategy := _, intensity := _, period := _}, SupFlags),
+
+    %% Validate child specs
+    ?assert(is_list(ChildSpecs)),
+    %% For simple_one_for_one, there should be exactly one template
+    ?assertEqual(1, length(ChildSpecs)),
+
+    [ChildSpec] = ChildSpecs,
+    validate_node_child_spec(ChildSpec),
+    ok.
+
+validate_node_child_spec(#{id := Id, start := {M, F, A}, restart := Restart,
+                           shutdown := Shutdown, type := Type, modules := Modules}) ->
+    %% Validate id
+    ?assert(is_atom(Id) orelse is_binary(Id) orelse is_list(Id)),
+
+    %% Validate MFA
+    ?assert(is_atom(M)),
+    ?assert(is_atom(F)),
+    ?assert(is_list(A)),
+
+    %% Validate restart
+    ?assert(lists:member(Restart, [permanent, transient, temporary])),
+
+    %% Validate shutdown
+    ValidShutdown = (is_integer(Shutdown) andalso Shutdown >= 0)
+                    orelse Shutdown =:= brutal_kill
+                    orelse Shutdown =:= infinity,
+    ?assert(ValidShutdown),
+
+    %% Validate type
+    ?assert(lists:member(Type, [worker, supervisor])),
+
+    %% Validate modules
+    ValidModules = (Modules =:= dynamic)
+                   orelse (is_list(Modules) andalso lists:all(fun is_atom/1, Modules)),
+    ?assert(ValidModules),
+    ok;
+validate_node_child_spec({Id, {M, F, A}, Restart, Shutdown, Type, Modules}) ->
+    %% Tuple format (legacy)
+    ?assert(is_atom(Id) orelse is_binary(Id) orelse is_list(Id)),
+    ?assert(is_atom(M)),
+    ?assert(is_atom(F)),
+    ?assert(is_list(A)),
+    ?assert(lists:member(Restart, [permanent, transient, temporary])),
+    ValidShutdown = (is_integer(Shutdown) andalso Shutdown >= 0)
+                    orelse Shutdown =:= brutal_kill
+                    orelse Shutdown =:= infinity,
+    ?assert(ValidShutdown),
+    ?assert(lists:member(Type, [worker, supervisor])),
+    ValidModules = (Modules =:= dynamic)
+                   orelse (is_list(Modules) andalso lists:all(fun is_atom/1, Modules)),
+    ?assert(ValidModules),
+    ok.

@@ -33,6 +33,15 @@
     code_change/3
 ]).
 
+%% Test exports - internal helpers for direct callback testing
+-ifdef(TEST).
+-export([
+    partition_name/1,
+    build_partition_info/1,
+    validate_partition_state/1
+]).
+-endif.
+
 %%====================================================================
 %% API
 %%====================================================================

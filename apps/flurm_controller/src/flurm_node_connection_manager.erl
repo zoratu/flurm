@@ -26,6 +26,13 @@
 ]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
+%% Test exports - internal helpers for direct callback testing
+-ifdef(TEST).
+-export([
+    log/3
+]).
+-endif.
+
 -record(state, {
     connections = #{} :: #{binary() => pid()},
     pids_to_nodes = #{} :: #{pid() => binary()}

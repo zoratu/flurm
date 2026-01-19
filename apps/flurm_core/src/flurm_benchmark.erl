@@ -38,6 +38,24 @@
 
 -export_type([benchmark_name/0]).
 
+%% Test exports for internal functions
+-ifdef(TEST).
+-export([
+    safe_min/1,
+    safe_max/1,
+    safe_avg/1,
+    percentile/2,
+    format_bytes/1,
+    format_result/1,
+    format_comparison/3,
+    create_result/6,
+    create_sample_messages/0,
+    encode_simple_message/2,
+    create_dummy_job/0,
+    simulate_scheduler_cycle/0
+]).
+-endif.
+
 %%====================================================================
 %% API
 %%====================================================================

@@ -8,6 +8,17 @@
 
 -export([run/0]).
 
+%% Test exports for internal functions
+%% Note: These functions require external processes (flurm_job_manager,
+%% flurm_node_connection_manager) so they cannot be unit tested in isolation.
+%% They are exported for integration testing purposes.
+-ifdef(TEST).
+-export([
+    run_job_test/0,
+    monitor_job/2
+]).
+-endif.
+
 run() ->
     io:format("~n=== Testing Full Job Lifecycle ===~n"),
 

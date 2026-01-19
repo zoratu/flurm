@@ -680,3 +680,364 @@ job_state_transitions_test_() ->
             ?assertEqual({error, not_found}, Result)
         end}
     ].
+
+%%====================================================================
+%% Additional Edge Case Tests
+%%====================================================================
+
+edge_cases_test_() ->
+    [
+        {"update_job_state_internal for pending state (no timestamps)", fun test_update_job_state_pending/0},
+        {"update_job_state_internal for configuring state", fun test_update_job_state_configuring/0},
+        {"update_job_state_internal for requeued state", fun test_update_job_state_requeued/0},
+        {"apply_job_updates with start_time and end_time", fun test_apply_job_updates_times/0},
+        {"apply_heartbeat with partial data uses defaults", fun test_apply_heartbeat_partial/0},
+        {"apply_heartbeat with empty data preserves values", fun test_apply_heartbeat_empty/0},
+        {"update non-existent node returns error", fun test_update_nonexistent_node/0},
+        {"heartbeat for non-existent node returns error", fun test_heartbeat_nonexistent_node/0},
+        {"update non-existent partition returns error", fun test_update_nonexistent_partition/0},
+        {"update_job for non-existent job returns error", fun test_update_nonexistent_job/0},
+        {"register node replaces existing node", fun test_register_node_replaces/0},
+        {"delete non-existent partition is ok", fun test_delete_nonexistent_partition/0},
+        {"unregister non-existent node is ok", fun test_unregister_nonexistent_node/0},
+        {"last_applied_index is updated on all commands", fun test_last_applied_index_updates/0}
+    ].
+
+test_update_job_state_pending() ->
+    Job = #job{id = 1, state = running, start_time = 12345, end_time = undefined},
+    %% Transitioning to pending should only update state (not a terminal or running state)
+    UpdatedJob = flurm_controller_ra_machine:update_job_state_internal(Job, pending),
+
+    ?assertEqual(pending, UpdatedJob#job.state),
+    %% start_time should be preserved (not touched by generic state update)
+    ?assertEqual(12345, UpdatedJob#job.start_time),
+    ?assertEqual(undefined, UpdatedJob#job.end_time),
+    ok.
+
+test_update_job_state_configuring() ->
+    Job = #job{id = 1, state = pending, start_time = undefined, end_time = undefined},
+    UpdatedJob = flurm_controller_ra_machine:update_job_state_internal(Job, configuring),
+
+    ?assertEqual(configuring, UpdatedJob#job.state),
+    ?assertEqual(undefined, UpdatedJob#job.start_time),
+    ?assertEqual(undefined, UpdatedJob#job.end_time),
+    ok.
+
+test_update_job_state_requeued() ->
+    Job = #job{id = 1, state = running, start_time = 12345, end_time = undefined},
+    %% Requeued is not in the terminal states list, so it uses the catch-all
+    UpdatedJob = flurm_controller_ra_machine:update_job_state_internal(Job, requeued),
+
+    ?assertEqual(requeued, UpdatedJob#job.state),
+    %% Only state should change, not timestamps
+    ?assertEqual(12345, UpdatedJob#job.start_time),
+    ?assertEqual(undefined, UpdatedJob#job.end_time),
+    ok.
+
+test_apply_job_updates_times() ->
+    Job = #job{
+        id = 1,
+        state = pending,
+        start_time = undefined,
+        end_time = undefined
+    },
+    Updates = #{
+        start_time => 1000,
+        end_time => 2000
+    },
+    UpdatedJob = flurm_controller_ra_machine:apply_job_updates(Job, Updates),
+
+    ?assertEqual(1000, UpdatedJob#job.start_time),
+    ?assertEqual(2000, UpdatedJob#job.end_time),
+    ok.
+
+test_apply_heartbeat_partial() ->
+    Node = #node{
+        hostname = <<"test-node">>,
+        load_avg = 1.0,
+        free_memory_mb = 8192,
+        running_jobs = [1],
+        last_heartbeat = 0
+    },
+    %% Only provide load_avg, rest should use defaults
+    HeartbeatData = #{load_avg => 3.0},
+    UpdatedNode = flurm_controller_ra_machine:apply_heartbeat(Node, HeartbeatData),
+
+    ?assertEqual(3.0, UpdatedNode#node.load_avg),
+    %% These should be preserved from original
+    ?assertEqual(8192, UpdatedNode#node.free_memory_mb),
+    ?assertEqual([1], UpdatedNode#node.running_jobs),
+    ?assert(is_integer(UpdatedNode#node.last_heartbeat)),
+    ok.
+
+test_apply_heartbeat_empty() ->
+    Node = #node{
+        hostname = <<"test-node">>,
+        load_avg = 2.0,
+        free_memory_mb = 4096,
+        running_jobs = [1, 2],
+        last_heartbeat = 0
+    },
+    %% Empty heartbeat - all values should be preserved
+    HeartbeatData = #{},
+    UpdatedNode = flurm_controller_ra_machine:apply_heartbeat(Node, HeartbeatData),
+
+    ?assertEqual(2.0, UpdatedNode#node.load_avg),
+    ?assertEqual(4096, UpdatedNode#node.free_memory_mb),
+    ?assertEqual([1, 2], UpdatedNode#node.running_jobs),
+    ?assert(UpdatedNode#node.last_heartbeat > 0),
+    ok.
+
+test_update_nonexistent_node() ->
+    State0 = flurm_controller_ra_machine:init(#{}),
+
+    {_State1, Result} = flurm_controller_ra_machine:apply(
+        #{index => 1},
+        {update_node_state, <<"no-such-node">>, down},
+        State0
+    ),
+
+    ?assertEqual({error, not_found}, Result),
+    ok.
+
+test_heartbeat_nonexistent_node() ->
+    State0 = flurm_controller_ra_machine:init(#{}),
+
+    {_State1, Result} = flurm_controller_ra_machine:apply(
+        #{index => 1},
+        {node_heartbeat, <<"no-such-node">>, #{load_avg => 1.0}},
+        State0
+    ),
+
+    ?assertEqual({error, not_found}, Result),
+    ok.
+
+test_update_nonexistent_partition() ->
+    State0 = flurm_controller_ra_machine:init(#{}),
+
+    {_State1, Result} = flurm_controller_ra_machine:apply(
+        #{index => 1},
+        {update_partition, <<"no-such-partition">>, #{state => down}},
+        State0
+    ),
+
+    ?assertEqual({error, not_found}, Result),
+    ok.
+
+test_update_nonexistent_job() ->
+    State0 = flurm_controller_ra_machine:init(#{}),
+
+    {_State1, Result} = flurm_controller_ra_machine:apply(
+        #{index => 1},
+        {update_job, 9999, #{priority => 100}},
+        State0
+    ),
+
+    ?assertEqual({error, not_found}, Result),
+    ok.
+
+test_register_node_replaces() ->
+    State0 = flurm_controller_ra_machine:init(#{}),
+
+    %% Register a node
+    Node1 = #node{hostname = <<"replace-node">>, cpus = 4, state = idle},
+    {State1, ok} = flurm_controller_ra_machine:apply(
+        #{index => 1},
+        {register_node, Node1},
+        State0
+    ),
+
+    %% Register again with different values - should replace
+    Node2 = #node{hostname = <<"replace-node">>, cpus = 8, state = allocated},
+    {State2, ok} = flurm_controller_ra_machine:apply(
+        #{index => 2},
+        {register_node, Node2},
+        State1
+    ),
+
+    %% Should still have 1 node
+    Overview = flurm_controller_ra_machine:overview(State2),
+    ?assertEqual(1, maps:get(node_count, Overview)),
+    ok.
+
+test_delete_nonexistent_partition() ->
+    State0 = flurm_controller_ra_machine:init(#{}),
+
+    %% Deleting a non-existent partition should still succeed (idempotent)
+    {_State1, Result} = flurm_controller_ra_machine:apply(
+        #{index => 1},
+        {delete_partition, <<"no-such-partition">>},
+        State0
+    ),
+
+    ?assertEqual(ok, Result),
+    ok.
+
+test_unregister_nonexistent_node() ->
+    State0 = flurm_controller_ra_machine:init(#{}),
+
+    %% Unregistering a non-existent node should still succeed (idempotent)
+    {_State1, Result} = flurm_controller_ra_machine:apply(
+        #{index => 1},
+        {unregister_node, <<"no-such-node">>},
+        State0
+    ),
+
+    ?assertEqual(ok, Result),
+    ok.
+
+test_last_applied_index_updates() ->
+    State0 = flurm_controller_ra_machine:init(#{}),
+
+    Overview0 = flurm_controller_ra_machine:overview(State0),
+    ?assertEqual(0, maps:get(last_applied_index, Overview0)),
+
+    %% Submit job at index 5
+    {State1, _} = flurm_controller_ra_machine:apply(
+        #{index => 5},
+        {submit_job, #{}},
+        State0
+    ),
+    Overview1 = flurm_controller_ra_machine:overview(State1),
+    ?assertEqual(5, maps:get(last_applied_index, Overview1)),
+
+    %% Unknown command at index 10 should also update
+    {State2, _} = flurm_controller_ra_machine:apply(
+        #{index => 10},
+        {some_unknown_cmd, arg},
+        State1
+    ),
+    Overview2 = flurm_controller_ra_machine:overview(State2),
+    ?assertEqual(10, maps:get(last_applied_index, Overview2)),
+
+    %% Error case at index 15 (cancel non-existent job)
+    {State3, _} = flurm_controller_ra_machine:apply(
+        #{index => 15},
+        {cancel_job, 9999},
+        State2
+    ),
+    Overview3 = flurm_controller_ra_machine:overview(State3),
+    ?assertEqual(15, maps:get(last_applied_index, Overview3)),
+    ok.
+
+%%====================================================================
+%% Sequence and Integration Tests
+%%====================================================================
+
+sequence_test_() ->
+    [
+        {"full job lifecycle", fun test_full_job_lifecycle/0},
+        {"multiple jobs with different states", fun test_multiple_jobs_states/0},
+        {"complex partition operations", fun test_complex_partition_ops/0}
+    ].
+
+test_full_job_lifecycle() ->
+    State0 = flurm_controller_ra_machine:init(#{}),
+
+    %% 1. Register a node
+    Node = #node{hostname = <<"worker-1">>, cpus = 8, memory_mb = 16384, state = idle},
+    {State1, ok} = flurm_controller_ra_machine:apply(
+        #{index => 1},
+        {register_node, Node},
+        State0
+    ),
+
+    %% 2. Submit a job
+    JobSpec = #{
+        name => <<"lifecycle-job">>,
+        user => <<"testuser">>,
+        partition => <<"default">>,
+        num_nodes => 1,
+        num_cpus => 4
+    },
+    {State2, {ok, JobId}} = flurm_controller_ra_machine:apply(
+        #{index => 2},
+        {submit_job, JobSpec},
+        State1
+    ),
+    ?assertEqual(1, JobId),
+
+    %% 3. Transition to running with allocated nodes
+    {State3, ok} = flurm_controller_ra_machine:apply(
+        #{index => 3},
+        {update_job, JobId, #{allocated_nodes => [<<"worker-1">>]}},
+        State2
+    ),
+
+    {State4, ok} = flurm_controller_ra_machine:apply(
+        #{index => 4},
+        {update_job_state, JobId, running},
+        State3
+    ),
+
+    %% 4. Complete the job with exit code
+    {State5, ok} = flurm_controller_ra_machine:apply(
+        #{index => 5},
+        {update_job, JobId, #{exit_code => 0}},
+        State4
+    ),
+
+    {_State6, ok} = flurm_controller_ra_machine:apply(
+        #{index => 6},
+        {update_job_state, JobId, completed},
+        State5
+    ),
+
+    ok.
+
+test_multiple_jobs_states() ->
+    State0 = flurm_controller_ra_machine:init(#{}),
+
+    %% Submit 3 jobs
+    {State1, {ok, 1}} = flurm_controller_ra_machine:apply(
+        #{index => 1}, {submit_job, #{name => <<"job1">>}}, State0),
+    {State2, {ok, 2}} = flurm_controller_ra_machine:apply(
+        #{index => 2}, {submit_job, #{name => <<"job2">>}}, State1),
+    {State3, {ok, 3}} = flurm_controller_ra_machine:apply(
+        #{index => 3}, {submit_job, #{name => <<"job3">>}}, State2),
+
+    %% Put them in different states
+    {State4, ok} = flurm_controller_ra_machine:apply(
+        #{index => 4}, {update_job_state, 1, running}, State3),
+    {State5, ok} = flurm_controller_ra_machine:apply(
+        #{index => 5}, {update_job_state, 2, completed}, State4),
+    {State6, ok} = flurm_controller_ra_machine:apply(
+        #{index => 6}, {cancel_job, 3}, State5),
+
+    Overview = flurm_controller_ra_machine:overview(State6),
+    ?assertEqual(3, maps:get(job_count, Overview)),
+    ?assertEqual(4, maps:get(next_job_id, Overview)),
+    ok.
+
+test_complex_partition_ops() ->
+    State0 = flurm_controller_ra_machine:init(#{}),
+
+    %% Create multiple partitions
+    P1 = #partition{name = <<"batch">>, state = up, nodes = [], priority = 1},
+    P2 = #partition{name = <<"gpu">>, state = up, nodes = [], priority = 10},
+    P3 = #partition{name = <<"debug">>, state = up, nodes = [], priority = 5},
+
+    {State1, ok} = flurm_controller_ra_machine:apply(
+        #{index => 1}, {create_partition, P1}, State0),
+    {State2, ok} = flurm_controller_ra_machine:apply(
+        #{index => 2}, {create_partition, P2}, State1),
+    {State3, ok} = flurm_controller_ra_machine:apply(
+        #{index => 3}, {create_partition, P3}, State2),
+
+    Overview1 = flurm_controller_ra_machine:overview(State3),
+    ?assertEqual(3, maps:get(partition_count, Overview1)),
+
+    %% Update one partition
+    {State4, ok} = flurm_controller_ra_machine:apply(
+        #{index => 4},
+        {update_partition, <<"gpu">>, #{nodes => [<<"gpu-001">>, <<"gpu-002">>]}},
+        State3
+    ),
+
+    %% Delete one partition
+    {State5, ok} = flurm_controller_ra_machine:apply(
+        #{index => 5}, {delete_partition, <<"debug">>}, State4),
+
+    Overview2 = flurm_controller_ra_machine:overview(State5),
+    ?assertEqual(2, maps:get(partition_count, Overview2)),
+    ok.
