@@ -1000,8 +1000,21 @@ api_integration_test_() ->
          Pid
      end,
      fun(Pid) ->
-         %% Stop the gen_server
-         gen_server:stop(Pid),
+         %% Stop the gen_server with proper monitor/wait pattern
+         case is_process_alive(Pid) of
+             true ->
+                 Ref = monitor(process, Pid),
+                 unlink(Pid),
+                 catch gen_server:stop(Pid, shutdown, 5000),
+                 receive
+                     {'DOWN', Ref, process, Pid, _} -> ok
+                 after 5000 ->
+                     demonitor(Ref, [flush]),
+                     catch exit(Pid, kill)
+                 end;
+             false ->
+                 ok
+         end,
          cleanup()
      end,
      fun(_Pid) ->

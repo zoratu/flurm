@@ -36,6 +36,7 @@ scheduler_cover_test_() ->
 
 setup() ->
     application:ensure_all_started(sasl),
+    application:ensure_all_started(lager),
     %% Start required dependencies
     {ok, JobRegistryPid} = flurm_job_registry:start_link(),
     {ok, JobSupPid} = flurm_job_sup:start_link(),
@@ -60,10 +61,23 @@ cleanup(Pids) ->
     %% Stop all jobs and nodes first
     [catch flurm_job_sup:stop_job(P) || P <- flurm_job_sup:which_jobs()],
     [catch flurm_node_sup:stop_node(P) || P <- flurm_node_sup:which_nodes()],
-    %% Unlink and stop all processes
+    %% Stop processes with proper waiting using monitor/receive pattern
+    %% This prevents "already_started" errors in subsequent tests
     maps:foreach(fun(_Key, Pid) ->
-        catch unlink(Pid),
-        catch gen_server:stop(Pid, shutdown, 5000)
+        case is_process_alive(Pid) of
+            true ->
+                Ref = monitor(process, Pid),
+                unlink(Pid),
+                catch gen_server:stop(Pid, shutdown, 5000),
+                receive
+                    {'DOWN', Ref, process, Pid, _} -> ok
+                after 5000 ->
+                    demonitor(Ref, [flush]),
+                    catch exit(Pid, kill)
+                end;
+            false ->
+                ok
+        end
     end, Pids),
     ok.
 

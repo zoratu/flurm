@@ -136,7 +136,20 @@ per_test_setup() ->
     Pid.
 
 per_test_cleanup(Pid) ->
-    catch gen_server:stop(Pid),
+    case is_process_alive(Pid) of
+        true ->
+            Ref = monitor(process, Pid),
+            unlink(Pid),
+            catch gen_server:stop(Pid, shutdown, 5000),
+            receive
+                {'DOWN', Ref, process, Pid, _} -> ok
+            after 5000 ->
+                demonitor(Ref, [flush]),
+                catch exit(Pid, kill)
+            end;
+        false ->
+            ok
+    end,
     ok.
 
 %%%===================================================================

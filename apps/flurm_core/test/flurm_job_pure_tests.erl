@@ -249,7 +249,20 @@ terminate_returns_ok_test() ->
         Result = flurm_job:terminate(normal, pending, Data),
         ?assertEqual(ok, Result)
     after
-        gen_server:stop(Pid)
+        case is_process_alive(Pid) of
+            true ->
+                Ref = monitor(process, Pid),
+                unlink(Pid),
+                catch gen_server:stop(Pid, shutdown, 5000),
+                receive
+                    {'DOWN', Ref, process, Pid, _} -> ok
+                after 5000 ->
+                    demonitor(Ref, [flush]),
+                    catch exit(Pid, kill)
+                end;
+            false ->
+                ok
+        end
     end.
 
 terminate_with_shutdown_reason_test() ->
@@ -259,7 +272,20 @@ terminate_with_shutdown_reason_test() ->
         Result = flurm_job:terminate(shutdown, running, Data),
         ?assertEqual(ok, Result)
     after
-        gen_server:stop(Pid)
+        case is_process_alive(Pid) of
+            true ->
+                Ref = monitor(process, Pid),
+                unlink(Pid),
+                catch gen_server:stop(Pid, shutdown, 5000),
+                receive
+                    {'DOWN', Ref, process, Pid, _} -> ok
+                after 5000 ->
+                    demonitor(Ref, [flush]),
+                    catch exit(Pid, kill)
+                end;
+            false ->
+                ok
+        end
     end.
 
 terminate_with_error_reason_test() ->
@@ -269,7 +295,20 @@ terminate_with_error_reason_test() ->
         Result = flurm_job:terminate({error, some_reason}, configuring, Data),
         ?assertEqual(ok, Result)
     after
-        gen_server:stop(Pid)
+        case is_process_alive(Pid) of
+            true ->
+                Ref = monitor(process, Pid),
+                unlink(Pid),
+                catch gen_server:stop(Pid, shutdown, 5000),
+                receive
+                    {'DOWN', Ref, process, Pid, _} -> ok
+                after 5000 ->
+                    demonitor(Ref, [flush]),
+                    catch exit(Pid, kill)
+                end;
+            false ->
+                ok
+        end
     end.
 
 %%====================================================================

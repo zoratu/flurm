@@ -26,12 +26,25 @@ setup() ->
             {existing, Pid}
     end.
 
-cleanup({started, _Pid}) ->
+cleanup({started, Pid}) ->
     catch ets:delete(flurm_user_limits),
     catch ets:delete(flurm_account_limits),
     catch ets:delete(flurm_partition_limits),
     catch ets:delete(flurm_usage),
-    gen_server:stop(flurm_limits);
+    %% Use monitor/wait pattern to ensure process terminates before next test
+    case is_process_alive(Pid) of
+        true ->
+            Ref = monitor(process, Pid),
+            catch gen_server:stop(flurm_limits, shutdown, 5000),
+            receive
+                {'DOWN', Ref, process, Pid, _} -> ok
+            after 5000 ->
+                demonitor(Ref, [flush]),
+                catch exit(Pid, kill)
+            end;
+        false ->
+            ok
+    end;
 cleanup({existing, _Pid}) ->
     ok.
 

@@ -22,6 +22,7 @@
 setup() ->
     %% Start required applications
     application:ensure_all_started(sasl),
+    application:ensure_all_started(lager),
 
     %% Start registries and supervisors
     {ok, JobRegistryPid} = flurm_job_registry:start_link(),
@@ -44,16 +45,23 @@ cleanup(#{job_registry := JobRegistryPid,
     [flurm_job_sup:stop_job(Pid) || Pid <- flurm_job_sup:which_jobs()],
     %% Stop all nodes
     [flurm_node_sup:stop_node(Pid) || Pid <- flurm_node_sup:which_nodes()],
-    %% Unlink before stopping to prevent shutdown propagation
-    catch unlink(NodeSupPid),
-    catch unlink(NodeRegistryPid),
-    catch unlink(JobSupPid),
-    catch unlink(JobRegistryPid),
-    %% Stop processes
-    catch gen_server:stop(NodeSupPid, shutdown, 5000),
-    catch gen_server:stop(NodeRegistryPid, shutdown, 5000),
-    catch gen_server:stop(JobSupPid, shutdown, 5000),
-    catch gen_server:stop(JobRegistryPid, shutdown, 5000),
+    %% Stop processes with proper monitor/wait pattern
+    lists:foreach(fun(Pid) ->
+        case is_process_alive(Pid) of
+            true ->
+                Ref = monitor(process, Pid),
+                unlink(Pid),
+                catch gen_server:stop(Pid, shutdown, 5000),
+                receive
+                    {'DOWN', Ref, process, Pid, _} -> ok
+                after 5000 ->
+                    demonitor(Ref, [flush]),
+                    catch exit(Pid, kill)
+                end;
+            false ->
+                ok
+        end
+    end, [NodeSupPid, NodeRegistryPid, JobSupPid, JobRegistryPid]),
     ok.
 
 %%====================================================================

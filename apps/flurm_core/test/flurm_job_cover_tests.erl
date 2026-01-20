@@ -51,10 +51,22 @@ setup() ->
 
 cleanup(#{registry := RegistryPid, supervisor := SupPid}) ->
     [catch flurm_job_sup:stop_job(P) || P <- flurm_job_sup:which_jobs()],
-    catch unlink(SupPid),
-    catch unlink(RegistryPid),
-    catch gen_server:stop(SupPid, shutdown, 5000),
-    catch gen_server:stop(RegistryPid, shutdown, 5000),
+    lists:foreach(fun(Pid) ->
+        case is_process_alive(Pid) of
+            true ->
+                Ref = monitor(process, Pid),
+                unlink(Pid),
+                catch gen_server:stop(Pid, shutdown, 5000),
+                receive
+                    {'DOWN', Ref, process, Pid, _} -> ok
+                after 5000 ->
+                    demonitor(Ref, [flush]),
+                    catch exit(Pid, kill)
+                end;
+            false ->
+                ok
+        end
+    end, [SupPid, RegistryPid]),
     ok.
 
 %%====================================================================

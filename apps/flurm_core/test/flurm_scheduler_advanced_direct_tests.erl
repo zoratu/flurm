@@ -30,6 +30,7 @@
 
 setup() ->
     application:ensure_all_started(sasl),
+    application:ensure_all_started(lager),
     %% Start meck for external dependencies only - NOT flurm_scheduler_advanced
     meck:new(flurm_job_registry, [non_strict, no_link]),
     meck:new(flurm_node_registry, [non_strict, no_link]),

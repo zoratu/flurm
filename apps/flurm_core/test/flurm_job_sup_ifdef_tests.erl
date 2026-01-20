@@ -107,12 +107,19 @@ cleanup_mocked_supervisor(Pid) ->
             lists:foreach(fun(ChildPid) ->
                 catch flurm_job_sup:stop_job(ChildPid)
             end, catch flurm_job_sup:which_jobs()),
-            %% Stop the supervisor gracefully
-            catch gen_server:stop(Pid, shutdown, 1000);
+            %% Stop the supervisor with proper monitor/wait pattern
+            Ref = monitor(process, Pid),
+            unlink(Pid),
+            catch gen_server:stop(Pid, shutdown, 5000),
+            receive
+                {'DOWN', Ref, process, Pid, _} -> ok
+            after 5000 ->
+                demonitor(Ref, [flush]),
+                catch exit(Pid, kill)
+            end;
         false ->
             ok
     end,
-    timer:sleep(50),
     ok.
 
 mock_job_loop() ->

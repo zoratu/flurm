@@ -18,6 +18,7 @@
 
 setup() ->
     application:ensure_all_started(sasl),
+    application:ensure_all_started(lager),
     %% Start meck for mocking external dependencies
     meck:new(flurm_job_manager, [passthrough, no_link]),
     meck:new(flurm_node_manager, [non_strict, no_link]),
@@ -67,12 +68,24 @@ setup() ->
     ok.
 
 cleanup(_) ->
-    %% Stop scheduler if running
+    %% Stop scheduler if running with proper monitor/wait pattern
     case whereis(flurm_scheduler) of
         undefined -> ok;
         Pid ->
-            catch unlink(Pid),
-            catch gen_server:stop(Pid, shutdown, 5000)
+            case is_process_alive(Pid) of
+                true ->
+                    Ref = monitor(process, Pid),
+                    catch unlink(Pid),
+                    catch gen_server:stop(Pid, shutdown, 5000),
+                    receive
+                        {'DOWN', Ref, process, Pid, _} -> ok
+                    after 5000 ->
+                        demonitor(Ref, [flush]),
+                        catch exit(Pid, kill)
+                    end;
+                false ->
+                    ok
+            end
     end,
 
     %% Unload all mocks

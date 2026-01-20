@@ -46,10 +46,23 @@ setup() ->
 cleanup(#{registry := RegistryPid, supervisor := SupPid}) ->
     %% Stop all jobs first
     [flurm_job_sup:stop_job(Pid) || Pid <- flurm_job_sup:which_jobs()],
-    catch unlink(SupPid),
-    catch unlink(RegistryPid),
-    catch gen_server:stop(SupPid, shutdown, 5000),
-    catch gen_server:stop(RegistryPid, shutdown, 5000),
+    %% Stop processes with proper monitor/wait pattern
+    lists:foreach(fun(Pid) ->
+        case is_process_alive(Pid) of
+            true ->
+                Ref = monitor(process, Pid),
+                unlink(Pid),
+                catch gen_server:stop(Pid, shutdown, 5000),
+                receive
+                    {'DOWN', Ref, process, Pid, _} -> ok
+                after 5000 ->
+                    demonitor(Ref, [flush]),
+                    catch exit(Pid, kill)
+                end;
+            false ->
+                ok
+        end
+    end, [SupPid, RegistryPid]),
     ok.
 
 %%====================================================================
@@ -345,10 +358,22 @@ state_transitions_test_() ->
          #{registry => RegistryPid, supervisor => SupPid}
      end,
      fun(#{registry := RegistryPid, supervisor := SupPid}) ->
-         catch unlink(SupPid),
-         catch unlink(RegistryPid),
-         catch gen_server:stop(SupPid, shutdown, 5000),
-         catch gen_server:stop(RegistryPid, shutdown, 5000)
+         lists:foreach(fun(Pid) ->
+             case is_process_alive(Pid) of
+                 true ->
+                     Ref = monitor(process, Pid),
+                     unlink(Pid),
+                     catch gen_server:stop(Pid, shutdown, 5000),
+                     receive
+                         {'DOWN', Ref, process, Pid, _} -> ok
+                     after 5000 ->
+                         demonitor(Ref, [flush]),
+                         catch exit(Pid, kill)
+                     end;
+                 false ->
+                     ok
+             end
+         end, [SupPid, RegistryPid])
      end,
      fun(_) ->
          [
@@ -381,10 +406,22 @@ concurrent_operations_test_() ->
          #{registry => RegistryPid, supervisor => SupPid}
      end,
      fun(#{registry := RegistryPid, supervisor := SupPid}) ->
-         catch unlink(SupPid),
-         catch unlink(RegistryPid),
-         catch gen_server:stop(SupPid, shutdown, 5000),
-         catch gen_server:stop(RegistryPid, shutdown, 5000)
+         lists:foreach(fun(Pid) ->
+             case is_process_alive(Pid) of
+                 true ->
+                     Ref = monitor(process, Pid),
+                     unlink(Pid),
+                     catch gen_server:stop(Pid, shutdown, 5000),
+                     receive
+                         {'DOWN', Ref, process, Pid, _} -> ok
+                     after 5000 ->
+                         demonitor(Ref, [flush]),
+                         catch exit(Pid, kill)
+                     end;
+                 false ->
+                     ok
+             end
+         end, [SupPid, RegistryPid])
      end,
      fun(_) ->
          {"Multiple job submissions", fun() ->
@@ -410,10 +447,22 @@ edge_cases_test_() ->
          #{registry => RegistryPid, supervisor => SupPid}
      end,
      fun(#{registry := RegistryPid, supervisor := SupPid}) ->
-         catch unlink(SupPid),
-         catch unlink(RegistryPid),
-         catch gen_server:stop(SupPid, shutdown, 5000),
-         catch gen_server:stop(RegistryPid, shutdown, 5000)
+         lists:foreach(fun(Pid) ->
+             case is_process_alive(Pid) of
+                 true ->
+                     Ref = monitor(process, Pid),
+                     unlink(Pid),
+                     catch gen_server:stop(Pid, shutdown, 5000),
+                     receive
+                         {'DOWN', Ref, process, Pid, _} -> ok
+                     after 5000 ->
+                         demonitor(Ref, [flush]),
+                         catch exit(Pid, kill)
+                     end;
+                 false ->
+                     ok
+             end
+         end, [SupPid, RegistryPid])
      end,
      fun(_) ->
          [

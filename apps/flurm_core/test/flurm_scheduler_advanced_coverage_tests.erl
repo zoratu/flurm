@@ -18,6 +18,7 @@
 
 setup() ->
     application:ensure_all_started(sasl),
+    application:ensure_all_started(lager),
     %% Start meck for mocking external dependencies
     meck:new(flurm_job_registry, [passthrough, no_link]),
     meck:new(flurm_node_registry, [passthrough, no_link]),

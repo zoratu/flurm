@@ -112,7 +112,20 @@ cleanup_single_node(SetupResult) ->
     case whereis(flurm_controller_cluster) of
         undefined -> ok;
         Pid ->
-            catch gen_server:stop(Pid, normal, 5000)
+            case is_process_alive(Pid) of
+                true ->
+                    Ref = monitor(process, Pid),
+                    unlink(Pid),
+                    catch gen_server:stop(Pid, shutdown, 5000),
+                    receive
+                        {'DOWN', Ref, process, Pid, _} -> ok
+                    after 5000 ->
+                        demonitor(Ref, [flush]),
+                        catch exit(Pid, kill)
+                    end;
+                false ->
+                    ok
+            end
     end,
 
     %% Give Ra time to clean up
@@ -157,7 +170,21 @@ cleanup_cluster_simulation(TestDataDir) ->
     %% Stop any running cluster module
     case whereis(flurm_controller_cluster) of
         undefined -> ok;
-        Pid -> catch gen_server:stop(Pid, normal, 5000)
+        Pid ->
+            case is_process_alive(Pid) of
+                true ->
+                    Ref = monitor(process, Pid),
+                    unlink(Pid),
+                    catch gen_server:stop(Pid, shutdown, 5000),
+                    receive
+                        {'DOWN', Ref, process, Pid, _} -> ok
+                    after 5000 ->
+                        demonitor(Ref, [flush]),
+                        catch exit(Pid, kill)
+                    end;
+                false ->
+                    ok
+            end
     end,
 
     cleanup_ra_state(),

@@ -53,12 +53,24 @@ setup() ->
     ok.
 
 cleanup(_) ->
-    %% Stop the supervisor if running
+    %% Stop the supervisor if running with proper monitor/wait pattern
     case whereis(flurm_job_sup) of
         undefined -> ok;
         Pid ->
-            unlink(Pid),
-            catch gen_server:stop(Pid, shutdown, 5000)
+            case is_process_alive(Pid) of
+                true ->
+                    Ref = monitor(process, Pid),
+                    unlink(Pid),
+                    catch gen_server:stop(Pid, shutdown, 5000),
+                    receive
+                        {'DOWN', Ref, process, Pid, _} -> ok
+                    after 5000 ->
+                        demonitor(Ref, [flush]),
+                        catch exit(Pid, kill)
+                    end;
+                false ->
+                    ok
+            end
     end,
 
     catch meck:unload(flurm_job),
@@ -315,19 +327,23 @@ integration_cleanup(#{registry := RegistryPid, supervisor := SupPid}) ->
     %% Stop all jobs
     [flurm_job_sup:stop_job(Pid) || Pid <- flurm_job_sup:which_jobs()],
 
-    case is_process_alive(SupPid) of
-        true ->
-            unlink(SupPid),
-            catch gen_server:stop(SupPid, shutdown, 5000);
-        false -> ok
-    end,
-
-    case is_process_alive(RegistryPid) of
-        true ->
-            unlink(RegistryPid),
-            catch gen_server:stop(RegistryPid, shutdown, 5000);
-        false -> ok
-    end,
+    %% Stop processes with proper monitor/wait pattern
+    lists:foreach(fun(Pid) ->
+        case is_process_alive(Pid) of
+            true ->
+                Ref = monitor(process, Pid),
+                unlink(Pid),
+                catch gen_server:stop(Pid, shutdown, 5000),
+                receive
+                    {'DOWN', Ref, process, Pid, _} -> ok
+                after 5000 ->
+                    demonitor(Ref, [flush]),
+                    catch exit(Pid, kill)
+                end;
+            false ->
+                ok
+        end
+    end, [SupPid, RegistryPid]),
     ok.
 
 test_full_job_lifecycle() ->

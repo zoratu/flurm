@@ -44,6 +44,7 @@ scheduler_test_() ->
 setup() ->
     %% Start required applications
     application:ensure_all_started(sasl),
+    application:ensure_all_started(lager),
 
     %% Start registries and supervisors
     {ok, JobRegistryPid} = flurm_job_registry:start_link(),
@@ -80,25 +81,26 @@ cleanup(#{job_registry := JobRegistryPid,
     [flurm_job_sup:stop_job(Pid) || Pid <- flurm_job_sup:which_jobs()],
     %% Stop all nodes
     [flurm_node_sup:stop_node(Pid) || Pid <- flurm_node_sup:which_nodes()],
-    %% Unlink before stopping to prevent shutdown propagation to test process
-    catch unlink(SchedulerPid),
-    catch unlink(JobManagerPid),
-    catch unlink(LimitsPid),
-    catch unlink(LicensePid),
-    catch unlink(NodeSupPid),
-    catch unlink(NodeRegistryPid),
-    catch unlink(JobSupPid),
-    catch unlink(JobRegistryPid),
-    %% Stop processes properly using gen_server:stop
-    %% Stop scheduler first (depends on job_manager)
-    catch gen_server:stop(SchedulerPid, shutdown, 5000),
-    catch gen_server:stop(JobManagerPid, shutdown, 5000),
-    catch gen_server:stop(LimitsPid, shutdown, 5000),
-    catch gen_server:stop(LicensePid, shutdown, 5000),
-    catch gen_server:stop(NodeSupPid, shutdown, 5000),
-    catch gen_server:stop(NodeRegistryPid, shutdown, 5000),
-    catch gen_server:stop(JobSupPid, shutdown, 5000),
-    catch gen_server:stop(JobRegistryPid, shutdown, 5000),
+    %% Stop processes with proper waiting using monitor/receive pattern
+    %% This prevents "already_started" errors in subsequent tests
+    Pids = [SchedulerPid, JobManagerPid, LimitsPid, LicensePid,
+            NodeSupPid, NodeRegistryPid, JobSupPid, JobRegistryPid],
+    lists:foreach(fun(Pid) ->
+        case is_process_alive(Pid) of
+            true ->
+                Ref = monitor(process, Pid),
+                unlink(Pid),
+                catch gen_server:stop(Pid, shutdown, 5000),
+                receive
+                    {'DOWN', Ref, process, Pid, _} -> ok
+                after 5000 ->
+                    demonitor(Ref, [flush]),
+                    catch exit(Pid, kill)
+                end;
+            false ->
+                ok
+        end
+    end, Pids),
     ok.
 
 %%====================================================================
