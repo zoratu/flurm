@@ -17,16 +17,31 @@
 %%====================================================================
 
 setup() ->
-    %% Start the limits server
-    case whereis(flurm_limits) of
-        undefined ->
-            {ok, Pid} = flurm_limits:start_link(),
-            {started, Pid};
-        Pid ->
-            {existing, Pid}
-    end.
+    %% Ensure required applications
+    application:ensure_all_started(sasl),
+    application:ensure_all_started(lager),
 
-cleanup({started, Pid}) ->
+    %% Stop any existing flurm_limits to ensure clean state for each test
+    case whereis(flurm_limits) of
+        undefined -> ok;
+        ExistingPid ->
+            Ref = monitor(process, ExistingPid),
+            catch gen_server:stop(flurm_limits, shutdown, 5000),
+            receive
+                {'DOWN', Ref, process, ExistingPid, _} -> ok
+            after 5000 ->
+                demonitor(Ref, [flush]),
+                catch exit(ExistingPid, kill),
+                timer:sleep(50)
+            end
+    end,
+
+    %% Start fresh limits server
+    {ok, Pid} = flurm_limits:start_link(),
+    unlink(Pid),  %% Unlink immediately to prevent EXIT propagation
+    Pid.
+
+cleanup(Pid) ->
     catch ets:delete(flurm_user_limits),
     catch ets:delete(flurm_account_limits),
     catch ets:delete(flurm_partition_limits),
@@ -44,9 +59,7 @@ cleanup({started, Pid}) ->
             end;
         false ->
             ok
-    end;
-cleanup({existing, _Pid}) ->
-    ok.
+    end.
 
 %%====================================================================
 %% Test Fixtures
