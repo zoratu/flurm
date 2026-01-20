@@ -60,14 +60,23 @@ setup() ->
         }}
     end),
     {ok, Pid} = flurm_job_registry:start_link(),
+    %% Unlink immediately to prevent EUnit process from receiving EXIT signals
+    unlink(Pid),
     #{registry_pid => Pid}.
 
 cleanup(#{registry_pid := Pid}) ->
     catch meck:unload(flurm_job),
     case is_process_alive(Pid) of
         true ->
+            Ref = monitor(process, Pid),
             unlink(Pid),
-            gen_server:stop(Pid, shutdown, 5000);
+            catch gen_server:stop(Pid, shutdown, 5000),
+            receive
+                {'DOWN', Ref, process, Pid, _} -> ok
+            after 5000 ->
+                demonitor(Ref, [flush]),
+                catch exit(Pid, kill)
+            end;
         false ->
             ok
     end,
@@ -472,10 +481,14 @@ test_terminate_handling() ->
     %% Get the pid
     Pid = whereis(flurm_job_registry),
 
-    %% Stop gracefully
-    unlink(Pid),
+    %% Stop gracefully (already unlinked in setup)
+    Ref = monitor(process, Pid),
     gen_server:stop(Pid, shutdown, 5000),
-    timer:sleep(50),
+    receive
+        {'DOWN', Ref, process, Pid, _} -> ok
+    after 5000 ->
+        demonitor(Ref, [flush])
+    end,
 
     %% Verify stopped
     ?assertEqual(undefined, whereis(flurm_job_registry)),

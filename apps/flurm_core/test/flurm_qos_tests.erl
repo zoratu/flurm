@@ -21,18 +21,40 @@
 %%====================================================================
 
 setup() ->
-    %% Start the QOS server
+    %% Clean up any existing state first
+    catch ets:delete(flurm_qos),
     case whereis(flurm_qos) of
         undefined ->
-            {ok, Pid} = flurm_qos:start_link(),
-            {started, Pid};
-        Pid ->
-            {existing, Pid}
-    end.
+            ok;
+        ExistingPid ->
+            Ref = monitor(process, ExistingPid),
+            catch gen_server:stop(ExistingPid, shutdown, 5000),
+            receive {'DOWN', Ref, process, ExistingPid, _} -> ok after 5000 -> ok end
+    end,
+    %% Start the QOS server
+    {ok, Pid} = flurm_qos:start_link(),
+    %% Unlink to prevent EUnit process from receiving EXIT signals
+    unlink(Pid),
+    {started, Pid}.
 
-cleanup({started, _Pid}) ->
+cleanup({started, Pid}) ->
+    %% Stop the server first, wait for it to terminate
+    case is_process_alive(Pid) of
+        true ->
+            Ref = monitor(process, Pid),
+            catch gen_server:stop(Pid, shutdown, 5000),
+            receive
+                {'DOWN', Ref, process, Pid, _} -> ok
+            after 5000 ->
+                demonitor(Ref, [flush]),
+                catch exit(Pid, kill)
+            end;
+        false ->
+            ok
+    end,
+    %% Clean up ETS table
     catch ets:delete(flurm_qos),
-    gen_server:stop(flurm_qos);
+    ok;
 cleanup({existing, _Pid}) ->
     ok.
 

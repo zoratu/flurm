@@ -43,10 +43,18 @@ get_state_file() ->
 -spec save_state(map()) -> ok | {error, term()}.
 save_state(State) ->
     StateFile = get_state_file(),
-    try
-        %% Ensure directory exists
-        ok = filelib:ensure_dir(StateFile),
+    %% Ensure directory exists
+    case filelib:ensure_dir(StateFile) of
+        ok ->
+            save_state_to_file(State, StateFile);
+        {error, Reason} ->
+            lager:error("Failed to create directory for state file: ~p", [Reason]),
+            {error, Reason}
+    end.
 
+%% Internal: save state after directory is ensured
+save_state_to_file(State, StateFile) ->
+    try
         %% Add metadata
         StateWithMeta = State#{
             version => 1,

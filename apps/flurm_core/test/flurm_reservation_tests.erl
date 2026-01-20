@@ -40,8 +40,21 @@ cleanup(#{reservation_pid := Pid}) ->
         Name = element(2, Res),
         catch flurm_reservation:delete(Name)
     end, AllRes),
-    %% Stop the server if we started it
-    catch gen_server:stop(Pid, shutdown, 5000),
+    %% Stop the server if we started it - use proper wait
+    case is_process_alive(Pid) of
+        true ->
+            Ref = monitor(process, Pid),
+            unlink(Pid),
+            catch gen_server:stop(Pid, shutdown, 5000),
+            receive
+                {'DOWN', Ref, process, Pid, _} -> ok
+            after 5000 ->
+                demonitor(Ref, [flush]),
+                catch exit(Pid, kill)
+            end;
+        false ->
+            ok
+    end,
     ok;
 cleanup(_) ->
     ok.

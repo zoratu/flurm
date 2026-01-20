@@ -214,11 +214,6 @@ find_backfill_nodes(NumNodes, NumCpus, MemoryMb, _TimeLimit, Timeline) ->
 
 %% @private
 %% Calculate when blocker job can start
-find_shadow_time([], _NumNodes, _NumCpus, _MemoryMb, Timeline) ->
-    %% No busy nodes, blocker can start now (but might not have resources)
-    Now = maps:get(timestamp, Timeline, erlang:system_time(second)),
-    Now + ?BACKFILL_WINDOW;
-
 find_shadow_time(EndTimes, NumNodes, NumCpus, MemoryMb, Timeline) ->
     Now = maps:get(timestamp, Timeline, erlang:system_time(second)),
     FreeNodes = maps:get(free_nodes, Timeline, []),
@@ -229,8 +224,11 @@ find_shadow_time(EndTimes, NumNodes, NumCpus, MemoryMb, Timeline) ->
 
     case CurrentSuitable >= NumNodes of
         true ->
-            %% Already have enough resources
+            %% Already have enough resources, can start now
             Now;
+        false when EndTimes =:= [] ->
+            %% No busy nodes to wait for, but not enough free nodes
+            Now + ?BACKFILL_WINDOW;
         false ->
             %% Need to wait for more nodes
             Needed = NumNodes - CurrentSuitable,

@@ -25,6 +25,13 @@
 %%====================================================================
 
 setup() ->
+    %% Ensure flurm_qos ETS table exists (required by check_limits)
+    case ets:whereis(flurm_qos) of
+        undefined ->
+            ets:new(flurm_qos, [named_table, set, public, {keypos, 2}]);
+        _ ->
+            ok
+    end,
     %% Start the account manager server
     case whereis(flurm_account_manager) of
         undefined ->
@@ -35,9 +42,21 @@ setup() ->
     end.
 
 cleanup({started, Pid}) ->
-    unlink(Pid),
-    gen_server:stop(Pid, normal, 5000),
-    timer:sleep(50);
+    %% Use monitor to wait for actual termination
+    case is_process_alive(Pid) of
+        true ->
+            Ref = monitor(process, Pid),
+            unlink(Pid),
+            catch gen_server:stop(Pid, normal, 5000),
+            receive
+                {'DOWN', Ref, process, Pid, _} -> ok
+            after 5000 ->
+                demonitor(Ref, [flush]),
+                catch exit(Pid, kill)
+            end;
+        false ->
+            ok
+    end;
 cleanup({existing, _Pid}) ->
     ok.
 

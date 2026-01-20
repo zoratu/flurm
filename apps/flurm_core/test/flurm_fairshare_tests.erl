@@ -29,8 +29,21 @@ setup() ->
     end.
 
 cleanup({started, Pid}) ->
-    %% Stop the server first
-    catch gen_server:stop(Pid, shutdown, 5000),
+    %% Use monitor to wait for actual termination
+    case is_process_alive(Pid) of
+        true ->
+            Ref = monitor(process, Pid),
+            unlink(Pid),
+            catch gen_server:stop(Pid, shutdown, 5000),
+            receive
+                {'DOWN', Ref, process, Pid, _} -> ok
+            after 5000 ->
+                demonitor(Ref, [flush]),
+                catch exit(Pid, kill)
+            end;
+        false ->
+            ok
+    end,
     %% Clean up ETS tables
     catch ets:delete(flurm_fairshare_usage),
     catch ets:delete(flurm_fairshare_shares),
@@ -463,8 +476,32 @@ test_multiple_accounts_same_user() ->
 
 lifecycle_test_() ->
     {setup,
-     fun() -> ok end,
-     fun(_) -> ok end,
+     fun() ->
+         %% Clean up any existing server/tables before lifecycle test
+         catch ets:delete(flurm_fairshare_usage),
+         catch ets:delete(flurm_fairshare_shares),
+         case whereis(flurm_fairshare) of
+             undefined -> ok;
+             ExistingPid ->
+                 Ref = monitor(process, ExistingPid),
+                 catch gen_server:stop(ExistingPid, shutdown, 5000),
+                 receive {'DOWN', Ref, process, ExistingPid, _} -> ok after 5000 -> ok end
+         end,
+         ok
+     end,
+     fun(_) ->
+         %% Cleanup after lifecycle test
+         catch ets:delete(flurm_fairshare_usage),
+         catch ets:delete(flurm_fairshare_shares),
+         case whereis(flurm_fairshare) of
+             undefined -> ok;
+             Pid ->
+                 Ref = monitor(process, Pid),
+                 catch gen_server:stop(Pid, shutdown, 5000),
+                 receive {'DOWN', Ref, process, Pid, _} -> ok after 5000 -> ok end
+         end,
+         ok
+     end,
      fun(_) ->
          [
              {"start and stop cleanly", fun test_lifecycle/0}
@@ -472,20 +509,21 @@ lifecycle_test_() ->
      end}.
 
 test_lifecycle() ->
-    %% Start fresh
-    catch ets:delete(flurm_fairshare_usage),
-    catch ets:delete(flurm_fairshare_shares),
-    catch gen_server:stop(flurm_fairshare, shutdown, 5000),
-    timer:sleep(100),
-
-    %% Start server
+    %% Start server - use unlink to prevent test process link
     {ok, Pid} = flurm_fairshare:start_link(),
+    unlink(Pid),
     ?assert(is_pid(Pid)),
     ?assert(is_process_alive(Pid)),
 
     %% Should be able to use it
     {ok, _} = flurm_fairshare:get_shares(<<"user">>, <<"account">>),
 
-    %% Stop cleanly
+    %% Stop cleanly with monitor
+    Ref = monitor(process, Pid),
     ok = gen_server:stop(Pid, shutdown, 5000),
+    receive
+        {'DOWN', Ref, process, Pid, _} -> ok
+    after 5000 ->
+        demonitor(Ref, [flush])
+    end,
     ?assertNot(is_process_alive(Pid)).

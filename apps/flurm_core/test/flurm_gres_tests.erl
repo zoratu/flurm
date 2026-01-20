@@ -27,13 +27,28 @@ setup() ->
             {existing, Pid}
     end.
 
-cleanup({started, _Pid}) ->
+cleanup({started, Pid}) ->
+    %% Use monitor to wait for actual termination
+    case is_process_alive(Pid) of
+        true ->
+            Ref = monitor(process, Pid),
+            unlink(Pid),
+            catch gen_server:stop(Pid, shutdown, 5000),
+            receive
+                {'DOWN', Ref, process, Pid, _} -> ok
+            after 5000 ->
+                demonitor(Ref, [flush]),
+                catch exit(Pid, kill)
+            end;
+        false ->
+            ok
+    end,
     %% Clean up ETS tables
     catch ets:delete(flurm_gres_types),
     catch ets:delete(flurm_gres_nodes),
     catch ets:delete(flurm_gres_allocations),
     catch ets:delete(flurm_gres_jobs),
-    gen_server:stop(flurm_gres);
+    ok;
 cleanup({existing, _Pid}) ->
     ok.
 

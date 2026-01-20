@@ -597,12 +597,13 @@ simulate_scheduler_cycle_with_jobs(PendingJobs) ->
 
 create_result(Name, TotalTimeUs, Iterations, Latencies, MemBefore, MemAfter) ->
     SortedLatencies = lists:sort(Latencies),
+    OpsPerSecond = safe_div(Iterations, TotalTimeUs / 1000000),
 
     #{
         name => Name,
         duration_ms => TotalTimeUs div 1000,
         iterations => Iterations,
-        ops_per_second => Iterations / (TotalTimeUs / 1000000),
+        ops_per_second => OpsPerSecond,
         min_latency_us => safe_min(Latencies),
         max_latency_us => safe_max(Latencies),
         avg_latency_us => safe_avg(Latencies),
@@ -622,6 +623,10 @@ safe_max(L) -> lists:max(L).
 
 safe_avg([]) -> 0.0;
 safe_avg(L) -> lists:sum(L) / length(L).
+
+safe_div(_, 0) -> 0.0;
+safe_div(_, Denom) when Denom == 0.0 -> 0.0;
+safe_div(Num, Denom) -> Num / Denom.
 
 percentile([], _) -> 0;
 percentile(SortedList, P) ->
