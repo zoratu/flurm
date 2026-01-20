@@ -281,25 +281,19 @@ start_link_test_() ->
              case whereis(flurm_dbd_sup) of
                  undefined -> ok;
                  ExistingPid ->
-                     unlink(ExistingPid),
-                     exit(ExistingPid, shutdown),
-                     timer:sleep(100)
+                     flurm_test_utils:kill_and_wait(ExistingPid)
              end,
 
              %% Also clean up child processes that might be lingering
              case whereis(flurm_dbd_storage) of
                  undefined -> ok;
                  StoragePid ->
-                     unlink(StoragePid),
-                     exit(StoragePid, shutdown),
-                     timer:sleep(50)
+                     flurm_test_utils:kill_and_wait(StoragePid)
              end,
              case whereis(flurm_dbd_server) of
                  undefined -> ok;
                  ServerPid ->
-                     unlink(ServerPid),
-                     exit(ServerPid, shutdown),
-                     timer:sleep(50)
+                     flurm_test_utils:kill_and_wait(ServerPid)
              end,
 
              case flurm_dbd_sup:start_link() of
@@ -308,9 +302,7 @@ start_link_test_() ->
                      ?assert(is_process_alive(Pid)),
                      ?assertEqual(Pid, whereis(flurm_dbd_sup)),
                      %% Stop it
-                     unlink(Pid),
-                     exit(Pid, shutdown),
-                     timer:sleep(100);
+                     flurm_test_utils:kill_and_wait(Pid);
                  {error, {already_started, Pid}} ->
                      ?assert(is_pid(Pid)),
                      ok;

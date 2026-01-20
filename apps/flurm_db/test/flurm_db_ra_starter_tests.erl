@@ -96,8 +96,8 @@ start_link_test_() ->
                      %% after init_cluster message
                      case flurm_db_ra_starter:start_link(Config) of
                          {ok, Pid} ->
-                             %% Give it time to process init_cluster and stop
-                             timer:sleep(100),
+                             %% Wait for process to die (it stops normally after init_cluster)
+                             flurm_test_utils:wait_for_death(Pid),
                              ?assertNot(is_process_alive(Pid));
                          {error, _} ->
                              ok  % Expected if can't start

@@ -41,6 +41,8 @@ make_state_with_partitions(Partitions) ->
 
 setup() ->
     meck:new(lager, [passthrough, no_link, non_strict]),
+    meck:expect(lager, md, fun() -> [] end),
+    meck:expect(lager, md, fun(_) -> ok end),
     meck:expect(lager, info, fun(_Fmt) -> ok end),
     meck:expect(lager, info, fun(_Fmt, _Args) -> ok end),
     meck:new(flurm_core, [passthrough, no_link]),

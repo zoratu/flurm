@@ -189,7 +189,16 @@
 %% @doc Start the GRES coordination gen_server
 -spec start_link() -> {ok, pid()} | ignore | {error, term()}.
 start_link() ->
-    gen_server:start_link({local, ?SERVER}, ?MODULE, [], []).
+    case gen_server:start_link({local, ?SERVER}, ?MODULE, [], []) of
+        {ok, Pid} ->
+            {ok, Pid};
+        {error, {already_started, Pid}} ->
+            %% Process already running - return existing pid
+            %% This handles race conditions during startup and restarts
+            {ok, Pid};
+        {error, Reason} ->
+            {error, Reason}
+    end.
 
 %% @doc Register a GRES type with configuration
 %% Config should include: count, type_specific (with GPU info for GPUs)

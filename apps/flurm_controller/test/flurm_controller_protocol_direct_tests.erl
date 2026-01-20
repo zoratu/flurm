@@ -61,8 +61,8 @@ test_start_link() ->
     {ok, Pid} = flurm_controller_protocol:start_link(test_ref, mock_transport, #{}),
     ?assert(is_pid(Pid)),
 
-    %% Give it time to die naturally
-    timer:sleep(50),
+    %% Wait for it to die naturally
+    flurm_test_utils:wait_for_death(Pid),
     ?assertEqual(false, is_process_alive(Pid)),
 
     meck:unload(mock_transport).

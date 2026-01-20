@@ -51,6 +51,7 @@ setup() ->
     meck:expect(lager, info, fun(_, _) -> ok end),
     meck:expect(lager, warning, fun(_, _) -> ok end),
     meck:expect(lager, error, fun(_, _) -> ok end),
+    meck:expect(lager, md, fun(_) -> ok end),
 
     meck:expect(ranch, handshake, fun(_Ref) -> {ok, fake_socket} end),
 
@@ -83,7 +84,9 @@ test_start_link() ->
     Result = flurm_dbd_acceptor:start_link(test_ref, ranch_tcp, #{}),
 
     ?assertMatch({ok, _Pid}, Result),
-    timer:sleep(20).
+    %% Process should exit immediately after handshake error
+    {ok, Pid} = Result,
+    flurm_test_utils:wait_for_death(Pid).
 
 %%====================================================================
 %% process_buffer Tests

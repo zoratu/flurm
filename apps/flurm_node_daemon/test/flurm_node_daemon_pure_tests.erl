@@ -53,7 +53,7 @@ flurm_node_daemon_test_() ->
 get_job_status_not_found_test() ->
     %% Create a pid that's already dead
     DeadPid = spawn(fun() -> ok end),
-    timer:sleep(10), %% Ensure process is dead
+    flurm_test_utils:wait_for_death(DeadPid),
     %% This should catch the noproc and return {error, not_found}
     Result = flurm_node_daemon:get_job_status(DeadPid),
     ?assertEqual({error, not_found}, Result).
@@ -73,7 +73,7 @@ get_job_status_guard_test() ->
 cancel_job_not_found_test() ->
     %% Create a pid that's already dead
     DeadPid = spawn(fun() -> ok end),
-    timer:sleep(10), %% Ensure process is dead
+    flurm_test_utils:wait_for_death(DeadPid),
     %% Cast-based cancel always returns ok (async fire-and-forget)
     Result = flurm_node_daemon:cancel_job(DeadPid),
     ?assertEqual(ok, Result).

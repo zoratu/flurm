@@ -58,7 +58,15 @@ now_ms_test() ->
     T1 = flurm_job_executor:now_ms(),
     ?assert(is_integer(T1)),
     ?assert(T1 > 0),
-    timer:sleep(10),
+    %% Spawn a process that does some work to ensure time passes
+    Parent = self(),
+    Pid = spawn(fun() ->
+        %% Do some work to consume time
+        _ = lists:seq(1, 10000),
+        Parent ! done
+    end),
+    receive done -> ok end,
+    flurm_test_utils:wait_for_death(Pid),
     T2 = flurm_job_executor:now_ms(),
     ?assert(T2 >= T1).
 

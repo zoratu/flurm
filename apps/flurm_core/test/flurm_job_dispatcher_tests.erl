@@ -226,7 +226,7 @@ dispatcher_with_mock_server_test_() ->
      fun(#{mock_pid := MockPid}) ->
          catch unregister(flurm_job_dispatcher_server),
          exit(MockPid, kill),
-         timer:sleep(50)
+         ok
      end,
      fun(_) ->
          [
@@ -291,7 +291,7 @@ server_running_dead_process_test() ->
     register(flurm_job_dispatcher_server, Pid),
     %% Kill the process
     exit(Pid, kill),
-    timer:sleep(50),
+    flurm_test_utils:wait_for_death(Pid),
     %% Now whereis returns undefined because process is dead
     ?assertEqual(undefined, whereis(flurm_job_dispatcher_server)),
     %% Operations should fall through to stub mode

@@ -284,7 +284,7 @@ job_submission_test_() ->
 test_trigger_schedule() ->
     %% Should not crash
     ok = flurm_scheduler_advanced:trigger_schedule(),
-    timer:sleep(100),
+    _ = sys:get_state(flurm_scheduler_advanced),
 
     %% Should still be able to get stats
     {ok, _Stats} = flurm_scheduler_advanced:get_stats(),
@@ -298,7 +298,7 @@ test_job_completed() ->
     %% Use a job ID that doesn't exist - this should still work
     %% as job_completed just updates internal counters
     ok = flurm_scheduler_advanced:job_completed(99999),
-    timer:sleep(100),
+    _ = sys:get_state(flurm_scheduler_advanced),
 
     %% Completed count should increase
     {ok, NewStats} = flurm_scheduler_advanced:get_stats(),
@@ -313,7 +313,7 @@ test_job_failed() ->
 
     %% Use a job ID that doesn't exist
     ok = flurm_scheduler_advanced:job_failed(99998),
-    timer:sleep(100),
+    _ = sys:get_state(flurm_scheduler_advanced),
 
     %% Failed count should increase
     {ok, NewStats} = flurm_scheduler_advanced:get_stats(),
@@ -351,7 +351,7 @@ test_unknown_call() ->
 test_unknown_cast() ->
     %% Should not crash
     gen_server:cast(flurm_scheduler_advanced, {unknown_message}),
-    timer:sleep(100),
+    _ = sys:get_state(flurm_scheduler_advanced),
 
     %% Should still be able to get stats
     {ok, _Stats} = flurm_scheduler_advanced:get_stats(),
@@ -360,7 +360,7 @@ test_unknown_cast() ->
 test_unknown_info() ->
     %% Send unknown info message directly
     flurm_scheduler_advanced ! unknown_message,
-    timer:sleep(100),
+    _ = sys:get_state(flurm_scheduler_advanced),
 
     %% Should still be able to get stats
     {ok, _Stats} = flurm_scheduler_advanced:get_stats(),
@@ -391,7 +391,7 @@ priority_decay_test_() ->
 test_priority_decay() ->
     %% Send priority_decay message directly
     flurm_scheduler_advanced ! priority_decay,
-    timer:sleep(100),
+    _ = sys:get_state(flurm_scheduler_advanced),
 
     %% Should still be able to get stats
     {ok, _Stats} = flurm_scheduler_advanced:get_stats(),
@@ -425,7 +425,7 @@ test_schedule_cycle_counter() ->
 
     %% Trigger schedule
     ok = flurm_scheduler_advanced:trigger_schedule(),
-    timer:sleep(200),
+    _ = sys:get_state(flurm_scheduler_advanced),
 
     %% Cycle count should increase
     {ok, NewStats} = flurm_scheduler_advanced:get_stats(),
@@ -438,7 +438,7 @@ test_schedule_cycle_periodic() ->
     {ok, InitStats} = flurm_scheduler_advanced:get_stats(),
     InitCycles = maps:get(schedule_cycles, InitStats),
 
-    %% Wait for periodic scheduling (SCHEDULE_INTERVAL is 100ms)
+    %% Wait for periodic scheduling (legitimate wait for 100ms timer-based scheduler interval)
     timer:sleep(500),
 
     %% Cycle count should increase

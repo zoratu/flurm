@@ -13,16 +13,29 @@ setup() ->
     case whereis(flurm_rate_limiter) of
         undefined ->
             {ok, Pid} = flurm_rate_limiter:start_link(),
+            %% Unlink to prevent test process crash on shutdown
+            unlink(Pid),
             {started, Pid};
         Pid ->
             {existing, Pid}
     end.
 
-cleanup({started, _Pid}) ->
+cleanup({started, Pid}) ->
     catch ets:delete(flurm_rate_buckets),
     catch ets:delete(flurm_rate_limits),
     catch ets:delete(flurm_rate_stats),
-    gen_server:stop(flurm_rate_limiter);
+    case is_process_alive(Pid) of
+        true ->
+            Ref = monitor(process, Pid),
+            catch gen_server:stop(flurm_rate_limiter, shutdown, 5000),
+            receive
+                {'DOWN', Ref, process, Pid, _} -> ok
+            after 5000 ->
+                demonitor(Ref, [flush])
+            end;
+        false ->
+            ok
+    end;
 cleanup({existing, _Pid}) ->
     ok.
 

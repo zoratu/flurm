@@ -38,7 +38,7 @@ setup() ->
     %% Clean up any existing ETS tables
     catch ets:delete(flurm_fairshare_usage),
     catch ets:delete(flurm_fairshare_shares),
-    timer:sleep(50),
+    ok,
     ok.
 
 cleanup(_) ->
@@ -51,7 +51,7 @@ cleanup(_) ->
     end,
     catch ets:delete(flurm_fairshare_usage),
     catch ets:delete(flurm_fairshare_shares),
-    timer:sleep(50),
+    ok,
     ok.
 
 %%====================================================================
@@ -299,7 +299,7 @@ test_decay_usage() ->
     ok = flurm_fairshare:decay_usage(),
 
     %% Allow time for async decay
-    timer:sleep(100),
+    _ = sys:get_state(flurm_fairshare),
 
     {ok, UsageAfter} = flurm_fairshare:get_usage(<<"alice">>, <<"engineering">>),
 
@@ -371,7 +371,7 @@ test_unknown_cast() ->
     start_fairshare(),
 
     gen_server:cast(flurm_fairshare, {unknown_message}),
-    timer:sleep(50),
+    ok,
 
     %% Should still be running
     ?assert(is_pid(whereis(flurm_fairshare))),
@@ -381,7 +381,7 @@ test_unknown_info() ->
     start_fairshare(),
 
     flurm_fairshare ! unknown_message,
-    timer:sleep(50),
+    ok,
 
     %% Should still be running
     ?assert(is_pid(whereis(flurm_fairshare))),
@@ -394,7 +394,7 @@ test_terminate() ->
     catch unlink(Pid),
     gen_server:stop(Pid, shutdown, 5000),
 
-    timer:sleep(50),
+    ok,
     ?assertNot(is_process_alive(Pid)),
     ok.
 

@@ -37,6 +37,7 @@ setup() ->
     meck:expect(lager, info, fun(_, _) -> ok end),
     meck:expect(lager, warning, fun(_, _) -> ok end),
     meck:expect(lager, error, fun(_, _) -> ok end),
+    meck:expect(lager, md, fun(_) -> ok end),
 
     %% Mock flurm_config_server
     meck:new(flurm_config_server, [non_strict, no_link]),
@@ -235,7 +236,7 @@ scheduling_tests(_Pid) ->
             %% Trigger scheduling
             ?assertEqual(ok, flurm_scheduler:trigger_schedule()),
             %% Allow time for async processing
-            timer:sleep(100)
+            _ = sys:get_state(flurm_scheduler)
         end}
     ].
 
@@ -247,25 +248,25 @@ message_handling_tests(Pid) ->
     [
         {"handle_info schedule_cycle", fun() ->
             Pid ! schedule_cycle,
-            timer:sleep(50),
+            _ = sys:get_state(flurm_scheduler),
             ?assert(is_process_alive(Pid))
         end},
 
         {"handle_info config_changed", fun() ->
             Pid ! {config_changed, partitions, []},
-            timer:sleep(10),
+            _ = sys:get_state(flurm_scheduler),
             ?assert(is_process_alive(Pid))
         end},
 
         {"handle_info unknown message", fun() ->
             Pid ! unknown_message,
-            timer:sleep(10),
+            _ = sys:get_state(flurm_scheduler),
             ?assert(is_process_alive(Pid))
         end},
 
         {"handle_cast unknown message", fun() ->
             gen_server:cast(Pid, unknown_cast),
-            timer:sleep(10),
+            _ = sys:get_state(flurm_scheduler),
             ?assert(is_process_alive(Pid))
         end}
     ].

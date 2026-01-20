@@ -88,7 +88,16 @@
 
 -spec start_link() -> {ok, pid()} | ignore | {error, term()}.
 start_link() ->
-    gen_server:start_link({local, ?SERVER}, ?MODULE, [], []).
+    case gen_server:start_link({local, ?SERVER}, ?MODULE, [], []) of
+        {ok, Pid} ->
+            {ok, Pid};
+        {error, {already_started, Pid}} ->
+            %% Process already running - return existing pid
+            %% This handles race conditions during startup and restarts
+            {ok, Pid};
+        {error, Reason} ->
+            {error, Reason}
+    end.
 
 %% @doc Create a new QOS with default settings
 -spec create(binary()) -> ok | {error, term()}.

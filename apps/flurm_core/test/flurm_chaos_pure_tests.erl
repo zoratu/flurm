@@ -492,7 +492,7 @@ handle_call_gc_process_success_test() ->
 handle_call_gc_process_dead_test() ->
     State = default_state(),
     DeadPid = spawn(fun() -> ok end),
-    timer:sleep(10), % Ensure process is dead
+    flurm_test_utils:wait_for_death(DeadPid),
     {reply, Result, _} = flurm_chaos:handle_call({gc_process, DeadPid}, {self(), make_ref()}, State),
     ?assertEqual({error, process_not_found}, Result),
     ok.

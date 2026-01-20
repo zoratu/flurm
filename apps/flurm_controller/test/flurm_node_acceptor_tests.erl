@@ -38,19 +38,29 @@ cleanup(_) ->
 
 test_start_link() ->
     %% Make handshake fail immediately so the spawned process exits quickly
+    %% Trap exits to prevent the spawned process crash from killing us
+    process_flag(trap_exit, true),
     meck:expect(ranch, handshake, fun(_Ref) -> {error, closed} end),
 
     Result = flurm_node_acceptor:start_link(test_ref, ranch_tcp, #{}),
 
     ?assertMatch({ok, _Pid}, Result),
+    %% Clean up trapped exit
+    receive {'EXIT', _, _} -> ok after 100 -> ok end,
+    process_flag(trap_exit, false),
     ok.
 
 test_start_link_returns_pid() ->
+    %% Trap exits to prevent the spawned process crash from killing us
+    process_flag(trap_exit, true),
     meck:expect(ranch, handshake, fun(_Ref) -> {error, closed} end),
 
     {ok, Pid} = flurm_node_acceptor:start_link(test_ref, ranch_tcp, #{}),
 
     ?assert(is_pid(Pid)),
+    %% Clean up trapped exit
+    receive {'EXIT', _, _} -> ok after 100 -> ok end,
+    process_flag(trap_exit, false),
     ok.
 
 %%====================================================================
@@ -99,25 +109,39 @@ init_failure_test_() ->
      ]}.
 
 test_init_handshake_failure() ->
+    %% Trap exits since spawned process will crash on badmatch
+    process_flag(trap_exit, true),
     meck:expect(ranch, handshake, fun(_Ref) -> {error, closed} end),
 
-    %% The init function will crash on badmatch, but start_link catches it
     Result = flurm_node_acceptor:start_link(test_ref, ranch_tcp, #{}),
     ?assertMatch({ok, _}, Result),
+    %% Clean up trapped exit
+    receive {'EXIT', _, _} -> ok after 100 -> ok end,
+    process_flag(trap_exit, false),
     ok.
 
 test_init_connection_refused() ->
+    %% Trap exits since spawned process will crash on badmatch
+    process_flag(trap_exit, true),
     meck:expect(ranch, handshake, fun(_Ref) -> {error, econnrefused} end),
 
     Result = flurm_node_acceptor:start_link(test_ref, ranch_tcp, #{}),
     ?assertMatch({ok, _}, Result),
+    %% Clean up trapped exit
+    receive {'EXIT', _, _} -> ok after 100 -> ok end,
+    process_flag(trap_exit, false),
     ok.
 
 test_init_timeout() ->
+    %% Trap exits since spawned process will crash on badmatch
+    process_flag(trap_exit, true),
     meck:expect(ranch, handshake, fun(_Ref) -> {error, etimedout} end),
 
     Result = flurm_node_acceptor:start_link(test_ref, ranch_tcp, #{}),
     ?assertMatch({ok, _}, Result),
+    %% Clean up trapped exit
+    receive {'EXIT', _, _} -> ok after 100 -> ok end,
+    process_flag(trap_exit, false),
     ok.
 
 %%====================================================================

@@ -40,6 +40,7 @@ setup() ->
     meck:expect(lager, info, fun(_, _) -> ok end),
     meck:expect(lager, warning, fun(_, _) -> ok end),
     meck:expect(lager, error, fun(_, _) -> ok end),
+    meck:expect(lager, md, fun(_) -> ok end),
 
     %% Start the GRES server
     {ok, Pid} = flurm_gres:start_link(),
@@ -79,18 +80,8 @@ stop_gres_server(_) ->
     end.
 
 %% Wait for a process to die with timeout
-wait_for_process_death(Pid, Timeout) when Timeout > 0 ->
-    case is_process_alive(Pid) of
-        false -> ok;
-        true ->
-            timer:sleep(10),
-            wait_for_process_death(Pid, Timeout - 10)
-    end;
 wait_for_process_death(Pid, _Timeout) ->
-    %% Force kill if still alive
-    catch exit(Pid, kill),
-    timer:sleep(10),
-    ok.
+    flurm_test_utils:wait_for_death(Pid).
 
 %% Clean up GRES state (ETS tables and registered process)
 cleanup_gres_state() ->
@@ -101,7 +92,7 @@ cleanup_gres_state() ->
             catch unlink(Pid),
             catch gen_server:stop(Pid, normal, 1000),
             catch exit(Pid, kill),
-            timer:sleep(10)
+            flurm_test_utils:wait_for_death(Pid)
     end,
 
     %% Delete ETS tables
@@ -417,13 +408,13 @@ message_handling_tests(Pid) ->
     [
         {"handle_info unknown message", fun() ->
             Pid ! unknown_message,
-            timer:sleep(10),
+            _ = sys:get_state(Pid),
             ?assert(is_process_alive(Pid))
         end},
 
         {"handle_cast unknown message", fun() ->
             gen_server:cast(Pid, unknown_cast),
-            timer:sleep(10),
+            _ = sys:get_state(Pid),
             ?assert(is_process_alive(Pid))
         end}
     ].

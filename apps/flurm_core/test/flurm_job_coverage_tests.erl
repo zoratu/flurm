@@ -364,7 +364,7 @@ test_pending_ignored_cast() ->
     gen_statem:cast(Pid, config_complete),
     gen_statem:cast(Pid, {job_complete, 0}),
     gen_statem:cast(Pid, unknown_cast),
-    timer:sleep(50),
+    _ = sys:get_state(Pid),
 
     {ok, pending} = flurm_job:get_state(Pid),
 
@@ -377,7 +377,7 @@ test_pending_ignored_info() ->
 
     Pid ! random_message,
     Pid ! {some, tuple},
-    timer:sleep(50),
+    _ = sys:get_state(Pid),
 
     {ok, pending} = flurm_job:get_state(Pid),
 
@@ -390,7 +390,7 @@ test_pending_timeout() ->
     JobSpec = make_job_spec(),
     {ok, Pid} = flurm_job:start_link(JobSpec),
 
-    timer:sleep(100),
+    _ = sys:get_state(Pid),
     {ok, pending} = flurm_job:get_state(Pid),
 
     safe_stop(Pid),
@@ -510,7 +510,7 @@ test_configuring_ignored_cast() ->
     ok = flurm_job:allocate(Pid, [<<"node1">>]),
     gen_statem:cast(Pid, unknown_cast),
     gen_statem:cast(Pid, {job_complete, 0}),
-    timer:sleep(50),
+    _ = sys:get_state(Pid),
 
     {ok, configuring} = flurm_job:get_state(Pid),
 
@@ -523,7 +523,7 @@ test_configuring_ignored_info() ->
 
     ok = flurm_job:allocate(Pid, [<<"node1">>]),
     Pid ! random_info,
-    timer:sleep(50),
+    _ = sys:get_state(Pid),
 
     {ok, configuring} = flurm_job:get_state(Pid),
 
@@ -710,6 +710,7 @@ test_running_timeout() ->
     ok = flurm_job:allocate(Pid, [<<"node1">>]),
     ok = flurm_job:signal_config_complete(Pid),
 
+    %% Legitimate wait for 1-second time_limit job timeout
     timer:sleep(1500),
     {ok, timeout} = flurm_job:get_state(Pid),
 
@@ -724,7 +725,7 @@ test_running_ignored_cast() ->
     ok = flurm_job:signal_config_complete(Pid),
     gen_statem:cast(Pid, unknown_cast),
     gen_statem:cast(Pid, config_complete),
-    timer:sleep(50),
+    _ = sys:get_state(Pid),
 
     {ok, running} = flurm_job:get_state(Pid),
 
@@ -738,7 +739,7 @@ test_running_ignored_info() ->
     ok = flurm_job:allocate(Pid, [<<"node1">>]),
     ok = flurm_job:signal_config_complete(Pid),
     Pid ! random_info,
-    timer:sleep(50),
+    _ = sys:get_state(Pid),
 
     {ok, running} = flurm_job:get_state(Pid),
 
@@ -851,7 +852,7 @@ test_completing_ignored_cast() ->
     ok = flurm_job:signal_config_complete(Pid),
     ok = flurm_job:signal_job_complete(Pid, 0),
     gen_statem:cast(Pid, unknown_cast),
-    timer:sleep(50),
+    _ = sys:get_state(Pid),
 
     {ok, completing} = flurm_job:get_state(Pid),
 
@@ -866,7 +867,7 @@ test_completing_ignored_info() ->
     ok = flurm_job:signal_config_complete(Pid),
     ok = flurm_job:signal_job_complete(Pid, 0),
     Pid ! random_info,
-    timer:sleep(50),
+    _ = sys:get_state(Pid),
 
     {ok, completing} = flurm_job:get_state(Pid),
 
@@ -1035,7 +1036,7 @@ test_suspended_ignored_cast() ->
     ok = flurm_job:signal_config_complete(Pid),
     ok = flurm_job:suspend(Pid),
     gen_statem:cast(Pid, unknown_cast),
-    timer:sleep(50),
+    _ = sys:get_state(Pid),
 
     {ok, suspended} = flurm_job:get_state(Pid),
 
@@ -1050,7 +1051,7 @@ test_suspended_ignored_info() ->
     ok = flurm_job:signal_config_complete(Pid),
     ok = flurm_job:suspend(Pid),
     Pid ! random_info,
-    timer:sleep(50),
+    _ = sys:get_state(Pid),
 
     {ok, suspended} = flurm_job:get_state(Pid),
 
@@ -1169,7 +1170,7 @@ test_completed_ignored_cast() ->
     ok = flurm_job:signal_job_complete(Pid, 0),
     ok = flurm_job:signal_cleanup_complete(Pid),
     gen_statem:cast(Pid, unknown_cast),
-    timer:sleep(50),
+    _ = sys:get_state(Pid),
 
     {ok, completed} = flurm_job:get_state(Pid),
 
@@ -1185,7 +1186,7 @@ test_completed_ignored_info() ->
     ok = flurm_job:signal_job_complete(Pid, 0),
     ok = flurm_job:signal_cleanup_complete(Pid),
     Pid ! random_info,
-    timer:sleep(50),
+    _ = sys:get_state(Pid),
 
     {ok, completed} = flurm_job:get_state(Pid),
 
@@ -1280,6 +1281,7 @@ test_timeout_enter() ->
 
     ok = flurm_job:allocate(Pid, [<<"node1">>]),
     ok = flurm_job:signal_config_complete(Pid),
+    %% Legitimate wait for 1-second time_limit job timeout
     timer:sleep(1500),
     {ok, timeout} = flurm_job:get_state(Pid),
 
@@ -1292,6 +1294,7 @@ test_timeout_cancel() ->
 
     ok = flurm_job:allocate(Pid, [<<"node1">>]),
     ok = flurm_job:signal_config_complete(Pid),
+    %% Legitimate wait for 1-second time_limit job timeout
     timer:sleep(1500),
     {error, already_timed_out} = flurm_job:cancel(Pid),
 
@@ -1304,6 +1307,7 @@ test_timeout_set_priority() ->
 
     ok = flurm_job:allocate(Pid, [<<"node1">>]),
     ok = flurm_job:signal_config_complete(Pid),
+    %% Legitimate wait for 1-second time_limit job timeout
     timer:sleep(1500),
     {error, job_timed_out} = gen_statem:call(Pid, {set_priority, 500}),
 

@@ -89,6 +89,7 @@ setup_supervisor() ->
     meck:expect(lager, debug, fun(_Fmt, _Args) -> ok end),
     meck:expect(lager, warning, fun(_Fmt, _Args) -> ok end),
     meck:expect(lager, error, fun(_Fmt, _Args) -> ok end),
+    meck:expect(lager, md, fun(_) -> ok end),
 
     %% Mock controller connector
     meck:new(flurm_controller_connector, [non_strict]),
@@ -116,7 +117,7 @@ cleanup_supervisor(_) ->
         Pid ->
             try
                 exit(Pid, shutdown),
-                timer:sleep(100)
+                flurm_test_utils:wait_for_death(Pid)
             catch _:_ -> ok
             end
     end,
@@ -208,13 +209,13 @@ test_stop_job() ->
     ?assert(is_process_alive(JobPid)),
 
     %% Give job time to start
-    timer:sleep(500),
+    _ = sys:get_state(JobPid),
 
     %% Stop the job
     ok = flurm_job_executor_sup:stop_job(JobPid),
 
     %% Wait for process to terminate
-    timer:sleep(200),
+    flurm_test_utils:wait_for_death(JobPid),
 
     ?assertNot(is_process_alive(JobPid)),
     ok.
@@ -238,7 +239,7 @@ test_multiple_jobs() ->
     ?assert(lists:all(fun is_pid/1, JobPids)),
 
     %% All should be alive initially
-    timer:sleep(100),
+    ?assert(lists:all(fun is_process_alive/1, JobPids)),
 
     %% Wait for all to complete
     lists:foreach(fun(Pid) ->
@@ -274,6 +275,7 @@ setup_restart() ->
     meck:expect(lager, debug, fun(_Fmt, _Args) -> ok end),
     meck:expect(lager, warning, fun(_Fmt, _Args) -> ok end),
     meck:expect(lager, error, fun(_Fmt, _Args) -> ok end),
+    meck:expect(lager, md, fun(_) -> ok end),
 
     meck:new(flurm_controller_connector, [non_strict]),
     meck:expect(flurm_controller_connector, report_job_complete,
@@ -285,7 +287,7 @@ setup_restart() ->
         undefined -> ok;
         Pid ->
             try exit(Pid, shutdown) catch _:_ -> ok end,
-            timer:sleep(100)
+            flurm_test_utils:wait_for_death(Pid)
     end,
     ok.
 
@@ -294,7 +296,7 @@ cleanup_restart(_) ->
         undefined -> ok;
         Pid ->
             try exit(Pid, shutdown) catch _:_ -> ok end,
-            timer:sleep(100)
+            flurm_test_utils:wait_for_death(Pid)
     end,
 
     meck:unload(lager),
@@ -311,11 +313,11 @@ test_child_crash_survival() ->
     },
 
     {ok, JobPid} = flurm_job_executor_sup:start_job(JobSpec),
-    timer:sleep(500),
+    _ = sys:get_state(JobPid),
 
     %% Kill the child process abnormally
     exit(JobPid, kill),
-    timer:sleep(200),
+    flurm_test_utils:wait_for_death(JobPid),
 
     %% Supervisor should still be alive
     ?assert(is_process_alive(SupPid)),
@@ -331,7 +333,7 @@ test_no_restart_on_crash() ->
     },
 
     {ok, JobPid} = flurm_job_executor_sup:start_job(JobSpec),
-    timer:sleep(500),
+    _ = sys:get_state(JobPid),
 
     %% Get initial children count
     Children1 = supervisor:which_children(flurm_job_executor_sup),
@@ -340,7 +342,7 @@ test_no_restart_on_crash() ->
 
     %% Kill the child
     exit(JobPid, kill),
-    timer:sleep(500),
+    flurm_test_utils:wait_for_death(JobPid),
 
     %% Child should not be restarted (temporary restart strategy)
     Children2 = supervisor:which_children(flurm_job_executor_sup),
@@ -370,6 +372,7 @@ setup_edge_cases() ->
     meck:expect(lager, debug, fun(_Fmt, _Args) -> ok end),
     meck:expect(lager, warning, fun(_Fmt, _Args) -> ok end),
     meck:expect(lager, error, fun(_Fmt, _Args) -> ok end),
+    meck:expect(lager, md, fun(_) -> ok end),
 
     meck:new(flurm_controller_connector, [non_strict]),
     meck:expect(flurm_controller_connector, report_job_complete,
@@ -381,7 +384,7 @@ setup_edge_cases() ->
         undefined -> ok;
         Pid ->
             try exit(Pid, shutdown) catch _:_ -> ok end,
-            timer:sleep(100)
+            flurm_test_utils:wait_for_death(Pid)
     end,
     ok.
 
@@ -390,7 +393,7 @@ cleanup_edge_cases(_) ->
         undefined -> ok;
         Pid ->
             try exit(Pid, shutdown) catch _:_ -> ok end,
-            timer:sleep(100)
+            flurm_test_utils:wait_for_death(Pid)
     end,
 
     meck:unload(lager),
@@ -402,7 +405,7 @@ test_stop_nonexistent() ->
 
     %% Create a fake pid (already dead process)
     FakePid = spawn(fun() -> ok end),
-    timer:sleep(50),
+    flurm_test_utils:wait_for_death(FakePid),
 
     %% Stop should return ok even for non-existent child
     Result = flurm_job_executor_sup:stop_job(FakePid),
@@ -428,6 +431,6 @@ test_rapid_job_start() ->
     SuccessCount = length([ok || {ok, _} <- Results]),
     ?assertEqual(5, SuccessCount),
 
-    %% Brief wait for jobs to start (don't wait for completion to avoid timeout)
-    timer:sleep(500),
+    %% Brief wait for jobs to start by syncing with each started process
+    lists:foreach(fun({ok, Pid}) -> _ = sys:get_state(Pid); (_) -> ok end, Results),
     ok.

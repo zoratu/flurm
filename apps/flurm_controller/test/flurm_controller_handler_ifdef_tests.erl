@@ -388,8 +388,8 @@ generate_reservation_name_test_() ->
          end},
         {"generates unique names",
          fun() ->
+             %% The random component ensures uniqueness without needing sleep
              Name1 = flurm_controller_handler:generate_reservation_name(),
-             timer:sleep(1),  % Ensure different timestamp
              Name2 = flurm_controller_handler:generate_reservation_name(),
              ?assertNotEqual(Name1, Name2)
          end}

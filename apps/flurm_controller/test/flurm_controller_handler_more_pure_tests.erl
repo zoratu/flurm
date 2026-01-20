@@ -264,8 +264,8 @@ info_conversion_edge_test_() ->
 %%====================================================================
 
 test_generate_reservation_name_unique() ->
+    %% The random component ensures uniqueness without needing sleep
     Name1 = generate_reservation_name(),
-    timer:sleep(1), % Ensure different timestamp
     Name2 = generate_reservation_name(),
     ?assertNotEqual(Name1, Name2).
 

@@ -24,7 +24,7 @@ setup_stub() ->
         Pid ->
             catch unlink(Pid),
             catch exit(Pid, kill),
-            timer:sleep(50)
+            flurm_test_utils:wait_for_death(Pid)
     end,
     #{mode => stub}.
 
@@ -36,7 +36,7 @@ setup_with_server() ->
         Pid ->
             catch unlink(Pid),
             catch exit(Pid, kill),
-            timer:sleep(50)
+            flurm_test_utils:wait_for_death(Pid)
     end,
     %% Start mock server
     MockPid = spawn(fun mock_server_loop/0),
@@ -48,7 +48,7 @@ cleanup(#{mode := stub}) ->
 cleanup(#{mode := server, mock_pid := MockPid}) ->
     catch unregister(flurm_job_dispatcher_server),
     catch exit(MockPid, kill),
-    timer:sleep(50),
+    flurm_test_utils:wait_for_death(MockPid),
     ok.
 
 mock_server_loop() ->
@@ -265,7 +265,7 @@ test_server_running_dead() ->
     Pid = spawn(fun() -> receive stop -> ok end end),
     register(flurm_job_dispatcher_server, Pid),
     exit(Pid, kill),
-    timer:sleep(50),
+    flurm_test_utils:wait_for_death(Pid),
 
     %% Process is dead, whereis returns undefined
     ?assertEqual(undefined, whereis(flurm_job_dispatcher_server)),
@@ -281,7 +281,7 @@ test_server_running_undefined() ->
         Pid ->
             catch unregister(flurm_job_dispatcher_server),
             catch exit(Pid, kill),
-            timer:sleep(50)
+            flurm_test_utils:wait_for_death(Pid)
     end,
 
     ?assertEqual(undefined, whereis(flurm_job_dispatcher_server)),

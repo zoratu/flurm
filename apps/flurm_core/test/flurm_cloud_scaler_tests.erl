@@ -13,14 +13,27 @@ setup() ->
     case whereis(flurm_cloud_scaler) of
         undefined ->
             {ok, Pid} = flurm_cloud_scaler:start_link(),
+            %% Unlink to prevent test process crash on shutdown
+            unlink(Pid),
             {started, Pid};
         Pid ->
             {existing, Pid}
     end.
 
-cleanup({started, _Pid}) ->
+cleanup({started, Pid}) ->
     catch ets:delete(flurm_cloud_config),
-    gen_server:stop(flurm_cloud_scaler);
+    case is_process_alive(Pid) of
+        true ->
+            Ref = monitor(process, Pid),
+            catch gen_server:stop(flurm_cloud_scaler, shutdown, 5000),
+            receive
+                {'DOWN', Ref, process, Pid, _} -> ok
+            after 5000 ->
+                demonitor(Ref, [flush])
+            end;
+        false ->
+            ok
+    end;
 cleanup({existing, _Pid}) ->
     ok.
 

@@ -112,7 +112,7 @@ test_register_job() ->
     %% Verify registration
     {ok, JobPid} = flurm_job_registry:lookup_job(1),
     exit(JobPid, kill),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_job_registry),
     ok.
 
 test_register_already_registered() ->
@@ -126,7 +126,7 @@ test_register_already_registered() ->
 
     exit(JobPid1, kill),
     exit(JobPid2, kill),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_job_registry),
     ok.
 
 test_unregister_job() ->
@@ -162,7 +162,7 @@ test_lookup_job() ->
     {ok, JobPid} = flurm_job_registry:lookup_job(4),
 
     exit(JobPid, kill),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_job_registry),
     ok.
 
 test_lookup_nonexistent() ->
@@ -183,7 +183,7 @@ test_get_job_entry() ->
     {error, not_found} = flurm_job_registry:get_job_entry(999999),
 
     exit(JobPid, kill),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_job_registry),
     ok.
 
 %%====================================================================
@@ -209,7 +209,7 @@ test_list_jobs() ->
     exit(JobPid1, kill),
     exit(JobPid2, kill),
     exit(JobPid3, kill),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_job_registry),
     ok.
 
 test_list_jobs_by_state() ->
@@ -247,7 +247,7 @@ test_list_jobs_by_state() ->
     exit(JobPid2, kill),
     exit(JobPid3, kill),
     exit(JobPid4, kill),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_job_registry),
     ok.
 
 test_list_jobs_by_user() ->
@@ -276,7 +276,7 @@ test_list_jobs_by_user() ->
     exit(JobPid1, kill),
     exit(JobPid2, kill),
     exit(JobPid3, kill),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_job_registry),
     ok.
 
 %%====================================================================
@@ -303,7 +303,7 @@ test_update_job_state() ->
     ?assertEqual(completed, Entry3#job_entry.state),
 
     exit(JobPid, kill),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_job_registry),
     ok.
 
 test_update_job_state_not_found() ->
@@ -324,7 +324,7 @@ test_multiple_state_updates() ->
     end, States),
 
     exit(JobPid, kill),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_job_registry),
     ok.
 
 %%====================================================================
@@ -353,7 +353,7 @@ test_count_by_state() ->
     exit(JobPid1, kill),
     exit(JobPid2, kill),
     exit(JobPid3, kill),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_job_registry),
     ok.
 
 test_count_by_user() ->
@@ -378,7 +378,7 @@ test_count_by_user() ->
     exit(JobPid1, kill),
     exit(JobPid2, kill),
     exit(JobPid3, kill),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_job_registry),
     ok.
 
 %%====================================================================
@@ -394,9 +394,11 @@ test_monitor_cleanup() ->
     %% Verify registered
     {ok, JobPid} = flurm_job_registry:lookup_job(80),
 
-    %% Kill the process
+    %% Kill the process and wait for death
     exit(JobPid, kill),
-    timer:sleep(100),  %% Wait for monitor to fire
+    flurm_test_utils:wait_for_death(JobPid),
+    %% Wait for registry to process DOWN message
+    _ = sys:get_state(flurm_job_registry),
 
     %% Should be unregistered
     {error, not_found} = flurm_job_registry:lookup_job(80),
@@ -413,14 +415,14 @@ test_unknown_request() ->
 
 test_unknown_cast() ->
     gen_server:cast(flurm_job_registry, unknown_cast),
-    timer:sleep(10),
+    _ = sys:get_state(flurm_job_registry),
     %% Server should still be alive
     ?assert(is_process_alive(whereis(flurm_job_registry))),
     ok.
 
 test_unknown_info() ->
     flurm_job_registry ! {unknown_info_message},
-    timer:sleep(10),
+    _ = sys:get_state(flurm_job_registry),
     %% Server should still be alive
     ?assert(is_process_alive(whereis(flurm_job_registry))),
     ok.

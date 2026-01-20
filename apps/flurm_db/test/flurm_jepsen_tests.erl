@@ -149,8 +149,8 @@ test_leader_isolation() ->
     Others = [N || N <- State#jepsen_state.nodes, N =/= Leader],
     State2 = apply_partition([Leader], Others, State),
 
-    %% Wait for election timeout
-    timer:sleep(1000),
+    %% Election happens immediately in simulation (no real Ra cluster)
+    %% No sleep needed - this is a simulated partition test
 
     %% Verify new leader elected in majority
     NewLeader = find_leader_in_set(Others, State2),
@@ -199,24 +199,29 @@ test_symmetrical_partition() ->
 test_partition_during_writes() ->
     State = init_jepsen_state(5),
 
-    %% Start continuous writes
+    %% Start continuous writes - using a synchronous approach
+    %% since this is a simulation test
+    WriterRef = make_ref(),
+    Parent = self(),
     WriterPid = spawn_link(fun() ->
-        continuous_writer(State, 100)
+        Result = continuous_writer(State, 100),
+        Parent ! {WriterRef, done, Result}
     end),
 
-    %% Wait a bit then partition
-    timer:sleep(100),
+    %% Apply partition immediately (simulation - no real delay needed)
     State2 = apply_partition([node1, node2], [node3, node4, node5], State),
-
-    %% Let writes continue during partition
-    timer:sleep(500),
 
     %% Heal partition
     State3 = heal_partition([node1, node2], [node3, node4, node5], State2),
 
-    %% Wait for writer to finish
-    timer:sleep(500),
+    %% Signal writer to stop and wait for completion
     WriterPid ! stop,
+    receive
+        {WriterRef, done, _} -> ok
+    after 5000 ->
+        exit(WriterPid, kill),
+        flurm_test_utils:wait_for_death(WriterPid)
+    end,
 
     %% Verify no data loss or corruption
     %% (Writes should either succeed or fail cleanly)
@@ -244,8 +249,8 @@ test_rapid_partition_cycling() ->
             Ops = generate_operations(10),
             _History = run_concurrent_operations(Ops, S1),
 
-            %% Short delay
-            timer:sleep(50),
+            %% Yield to other processes (simulation - no real delay needed)
+            erlang:yield(),
 
             %% Heal
             heal_partition(Set1, Set2, S1)
@@ -396,32 +401,36 @@ simulate_ra_write(Key, Value, State) ->
     %% Simulate network partition effects
     case is_partitioned_from_leader(pick_node(State), State) of
         true ->
-            %% Simulate timeout
-            timer:sleep(100),
+            %% Simulate timeout (yield instead of sleep for simulation)
+            erlang:yield(),
             {error, timeout};
         false ->
-            %% Simulate successful write
-            timer:sleep(rand:uniform(10)),
+            %% Simulate successful write (yield instead of sleep)
+            erlang:yield(),
             {ok, Key, Value}
     end.
 
 simulate_ra_read(Key, State) ->
     case is_partitioned_from_leader(pick_node(State), State) of
         true ->
-            timer:sleep(100),
+            %% Simulate timeout (yield instead of sleep for simulation)
+            erlang:yield(),
             {error, timeout};
         false ->
-            timer:sleep(rand:uniform(5)),
+            %% Simulate successful read (yield instead of sleep)
+            erlang:yield(),
             {ok, Key, rand:uniform(1000)}
     end.
 
 simulate_ra_cas(Key, Expected, New, State) ->
     case is_partitioned_from_leader(pick_node(State), State) of
         true ->
-            timer:sleep(100),
+            %% Simulate timeout (yield instead of sleep for simulation)
+            erlang:yield(),
             {error, timeout};
         false ->
-            timer:sleep(rand:uniform(15)),
+            %% Simulate CAS operation (yield instead of sleep)
+            erlang:yield(),
             %% 50% chance of CAS success (for testing)
             case rand:uniform(2) of
                 1 -> {ok, Key, New};

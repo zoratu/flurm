@@ -387,7 +387,7 @@ test_timeout_state() ->
     ok = flurm_job:allocate(Pid, [<<"node1">>]),
     ok = flurm_job:signal_config_complete(Pid),
     {ok, running} = flurm_job:get_state(Pid),
-    %% Wait for timeout
+    %% Wait for timeout (legitimate wait for 1-second job timeout to expire)
     timer:sleep(1500),
     {ok, timeout} = flurm_job:get_state(Pid),
     %% Verify terminal state errors
@@ -527,11 +527,11 @@ test_ignored_casts() ->
     {ok, Pid, _JobId} = flurm_job:submit(JobSpec),
     %% Unknown cast in pending
     gen_statem:cast(Pid, unknown_cast),
-    timer:sleep(10),
+    _ = sys:get_state(Pid),
     {ok, pending} = flurm_job:get_state(Pid),
     %% Config complete in pending (ignored)
     gen_statem:cast(Pid, config_complete),
-    timer:sleep(10),
+    _ = sys:get_state(Pid),
     {ok, pending} = flurm_job:get_state(Pid),
     ok.
 
@@ -540,10 +540,10 @@ test_ignored_info() ->
     {ok, Pid, _JobId} = flurm_job:submit(JobSpec),
     %% Info messages ignored
     Pid ! random_info_message,
-    timer:sleep(10),
+    _ = sys:get_state(Pid),
     {ok, pending} = flurm_job:get_state(Pid),
     ok = flurm_job:allocate(Pid, [<<"node1">>]),
     Pid ! another_info,
-    timer:sleep(10),
+    _ = sys:get_state(Pid),
     {ok, configuring} = flurm_job:get_state(Pid),
     ok.

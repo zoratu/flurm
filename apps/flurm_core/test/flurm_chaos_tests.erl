@@ -25,7 +25,7 @@
 setup() ->
     %% Stop any existing chaos server
     catch gen_server:stop(flurm_chaos, normal, 1000),
-    timer:sleep(50),
+    ok,
 
     %% Start fresh
     {ok, Pid} = flurm_chaos:start_link(),
@@ -38,7 +38,7 @@ cleanup(#{pid := Pid}) ->
     catch flurm_chaos:heal_all_partitions(),
     catch unlink(Pid),
     catch gen_server:stop(Pid, normal, 5000),
-    timer:sleep(50),
+    ok,
     ok.
 
 %%====================================================================
@@ -439,7 +439,7 @@ test_gc_operations() ->
 
     %% GC non-existent process
     DeadPid = spawn(fun() -> ok end),
-    timer:sleep(50),  % Let it die
+    flurm_test_utils:wait_for_death(DeadPid),
     Result2 = flurm_chaos:gc_process(DeadPid),
     ?assertEqual({error, process_not_found}, Result2),
 
@@ -514,8 +514,7 @@ test_tick_fires() ->
     ok = flurm_chaos:enable_scenario(trigger_gc),
     ok = flurm_chaos:set_scenario(trigger_gc, 1.0),
 
-    %% Wait for tick to fire (default 1000ms, but we'll wait less since
-    %% the test might have already had some ticks)
+    %% Wait for tick to fire (legitimate wait for 1000ms timer-based chaos tick)
     timer:sleep(1500),
 
     %% Check stats
@@ -549,7 +548,7 @@ options_test_() ->
      {setup,
       fun() ->
           catch gen_server:stop(flurm_chaos, normal, 1000),
-          timer:sleep(50),
+          ok,
           {ok, Pid} = flurm_chaos:start_link(#{
               tick_ms => 500,
               scenarios => #{kill_random_process => 0.0, trigger_gc => 0.5},
@@ -616,7 +615,7 @@ edge_case_test_() ->
 test_unknown_info() ->
     %% Send unknown info message
     flurm_chaos ! {unknown_info, some_data},
-    timer:sleep(50),
+    ok,
 
     %% Server should still be running
     Status = flurm_chaos:status(),
@@ -626,7 +625,7 @@ test_unknown_info() ->
 test_unknown_cast() ->
     %% Send unknown cast message
     gen_server:cast(flurm_chaos, {unknown_cast, data}),
-    timer:sleep(50),
+    ok,
 
     %% Server should still be running
     Status = flurm_chaos:status(),

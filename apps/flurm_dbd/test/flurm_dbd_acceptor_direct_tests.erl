@@ -37,6 +37,7 @@ setup() ->
     meck:expect(lager, warning, fun(_) -> ok end),
     meck:expect(lager, warning, fun(_, _) -> ok end),
     meck:expect(lager, error, fun(_, _) -> ok end),
+    meck:expect(lager, md, fun(_) -> ok end),
     ok.
 
 cleanup(_) ->
@@ -64,12 +65,10 @@ test_start_link() ->
     {ok, Pid} = flurm_dbd_acceptor:start_link(test_ref, ranch_tcp, #{}),
     ?assert(is_pid(Pid)),
 
-    %% Give the process time to initialize, then check it started
-    timer:sleep(50),
     %% The process will be in the loop waiting for tcp messages
     %% Send tcp_closed to terminate cleanly
     Pid ! {tcp_closed, fake_socket},
-    timer:sleep(20),
+    flurm_test_utils:wait_for_death(Pid),
 
     catch meck:unload(ranch_tcp),
     catch meck:unload(ranch).
@@ -103,6 +102,7 @@ setup_message_handling() ->
     meck:expect(lager, warning, fun(_) -> ok end),
     meck:expect(lager, warning, fun(_, _) -> ok end),
     meck:expect(lager, error, fun(_, _) -> ok end),
+    meck:expect(lager, md, fun(_) -> ok end),
 
     meck:new(ranch, [passthrough, unstick, no_link]),
     meck:expect(ranch, handshake, fun(_) -> {ok, fake_socket} end),
@@ -125,18 +125,17 @@ test_tcp_closed() ->
     Pid = spawn(fun() ->
         flurm_dbd_acceptor:init(test_ref, ranch_tcp, #{})
     end),
-    timer:sleep(30),
+    %% Erlang guarantees message order - this message will be queued
     Pid ! {tcp_closed, fake_socket},
-    timer:sleep(50),
+    flurm_test_utils:wait_for_death(Pid),
     ?assert(not is_process_alive(Pid)).
 
 test_tcp_error() ->
     Pid = spawn(fun() ->
         flurm_dbd_acceptor:init(test_ref, ranch_tcp, #{})
     end),
-    timer:sleep(30),
     Pid ! {tcp_error, fake_socket, econnreset},
-    timer:sleep(50),
+    flurm_test_utils:wait_for_death(Pid),
     ?assert(not is_process_alive(Pid)).
 
 test_tcp_data() ->
@@ -147,54 +146,72 @@ test_tcp_data() ->
         {error, incomplete}
     end),
 
+    Self = self(),
     Pid = spawn(fun() ->
-        flurm_dbd_acceptor:init(test_ref, ranch_tcp, #{})
+        flurm_dbd_acceptor:init(test_ref, ranch_tcp, #{}),
+        Self ! {done, self()}
     end),
-    timer:sleep(30),
 
     %% Send some data that's too small (less than 4 bytes for length)
     Pid ! {tcp, fake_socket, <<1, 2>>},
-    timer:sleep(30),
 
-    %% Should still be alive waiting for more data
+    %% Should still be alive waiting for more data - use monitor to check
+    MRef = erlang:monitor(process, Pid),
     ?assert(is_process_alive(Pid)),
 
-    %% Close connection
+    %% Close connection and wait for death
     Pid ! {tcp_closed, fake_socket},
-    timer:sleep(30).
+    receive
+        {'DOWN', MRef, process, Pid, _} -> ok
+    after 5000 ->
+        erlang:demonitor(MRef, [flush]),
+        ?assert(false)
+    end.
 
 test_unknown_message() ->
+    Self = self(),
     Pid = spawn(fun() ->
-        flurm_dbd_acceptor:init(test_ref, ranch_tcp, #{})
+        flurm_dbd_acceptor:init(test_ref, ranch_tcp, #{}),
+        Self ! {done, self()}
     end),
-    timer:sleep(30),
 
     %% Send unknown message
     Pid ! {unknown, message, type},
-    timer:sleep(30),
 
-    %% Should still be alive
+    %% Should still be alive - use monitor
+    MRef = erlang:monitor(process, Pid),
     ?assert(is_process_alive(Pid)),
 
-    %% Cleanup
+    %% Cleanup - send tcp_closed and wait for DOWN
     Pid ! {tcp_closed, fake_socket},
-    timer:sleep(30).
+    receive
+        {'DOWN', MRef, process, Pid, _} -> ok
+    after 5000 ->
+        erlang:demonitor(MRef, [flush]),
+        ?assert(false)
+    end.
 
 test_incomplete_buffer() ->
+    Self = self(),
     Pid = spawn(fun() ->
-        flurm_dbd_acceptor:init(test_ref, ranch_tcp, #{})
+        flurm_dbd_acceptor:init(test_ref, ranch_tcp, #{}),
+        Self ! {done, self()}
     end),
-    timer:sleep(30),
 
     %% Send partial length header (only 2 bytes of 4)
     Pid ! {tcp, fake_socket, <<0, 0>>},
-    timer:sleep(30),
 
-    %% Should still be alive waiting for more
+    %% Should still be alive waiting for more - use monitor
+    MRef = erlang:monitor(process, Pid),
     ?assert(is_process_alive(Pid)),
 
     Pid ! {tcp_closed, fake_socket},
-    timer:sleep(30).
+    receive
+        {'DOWN', MRef, process, Pid, _} -> ok
+    after 5000 ->
+        erlang:demonitor(MRef, [flush]),
+        ?assert(false)
+    end.
 
 %%====================================================================
 %% Protocol Message Type Tests
@@ -229,6 +246,7 @@ setup_protocol() ->
     meck:expect(lager, warning, fun(_) -> ok end),
     meck:expect(lager, warning, fun(_, _) -> ok end),
     meck:expect(lager, error, fun(_, _) -> ok end),
+    meck:expect(lager, md, fun(_) -> ok end),
 
     meck:new(ranch, [passthrough, unstick, no_link]),
     meck:expect(ranch, handshake, fun(_) -> {ok, fake_socket} end),
@@ -270,13 +288,10 @@ test_handle_ping() ->
     Pid = spawn(fun() ->
         flurm_dbd_acceptor:init(test_ref, ranch_tcp, #{})
     end),
-    timer:sleep(30),
 
     Pid ! {tcp, fake_socket, <<0, 0, 0, 4, 0, 0, 0, 1>>},
-    timer:sleep(50),
-
     Pid ! {tcp_closed, fake_socket},
-    timer:sleep(30).
+    flurm_test_utils:wait_for_death(Pid).
 
 test_accounting_update_job_start() ->
     meck:expect(flurm_protocol_codec, decode, fun(_) ->
@@ -287,15 +302,12 @@ test_accounting_update_job_start() ->
     Pid = spawn(fun() ->
         flurm_dbd_acceptor:init(test_ref, ranch_tcp, #{})
     end),
-    timer:sleep(30),
 
     Pid ! {tcp, fake_socket, <<0, 0, 0, 10, "job_start_">>},
-    timer:sleep(50),
-
-    ?assert(meck:called(flurm_dbd_server, record_job_start, '_')),
-
     Pid ! {tcp_closed, fake_socket},
-    timer:sleep(30).
+    flurm_test_utils:wait_for_death(Pid),
+
+    ?assert(meck:called(flurm_dbd_server, record_job_start, '_')).
 
 test_accounting_update_job_end() ->
     meck:expect(flurm_protocol_codec, decode, fun(_) ->
@@ -306,15 +318,12 @@ test_accounting_update_job_end() ->
     Pid = spawn(fun() ->
         flurm_dbd_acceptor:init(test_ref, ranch_tcp, #{})
     end),
-    timer:sleep(30),
 
     Pid ! {tcp, fake_socket, <<0, 0, 0, 8, "job_end_">>},
-    timer:sleep(50),
-
-    ?assert(meck:called(flurm_dbd_server, record_job_end, '_')),
-
     Pid ! {tcp_closed, fake_socket},
-    timer:sleep(30).
+    flurm_test_utils:wait_for_death(Pid),
+
+    ?assert(meck:called(flurm_dbd_server, record_job_end, '_')).
 
 test_accounting_update_step() ->
     meck:expect(flurm_protocol_codec, decode, fun(_) ->
@@ -325,15 +334,12 @@ test_accounting_update_step() ->
     Pid = spawn(fun() ->
         flurm_dbd_acceptor:init(test_ref, ranch_tcp, #{})
     end),
-    timer:sleep(30),
 
     Pid ! {tcp, fake_socket, <<0, 0, 0, 8, "step____">>},
-    timer:sleep(50),
-
-    ?assert(meck:called(flurm_dbd_server, record_job_step, '_')),
-
     Pid ! {tcp_closed, fake_socket},
-    timer:sleep(30).
+    flurm_test_utils:wait_for_death(Pid),
+
+    ?assert(meck:called(flurm_dbd_server, record_job_step, '_')).
 
 test_controller_registration() ->
     meck:expect(flurm_protocol_codec, decode, fun(_) ->
@@ -343,16 +349,19 @@ test_controller_registration() ->
     Pid = spawn(fun() ->
         flurm_dbd_acceptor:init(test_ref, ranch_tcp, #{})
     end),
-    timer:sleep(30),
 
     Pid ! {tcp, fake_socket, <<0, 0, 0, 4, "ctld">>},
-    timer:sleep(50),
-
-    %% Process should still be alive after handling controller registration
+    %% Use monitor to check process is still alive after processing
+    MRef = erlang:monitor(process, Pid),
     ?assert(is_process_alive(Pid)),
 
     Pid ! {tcp_closed, fake_socket},
-    timer:sleep(30).
+    receive
+        {'DOWN', MRef, process, Pid, _} -> ok
+    after 5000 ->
+        erlang:demonitor(MRef, [flush]),
+        ?assert(false)
+    end.
 
 test_unsupported_message() ->
     meck:expect(flurm_protocol_codec, decode, fun(_) ->
@@ -362,17 +371,19 @@ test_unsupported_message() ->
     Pid = spawn(fun() ->
         flurm_dbd_acceptor:init(test_ref, ranch_tcp, #{})
     end),
-    timer:sleep(30),
 
     Pid ! {tcp, fake_socket, <<0, 0, 0, 4, "unkn">>},
-    timer:sleep(50),
-
-    %% Process should still be alive after handling unsupported message
-    %% The response with return_code=-1 is sent back
+    %% Use monitor to check process is still alive after processing
+    MRef = erlang:monitor(process, Pid),
     ?assert(is_process_alive(Pid)),
 
     Pid ! {tcp_closed, fake_socket},
-    timer:sleep(30).
+    receive
+        {'DOWN', MRef, process, Pid, _} -> ok
+    after 5000 ->
+        erlang:demonitor(MRef, [flush]),
+        ?assert(false)
+    end.
 
 test_decode_error() ->
     meck:expect(flurm_protocol_codec, decode, fun(_) ->
@@ -382,10 +393,9 @@ test_decode_error() ->
     Pid = spawn(fun() ->
         flurm_dbd_acceptor:init(test_ref, ranch_tcp, #{})
     end),
-    timer:sleep(30),
 
     Pid ! {tcp, fake_socket, <<0, 0, 0, 4, "bad!">>},
-    timer:sleep(50),
+    flurm_test_utils:wait_for_death(Pid),
 
     %% Connection should be closed on decode error
     ?assert(not is_process_alive(Pid)).

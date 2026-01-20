@@ -19,26 +19,23 @@ setup() ->
     case whereis(flurm_dbd_server) of
         undefined -> ok;
         ExistingPid ->
-            exit(ExistingPid, shutdown),
-            timer:sleep(50)
+            flurm_test_utils:kill_and_wait(ExistingPid)
     end,
     %% Mock flurm_dbd_sup to avoid Ranch dependency
     meck:new(flurm_dbd_sup, [passthrough, no_link]),
     meck:expect(flurm_dbd_sup, start_listener, fun() -> {ok, self()} end),
     %% Start the DBD server for testing
     {ok, Pid} = flurm_dbd_server:start_link(),
-    timer:sleep(100),
+    _ = sys:get_state(Pid),
     Pid.
 
 cleanup(Pid) ->
     %% Stop the server if running
     case is_process_alive(Pid) of
         true ->
-            unlink(Pid),
-            exit(Pid, shutdown);
+            gen_server:stop(Pid, normal, 5000);
         false -> ok
     end,
-    timer:sleep(50),
     catch meck:unload(flurm_dbd_sup),
     ok.
 
@@ -77,7 +74,7 @@ test_record_job_submit() ->
     },
     Result = flurm_dbd:record_job_submit(JobData),
     ?assertEqual(ok, Result),
-    timer:sleep(50),  % Allow async processing
+    _ = sys:get_state(flurm_dbd_server),  % Allow async processing
     ok.
 
 test_record_job_start() ->
@@ -91,12 +88,12 @@ test_record_job_start() ->
         num_cpus => 8
     },
     ok = flurm_dbd:record_job_submit(JobData),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_dbd_server),
 
     %% Then record start
     Result = flurm_dbd:record_job_start(1002, [<<"node1">>, <<"node2">>]),
     ?assertEqual(ok, Result),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_dbd_server),
     ok.
 
 test_record_job_end() ->
@@ -110,14 +107,14 @@ test_record_job_end() ->
         num_cpus => 2
     },
     ok = flurm_dbd:record_job_submit(JobData),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_dbd_server),
     ok = flurm_dbd:record_job_start(1003, [<<"node1">>]),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_dbd_server),
 
     %% Record end
     Result = flurm_dbd:record_job_end(1003, 0, completed),
     ?assertEqual(ok, Result),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_dbd_server),
     ok.
 
 test_record_job_cancelled() ->
@@ -131,12 +128,12 @@ test_record_job_cancelled() ->
         num_cpus => 1
     },
     ok = flurm_dbd:record_job_submit(JobData),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_dbd_server),
 
     %% Cancel it
     Result = flurm_dbd:record_job_cancelled(1004, user_cancelled),
     ?assertEqual(ok, Result),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_dbd_server),
     ok.
 
 test_get_job() ->
@@ -150,7 +147,7 @@ test_get_job() ->
         num_cpus => 16
     },
     ok = flurm_dbd:record_job_submit(JobData),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_dbd_server),
 
     %% Get it
     case flurm_dbd:get_job(1005) of

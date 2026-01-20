@@ -32,7 +32,7 @@ cleanup_all() ->
         undefined -> ok;
         Pid when is_pid(Pid) ->
             catch exit(Pid, kill),
-            timer:sleep(10)
+            flurm_test_utils:wait_for_death(Pid)
     end,
     %% Delete any ETS tables that might have been created
     catch ets:delete(flurm_system_monitor),
@@ -43,8 +43,8 @@ cleanup_all() ->
     catch meck:unload(flurm_system_monitor),
     catch meck:unload(os),
     catch meck:unload(file),
-    %% Give time for cleanup to complete
-    timer:sleep(20),
+    %% Wait for the name to be unregistered
+    flurm_test_utils:wait_for_unregistered(flurm_system_monitor),
     ok.
 
 %%====================================================================
@@ -190,18 +190,22 @@ test_unknown_call() ->
 
 test_unknown_cast() ->
     ok = gen_server:cast(flurm_system_monitor, {unknown_cast, arg}),
-    timer:sleep(20),
+    %% Sync with gen_server to ensure cast was processed
+    _ = sys:get_state(flurm_system_monitor),
     ?assert(is_pid(whereis(flurm_system_monitor))).
 
 test_unknown_info() ->
     flurm_system_monitor ! {unknown_info, arg},
-    timer:sleep(20),
+    %% Sync with gen_server to ensure message was processed
+    _ = sys:get_state(flurm_system_monitor),
     ?assert(is_pid(whereis(flurm_system_monitor))).
 
 test_collect_timer() ->
-    %% Wait for collect timer to fire (5 second interval)
-    %% We'll just verify server is still running after a short wait
-    timer:sleep(100),
+    %% Trigger a collect manually and verify server handles it
+    Pid = whereis(flurm_system_monitor),
+    Pid ! collect,
+    %% Sync with gen_server to ensure collect was processed
+    _ = sys:get_state(Pid),
     ?assert(is_pid(whereis(flurm_system_monitor))).
 
 %%====================================================================
@@ -224,7 +228,7 @@ terminate_test_() ->
           Pid = whereis(flurm_system_monitor),
           ?assert(is_pid(Pid)),
           gen_server:stop(flurm_system_monitor),
-          timer:sleep(50),
+          flurm_test_utils:wait_for_death(Pid),
           ?assertEqual(undefined, whereis(flurm_system_monitor))
       end}
      ]}.
@@ -301,13 +305,15 @@ platform_test_() ->
           ?assert(is_integer(TotalMem)),
           ?assert(TotalMem > 0)
       end},
-      {"Load average is float", {timeout, 10, fun() ->
-          %% Wait for collect timer (5 second interval)
-          timer:sleep(5500),
+      {"Load average is float", fun() ->
+          %% Trigger collect manually to ensure metrics are fresh
+          Pid = whereis(flurm_system_monitor),
+          Pid ! collect,
+          _ = sys:get_state(Pid),
           Metrics = flurm_system_monitor:get_metrics(),
           LoadAvg = maps:get(load_avg, Metrics),
           ?assert(is_float(LoadAvg))
-      end}}
+      end}
      ]}.
 
 %%====================================================================
@@ -325,14 +331,16 @@ memory_info_test_() ->
      fun(_) ->
          cleanup_all()
      end,
-     {timeout, 10,
-      [
-       {"Free memory is reasonable", fun() ->
-           timer:sleep(5500), % Wait for collection
-           Metrics = flurm_system_monitor:get_metrics(),
-           FreeMem = maps:get(free_memory_mb, Metrics),
-           TotalMem = maps:get(total_memory_mb, Metrics),
-           ?assert(is_integer(FreeMem)),
-           ?assert(FreeMem =< TotalMem)
-       end}
-      ]}}.
+     [
+      {"Free memory is reasonable", fun() ->
+          %% Trigger collect manually to ensure metrics are fresh
+          Pid = whereis(flurm_system_monitor),
+          Pid ! collect,
+          _ = sys:get_state(Pid),
+          Metrics = flurm_system_monitor:get_metrics(),
+          FreeMem = maps:get(free_memory_mb, Metrics),
+          TotalMem = maps:get(total_memory_mb, Metrics),
+          ?assert(is_integer(FreeMem)),
+          ?assert(FreeMem =< TotalMem)
+      end}
+     ]}.

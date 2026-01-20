@@ -106,7 +106,7 @@ test_unregister_connection() ->
 
     flurm_node_connection_manager:register_connection(<<"node001">>, Pid),
     flurm_node_connection_manager:unregister_connection(<<"node001">>),
-    timer:sleep(20),
+    _ = sys:get_state(flurm_node_connection_manager),
 
     Result = flurm_node_connection_manager:get_connection(<<"node001">>),
     ?assertEqual({error, not_connected}, Result),
@@ -116,7 +116,7 @@ test_unregister_connection_nonexistent() ->
     {ok, _} = flurm_node_connection_manager:start_link(),
 
     flurm_node_connection_manager:unregister_connection(<<"nonexistent">>),
-    timer:sleep(20),
+    _ = sys:get_state(flurm_node_connection_manager),
     ?assert(is_process_alive(whereis(flurm_node_connection_manager))).
 
 %%====================================================================
@@ -262,7 +262,9 @@ test_handle_info_down() ->
     flurm_node_connection_manager:register_connection(<<"node001">>, Pid),
 
     Pid ! stop,
-    timer:sleep(50),
+    flurm_test_utils:wait_for_death(Pid),
+    %% Sync to ensure DOWN message is processed
+    _ = sys:get_state(flurm_node_connection_manager),
 
     Result = flurm_node_connection_manager:get_connection(<<"node001">>),
     ?assertEqual({error, not_connected}, Result).
@@ -271,7 +273,7 @@ test_handle_info_unknown() ->
     {ok, Pid} = flurm_node_connection_manager:start_link(),
 
     Pid ! {unknown, message, here},
-    timer:sleep(20),
+    _ = sys:get_state(flurm_node_connection_manager),
 
     ?assert(is_process_alive(Pid)).
 
@@ -290,7 +292,7 @@ test_handle_cast_unknown() ->
     {ok, Pid} = flurm_node_connection_manager:start_link(),
 
     gen_server:cast(Pid, {unknown_cast, data}),
-    timer:sleep(20),
+    _ = sys:get_state(flurm_node_connection_manager),
 
     ?assert(is_process_alive(Pid)).
 
@@ -302,6 +304,6 @@ test_terminate() ->
     {ok, Pid} = flurm_node_connection_manager:start_link(),
 
     gen_server:stop(Pid, normal, 5000),
-    timer:sleep(20),
+    flurm_test_utils:wait_for_death(Pid),
 
     ?assertEqual(undefined, whereis(flurm_node_connection_manager)).

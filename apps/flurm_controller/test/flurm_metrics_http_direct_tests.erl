@@ -148,7 +148,8 @@ test_accept_success() ->
 
     %% Spawn a client that will connect
     spawn(fun() ->
-        timer:sleep(100),
+        %% Small delay to let accept start first
+        receive after 50 -> ok end,
         case gen_tcp:connect("localhost", Port, []) of
             {ok, S} -> gen_tcp:close(S);
             _ -> ok
@@ -238,7 +239,7 @@ integration_test_() ->
          meck:expect(flurm_metrics, format_prometheus, fun() -> ["test_metric 42\n"] end),
 
          {ok, Pid} = flurm_metrics_http:start_link(),
-         timer:sleep(200),  % Wait for server to start
+         _ = sys:get_state(Pid),  % Sync with server
          {Pid, Port}
      end,
      fun({Pid, _Port}) ->

@@ -342,7 +342,7 @@ test_get_running_tasks() ->
 
     %% Start a task
     flurm_job_array:task_started(ArrayJobId, 0, 1000),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_job_array),
 
     RunningTasks2 = flurm_job_array:get_running_tasks(ArrayJobId),
     ?assertEqual(1, length(RunningTasks2)),
@@ -360,7 +360,7 @@ test_get_completed_tasks() ->
     %% Start and complete a task
     flurm_job_array:task_started(ArrayJobId, 0, 1000),
     flurm_job_array:task_completed(ArrayJobId, 0, 0),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_job_array),
 
     CompletedTasks2 = flurm_job_array:get_completed_tasks(ArrayJobId),
     ?assertEqual(1, length(CompletedTasks2)),
@@ -422,7 +422,7 @@ test_update_task_state() ->
         job_id => 1001,
         start_time => erlang:system_time(second)
     }),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_job_array),
 
     {ok, Task} = flurm_job_array:get_array_task(ArrayJobId, 0),
     ?assertEqual(running, Task#array_task.state),
@@ -475,14 +475,14 @@ test_can_schedule_throttled() ->
     %% Start 2 tasks
     flurm_job_array:task_started(ArrayJobId, 0, 1000),
     flurm_job_array:task_started(ArrayJobId, 1, 1001),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_job_array),
 
     %% Now at limit - can't schedule more
     ?assertEqual(false, flurm_job_array:can_schedule_task(ArrayJobId)),
 
     %% Complete one task
     flurm_job_array:task_completed(ArrayJobId, 0, 0),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_job_array),
 
     %% Can schedule again
     ?assertEqual(true, flurm_job_array:can_schedule_task(ArrayJobId)),
@@ -500,7 +500,7 @@ test_schedule_next_task() ->
     %% Fill up the slots
     flurm_job_array:task_started(ArrayJobId, 0, 1000),
     flurm_job_array:task_started(ArrayJobId, 1, 1001),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_job_array),
 
     %% Should be throttled now
     {error, throttled} = flurm_job_array:schedule_next_task(ArrayJobId),
@@ -517,7 +517,7 @@ test_task_started() ->
 
     %% Start a task
     ok = flurm_job_array:task_started(ArrayJobId, 0, 2000),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_job_array),
 
     {ok, Task} = flurm_job_array:get_array_task(ArrayJobId, 0),
     ?assertEqual(running, Task#array_task.state),
@@ -533,7 +533,7 @@ test_task_completed() ->
     %% Start and complete task with success
     flurm_job_array:task_started(ArrayJobId, 0, 2000),
     flurm_job_array:task_completed(ArrayJobId, 0, 0),  %% Exit code 0 = success
-    timer:sleep(50),
+    _ = sys:get_state(flurm_job_array),
 
     {ok, Task0} = flurm_job_array:get_array_task(ArrayJobId, 0),
     ?assertEqual(completed, Task0#array_task.state),
@@ -542,7 +542,7 @@ test_task_completed() ->
     %% Start and complete task with failure
     flurm_job_array:task_started(ArrayJobId, 1, 2001),
     flurm_job_array:task_completed(ArrayJobId, 1, 1),  %% Exit code 1 = failure
-    timer:sleep(50),
+    _ = sys:get_state(flurm_job_array),
 
     {ok, Task1} = flurm_job_array:get_array_task(ArrayJobId, 1),
     ?assertEqual(failed, Task1#array_task.state),
@@ -564,7 +564,7 @@ test_get_schedulable_count() ->
     %% Start 2 tasks
     flurm_job_array:task_started(ArrayJobId, 0, 1000),
     flurm_job_array:task_started(ArrayJobId, 1, 1001),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_job_array),
 
     %% Can schedule 1 more
     ?assertEqual(1, flurm_job_array:get_schedulable_count(ArrayJobId)),
@@ -599,14 +599,14 @@ test_unknown_request() ->
 test_cast_message_handling() ->
     %% Send unknown cast - should not crash server
     gen_server:cast(flurm_job_array, unknown_cast),
-    timer:sleep(10),
+    _ = sys:get_state(flurm_job_array),
     ?assertEqual(true, is_process_alive(whereis(flurm_job_array))),
     ok.
 
 test_info_message_handling() ->
     %% Send info message - should not crash server
     whereis(flurm_job_array) ! {arbitrary, info, message},
-    timer:sleep(10),
+    _ = sys:get_state(flurm_job_array),
     ?assertEqual(true, is_process_alive(whereis(flurm_job_array))),
     ok.
 
@@ -655,7 +655,7 @@ array_completion_test_() ->
              flurm_job_array:task_started(ArrayJobId, 1, 1001),
              flurm_job_array:task_completed(ArrayJobId, 0, 0),
              flurm_job_array:task_completed(ArrayJobId, 1, 0),
-             timer:sleep(100),
+             _ = sys:get_state(flurm_job_array),
 
              {ok, ArrayJob} = flurm_job_array:get_array_job(ArrayJobId),
              ?assertEqual(completed, ArrayJob#array_job.state)
@@ -684,7 +684,7 @@ array_failure_test_() ->
              flurm_job_array:task_started(ArrayJobId, 1, 1001),
              flurm_job_array:task_completed(ArrayJobId, 0, 0),   %% Success
              flurm_job_array:task_completed(ArrayJobId, 1, 1),   %% Failure
-             timer:sleep(100),
+             _ = sys:get_state(flurm_job_array),
 
              {ok, ArrayJob} = flurm_job_array:get_array_job(ArrayJobId),
              ?assertEqual(failed, ArrayJob#array_job.state)
@@ -711,7 +711,7 @@ cancel_completed_task_test_() ->
              %% Complete task 0
              flurm_job_array:task_started(ArrayJobId, 0, 1000),
              flurm_job_array:task_completed(ArrayJobId, 0, 0),
-             timer:sleep(50),
+             _ = sys:get_state(flurm_job_array),
 
              %% Try to cancel completed task - should fail
              {error, task_not_cancellable} = flurm_job_array:cancel_array_task(ArrayJobId, 0)
@@ -771,7 +771,7 @@ array_spec_edge_cases_test_() ->
                  %% Start and complete the only task
                  flurm_job_array:task_started(ArrayJobId, 0, 1000),
                  flurm_job_array:task_completed(ArrayJobId, 0, 0),
-                 timer:sleep(50),
+                 _ = sys:get_state(flurm_job_array),
                  %% Now try to schedule - should return no_pending
                  {error, no_pending} = flurm_job_array:schedule_next_task(ArrayJobId)
              end},
@@ -792,7 +792,7 @@ array_spec_edge_cases_test_() ->
                  {ok, ArrayJobId} = flurm_job_array:create_array_job(BaseJob, Spec),
                  %% Start task to make it running
                  flurm_job_array:task_started(ArrayJobId, 0, 1000),
-                 timer:sleep(50),
+                 _ = sys:get_state(flurm_job_array),
                  %% Cancel running task
                  ok = flurm_job_array:cancel_array_task(ArrayJobId, 0),
                  {ok, Task} = flurm_job_array:get_array_task(ArrayJobId, 0),
@@ -852,7 +852,7 @@ array_job_error_test_() ->
                  %% Complete one task
                  flurm_job_array:task_started(ArrayJobId, 0, 1000),
                  flurm_job_array:task_completed(ArrayJobId, 0, 0),
-                 timer:sleep(50),
+                 _ = sys:get_state(flurm_job_array),
 
                  %% Cancel the array - completed tasks stay completed
                  ok = flurm_job_array:cancel_array_job(ArrayJobId),
@@ -873,7 +873,7 @@ array_job_error_test_() ->
                  %% Cancel both tasks
                  ok = flurm_job_array:cancel_array_task(ArrayJobId, 0),
                  ok = flurm_job_array:cancel_array_task(ArrayJobId, 1),
-                 timer:sleep(50),
+                 _ = sys:get_state(flurm_job_array),
 
                  %% Array state should be cancelled
                  {ok, ArrayJob} = flurm_job_array:get_array_job(ArrayJobId),

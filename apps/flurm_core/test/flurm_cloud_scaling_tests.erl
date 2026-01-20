@@ -29,7 +29,7 @@ setup() ->
 
     %% Stop any existing server
     catch gen_server:stop(flurm_cloud_scaling, normal, 1000),
-    timer:sleep(50),
+    ok,
 
     %% Start the cloud scaling server
     {ok, Pid} = flurm_cloud_scaling:start_link(),
@@ -38,7 +38,6 @@ setup() ->
 cleanup(#{pid := Pid}) ->
     catch unlink(Pid),
     catch gen_server:stop(Pid, normal, 5000),
-    timer:sleep(50),
     ok.
 
 %%====================================================================
@@ -315,6 +314,7 @@ test_scale_up_with_provider() ->
     ?assertMatch(<<"scale-", _/binary>>, ActionId),
 
     %% Wait for async action
+    %% Legitimate wait for async scale operation
     timer:sleep(200),
 
     %% Check stats
@@ -530,6 +530,7 @@ test_auto_scaling_timer() ->
     ?assert(flurm_cloud_scaling:is_enabled()),
 
     %% Wait for timer messages - shouldn't crash
+    %% Legitimate wait for auto-scaling timer functionality
     timer:sleep(200),
 
     %% Still enabled and functional

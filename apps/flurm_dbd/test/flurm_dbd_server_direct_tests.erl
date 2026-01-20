@@ -80,6 +80,7 @@ setup() ->
     meck:expect(lager, warning, fun(_, _) -> ok end),
     meck:expect(lager, error, fun(_) -> ok end),
     meck:expect(lager, error, fun(_, _) -> ok end),
+    meck:expect(lager, md, fun(_) -> ok end),
 
     %% Mock flurm_dbd_sup to prevent listener startup
     meck:new(flurm_dbd_sup, [passthrough, no_link]),
@@ -116,7 +117,7 @@ test_record_job_start_cast() ->
     JobInfo = #{job_id => 1, name => <<"test_job">>, user_name => <<"testuser">>,
                 partition => <<"batch">>, state => running},
     ?assertEqual(ok, flurm_dbd_server:record_job_start(JobInfo)),
-    timer:sleep(50), % Allow cast to process
+    _ = sys:get_state(flurm_dbd_server), % Allow cast to process
     gen_server:stop(Pid).
 
 test_record_job_end_cast() ->
@@ -124,18 +125,18 @@ test_record_job_end_cast() ->
     %% First create a job
     JobInfo = #{job_id => 2, name => <<"test_job">>, state => running},
     flurm_dbd_server:record_job_start(JobInfo),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_dbd_server),
     %% Then end it
     EndInfo = #{job_id => 2, exit_code => 0, state => completed},
     ?assertEqual(ok, flurm_dbd_server:record_job_end(EndInfo)),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_dbd_server),
     gen_server:stop(Pid).
 
 test_record_job_step_cast() ->
     {ok, Pid} = flurm_dbd_server:start_link(),
     StepInfo = #{job_id => 1, step_id => 0, name => <<"step0">>, state => running},
     ?assertEqual(ok, flurm_dbd_server:record_job_step(StepInfo)),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_dbd_server),
     gen_server:stop(Pid).
 
 test_record_job_submit() ->
@@ -143,7 +144,7 @@ test_record_job_submit() ->
     JobData = #{job_id => 10, user_id => 1000, group_id => 1000,
                 partition => <<"batch">>, num_nodes => 2, num_cpus => 4},
     ?assertEqual(ok, flurm_dbd_server:record_job_submit(JobData)),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_dbd_server),
     %% Verify job was recorded
     {ok, Job} = flurm_dbd_server:get_job_record(10),
     ?assertEqual(10, maps:get(job_id, Job)),
@@ -155,10 +156,10 @@ test_record_job_start_event() ->
     %% First submit a job
     JobData = #{job_id => 11, user_id => 1000},
     flurm_dbd_server:record_job_submit(JobData),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_dbd_server),
     %% Then start it
     ?assertEqual(ok, flurm_dbd_server:record_job_start(11, [<<"node1">>, <<"node2">>])),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_dbd_server),
     {ok, Job} = flurm_dbd_server:get_job_record(11),
     ?assertEqual(running, maps:get(state, Job)),
     ?assertEqual(2, maps:get(num_nodes, Job)),
@@ -169,12 +170,12 @@ test_record_job_end_event() ->
     %% Create job through submit and start
     JobData = #{job_id => 12, user_id => 1000},
     flurm_dbd_server:record_job_submit(JobData),
-    timer:sleep(20),
+    _ = sys:get_state(flurm_dbd_server),
     flurm_dbd_server:record_job_start(12, [<<"node1">>]),
-    timer:sleep(20),
+    _ = sys:get_state(flurm_dbd_server),
     %% End job
     ?assertEqual(ok, flurm_dbd_server:record_job_end(12, 0, completed)),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_dbd_server),
     {ok, Job} = flurm_dbd_server:get_job_record(12),
     ?assertEqual(completed, maps:get(state, Job)),
     ?assertEqual(0, maps:get(exit_code, Job)),
@@ -185,10 +186,10 @@ test_record_job_cancelled() ->
     %% Create a job first
     JobData = #{job_id => 13, user_id => 1000},
     flurm_dbd_server:record_job_submit(JobData),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_dbd_server),
     %% Cancel it
     ?assertEqual(ok, flurm_dbd_server:record_job_cancelled(13, user_request)),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_dbd_server),
     {ok, Job} = flurm_dbd_server:get_job_record(13),
     ?assertEqual(cancelled, maps:get(state, Job)),
     gen_server:stop(Pid).
@@ -204,7 +205,7 @@ test_get_job_record() ->
     %% Create and retrieve
     JobData = #{job_id => 20, user_id => 1000},
     flurm_dbd_server:record_job_submit(JobData),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_dbd_server),
     {ok, Job} = flurm_dbd_server:get_job_record(20),
     ?assertEqual(20, maps:get(job_id, Job)),
     gen_server:stop(Pid).
@@ -216,7 +217,7 @@ test_list_job_records() ->
     %% Add some jobs
     flurm_dbd_server:record_job_submit(#{job_id => 21, user_id => 1000}),
     flurm_dbd_server:record_job_submit(#{job_id => 22, user_id => 1001}),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_dbd_server),
     Jobs = flurm_dbd_server:list_job_records(),
     ?assertEqual(2, length(Jobs)),
     gen_server:stop(Pid).
@@ -226,7 +227,7 @@ test_list_job_records_filters() ->
     %% Add jobs with different users
     flurm_dbd_server:record_job_start(#{job_id => 31, user_name => <<"alice">>, account => <<"acct1">>, state => running}),
     flurm_dbd_server:record_job_start(#{job_id => 32, user_name => <<"bob">>, account => <<"acct1">>, state => completed}),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_dbd_server),
     %% Filter by user
     AliceJobs = flurm_dbd_server:list_job_records(#{user => <<"alice">>}),
     ?assertEqual(1, length(AliceJobs)),
@@ -336,7 +337,7 @@ test_get_jobs_by_user() ->
     %% Add jobs for different users
     flurm_dbd_server:record_job_start(#{job_id => 40, user_name => <<"alice">>}),
     flurm_dbd_server:record_job_start(#{job_id => 41, user_name => <<"bob">>}),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_dbd_server),
     AliceJobs = flurm_dbd_server:get_jobs_by_user(<<"alice">>),
     ?assertEqual(1, length(AliceJobs)),
     ?assertEqual(<<"alice">>, maps:get(user_name, hd(AliceJobs))),
@@ -346,7 +347,7 @@ test_get_jobs_by_account() ->
     {ok, Pid} = flurm_dbd_server:start_link(),
     flurm_dbd_server:record_job_start(#{job_id => 42, account => <<"physics">>}),
     flurm_dbd_server:record_job_start(#{job_id => 43, account => <<"chem">>}),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_dbd_server),
     PhysicsJobs = flurm_dbd_server:get_jobs_by_account(<<"physics">>),
     ?assertEqual(1, length(PhysicsJobs)),
     gen_server:stop(Pid).
@@ -355,7 +356,7 @@ test_get_jobs_in_range() ->
     {ok, Pid} = flurm_dbd_server:start_link(),
     Now = erlang:system_time(second),
     flurm_dbd_server:record_job_start(#{job_id => 44, start_time => Now}),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_dbd_server),
     Jobs = flurm_dbd_server:get_jobs_in_range(Now - 100, Now + 100),
     ?assert(length(Jobs) >= 1),
     gen_server:stop(Pid).
@@ -460,7 +461,7 @@ test_archive_old_jobs() ->
     OldTime = erlang:system_time(second) - (40 * 86400), % 40 days ago
     flurm_dbd_server:record_job_start(#{job_id => 50, state => completed,
                                         end_time => OldTime}),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_dbd_server),
     {ok, Count} = flurm_dbd_server:archive_old_jobs(30),
     ?assert(is_integer(Count)),
     gen_server:stop(Pid).
@@ -498,7 +499,7 @@ test_unknown_cast() ->
     {ok, Pid} = flurm_dbd_server:start_link(),
     %% Should not crash
     gen_server:cast(Pid, {unknown_cast, bar}),
-    timer:sleep(20),
+    _ = sys:get_state(flurm_dbd_server),
     ?assert(is_process_alive(Pid)),
     gen_server:stop(Pid).
 
@@ -506,14 +507,14 @@ test_handle_info_start_listener() ->
     {ok, Pid} = flurm_dbd_server:start_link(),
     %% The init already sends start_listener, but we can send another
     Pid ! start_listener,
-    timer:sleep(50),
+    _ = sys:get_state(flurm_dbd_server),
     ?assert(is_process_alive(Pid)),
     gen_server:stop(Pid).
 
 test_handle_info_other() ->
     {ok, Pid} = flurm_dbd_server:start_link(),
     Pid ! {some, random, message},
-    timer:sleep(20),
+    _ = sys:get_state(flurm_dbd_server),
     ?assert(is_process_alive(Pid)),
     gen_server:stop(Pid).
 
@@ -521,7 +522,7 @@ test_terminate() ->
     {ok, Pid} = flurm_dbd_server:start_link(),
     %% Calling stop triggers terminate/2
     gen_server:stop(Pid, normal, 5000),
-    timer:sleep(20),
+    _ = sys:get_state(flurm_dbd_server),
     ?assertEqual(undefined, whereis(flurm_dbd_server)).
 
 %%====================================================================
@@ -545,7 +546,7 @@ test_record_job_end_new_job() ->
     %% End a job that was never started - should create new record
     EndInfo = #{job_id => 100, exit_code => 1, state => failed},
     flurm_dbd_server:record_job_end(EndInfo),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_dbd_server),
     {ok, Job} = flurm_dbd_server:get_job_record(100),
     ?assertEqual(100, maps:get(job_id, Job)),
     gen_server:stop(Pid).
@@ -554,7 +555,7 @@ test_record_job_start_event_new_job() ->
     {ok, Pid} = flurm_dbd_server:start_link(),
     %% Start event for job that was never submitted
     flurm_dbd_server:record_job_start(101, [<<"node1">>]),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_dbd_server),
     {ok, Job} = flurm_dbd_server:get_job_record(101),
     ?assertEqual(running, maps:get(state, Job)),
     gen_server:stop(Pid).
@@ -563,7 +564,7 @@ test_record_job_end_event_unknown() ->
     {ok, Pid} = flurm_dbd_server:start_link(),
     %% End event for unknown job - should log warning but not crash
     flurm_dbd_server:record_job_end(999, 0, completed),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_dbd_server),
     ?assert(is_process_alive(Pid)),
     gen_server:stop(Pid).
 
@@ -571,7 +572,7 @@ test_record_job_cancelled_unknown() ->
     {ok, Pid} = flurm_dbd_server:start_link(),
     %% Cancel unknown job - should log warning but not crash
     flurm_dbd_server:record_job_cancelled(999, timeout),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_dbd_server),
     ?assert(is_process_alive(Pid)),
     gen_server:stop(Pid).
 
@@ -581,7 +582,7 @@ test_record_job_submit_timestamp_tuple() ->
     Now = os:timestamp(),
     JobData = #{job_id => 102, user_id => 1000, submit_time => Now},
     flurm_dbd_server:record_job_submit(JobData),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_dbd_server),
     {ok, Job} = flurm_dbd_server:get_job_record(102),
     ?assert(maps:get(submit_time, Job) > 0),
     gen_server:stop(Pid).
@@ -601,6 +602,7 @@ listener_error_test_() ->
          meck:expect(lager, info, fun(_, _) -> ok end),
          meck:expect(lager, debug, fun(_, _) -> ok end),
          meck:expect(lager, error, fun(_, _) -> ok end),
+    meck:expect(lager, md, fun(_) -> ok end),
          %% Mock flurm_dbd_sup to fail listener start
          meck:new(flurm_dbd_sup, [passthrough, no_link]),
          meck:expect(flurm_dbd_sup, start_listener, fun() -> {error, eaddrinuse} end),
@@ -621,7 +623,8 @@ listener_error_test_() ->
 
 test_listener_start_failure() ->
     {ok, Pid} = flurm_dbd_server:start_link(),
-    timer:sleep(100),
+    %% Sync to wait for handle_info start_listener to process
+    _ = sys:get_state(Pid),
     %% Server should still be running even if listener failed
     ?assert(is_process_alive(Pid)),
     gen_server:stop(Pid).

@@ -331,7 +331,7 @@ test_job_timeout() ->
     ok = flurm_job:signal_config_complete(Pid),
     {ok, running} = flurm_job:get_state(Pid),
 
-    %% Wait for timeout (slightly more than 1 second)
+    %% Wait for timeout (legitimate wait for 1-second job timeout to expire)
     timer:sleep(1500),
 
     %% Should be in timeout state
@@ -511,7 +511,7 @@ test_multiple_jobs_lifecycle() ->
     {ok, pending} = flurm_job:get_state(Pid5),
 
     %% Verify registry state counts
-    timer:sleep(50),  % Allow time for state updates
+    _ = sys:get_state(flurm_job_registry),  % Allow time for state updates
     StateCounts = flurm_job_registry:count_by_state(),
     ?assert(maps:get(completed, StateCounts, 0) >= 1),
     ?assert(maps:get(cancelled, StateCounts, 0) >= 1),
@@ -550,7 +550,7 @@ test_job_dependency_afterok() ->
 
     %% Notify dependency system
     ok = flurm_job_deps:notify_completion(JobId1, completed),
-    timer:sleep(50),  % Allow time for async processing
+    _ = sys:get_state(flurm_job_registry),  % Allow time for async processing
 
     %% Job2 dependencies should now be satisfied
     ?assertEqual(true, flurm_job_deps:are_dependencies_satisfied(JobId2)),
@@ -581,7 +581,7 @@ test_job_dependency_afterany() ->
 
     %% Notify dependency system
     ok = flurm_job_deps:notify_completion(JobId1, cancelled),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_job_registry),
 
     %% Job2 dependencies should be satisfied (afterany accepts any terminal state)
     ?assertEqual(true, flurm_job_deps:are_dependencies_satisfied(JobId2)),
@@ -611,7 +611,7 @@ test_job_dependency_afternotok() ->
 
     %% Notify dependency system
     ok = flurm_job_deps:notify_completion(JobId1, failed),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_job_registry),
 
     %% Job2 dependencies should be satisfied (afternotok accepts failed state)
     ?assertEqual(true, flurm_job_deps:are_dependencies_satisfied(JobId2)),
@@ -643,7 +643,7 @@ test_job_singleton_dependency() ->
 
     %% Notify completion
     ok = flurm_job_deps:notify_completion(JobId1, completed),
-    timer:sleep(100),
+    _ = sys:get_state(flurm_job_deps),
 
     %% Second job should now have singleton
     ?assertEqual(true, flurm_job_deps:are_dependencies_satisfied(JobId2)),
@@ -691,7 +691,7 @@ test_job_array_task_states() ->
 
     %% Start task 0
     ok = flurm_job_array:task_started(ArrayJobId, 0, 1001),
-    timer:sleep(20),
+    _ = sys:get_state(flurm_job_array),
 
     Stats2 = flurm_job_array:get_array_stats(ArrayJobId),
     ?assertEqual(2, maps:get(pending, Stats2)),
@@ -699,7 +699,7 @@ test_job_array_task_states() ->
 
     %% Complete task 0 successfully
     ok = flurm_job_array:task_completed(ArrayJobId, 0, 0),
-    timer:sleep(20),
+    _ = sys:get_state(flurm_job_array),
 
     Stats3 = flurm_job_array:get_array_stats(ArrayJobId),
     ?assertEqual(1, maps:get(completed, Stats3)),
@@ -708,7 +708,7 @@ test_job_array_task_states() ->
     %% Start and fail task 1
     ok = flurm_job_array:task_started(ArrayJobId, 1, 1002),
     ok = flurm_job_array:task_completed(ArrayJobId, 1, 1),  % Non-zero exit = failure
-    timer:sleep(20),
+    _ = sys:get_state(flurm_job_array),
 
     Stats4 = flurm_job_array:get_array_stats(ArrayJobId),
     ?assertEqual(1, maps:get(completed, Stats4)),
@@ -730,18 +730,18 @@ test_job_array_throttling() ->
 
     %% Start two tasks
     ok = flurm_job_array:task_started(ArrayJobId, 0, 1001),
-    timer:sleep(20),
+    _ = sys:get_state(flurm_job_array),
     ?assertEqual(1, flurm_job_array:get_schedulable_count(ArrayJobId)),
 
     ok = flurm_job_array:task_started(ArrayJobId, 1, 1002),
-    timer:sleep(20),
+    _ = sys:get_state(flurm_job_array),
 
     %% At max concurrent - cannot schedule more
     ?assertEqual(0, flurm_job_array:get_schedulable_count(ArrayJobId)),
 
     %% Complete one task
     ok = flurm_job_array:task_completed(ArrayJobId, 0, 0),
-    timer:sleep(20),
+    _ = sys:get_state(flurm_job_array),
 
     %% Can schedule one more
     ?assertEqual(1, flurm_job_array:get_schedulable_count(ArrayJobId)),
@@ -756,7 +756,7 @@ test_job_array_cancellation() ->
 
     %% Cancel individual task
     ok = flurm_job_array:cancel_array_task(ArrayJobId, 1),
-    timer:sleep(20),
+    _ = sys:get_state(flurm_job_array),
 
     %% Verify stats show one cancelled task
     Stats1 = flurm_job_array:get_array_stats(ArrayJobId),
@@ -764,7 +764,7 @@ test_job_array_cancellation() ->
 
     %% Cancel entire array job
     ok = flurm_job_array:cancel_array_job(ArrayJobId),
-    timer:sleep(20),
+    _ = sys:get_state(flurm_job_array),
 
     %% Verify all tasks are cancelled via stats
     Stats2 = flurm_job_array:get_array_stats(ArrayJobId),
@@ -822,17 +822,17 @@ test_state_machine_info_handling() ->
 
     %% Send info messages in various states - should all be ignored
     Pid ! random_info_message,
-    timer:sleep(10),
+    _ = sys:get_state(Pid),
     {ok, pending} = flurm_job:get_state(Pid),
 
     ok = flurm_job:allocate(Pid, [<<"node1">>]),
     Pid ! another_info,
-    timer:sleep(10),
+    _ = sys:get_state(Pid),
     {ok, configuring} = flurm_job:get_state(Pid),
 
     ok = flurm_job:signal_config_complete(Pid),
     Pid ! yet_another_info,
-    timer:sleep(10),
+    _ = sys:get_state(Pid),
     {ok, running} = flurm_job:get_state(Pid),
 
     %% Also test casts in terminal states
@@ -842,7 +842,7 @@ test_state_machine_info_handling() ->
 
     gen_statem:cast(Pid, random_cast),
     Pid ! random_info,
-    timer:sleep(10),
+    _ = sys:get_state(Pid),
     {ok, completed} = flurm_job:get_state(Pid),
     ok.
 

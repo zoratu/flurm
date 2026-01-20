@@ -432,11 +432,11 @@ test_health_monitoring_failures() ->
 
     %% Send 3 failure notifications (MAX_RETRY_COUNT)
     FedPid ! {cluster_health, <<"failing">>, down},
-    timer:sleep(50),
+    _ = sys:get_state(flurm_federation),
     FedPid ! {cluster_health, <<"failing">>, down},
-    timer:sleep(50),
+    _ = sys:get_state(flurm_federation),
     FedPid ! {cluster_health, <<"failing">>, down},
-    timer:sleep(50),
+    _ = sys:get_state(flurm_federation),
 
     %% Check cluster is now marked down
     {ok, Status} = flurm_federation:get_cluster_status(<<"failing">>),
@@ -451,7 +451,7 @@ test_health_monitoring_recovery() ->
     %% Simulate successful health check
     FedPid = whereis(flurm_federation),
     FedPid ! {cluster_health, <<"recovering">>, up},
-    timer:sleep(50),
+    _ = sys:get_state(flurm_federation),
 
     %% Check cluster is now marked up with reset failures
     {ok, Status} = flurm_federation:get_cluster_status(<<"recovering">>),

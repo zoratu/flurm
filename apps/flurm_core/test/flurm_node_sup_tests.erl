@@ -315,14 +315,14 @@ test_stop_node() ->
     Result = flurm_node_sup:stop_node(Pid),
 
     ?assertEqual(ok, Result),
-    timer:sleep(100),
+    _ = sys:get_state(flurm_node_sup),
     ?assertNot(is_process_alive(Pid)),
     ok.
 
 test_stop_non_existent_node() ->
     %% Create a fake pid that's not a child
     FakePid = spawn(fun() -> ok end),
-    timer:sleep(10),  % Let it die
+    flurm_test_utils:wait_for_death(FakePid),
 
     Result = flurm_node_sup:stop_node(FakePid),
 
@@ -351,7 +351,7 @@ test_which_nodes_empty() ->
     lists:foreach(fun(Pid) ->
         flurm_node_sup:stop_node(Pid)
     end, Children),
-    timer:sleep(100),
+    _ = sys:get_state(flurm_node_sup),
 
     Result = flurm_node_sup:which_nodes(),
 
@@ -364,7 +364,7 @@ test_which_nodes_with_nodes() ->
     lists:foreach(fun(Pid) ->
         flurm_node_sup:stop_node(Pid)
     end, Children),
-    timer:sleep(100),
+    _ = sys:get_state(flurm_node_sup),
 
     %% Start some nodes
     NodeSpec1 = #node_spec{
@@ -422,7 +422,7 @@ test_count_nodes_zero() ->
     lists:foreach(fun(Pid) ->
         flurm_node_sup:stop_node(Pid)
     end, Children),
-    timer:sleep(100),
+    _ = sys:get_state(flurm_node_sup),
 
     Result = flurm_node_sup:count_nodes(),
 
@@ -435,7 +435,7 @@ test_count_nodes_with_nodes() ->
     lists:foreach(fun(Pid) ->
         flurm_node_sup:stop_node(Pid)
     end, Children),
-    timer:sleep(100),
+    _ = sys:get_state(flurm_node_sup),
 
     %% Start some nodes
     NodeSpecs = [

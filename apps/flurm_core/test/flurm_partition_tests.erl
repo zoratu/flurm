@@ -407,7 +407,7 @@ test_unknown_cast() ->
     Pid = whereis(flurm_partition_test_partition),
     %% Unknown cast should be ignored without crashing
     ok = gen_server:cast(Pid, {unknown_cast_message, bar}),
-    timer:sleep(50),
+    _ = sys:get_state(Pid),
     ?assert(is_process_alive(Pid)),
     %% Process should still work
     {ok, State} = flurm_partition:get_state(Pid),
@@ -417,7 +417,7 @@ test_unknown_info() ->
     Pid = whereis(flurm_partition_test_partition),
     %% Unknown info message should be ignored without crashing
     Pid ! {unknown_info_message, baz},
-    timer:sleep(50),
+    _ = sys:get_state(Pid),
     ?assert(is_process_alive(Pid)),
     %% Process should still work
     {ok, State} = flurm_partition:get_state(Pid),
@@ -448,5 +448,5 @@ test_terminate_clean() ->
     ?assert(is_process_alive(Pid)),
     %% Stop the partition
     gen_server:stop(Pid, normal, 5000),
-    timer:sleep(50),
+    %% Process is stopped, verify it's gone
     ?assertNot(is_process_alive(Pid)).

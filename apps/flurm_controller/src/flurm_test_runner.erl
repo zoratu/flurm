@@ -12,9 +12,10 @@
 %% Note: These functions require external processes (flurm_job_manager,
 %% flurm_node_connection_manager) so they cannot be unit tested in isolation.
 %% They are exported for integration testing purposes.
+%% Note: run_job_impl is renamed from run_job_test to avoid EUnit auto-discovery
 -ifdef(TEST).
 -export([
-    run_job_test/0,
+    run_job_impl/0,
     monitor_job/2
 ]).
 -endif.
@@ -34,10 +35,10 @@ run() ->
             io:format("ERROR: No nodes connected~n"),
             {error, no_nodes};
         _ ->
-            run_job_test()
+            run_job_impl()
     end.
 
-run_job_test() ->
+run_job_impl() ->
     io:format("~nSubmitting job...~n"),
     JobSpec = #{
         name => <<"test_job">>,

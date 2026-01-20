@@ -128,9 +128,6 @@ cleanup_single_node(SetupResult) ->
             end
     end,
 
-    %% Give Ra time to clean up
-    timer:sleep(100),
-
     %% Stop Ra if possible
     cleanup_ra_state(),
 
@@ -201,7 +198,6 @@ cleanup_cluster_simulation(TestDataDir) ->
 cleanup_ra_state() ->
     %% Try to stop Ra servers gracefully
     catch application:stop(ra),
-    timer:sleep(50),
     ok.
 
 %%====================================================================
@@ -255,8 +251,8 @@ test_leader_election() ->
             ok
     end,
 
-    %% Wait for potential Ra initialization
-    timer:sleep(1000),
+    %% Sync with server to ensure ready
+    _ = sys:get_state(flurm_controller_cluster),
 
     %% Get leader info
     LeaderResult = flurm_controller_cluster:get_leader(),

@@ -10,29 +10,73 @@
 %%====================================================================
 
 setup() ->
-    %% Stop any existing servers
-    catch gen_server:stop(flurm_metrics_http),
-    catch gen_server:stop(flurm_metrics),
+    %% Stop any existing servers with proper unlinking
+    case whereis(flurm_metrics_http) of
+        undefined -> ok;
+        HttpP ->
+            catch unlink(HttpP),
+            Ref1 = monitor(process, HttpP),
+            catch gen_server:stop(HttpP, shutdown, 2000),
+            receive
+                {'DOWN', Ref1, process, HttpP, _} -> ok
+            after 2000 ->
+                demonitor(Ref1, [flush])
+            end
+    end,
+    case whereis(flurm_metrics) of
+        undefined -> ok;
+        MetP ->
+            catch unlink(MetP),
+            Ref2 = monitor(process, MetP),
+            catch gen_server:stop(MetP, shutdown, 2000),
+            receive
+                {'DOWN', Ref2, process, MetP, _} -> ok
+            after 2000 ->
+                demonitor(Ref2, [flush])
+            end
+    end,
     catch ets:delete(flurm_metrics),
     catch ets:delete(flurm_histograms),
-    timer:sleep(50),
 
     %% Start metrics server first (dependency)
     {ok, MetricsPid} = flurm_metrics:start_link(),
+    unlink(MetricsPid),
 
     %% Use a random high port to avoid conflicts
     Port = 19090 + rand:uniform(1000),
     application:set_env(flurm_controller, metrics_port, Port),
 
     {ok, HttpPid} = flurm_metrics_http:start_link(),
+    unlink(HttpPid),
     {MetricsPid, HttpPid, Port}.
 
 cleanup({MetricsPid, HttpPid, _Port}) ->
-    catch gen_server:stop(HttpPid),
-    catch gen_server:stop(MetricsPid),
+    case is_process_alive(HttpPid) of
+        true ->
+            catch unlink(HttpPid),
+            Ref1 = monitor(process, HttpPid),
+            catch gen_server:stop(HttpPid, shutdown, 2000),
+            receive
+                {'DOWN', Ref1, process, HttpPid, _} -> ok
+            after 2000 ->
+                demonitor(Ref1, [flush])
+            end;
+        false -> ok
+    end,
+    case is_process_alive(MetricsPid) of
+        true ->
+            catch unlink(MetricsPid),
+            Ref2 = monitor(process, MetricsPid),
+            catch gen_server:stop(MetricsPid, shutdown, 2000),
+            receive
+                {'DOWN', Ref2, process, MetricsPid, _} -> ok
+            after 2000 ->
+                demonitor(Ref2, [flush])
+            end;
+        false -> ok
+    end,
     catch ets:delete(flurm_metrics),
-    catch ets:delete(flurm_histograms),
-    timer:sleep(50).
+    catch ets:delete(flurm_histograms).
 
 %%====================================================================
 %% Test Generator
@@ -65,8 +109,8 @@ test_server_starts() ->
 
 test_get_metrics() ->
     Port = application:get_env(flurm_controller, metrics_port, 9090),
-    %% Give server time to start accepting
-    timer:sleep(100),
+    %% Sync with server to ensure it's ready
+    _ = sys:get_state(flurm_metrics_http),
 
     case gen_tcp:connect("127.0.0.1", Port, [binary, {active, false}], 1000) of
         {ok, Socket} ->
@@ -89,7 +133,7 @@ test_get_metrics() ->
 
 test_get_index() ->
     Port = application:get_env(flurm_controller, metrics_port, 9090),
-    timer:sleep(100),
+    _ = sys:get_state(flurm_metrics_http),
 
     case gen_tcp:connect("127.0.0.1", Port, [binary, {active, false}], 1000) of
         {ok, Socket} ->
@@ -108,7 +152,7 @@ test_get_index() ->
 
 test_get_health() ->
     Port = application:get_env(flurm_controller, metrics_port, 9090),
-    timer:sleep(100),
+    _ = sys:get_state(flurm_metrics_http),
 
     case gen_tcp:connect("127.0.0.1", Port, [binary, {active, false}], 1000) of
         {ok, Socket} ->
@@ -128,7 +172,7 @@ test_get_health() ->
 
 test_get_404() ->
     Port = application:get_env(flurm_controller, metrics_port, 9090),
-    timer:sleep(100),
+    _ = sys:get_state(flurm_metrics_http),
 
     case gen_tcp:connect("127.0.0.1", Port, [binary, {active, false}], 1000) of
         {ok, Socket} ->
@@ -150,19 +194,19 @@ test_unknown_call() ->
 
 test_unknown_cast() ->
     ok = gen_server:cast(flurm_metrics_http, {unknown_cast}),
-    timer:sleep(20),
+    _ = sys:get_state(flurm_metrics_http),
     ?assert(is_pid(whereis(flurm_metrics_http))).
 
 test_unknown_info() ->
     flurm_metrics_http ! {unknown_info},
-    timer:sleep(20),
+    _ = sys:get_state(flurm_metrics_http),
     ?assert(is_pid(whereis(flurm_metrics_http))).
 
 test_stop() ->
     Pid = whereis(flurm_metrics_http),
     ?assert(is_pid(Pid)),
     ok = flurm_metrics_http:stop(),
-    timer:sleep(50),
+    flurm_test_utils:wait_for_death(Pid),
     ?assertEqual(undefined, whereis(flurm_metrics_http)).
 
 test_code_change() ->
@@ -192,9 +236,14 @@ port_in_use_test_() ->
           {"Server handles port in use gracefully", fun() ->
               %% Should start without error even if port is in use
               %% (will have socket = undefined in state)
-              catch gen_server:stop(flurm_metrics),
-              catch gen_server:stop(flurm_metrics_http),
-              timer:sleep(50),
+              case whereis(flurm_metrics) of
+                  undefined -> ok;
+                  MPid -> gen_server:stop(MPid), flurm_test_utils:wait_for_death(MPid)
+              end,
+              case whereis(flurm_metrics_http) of
+                  undefined -> ok;
+                  HPid -> gen_server:stop(HPid), flurm_test_utils:wait_for_death(HPid)
+              end,
               {ok, _} = flurm_metrics:start_link(),
               {ok, Pid} = flurm_metrics_http:start_link(),
               ?assert(is_pid(Pid)),
@@ -221,5 +270,5 @@ no_socket_test_() ->
             end
         end),
         Pid ! accept,
-        timer:sleep(50)
+        flurm_test_utils:wait_for_death(Pid)
     end}.

@@ -20,24 +20,21 @@ setup() ->
     case whereis(flurm_dbd_server) of
         undefined -> ok;
         ExistingPid ->
-            exit(ExistingPid, shutdown),
-            timer:sleep(50)
+            flurm_test_utils:kill_and_wait(ExistingPid)
     end,
     %% Mock flurm_dbd_sup to avoid Ranch dependency
     meck:new(flurm_dbd_sup, [passthrough, no_link]),
     meck:expect(flurm_dbd_sup, start_listener, fun() -> {ok, self()} end),
     %% Start fresh server
     {ok, NewPid} = flurm_dbd_server:start_link(),
-    %% Wait for listener start message to be processed
-    timer:sleep(100),
+    %% Sync to ensure listener start message is processed
+    _ = sys:get_state(NewPid),
     NewPid.
 
 cleanup(Pid) ->
     case is_process_alive(Pid) of
         true ->
-            unlink(Pid),
-            exit(Pid, shutdown),
-            timer:sleep(50);
+            gen_server:stop(Pid, normal, 5000);
         false ->
             ok
     end,
@@ -83,7 +80,7 @@ test_record_job_start_map() ->
     },
     Result = flurm_dbd_server:record_job_start(JobInfo),
     ?assertEqual(ok, Result),
-    timer:sleep(50).
+    _ = sys:get_state(flurm_dbd_server).
 
 test_record_job_end_map() ->
     JobInfo = #{
@@ -94,7 +91,7 @@ test_record_job_end_map() ->
     },
     Result = flurm_dbd_server:record_job_end(JobInfo),
     ?assertEqual(ok, Result),
-    timer:sleep(50).
+    _ = sys:get_state(flurm_dbd_server).
 
 test_record_job_step() ->
     StepInfo = #{
@@ -111,7 +108,7 @@ test_record_job_step() ->
     },
     Result = flurm_dbd_server:record_job_step(StepInfo),
     ?assertEqual(ok, Result),
-    timer:sleep(50).
+    _ = sys:get_state(flurm_dbd_server).
 
 test_record_job_submit_event() ->
     JobData = #{
@@ -124,7 +121,7 @@ test_record_job_submit_event() ->
     },
     Result = flurm_dbd_server:record_job_submit(JobData),
     ?assertEqual(ok, Result),
-    timer:sleep(50).
+    _ = sys:get_state(flurm_dbd_server).
 
 test_record_job_start_event() ->
     %% First submit
@@ -137,12 +134,12 @@ test_record_job_start_event() ->
         num_cpus => 8
     },
     ok = flurm_dbd_server:record_job_submit(JobData),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_dbd_server),
 
     %% Then start
     Result = flurm_dbd_server:record_job_start(6002, [<<"node1">>, <<"node2">>]),
     ?assertEqual(ok, Result),
-    timer:sleep(50).
+    _ = sys:get_state(flurm_dbd_server).
 
 test_record_job_end_event() ->
     %% Submit and start first
@@ -155,14 +152,14 @@ test_record_job_end_event() ->
         num_cpus => 4
     },
     ok = flurm_dbd_server:record_job_submit(JobData),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_dbd_server),
     ok = flurm_dbd_server:record_job_start(6003, [<<"node1">>]),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_dbd_server),
 
     %% End with exit code
     Result = flurm_dbd_server:record_job_end(6003, 0, completed),
     ?assertEqual(ok, Result),
-    timer:sleep(50).
+    _ = sys:get_state(flurm_dbd_server).
 
 test_record_job_cancelled_event() ->
     %% Submit first
@@ -175,12 +172,12 @@ test_record_job_cancelled_event() ->
         num_cpus => 1
     },
     ok = flurm_dbd_server:record_job_submit(JobData),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_dbd_server),
 
     %% Cancel
     Result = flurm_dbd_server:record_job_cancelled(6004, user_cancelled),
     ?assertEqual(ok, Result),
-    timer:sleep(50).
+    _ = sys:get_state(flurm_dbd_server).
 
 test_get_job_record() ->
     %% Submit a job
@@ -193,7 +190,7 @@ test_get_job_record() ->
         num_cpus => 2
     },
     ok = flurm_dbd_server:record_job_submit(JobData),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_dbd_server),
 
     %% Get the record
     case flurm_dbd_server:get_job_record(7001) of
@@ -449,12 +446,12 @@ gen_server_callbacks_test_() ->
              end},
              {"handle_cast unknown does not crash", fun() ->
                  gen_server:cast(flurm_dbd_server, unknown_message),
-                 timer:sleep(50),
+                 _ = sys:get_state(flurm_dbd_server),
                  ?assert(is_process_alive(whereis(flurm_dbd_server)))
              end},
              {"handle_info unknown does not crash", fun() ->
                  whereis(flurm_dbd_server) ! unknown_info,
-                 timer:sleep(50),
+                 _ = sys:get_state(flurm_dbd_server),
                  ?assert(is_process_alive(whereis(flurm_dbd_server)))
              end}
          ]
@@ -568,7 +565,7 @@ job_conversion_test_() ->
                      std_err => <<"/home/user/job.err">>
                  },
                  ok = flurm_dbd_server:record_job_start(JobInfo),
-                 timer:sleep(50)
+                 _ = sys:get_state(flurm_dbd_server)
              end},
              {"job submit with erlang timestamp", fun() ->
                  JobData = #{
@@ -581,22 +578,22 @@ job_conversion_test_() ->
                      submit_time => erlang:timestamp()
                  },
                  ok = flurm_dbd_server:record_job_submit(JobData),
-                 timer:sleep(50)
+                 _ = sys:get_state(flurm_dbd_server)
              end},
              {"job end for unknown job", fun() ->
                  %% Try to end a job that doesn't exist
                  ok = flurm_dbd_server:record_job_end(99999, 0, completed),
-                 timer:sleep(50)
+                 _ = sys:get_state(flurm_dbd_server)
              end},
              {"job cancelled for unknown job", fun() ->
                  %% Try to cancel a job that doesn't exist
                  ok = flurm_dbd_server:record_job_cancelled(99998, unknown),
-                 timer:sleep(50)
+                 _ = sys:get_state(flurm_dbd_server)
              end},
              {"job start event for unknown job", fun() ->
                  %% Start a job without prior submit
                  ok = flurm_dbd_server:record_job_start(88888, [<<"node1">>]),
-                 timer:sleep(50)
+                 _ = sys:get_state(flurm_dbd_server)
              end}
          ]
      end
@@ -621,7 +618,7 @@ filter_test_() ->
                      state => completed
                  },
                  ok = flurm_dbd_server:record_job_start(JobInfo),
-                 timer:sleep(50),
+                 _ = sys:get_state(flurm_dbd_server),
                  %% Filter by user
                  Jobs = flurm_dbd_server:list_job_records(#{user => <<"filter_user">>}),
                  ?assert(is_list(Jobs))
@@ -680,7 +677,7 @@ job_end_update_test_() ->
                      start_time => erlang:system_time(second) - 100
                  },
                  ok = flurm_dbd_server:record_job_start(JobInfo1),
-                 timer:sleep(50),
+                 _ = sys:get_state(flurm_dbd_server),
 
                  %% Then record end
                  JobInfo2 = #{
@@ -690,7 +687,7 @@ job_end_update_test_() ->
                      end_time => erlang:system_time(second)
                  },
                  ok = flurm_dbd_server:record_job_end(JobInfo2),
-                 timer:sleep(50),
+                 _ = sys:get_state(flurm_dbd_server),
 
                  %% Verify
                  case flurm_dbd_server:get_job_record(10001) of
@@ -709,7 +706,7 @@ job_end_update_test_() ->
                      end_time => erlang:system_time(second)
                  },
                  ok = flurm_dbd_server:record_job_end(JobInfo),
-                 timer:sleep(50)
+                 _ = sys:get_state(flurm_dbd_server)
              end},
              {"record_job_end with failed exit code", fun() ->
                  %% First record start
@@ -723,7 +720,7 @@ job_end_update_test_() ->
                      start_time => erlang:system_time(second) - 100
                  },
                  ok = flurm_dbd_server:record_job_start(JobInfo1),
-                 timer:sleep(50),
+                 _ = sys:get_state(flurm_dbd_server),
 
                  %% Then record end with failure
                  JobInfo2 = #{
@@ -733,7 +730,7 @@ job_end_update_test_() ->
                      end_time => erlang:system_time(second)
                  },
                  ok = flurm_dbd_server:record_job_end(JobInfo2),
-                 timer:sleep(50)
+                 _ = sys:get_state(flurm_dbd_server)
              end}
          ]
      end
@@ -802,9 +799,7 @@ handle_info_listener_test_() ->
              case whereis(flurm_dbd_server) of
                  undefined -> ok;
                  ExistingPid ->
-                     unlink(ExistingPid),
-                     exit(ExistingPid, shutdown),
-                     timer:sleep(50)
+                     flurm_test_utils:kill_and_wait(ExistingPid)
              end,
              %% Mock to return error
              meck:new(flurm_dbd_sup, [passthrough, no_link]),
@@ -812,13 +807,11 @@ handle_info_listener_test_() ->
 
              %% Start server - should log error but not crash
              {ok, Pid} = flurm_dbd_server:start_link(),
-             timer:sleep(100),
+             _ = sys:get_state(Pid),
              ?assert(is_process_alive(Pid)),
 
              %% Cleanup
-             unlink(Pid),
-             exit(Pid, shutdown),
-             timer:sleep(50),
+             gen_server:stop(Pid, normal, 5000),
              catch meck:unload(flurm_dbd_sup)
          end}
     ].

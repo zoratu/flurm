@@ -17,7 +17,7 @@ cleanup_rate_limiter() ->
     catch ets:delete(flurm_rate_limits),
     catch ets:delete(flurm_rate_stats),
     %% Small delay to ensure cleanup completes
-    timer:sleep(50),
+    ok,
     ok.
 
 %% Common setup function to start with clean state
@@ -108,7 +108,7 @@ test_check_rate_count() ->
 
 test_record_request() ->
     ok = flurm_rate_limiter:record_request(user, <<"recorduser">>),
-    timer:sleep(20),
+    _ = sys:get_state(flurm_rate_limiter),
     Stats = flurm_rate_limiter:get_stats({user, <<"recorduser">>}),
     ?assert(is_map(Stats)),
     ?assertEqual({user, <<"recorduser">>}, maps:get(key, Stats)),
@@ -130,7 +130,7 @@ test_get_stats_key() ->
     ok = flurm_rate_limiter:record_request(user, <<"statsuser">>),
     ok = flurm_rate_limiter:record_request(user, <<"statsuser">>),
     ok = flurm_rate_limiter:record_request(user, <<"statsuser">>),
-    timer:sleep(30),
+    _ = sys:get_state(flurm_rate_limiter),
 
     Stats = flurm_rate_limiter:get_stats({user, <<"statsuser">>}),
     ?assertEqual({user, <<"statsuser">>}, maps:get(key, Stats)),
@@ -165,7 +165,7 @@ test_set_get_limits() ->
 test_set_limit_updates_bucket() ->
     %% First check rate to create a bucket
     _ = flurm_rate_limiter:check_rate(user, <<"bucketuser">>),
-    timer:sleep(10),
+    _ = sys:get_state(flurm_rate_limiter),
 
     %% Now set a new limit - should update existing bucket
     ok = flurm_rate_limiter:set_limit(user, <<"bucketuser">>, 500),
@@ -176,7 +176,7 @@ test_reset_limits() ->
     ok = flurm_rate_limiter:set_limit(user, <<"resetuser">>, 999),
     %% Record some requests
     ok = flurm_rate_limiter:record_request(user, <<"resetuser">>),
-    timer:sleep(10),
+    _ = sys:get_state(flurm_rate_limiter),
 
     %% Reset
     ok = flurm_rate_limiter:reset_limits(),
@@ -195,9 +195,10 @@ test_token_refill() ->
 
     %% Make some requests to consume tokens
     _ = flurm_rate_limiter:check_rate(user, <<"refilluser">>, 50),
-    timer:sleep(10),
+    _ = sys:get_state(flurm_rate_limiter),
 
     %% Wait for refill (default interval is 100ms)
+    %% Legitimate wait for timer-based functionality
     timer:sleep(200),
 
     %% Should be able to make more requests after refill
@@ -207,7 +208,7 @@ test_token_refill() ->
 test_rate_limiting_triggers() ->
     %% Set a very low limit for testing
     ok = flurm_rate_limiter:set_limit(user, <<"limiteduser">>, 1),
-    timer:sleep(50),
+    ok,
 
     %% First request should succeed
     Result1 = flurm_rate_limiter:check_rate(user, <<"limiteduser">>),
@@ -228,12 +229,12 @@ test_unknown_call() ->
 
 test_unknown_cast() ->
     ok = gen_server:cast(flurm_rate_limiter, {unknown_cast, arg}),
-    timer:sleep(20),
+    _ = sys:get_state(flurm_rate_limiter),
     ?assert(is_pid(whereis(flurm_rate_limiter))).
 
 test_unknown_info() ->
     flurm_rate_limiter ! {unknown_info, arg},
-    timer:sleep(20),
+    _ = sys:get_state(flurm_rate_limiter),
     ?assert(is_pid(whereis(flurm_rate_limiter))).
 
 test_code_change() ->
@@ -256,7 +257,7 @@ test_terminate() ->
     Pid = whereis(flurm_rate_limiter),
     ?assert(is_pid(Pid)),
     gen_server:stop(flurm_rate_limiter),
-    timer:sleep(50),
+    ok,
     ?assertEqual(undefined, whereis(flurm_rate_limiter)).
 
 %%====================================================================
@@ -276,7 +277,7 @@ test_is_enabled() ->
     %% Stop server and delete table
     catch gen_server:stop(flurm_rate_limiter),
     catch ets:delete(flurm_rate_limits),
-    timer:sleep(20),
+    _ = sys:get_state(flurm_rate_limiter),
 
     %% With no table, should return false
     ?assertNot(flurm_rate_limiter:is_enabled()).
@@ -296,11 +297,13 @@ timer_tests_() ->
 
 test_refill_timer() ->
     %% Wait for refill timer to fire (100ms interval)
+    %% Legitimate wait for timer-based functionality
     timer:sleep(150),
     ?assert(is_pid(whereis(flurm_rate_limiter))).
 
 test_load_check_timer() ->
     %% Wait for load check timer to fire (1000ms interval)
+    %% Legitimate wait for timer-based functionality
     timer:sleep(1100),
     Stats = flurm_rate_limiter:get_stats(),
     %% current_load should have been calculated
@@ -319,12 +322,13 @@ backpressure_test_() ->
 test_backpressure() ->
     %% Set a very low global limit to trigger backpressure
     ok = flurm_rate_limiter:set_limit(global, default, 10),
-    timer:sleep(50),
+    ok,
 
     %% Consume most of the global bucket
     _ = [flurm_rate_limiter:check_rate(global, global, 1) || _ <- lists:seq(1, 100)],
 
-    %% Wait for load check
+    %% Wait for load check timer to fire
+    %% Legitimate wait for timer-based functionality
     timer:sleep(1200),
 
     %% Stats should show high load

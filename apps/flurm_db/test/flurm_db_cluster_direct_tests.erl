@@ -76,6 +76,7 @@ setup_ra_mock() ->
     meck:expect(lager, info, fun(_, _) -> ok end),
     meck:expect(lager, warning, fun(_, _) -> ok end),
     meck:expect(lager, error, fun(_, _) -> ok end),
+    meck:expect(lager, md, fun(_) -> ok end),
     ok.
 
 cleanup_ra_mock(_) ->
@@ -91,6 +92,7 @@ setup_for_init_ra() ->
     meck:expect(lager, info, fun(_, _) -> ok end),
     meck:expect(lager, warning, fun(_, _) -> ok end),
     meck:expect(lager, error, fun(_, _) -> ok end),
+    meck:expect(lager, md, fun(_) -> ok end),
     ok.
 
 cleanup_for_init_ra(_) ->

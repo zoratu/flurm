@@ -111,7 +111,6 @@ cleanup_mocked_supervisor(Pid) ->
         false ->
             ok
     end,
-    timer:sleep(50),
     ok.
 
 mock_node_loop() ->
@@ -226,7 +225,7 @@ test_stop_node() ->
     ?assert(is_process_alive(Child)),
 
     ok = flurm_node_sup:stop_node(Child),
-    timer:sleep(50),
+    flurm_test_utils:wait_for_death(Child),
     ?assertNot(is_process_alive(Child)).
 
 %%====================================================================

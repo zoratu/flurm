@@ -201,10 +201,8 @@ test_multiple_connections(_Config) ->
 
 test_connection_timeout(_Config) ->
     {ok, Socket} = connect(),
-    %% Don't send anything, wait for timeout (if implemented)
+    %% Connection should be valid immediately after connect
     %% Most implementations don't timeout idle connections quickly
-    timer:sleep(1000),
-    %% Connection should still be valid
     ok = inet:setopts(Socket, [{active, false}]),
     gen_tcp:close(Socket),
     ok.

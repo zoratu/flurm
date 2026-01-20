@@ -151,7 +151,7 @@ test_submit_job() ->
     ?assert(is_integer(JobId)),
     ?assert(JobId > 0),
     %% Give scheduler time to process
-    timer:sleep(100),
+    _ = sys:get_state(flurm_scheduler),
     %% Verify stats show pending job
     {ok, Stats} = flurm_scheduler:get_stats(),
     ?assert(maps:get(pending_count, Stats) >= 1),
@@ -163,13 +163,13 @@ test_job_completed() ->
     %% Submit a job
     JobMap = make_job_map(),
     {ok, JobId} = flurm_job_manager:submit_job(JobMap),
-    timer:sleep(200),
+    _ = sys:get_state(flurm_scheduler),
     %% Get initial completed count
     {ok, InitStats} = flurm_scheduler:get_stats(),
     InitCompleted = maps:get(completed_count, InitStats),
     %% Mark job as completed
     ok = flurm_scheduler:job_completed(JobId),
-    timer:sleep(100),
+    _ = sys:get_state(flurm_scheduler),
     %% Verify completed count increased
     {ok, NewStats} = flurm_scheduler:get_stats(),
     NewCompleted = maps:get(completed_count, NewStats),
@@ -180,13 +180,13 @@ test_job_failed() ->
     %% Submit a job
     JobMap = make_job_map(),
     {ok, JobId} = flurm_job_manager:submit_job(JobMap),
-    timer:sleep(100),
+    _ = sys:get_state(flurm_scheduler),
     %% Get initial failed count
     {ok, InitStats} = flurm_scheduler:get_stats(),
     InitFailed = maps:get(failed_count, InitStats),
     %% Mark job as failed
     ok = flurm_scheduler:job_failed(JobId),
-    timer:sleep(100),
+    _ = sys:get_state(flurm_scheduler),
     %% Verify failed count increased
     {ok, NewStats} = flurm_scheduler:get_stats(),
     NewFailed = maps:get(failed_count, NewStats),
@@ -199,7 +199,7 @@ test_trigger_schedule() ->
     InitCycles = maps:get(schedule_cycles, InitStats),
     %% Trigger a schedule cycle
     ok = flurm_scheduler:trigger_schedule(),
-    timer:sleep(200),
+    _ = sys:get_state(flurm_scheduler),
     %% Verify cycle count increased
     {ok, NewStats} = flurm_scheduler:get_stats(),
     NewCycles = maps:get(schedule_cycles, NewStats),
@@ -226,7 +226,7 @@ test_get_stats() ->
 test_job_deps_satisfied() ->
     %% Notify scheduler that job dependencies are satisfied
     ok = flurm_scheduler:job_deps_satisfied(12345),
-    timer:sleep(100),
+    _ = sys:get_state(flurm_scheduler),
     %% Should not crash, verify scheduler still responds
     {ok, _Stats} = flurm_scheduler:get_stats(),
     ok.
@@ -238,7 +238,7 @@ test_multiple_jobs() ->
         {ok, JobId} = flurm_job_manager:submit_job(JobMap),
         JobId
     end, lists:seq(1, 5)),
-    timer:sleep(200),
+    _ = sys:get_state(flurm_scheduler),
     %% Verify all jobs were submitted
     ?assertEqual(5, length(JobIds)),
     %% Verify stats show pending jobs
@@ -253,8 +253,8 @@ test_schedule_with_nodes() ->
     %% Submit a job
     JobMap = make_job_map(#{num_cpus => 4, memory_mb => 2048}),
     {ok, JobId} = flurm_job_manager:submit_job(JobMap),
-    %% Wait for scheduling
-    timer:sleep(500),
+    %% Wait for scheduling with sync
+    _ = sys:get_state(flurm_scheduler),
     %% Check if job was scheduled
     case flurm_job_manager:get_job(JobId) of
         {ok, Job} ->
@@ -269,20 +269,20 @@ test_schedule_with_nodes() ->
 test_config_changes() ->
     %% Send config change notifications directly to scheduler
     flurm_scheduler ! {config_changed, partitions, [], [#{name => <<"default">>}]},
-    timer:sleep(100),
+    _ = sys:get_state(flurm_scheduler),
     {ok, _} = flurm_scheduler:get_stats(),
 
     flurm_scheduler ! {config_changed, nodes, [], [<<"node1">>]},
-    timer:sleep(100),
+    _ = sys:get_state(flurm_scheduler),
     {ok, _} = flurm_scheduler:get_stats(),
 
     flurm_scheduler ! {config_changed, schedulertype, fifo, backfill},
-    timer:sleep(100),
+    _ = sys:get_state(flurm_scheduler),
     {ok, _} = flurm_scheduler:get_stats(),
 
     %% Unknown config changes should be ignored
     flurm_scheduler ! {config_changed, unknown_key, old, new},
-    timer:sleep(100),
+    _ = sys:get_state(flurm_scheduler),
     {ok, _} = flurm_scheduler:get_stats(),
     ok.
 
@@ -309,7 +309,7 @@ test_unknown_call() ->
 test_unknown_cast() ->
     %% Send unknown cast - should not crash
     gen_server:cast(flurm_scheduler, {unknown_cast, test}),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_scheduler),
     %% Verify scheduler still works
     {ok, _Stats} = flurm_scheduler:get_stats(),
     ok.
@@ -317,7 +317,7 @@ test_unknown_cast() ->
 test_unknown_info() ->
     %% Send unknown info message - should not crash
     flurm_scheduler ! {unknown_info, test},
-    timer:sleep(50),
+    _ = sys:get_state(flurm_scheduler),
     %% Verify scheduler still works
     {ok, _Stats} = flurm_scheduler:get_stats(),
     ok.

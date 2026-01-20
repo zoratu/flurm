@@ -22,42 +22,26 @@
 setup() ->
     %% Stop any existing supervisor
     case whereis(flurm_config_sup) of
-        undefined ->
-            ok;
-        Pid ->
-            unlink(Pid),
-            exit(Pid, shutdown),
-            timer:sleep(50)
+        undefined -> ok;
+        Pid -> flurm_test_utils:kill_and_wait(Pid)
     end,
     %% Also stop config server if running
     case whereis(flurm_config_server) of
-        undefined ->
-            ok;
-        ServerPid ->
-            unlink(ServerPid),
-            exit(ServerPid, shutdown),
-            timer:sleep(50)
+        undefined -> ok;
+        ServerPid -> flurm_test_utils:kill_and_wait(ServerPid)
     end,
     ok.
 
 cleanup(_) ->
     %% Stop supervisor if running
     case whereis(flurm_config_sup) of
-        undefined ->
-            ok;
-        Pid ->
-            unlink(Pid),
-            exit(Pid, shutdown),
-            timer:sleep(50)
+        undefined -> ok;
+        Pid -> flurm_test_utils:kill_and_wait(Pid)
     end,
     %% Also stop config server if running separately
     case whereis(flurm_config_server) of
-        undefined ->
-            ok;
-        ServerPid ->
-            unlink(ServerPid),
-            exit(ServerPid, shutdown),
-            timer:sleep(50)
+        undefined -> ok;
+        ServerPid -> flurm_test_utils:kill_and_wait(ServerPid)
     end,
     ok.
 
@@ -170,8 +154,8 @@ test_child_modules() ->
 
 test_starts_child() ->
     {ok, SupPid} = flurm_config_sup:start_link(),
-    %% Give it time to start children
-    timer:sleep(100),
+    %% Wait for child to be registered
+    _ = flurm_test_utils:wait_for_registered(flurm_config_server),
     Children = supervisor:which_children(SupPid),
     ?assertEqual(1, length(Children)),
     [{Id, ChildPid, Type, Modules}] = Children,
@@ -182,26 +166,22 @@ test_starts_child() ->
 
 test_config_server_running() ->
     {ok, _SupPid} = flurm_config_sup:start_link(),
-    timer:sleep(100),
-    ServerPid = whereis(flurm_config_server),
-    ?assertNotEqual(undefined, ServerPid),
+    ServerPid = flurm_test_utils:wait_for_registered(flurm_config_server),
+    ?assert(is_pid(ServerPid)),
     ?assert(is_process_alive(ServerPid)).
 
 test_restart_crashed_child() ->
     {ok, SupPid} = flurm_config_sup:start_link(),
-    timer:sleep(100),
+    OriginalPid = flurm_test_utils:wait_for_registered(flurm_config_server),
+    ?assert(is_pid(OriginalPid)),
 
-    %% Get original child pid
-    OriginalPid = whereis(flurm_config_server),
-    ?assertNotEqual(undefined, OriginalPid),
-
-    %% Crash the child
+    %% Crash the child and wait for death
     exit(OriginalPid, kill),
-    timer:sleep(200),
+    flurm_test_utils:wait_for_death(OriginalPid),
 
-    %% Check that supervisor restarted the child
-    NewPid = whereis(flurm_config_server),
-    ?assertNotEqual(undefined, NewPid),
+    %% Wait for supervisor to restart the child
+    NewPid = flurm_test_utils:wait_for_registered(flurm_config_server),
+    ?assert(is_pid(NewPid)),
     ?assert(is_process_alive(NewPid)),
     ?assertNotEqual(OriginalPid, NewPid),
 
@@ -256,7 +236,7 @@ integration_test_() ->
 
 test_child_lifecycle() ->
     {ok, SupPid} = flurm_config_sup:start_link(),
-    timer:sleep(100),
+    _ = flurm_test_utils:wait_for_registered(flurm_config_server),
 
     %% Child should be running
     ChildPid1 = whereis(flurm_config_server),
@@ -264,7 +244,7 @@ test_child_lifecycle() ->
 
     %% Stop child gracefully via supervisor
     ok = supervisor:terminate_child(SupPid, flurm_config_server),
-    timer:sleep(50),
+    flurm_test_utils:wait_for_unregistered(flurm_config_server),
 
     %% Child should be stopped but can be restarted
     ?assertEqual(undefined, whereis(flurm_config_server)),
@@ -275,27 +255,27 @@ test_child_lifecycle() ->
 
 test_multiple_restarts() ->
     {ok, SupPid} = flurm_config_sup:start_link(),
-    timer:sleep(100),
+    _ = flurm_test_utils:wait_for_registered(flurm_config_server),
 
     %% Crash child multiple times (but less than intensity)
     lists:foreach(fun(_) ->
-        Pid = whereis(flurm_config_server),
-        ?assertNotEqual(undefined, Pid),
+        Pid = flurm_test_utils:wait_for_registered(flurm_config_server),
+        ?assert(is_pid(Pid)),
         exit(Pid, kill),
-        timer:sleep(100)
+        flurm_test_utils:wait_for_death(Pid)
     end, lists:seq(1, 3)),
 
     %% Supervisor should still be alive
     ?assert(is_process_alive(SupPid)),
 
     %% Child should be restarted
-    FinalPid = whereis(flurm_config_server),
-    ?assertNotEqual(undefined, FinalPid),
+    FinalPid = flurm_test_utils:wait_for_registered(flurm_config_server),
+    ?assert(is_pid(FinalPid)),
     ?assert(is_process_alive(FinalPid)).
 
 test_which_children() ->
     {ok, SupPid} = flurm_config_sup:start_link(),
-    timer:sleep(100),
+    _ = flurm_test_utils:wait_for_registered(flurm_config_server),
 
     Children = supervisor:which_children(SupPid),
     ?assertEqual(1, length(Children)),
@@ -308,7 +288,7 @@ test_which_children() ->
 
 test_count_children() ->
     {ok, SupPid} = flurm_config_sup:start_link(),
-    timer:sleep(100),
+    _ = flurm_test_utils:wait_for_registered(flurm_config_server),
 
     Counts = supervisor:count_children(SupPid),
     ?assertEqual(1, proplists:get_value(specs, Counts)),
@@ -332,7 +312,7 @@ supervisor_api_test_() ->
 
 test_get_childspec() ->
     {ok, SupPid} = flurm_config_sup:start_link(),
-    timer:sleep(100),
+    _ = flurm_test_utils:wait_for_registered(flurm_config_server),
 
     {ok, ChildSpec} = supervisor:get_childspec(SupPid, flurm_config_server),
     ?assert(is_map(ChildSpec)),
@@ -340,7 +320,7 @@ test_get_childspec() ->
 
 test_delete_active_child() ->
     {ok, SupPid} = flurm_config_sup:start_link(),
-    timer:sleep(100),
+    _ = flurm_test_utils:wait_for_registered(flurm_config_server),
 
     %% Cannot delete an active child
     Result = supervisor:delete_child(SupPid, flurm_config_server),
@@ -348,11 +328,11 @@ test_delete_active_child() ->
 
 test_delete_terminated_child() ->
     {ok, SupPid} = flurm_config_sup:start_link(),
-    timer:sleep(100),
+    _ = flurm_test_utils:wait_for_registered(flurm_config_server),
 
     %% First terminate the child
     ok = supervisor:terminate_child(SupPid, flurm_config_server),
-    timer:sleep(50),
+    flurm_test_utils:wait_for_unregistered(flurm_config_server),
 
     %% Now delete should succeed
     Result = supervisor:delete_child(SupPid, flurm_config_server),
@@ -386,35 +366,33 @@ test_start_when_running() ->
 
 test_normal_exit() ->
     {ok, SupPid} = flurm_config_sup:start_link(),
-    timer:sleep(100),
+    _ = flurm_test_utils:wait_for_registered(flurm_config_server),
 
-    %% Exit child with normal reason
+    %% Exit child with normal reason using gen_server:stop (exit/2 with normal is ignored by trap_exit)
     ChildPid = whereis(flurm_config_server),
-    exit(ChildPid, normal),
-    timer:sleep(100),
+    gen_server:stop(ChildPid, normal, 5000),
 
     %% Supervisor should still be alive
     ?assert(is_process_alive(SupPid)),
 
     %% Child should be restarted (permanent restart)
-    NewChildPid = whereis(flurm_config_server),
-    ?assertNotEqual(undefined, NewChildPid).
+    NewChildPid = flurm_test_utils:wait_for_registered(flurm_config_server),
+    ?assert(is_pid(NewChildPid)).
 
 test_shutdown_exit() ->
     {ok, SupPid} = flurm_config_sup:start_link(),
-    timer:sleep(100),
+    _ = flurm_test_utils:wait_for_registered(flurm_config_server),
 
-    %% Exit child with shutdown reason
+    %% Exit child with shutdown reason using gen_server:stop
     ChildPid = whereis(flurm_config_server),
-    exit(ChildPid, shutdown),
-    timer:sleep(100),
+    gen_server:stop(ChildPid, shutdown, 5000),
 
     %% Supervisor should still be alive
     ?assert(is_process_alive(SupPid)),
 
     %% Child should be restarted (permanent restart)
-    NewChildPid = whereis(flurm_config_server),
-    ?assertNotEqual(undefined, NewChildPid).
+    NewChildPid = flurm_test_utils:wait_for_registered(flurm_config_server),
+    ?assert(is_pid(NewChildPid)).
 
 %%====================================================================
 %% Strategy Verification Tests
@@ -436,16 +414,16 @@ test_one_for_one_isolation() ->
 
     %% Start supervisor and verify behavior
     {ok, SupPid} = flurm_config_sup:start_link(),
-    timer:sleep(100),
+    _ = flurm_test_utils:wait_for_registered(flurm_config_server),
 
     OriginalPid = whereis(flurm_config_server),
     exit(OriginalPid, kill),
-    timer:sleep(100),
+    flurm_test_utils:wait_for_death(OriginalPid),
 
     %% Only the config_server should have restarted
     %% (the supervisor should not have restarted)
     ?assert(is_process_alive(SupPid)),
-    NewPid = whereis(flurm_config_server),
+    NewPid = flurm_test_utils:wait_for_registered(flurm_config_server),
     ?assertNotEqual(OriginalPid, NewPid),
     ?assert(is_process_alive(NewPid)).
 

@@ -83,7 +83,7 @@ get_process_modules_self_test() ->
 get_process_modules_dead_process_test() ->
     %% Test with a terminated process
     Pid = spawn(fun() -> ok end),
-    timer:sleep(10),  % Let it die
+    flurm_test_utils:wait_for_death(Pid),
     Modules = flurm_upgrade:get_process_modules(Pid),
     ?assertEqual([], Modules).
 

@@ -40,8 +40,7 @@ setup() ->
         undefined -> ok;
         Pid -> catch supervisor:terminate_child(Pid, flurm_dbd_storage),
                catch supervisor:terminate_child(Pid, flurm_dbd_server),
-               catch exit(Pid, kill),
-               timer:sleep(20)
+               flurm_test_utils:kill_and_wait(Pid)
     end,
 
     meck:new(lager, [non_strict]),
@@ -50,6 +49,7 @@ setup() ->
     meck:expect(lager, info, fun(_) -> ok end),
     meck:expect(lager, info, fun(_, _) -> ok end),
     meck:expect(lager, error, fun(_, _) -> ok end),
+    meck:expect(lager, md, fun(_) -> ok end),
 
     %% Default ranch expectations
     meck:expect(ranch, start_listener, fun(_, _, _, _, _) -> {ok, self()} end),
@@ -68,7 +68,7 @@ setup() ->
 cleanup(_) ->
     case whereis(flurm_dbd_sup) of
         undefined -> ok;
-        Pid -> catch exit(Pid, kill), timer:sleep(20)
+        Pid -> flurm_test_utils:kill_and_wait(Pid)
     end,
     catch meck:unload(lager),
     catch meck:unload(ranch),

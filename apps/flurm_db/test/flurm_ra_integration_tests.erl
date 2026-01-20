@@ -74,15 +74,14 @@ setup() ->
         _ -> ok
     end,
 
-    %% Start cluster
+    %% Start cluster (Ra leader election is synchronous with start_cluster)
     ok = flurm_db_cluster:start_cluster([node()]),
-    timer:sleep(1000),
 
     #{data_dir => TmpDir}.
 
 cleanup(#{data_dir := DataDir}) ->
     catch flurm_db_cluster:leave_cluster(),
-    timer:sleep(100),
+    %% application:stop is synchronous - no sleep needed
     application:stop(ra),
     os:cmd("rm -rf " ++ DataDir),
     ok.

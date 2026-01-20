@@ -227,7 +227,7 @@ test_get_job_status_success() ->
 
 test_get_job_status_noproc() ->
     DeadPid = spawn(fun() -> ok end),
-    timer:sleep(10),  % Ensure process is dead
+    flurm_test_utils:wait_for_death(DeadPid),
     meck:expect(flurm_job_executor, get_status, fun(_Pid) ->
         exit({noproc, {gen_server, call, [self(), get_status]}})
     end),
@@ -254,7 +254,7 @@ test_cancel_job_success() ->
 
 test_cancel_job_noproc() ->
     DeadPid = spawn(fun() -> ok end),
-    timer:sleep(10),
+    flurm_test_utils:wait_for_death(DeadPid),
     meck:expect(flurm_job_executor, cancel, fun(_Pid) ->
         exit({noproc, {gen_server, cast, [self(), cancel]}})
     end),

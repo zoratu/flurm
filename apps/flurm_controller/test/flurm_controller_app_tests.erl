@@ -178,8 +178,12 @@ app_lifecycle_test_() ->
     {timeout, 60,
      fun() ->
          %% Clean state
-         application:stop(flurm_controller),
-         timer:sleep(100),
+         case whereis(flurm_controller_sup) of
+             undefined -> ok;
+             Pid ->
+                 application:stop(flurm_controller),
+                 flurm_test_utils:wait_for_death(Pid)
+         end,
 
          %% Configure for test
          application:set_env(flurm_controller, enable_cluster, false),
@@ -197,8 +201,12 @@ app_lifecycle_test_() ->
                  ?assertEqual(some_state, State),
 
                  %% Stop application
+                 SupPid = whereis(flurm_controller_sup),
                  ok = application:stop(flurm_controller),
-                 timer:sleep(100);
+                 case SupPid of
+                     undefined -> ok;
+                     _ -> flurm_test_utils:wait_for_death(SupPid)
+                 end;
              {error, _Reason} ->
                  %% Application might already be started or have issues
                  ok

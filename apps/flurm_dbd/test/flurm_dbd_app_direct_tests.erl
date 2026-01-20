@@ -38,6 +38,7 @@ setup() ->
     meck:expect(lager, debug, fun(_, _) -> ok end),
     meck:expect(lager, warning, fun(_, _) -> ok end),
     meck:expect(lager, error, fun(_, _) -> ok end),
+    meck:expect(lager, md, fun(_) -> ok end),
 
     %% Mock flurm_dbd_sup to avoid starting actual supervisor
     meck:new(flurm_dbd_sup, [passthrough, no_link]),
@@ -95,6 +96,7 @@ supervisor_failure_test_() ->
          meck:expect(lager, info, fun(_) -> ok end),
          meck:expect(lager, info, fun(_, _) -> ok end),
          meck:expect(lager, error, fun(_, _) -> ok end),
+    meck:expect(lager, md, fun(_) -> ok end),
 
          meck:new(flurm_dbd_sup, [passthrough, no_link]),
          meck:expect(flurm_dbd_sup, start_link, fun() ->

@@ -177,6 +177,7 @@ test_lifecycle_running_to_timeout() ->
     {ok, running} = flurm_job:get_state(Pid),
 
     %% Wait for timeout (slightly more than 1 second)
+    %% Legitimate wait for time_limit job timeout functionality
     timer:sleep(1500),
 
     %% Should be in timeout state
@@ -356,14 +357,14 @@ test_registry_list_by_state() ->
 
     %% Move Pid2 to configuring
     ok = flurm_job:allocate(Pid2, [<<"node1">>]),
-    timer:sleep(50), %% Give time for state update
+    _ = sys:get_state(flurm_job_registry), %% Give time for state update
 
     ConfiguringJobs = flurm_job_registry:list_jobs_by_state(configuring),
     ?assert(lists:member({JobId2, Pid2}, ConfiguringJobs)),
 
     %% Move Pid3 to cancelled
     ok = flurm_job:cancel(Pid3),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_job_registry),
 
     CancelledJobs = flurm_job_registry:list_jobs_by_state(cancelled),
     ?assert(lists:member({JobId3, Pid3}, CancelledJobs)),
@@ -396,7 +397,7 @@ test_registry_monitor_cleanup() ->
 
     %% Kill the job process
     exit(Pid, kill),
-    timer:sleep(100),  %% Give time for monitor to trigger
+    flurm_test_utils:wait_for_death(Pid),
 
     %% Job should be automatically unregistered
     {error, not_found} = flurm_job_registry:lookup_job(JobId),
@@ -425,7 +426,7 @@ test_supervisor_operations() ->
 
     %% Stop a job
     ok = flurm_job_sup:stop_job(Pid1),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_job_registry),
 
     ?assertEqual(InitialCount + 1, flurm_job_sup:count_jobs()),
     ?assertNot(lists:member(Pid1, flurm_job_sup:which_jobs())),
@@ -474,7 +475,7 @@ test_multiple_jobs() ->
         Jobs
     ),
 
-    timer:sleep(50),
+    _ = sys:get_state(flurm_job_registry),
 
     %% Verify state counts
     StateCounts = flurm_job_registry:count_by_state(),
@@ -640,18 +641,18 @@ test_info_messages_ignored() ->
 
     %% Send info message - should be ignored
     Pid ! some_random_info_message,
-    timer:sleep(10),
+    _ = sys:get_state(Pid),
     {ok, pending} = flurm_job:get_state(Pid),
 
     %% Move to other states and test info messages
     ok = flurm_job:allocate(Pid, [<<"node1">>]),
     Pid ! another_info,
-    timer:sleep(10),
+    _ = sys:get_state(Pid),
     {ok, configuring} = flurm_job:get_state(Pid),
 
     ok = flurm_job:signal_config_complete(Pid),
     Pid ! yet_another_info,
-    timer:sleep(10),
+    _ = sys:get_state(Pid),
     {ok, running} = flurm_job:get_state(Pid),
     ok.
 
@@ -665,18 +666,18 @@ test_cast_messages_in_states() ->
     %% Test ignored casts in pending
     {ok, Pid1, _} = flurm_job:submit(JobSpec),
     gen_statem:cast(Pid1, unknown_cast),
-    timer:sleep(10),
+    _ = sys:get_state(Pid1),
     {ok, pending} = flurm_job:get_state(Pid1),
 
     %% Config complete cast in pending should be ignored
     gen_statem:cast(Pid1, config_complete),
-    timer:sleep(10),
+    _ = sys:get_state(Pid1),
     {ok, pending} = flurm_job:get_state(Pid1),
 
     %% Test ignored casts in terminal states
     ok = flurm_job:cancel(Pid1),
     gen_statem:cast(Pid1, {job_complete, 0}),
-    timer:sleep(10),
+    _ = sys:get_state(Pid1),
     {ok, cancelled} = flurm_job:get_state(Pid1),
     ok.
 
@@ -1004,7 +1005,7 @@ test_configuring_timeout_to_failed() ->
     {error, invalid_operation} = gen_statem:call(Pid, {set_priority, 100}),
     %% Send ignored cast
     gen_statem:cast(Pid, random_cast),
-    timer:sleep(10),
+    _ = sys:get_state(Pid),
     {ok, configuring} = flurm_job:get_state(Pid),
     ok.
 
@@ -1024,7 +1025,7 @@ test_completing_timeout_transition() ->
     {error, invalid_operation} = gen_statem:call(Pid1, {set_priority, 100}),
     %% Test ignored cast in completing
     gen_statem:cast(Pid1, random_cast),
-    timer:sleep(10),
+    _ = sys:get_state(Pid1),
     {ok, completing} = flurm_job:get_state(Pid1),
     ok.
 
@@ -1080,6 +1081,7 @@ test_get_job_id_in_states() ->
     {ok, Pid4, JobId4} = flurm_job:submit(make_job_spec(#{time_limit => 1})),
     ok = flurm_job:allocate(Pid4, [<<"node1">>]),
     ok = flurm_job:signal_config_complete(Pid4),
+    %% Legitimate wait for 1-second time_limit job timeout
     timer:sleep(1500),
     {ok, timeout} = flurm_job:get_state(Pid4),
     JobId4 = gen_statem:call(Pid4, get_job_id),
@@ -1114,6 +1116,7 @@ test_invalid_calls_in_states() ->
     {ok, Pid3, _} = flurm_job:submit(make_job_spec(#{time_limit => 1})),
     ok = flurm_job:allocate(Pid3, [<<"node1">>]),
     ok = flurm_job:signal_config_complete(Pid3),
+    %% Legitimate wait for 1-second time_limit job timeout
     timer:sleep(1500),
     {ok, timeout} = flurm_job:get_state(Pid3),
     {error, job_timed_out} = gen_statem:call(Pid3, {set_priority, 100}),
@@ -1137,12 +1140,12 @@ test_ignored_casts_all_states() ->
     gen_statem:cast(Pid1, config_complete),
     gen_statem:cast(Pid1, {job_complete, 0}),
     gen_statem:cast(Pid1, cleanup_complete),
-    timer:sleep(10),
+    _ = sys:get_state(Pid1),
     {ok, cancelled} = flurm_job:get_state(Pid1),
 
     %% Test info messages ignored in terminal states
     Pid1 ! random_info,
-    timer:sleep(10),
+    _ = sys:get_state(Pid1),
     {ok, cancelled} = flurm_job:get_state(Pid1),
 
     %% Test in completed state
@@ -1154,7 +1157,7 @@ test_ignored_casts_all_states() ->
     {ok, completed} = flurm_job:get_state(Pid2),
     gen_statem:cast(Pid2, random_cast),
     Pid2 ! random_info,
-    timer:sleep(10),
+    _ = sys:get_state(Pid2),
     {ok, completed} = flurm_job:get_state(Pid2),
 
     %% Test in failed state
@@ -1166,7 +1169,7 @@ test_ignored_casts_all_states() ->
     {ok, failed} = flurm_job:get_state(Pid3),
     gen_statem:cast(Pid3, random_cast),
     Pid3 ! random_info,
-    timer:sleep(10),
+    _ = sys:get_state(Pid3),
     {ok, failed} = flurm_job:get_state(Pid3),
 
     %% Test casts in suspended state
@@ -1177,18 +1180,19 @@ test_ignored_casts_all_states() ->
     {ok, suspended} = flurm_job:get_state(Pid4),
     gen_statem:cast(Pid4, random_cast),
     Pid4 ! random_info,
-    timer:sleep(10),
+    _ = sys:get_state(Pid4),
     {ok, suspended} = flurm_job:get_state(Pid4),
 
     %% Test casts in timeout and node_fail states
     {ok, Pid5, _} = flurm_job:submit(make_job_spec(#{time_limit => 1})),
     ok = flurm_job:allocate(Pid5, [<<"node1">>]),
     ok = flurm_job:signal_config_complete(Pid5),
+    %% Legitimate wait for 1-second time_limit job timeout
     timer:sleep(1500),
     {ok, timeout} = flurm_job:get_state(Pid5),
     gen_statem:cast(Pid5, random_cast),
     Pid5 ! random_info,
-    timer:sleep(10),
+    _ = sys:get_state(Pid5),
     {ok, timeout} = flurm_job:get_state(Pid5),
 
     {ok, Pid6, _} = flurm_job:submit(JobSpec),
@@ -1198,7 +1202,7 @@ test_ignored_casts_all_states() ->
     {ok, node_fail} = flurm_job:get_state(Pid6),
     gen_statem:cast(Pid6, random_cast),
     Pid6 ! random_info,
-    timer:sleep(10),
+    _ = sys:get_state(Pid6),
     {ok, node_fail} = flurm_job:get_state(Pid6),
     ok.
 

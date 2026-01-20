@@ -59,6 +59,7 @@ setup() ->
     meck:expect(lager, debug, fun(_, _) -> ok end),
     meck:expect(lager, warning, fun(_, _) -> ok end),
     meck:expect(lager, error, fun(_, _) -> ok end),
+    meck:expect(lager, md, fun(_) -> ok end),
     %% Ensure ets backend
     application:set_env(flurm_dbd, storage_backend, ets),
     ok.
@@ -225,21 +226,21 @@ test_unknown_call() ->
 test_unknown_cast() ->
     {ok, Pid} = flurm_dbd_storage:start_link(),
     gen_server:cast(Pid, {unknown_cast, data}),
-    timer:sleep(20),
+    _ = sys:get_state(Pid),
     ?assert(is_process_alive(Pid)),
     gen_server:stop(Pid).
 
 test_handle_info() ->
     {ok, Pid} = flurm_dbd_storage:start_link(),
     Pid ! {random, message},
-    timer:sleep(20),
+    _ = sys:get_state(Pid),
     ?assert(is_process_alive(Pid)),
     gen_server:stop(Pid).
 
 test_terminate() ->
     {ok, Pid} = flurm_dbd_storage:start_link(),
     gen_server:stop(Pid, normal, 5000),
-    timer:sleep(20),
+    flurm_test_utils:wait_for_unregistered(flurm_dbd_storage),
     ?assertEqual(undefined, whereis(flurm_dbd_storage)).
 
 test_overwrite() ->
@@ -283,6 +284,7 @@ setup_mnesia() ->
     meck:expect(lager, info, fun(_, _) -> ok end),
     meck:expect(lager, debug, fun(_, _) -> ok end),
     meck:expect(lager, error, fun(_, _) -> ok end),
+    meck:expect(lager, md, fun(_) -> ok end),
 
     meck:new(mnesia, [passthrough, unstick, no_link]),
     meck:expect(mnesia, create_table, fun(_, _) -> {atomic, ok} end),

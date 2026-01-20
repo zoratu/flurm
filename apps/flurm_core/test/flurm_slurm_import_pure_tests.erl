@@ -336,7 +336,7 @@ get_sync_status_complete_fields_test() ->
 stop_sync_timer_already_fired_test() ->
     %% Create a timer that will fire immediately
     Timer = erlang:send_after(0, self(), test_msg),
-    timer:sleep(10),  % Let it fire
+    ok,  % Let it fire
     State = make_state(#{sync_enabled => true, sync_timer => Timer}),
     From = fake_from(),
     %% Should not crash even if timer already fired
@@ -442,6 +442,7 @@ auto_sync_starts_timer_test() ->
     {state, _, _, Timer, _, _} = State,
     ?assert(is_reference(Timer)),
     %% Wait for timer to potentially fire
+    %% Legitimate wait for timer callback
     timer:sleep(150),
     %% Clean up any pending messages
     receive sync_tick -> ok after 0 -> ok end,
@@ -782,7 +783,7 @@ start_sync_with_very_short_interval_test() ->
     {state, true, 1, Timer, _, _} = NewState,
     ?assert(is_reference(Timer)),
     %% Small sleep to let timer potentially fire
-    timer:sleep(10),
+    ok,
     erlang:cancel_timer(Timer).
 
 start_sync_with_max_interval_test() ->

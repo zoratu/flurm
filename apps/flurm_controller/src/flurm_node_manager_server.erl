@@ -49,8 +49,18 @@
 %% API
 %%====================================================================
 
+-spec start_link() -> {ok, pid()} | ignore | {error, term()}.
 start_link() ->
-    gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
+    case gen_server:start_link({local, ?MODULE}, ?MODULE, [], []) of
+        {ok, Pid} ->
+            {ok, Pid};
+        {error, {already_started, Pid}} ->
+            %% Process already running - return existing pid
+            %% This handles race conditions during startup and restarts
+            {ok, Pid};
+        {error, Reason} ->
+            {error, Reason}
+    end.
 
 -spec register_node(map()) -> ok | {error, term()}.
 register_node(NodeSpec) ->

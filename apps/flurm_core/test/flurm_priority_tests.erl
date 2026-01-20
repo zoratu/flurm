@@ -650,7 +650,7 @@ recalculate_all_test_() ->
                  },
                  %% Submit a job
                  {ok, _Pid, _JobId} = flurm_job:submit(JobSpec),
-                 timer:sleep(50),
+                 _ = sys:get_state(flurm_job_registry),
 
                  %% Call recalculate_all
                  ok = flurm_priority:recalculate_all(),

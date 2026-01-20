@@ -390,7 +390,7 @@ handle_info_test_() ->
 
 handle_down_removes_subscriber() ->
     TestPid = spawn(fun() -> ok end),
-    timer:sleep(10), %% Let the process die
+    flurm_test_utils:wait_for_death(TestPid), %% Wait for the process to die
     State = #state{
         config = #{},
         config_file = undefined,
@@ -404,7 +404,7 @@ handle_down_removes_subscriber() ->
 
 handle_down_removes_filtered() ->
     TestPid = spawn(fun() -> ok end),
-    timer:sleep(10),
+    flurm_test_utils:wait_for_death(TestPid),
     State = #state{
         config = #{},
         config_file = undefined,
@@ -1074,7 +1074,7 @@ multiple_changes_test() ->
 
 down_with_both_subscribers_test() ->
     TestPid = spawn(fun() -> ok end),
-    timer:sleep(10),
+    flurm_test_utils:wait_for_death(TestPid),
     State = #state{
         config = #{},
         config_file = undefined,

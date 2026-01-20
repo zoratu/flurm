@@ -256,7 +256,7 @@ test_unknown_cast() ->
     PartitionSpec = make_partition_spec(<<"unknowncast">>),
     {ok, Pid} = flurm_partition:start_link(PartitionSpec),
     gen_server:cast(Pid, {unknown_cast, test}),
-    timer:sleep(50),
+    _ = sys:get_state(Pid),
     %% Verify partition still works
     {ok, _Info} = flurm_partition:get_info(Pid),
     gen_server:stop(Pid),
@@ -266,7 +266,7 @@ test_unknown_info() ->
     PartitionSpec = make_partition_spec(<<"unknowninfo">>),
     {ok, Pid} = flurm_partition:start_link(PartitionSpec),
     Pid ! {unknown_info, test},
-    timer:sleep(50),
+    _ = sys:get_state(Pid),
     %% Verify partition still works
     {ok, _Info} = flurm_partition:get_info(Pid),
     gen_server:stop(Pid),

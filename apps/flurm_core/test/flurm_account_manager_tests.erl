@@ -774,7 +774,7 @@ test_unknown_call() ->
 test_unknown_cast() ->
     %% Unknown cast should not crash the server
     ok = gen_server:cast(flurm_account_manager, {unknown_cast_message}),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_account_manager),
     ?assert(is_process_alive(whereis(flurm_account_manager))),
     %% Should still work
     _ = flurm_account_manager:list_accounts().
@@ -782,7 +782,7 @@ test_unknown_cast() ->
 test_unknown_info() ->
     %% Unknown info message should not crash the server
     flurm_account_manager ! {unknown_info_message, foo, bar},
-    timer:sleep(50),
+    _ = sys:get_state(flurm_account_manager),
     ?assert(is_process_alive(whereis(flurm_account_manager))),
     %% Should still work
     _ = flurm_account_manager:list_accounts().
@@ -790,11 +790,11 @@ test_unknown_info() ->
 test_terminate() ->
     %% Start a fresh server for terminate test
     catch gen_server:stop(flurm_account_manager),
-    timer:sleep(50),
+    %% Process is stopped, start fresh
     {ok, Pid} = flurm_account_manager:start_link(),
     ?assert(is_process_alive(Pid)),
     gen_server:stop(Pid, normal, 5000),
-    timer:sleep(50),
+    %% Process is stopped, verify it's gone
     ?assertNot(is_process_alive(Pid)).
 
 %%====================================================================

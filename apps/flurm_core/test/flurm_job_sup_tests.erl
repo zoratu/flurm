@@ -204,7 +204,7 @@ test_stop_job() ->
     ok = flurm_job_sup:stop_job(JobPid),
 
     %% Wait for process to terminate
-    timer:sleep(50),
+    _ = sys:get_state(flurm_job_sup),
 
     ?assertNot(is_process_alive(JobPid)),
     ?assertEqual(0, flurm_job_sup:count_jobs()),
@@ -272,7 +272,7 @@ test_multiple_jobs_lifecycle() ->
 
     %% Stop one job
     ok = flurm_job_sup:stop_job(Pid2),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_job_sup),
     ?assertEqual(2, flurm_job_sup:count_jobs()),
 
     Jobs = flurm_job_sup:which_jobs(),
@@ -283,7 +283,7 @@ test_multiple_jobs_lifecycle() ->
     %% Stop remaining jobs
     ok = flurm_job_sup:stop_job(Pid1),
     ok = flurm_job_sup:stop_job(Pid3),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_job_sup),
 
     ?assertEqual(0, flurm_job_sup:count_jobs()),
     ?assertEqual([], flurm_job_sup:which_jobs()),
@@ -390,7 +390,7 @@ test_process_crash_handling() ->
 
     %% Kill the process (simulating crash)
     exit(Pid, kill),
-    timer:sleep(100),
+    _ = sys:get_state(flurm_job_sup),
 
     %% Process should be removed from supervisor
     %% (temporary restart strategy means no restart)
@@ -575,7 +575,7 @@ test_many_jobs() ->
     %% Stop half of them
     {ToStop, ToKeep} = lists:split(NumJobs div 2, Pids),
     [flurm_job_sup:stop_job(P) || P <- ToStop],
-    timer:sleep(100),
+    _ = sys:get_state(flurm_job_sup),
 
     ?assertEqual(length(ToKeep), flurm_job_sup:count_jobs()),
 
@@ -587,7 +587,7 @@ test_many_jobs() ->
 
     %% Stop remaining
     [flurm_job_sup:stop_job(P) || P <- ToKeep],
-    timer:sleep(100),
+    _ = sys:get_state(flurm_job_sup),
 
     ?assertEqual(0, flurm_job_sup:count_jobs()),
     ok.

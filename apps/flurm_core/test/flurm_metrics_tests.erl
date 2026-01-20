@@ -13,15 +13,28 @@ setup() ->
     case whereis(flurm_metrics) of
         undefined ->
             {ok, Pid} = flurm_metrics:start_link(),
+            %% Unlink to prevent test process crash on shutdown
+            unlink(Pid),
             {started, Pid};
         Pid ->
             {existing, Pid}
     end.
 
-cleanup({started, _Pid}) ->
+cleanup({started, Pid}) ->
     catch ets:delete(flurm_metrics),
     catch ets:delete(flurm_histograms),
-    gen_server:stop(flurm_metrics);
+    case is_process_alive(Pid) of
+        true ->
+            Ref = monitor(process, Pid),
+            catch gen_server:stop(flurm_metrics, shutdown, 5000),
+            receive
+                {'DOWN', Ref, process, Pid, _} -> ok
+            after 5000 ->
+                demonitor(Ref, [flush])
+            end;
+        false ->
+            ok
+    end;
 cleanup({existing, _Pid}) ->
     ok.
 
@@ -46,43 +59,43 @@ metrics_test_() ->
 test_increment() ->
     %% Initial value should be 0 or set in init
     flurm_metrics:increment(flurm_jobs_submitted_total),
-    timer:sleep(10),  % Allow async cast to complete
+    _ = sys:get_state(flurm_metrics),  % Allow async cast to complete
     {ok, Value} = flurm_metrics:get_metric(flurm_jobs_submitted_total),
     ?assert(Value >= 1),
 
     %% Increment by specific amount
     flurm_metrics:increment(flurm_jobs_submitted_total, 5),
-    timer:sleep(10),
+    _ = sys:get_state(flurm_metrics),
     {ok, Value2} = flurm_metrics:get_metric(flurm_jobs_submitted_total),
     ?assertEqual(Value + 5, Value2).
 
 test_decrement() ->
     %% Set a starting value
     flurm_metrics:gauge(test_counter, 10),
-    timer:sleep(10),
+    _ = sys:get_state(flurm_metrics),
 
     %% Decrement
     flurm_metrics:decrement(test_counter),
-    timer:sleep(10),
+    _ = sys:get_state(flurm_metrics),
     {ok, Value} = flurm_metrics:get_metric(test_counter),
     ?assertEqual(9, Value),
 
     %% Should not go below 0
     flurm_metrics:decrement(test_counter, 100),
-    timer:sleep(10),
+    _ = sys:get_state(flurm_metrics),
     {ok, Value2} = flurm_metrics:get_metric(test_counter),
     ?assertEqual(0, Value2).
 
 test_gauge() ->
     %% Set gauge value
     flurm_metrics:gauge(flurm_jobs_running, 42),
-    timer:sleep(10),
+    _ = sys:get_state(flurm_metrics),
     {ok, Value} = flurm_metrics:get_metric(flurm_jobs_running),
     ?assertEqual(42, Value),
 
     %% Update gauge
     flurm_metrics:gauge(flurm_jobs_running, 100),
-    timer:sleep(10),
+    _ = sys:get_state(flurm_metrics),
     {ok, Value2} = flurm_metrics:get_metric(flurm_jobs_running),
     ?assertEqual(100, Value2).
 
@@ -92,7 +105,7 @@ test_histogram() ->
     flurm_metrics:histogram(flurm_request_duration_ms, 50),
     flurm_metrics:histogram(flurm_request_duration_ms, 100),
     flurm_metrics:histogram(flurm_request_duration_ms, 200),
-    timer:sleep(20),
+    _ = sys:get_state(flurm_metrics),
 
     %% Get all metrics should include histogram
     AllMetrics = flurm_metrics:get_all_metrics(),

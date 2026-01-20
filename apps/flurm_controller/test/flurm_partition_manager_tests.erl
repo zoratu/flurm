@@ -23,13 +23,26 @@ setup() ->
     case whereis(flurm_partition_manager) of
         undefined ->
             {ok, Pid} = flurm_partition_manager:start_link(),
+            %% Unlink to prevent test process crash on shutdown
+            unlink(Pid),
             {started, Pid};
         Pid ->
             {existing, Pid}
     end.
 
-cleanup({started, _Pid}) ->
-    gen_server:stop(flurm_partition_manager);
+cleanup({started, Pid}) ->
+    case is_process_alive(Pid) of
+        true ->
+            Ref = monitor(process, Pid),
+            catch gen_server:stop(flurm_partition_manager, shutdown, 5000),
+            receive
+                {'DOWN', Ref, process, Pid, _} -> ok
+            after 5000 ->
+                demonitor(Ref, [flush])
+            end;
+        false ->
+            ok
+    end;
 cleanup({existing, _Pid}) ->
     ok.
 

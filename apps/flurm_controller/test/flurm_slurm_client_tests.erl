@@ -71,6 +71,8 @@ suite_setup() ->
     meck:expect(lager, info, fun(_) -> ok end),
     meck:expect(lager, warning, fun(_, _) -> ok end),
     meck:expect(lager, error, fun(_, _) -> ok end),
+    meck:expect(lager, md, fun() -> [] end),
+    meck:expect(lager, md, fun(_) -> ok end),
 
     %% Start a test TCP listener
     {ok, _} = ranch:start_listener(

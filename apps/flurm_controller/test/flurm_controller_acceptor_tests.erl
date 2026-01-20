@@ -55,7 +55,7 @@ test_start_link() ->
     ?assert(is_pid(Pid)),
 
     %% Wait for process to exit (it will fail on handshake)
-    timer:sleep(50),
+    flurm_test_utils:wait_for_death(Pid),
     ?assertNot(is_process_alive(Pid)),
     ok.
 

@@ -24,7 +24,7 @@ server_running_test_() ->
                  Pid ->
                      %% If running, unregister for test
                      exit(Pid, kill),
-                     timer:sleep(10)
+                     flurm_test_utils:wait_for_death(Pid)
              end,
              ?assertEqual(false, flurm_job_dispatcher:server_running())
          end},

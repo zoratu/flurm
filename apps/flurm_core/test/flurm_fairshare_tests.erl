@@ -140,7 +140,7 @@ test_record_usage() ->
 
     %% Record CPU usage
     flurm_fairshare:record_usage(User, Account, 1000, 100),
-    timer:sleep(50),  % Allow cast to complete
+    _ = sys:get_state(flurm_fairshare),  % Allow cast to complete
 
     %% Usage should increase
     {ok, Usage} = flurm_fairshare:get_usage(User, Account),
@@ -152,11 +152,11 @@ test_cumulative_usage() ->
 
     %% Record multiple usages
     flurm_fairshare:record_usage(User, Account, 100, 10),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_fairshare),
     flurm_fairshare:record_usage(User, Account, 200, 20),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_fairshare),
     flurm_fairshare:record_usage(User, Account, 300, 30),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_fairshare),
 
     %% Usage should be cumulative
     {ok, Usage} = flurm_fairshare:get_usage(User, Account),
@@ -168,7 +168,7 @@ test_reset_usage() ->
 
     %% Record some usage
     flurm_fairshare:record_usage(User, Account, 5000, 500),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_fairshare),
 
     %% Verify usage exists
     {ok, Usage} = flurm_fairshare:get_usage(User, Account),
@@ -176,7 +176,7 @@ test_reset_usage() ->
 
     %% Reset
     flurm_fairshare:reset_usage(User, Account),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_fairshare),
 
     %% Should be back to 0
     {ok, ResetUsage} = flurm_fairshare:get_usage(User, Account),
@@ -185,7 +185,7 @@ test_reset_usage() ->
 test_reset_nonexistent_usage() ->
     %% Reset on non-existent user should not crash
     flurm_fairshare:reset_usage(<<"nonexistent">>, <<"account">>),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_fairshare),
     %% Server should still be responsive
     {ok, _} = flurm_fairshare:get_usage(<<"other">>, <<"account">>).
 
@@ -224,7 +224,7 @@ test_priority_factor_range() ->
 
     %% Record usage
     flurm_fairshare:record_usage(User, Account, 10000, 1000),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_fairshare),
 
     Factor2 = flurm_fairshare:get_priority_factor(User, Account),
     ?assert(Factor2 >= 0.0 andalso Factor2 =< 1.0).
@@ -240,11 +240,11 @@ test_heavy_user_lower_priority() ->
 
     %% Record heavy usage for one user
     flurm_fairshare:record_usage(HeavyUser, Account, 50000, 5000),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_fairshare),
 
     %% Record light usage for other
     flurm_fairshare:record_usage(LightUser, Account, 100, 10),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_fairshare),
 
     %% Heavy user should have lower priority
     HeavyFactor = flurm_fairshare:get_priority_factor(HeavyUser, Account),
@@ -264,7 +264,7 @@ test_light_user_higher_priority() ->
     %% Same usage
     flurm_fairshare:record_usage(User1, Account, 1000, 100),
     flurm_fairshare:record_usage(User2, Account, 1000, 100),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_fairshare),
 
     %% User with more shares should have higher priority
     Factor1 = flurm_fairshare:get_priority_factor(User1, Account),
@@ -285,7 +285,7 @@ test_equal_usage_equal_priority() ->
     %% Equal usage
     flurm_fairshare:record_usage(User1, Account, 5000, 500),
     flurm_fairshare:record_usage(User2, Account, 5000, 500),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_fairshare),
 
     %% Should have approximately equal priority
     Factor1 = flurm_fairshare:get_priority_factor(User1, Account),
@@ -310,7 +310,7 @@ decay_test_() ->
 test_manual_decay() ->
     %% Manual decay should not crash
     ok = flurm_fairshare:decay_usage(),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_fairshare),
     %% Server should still be responsive
     {ok, _} = flurm_fairshare:get_shares(<<"user">>, <<"account">>).
 
@@ -320,14 +320,14 @@ test_decay_reduces_usage() ->
 
     %% Record some usage
     flurm_fairshare:record_usage(User, Account, 10000, 1000),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_fairshare),
 
     {ok, InitUsage} = flurm_fairshare:get_usage(User, Account),
     ?assertEqual(10000.0, InitUsage),
 
     %% Trigger decay
     ok = flurm_fairshare:decay_usage(),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_fairshare),
 
     %% Usage should decrease (or be deleted if < 0.01)
     {ok, NewUsage} = flurm_fairshare:get_usage(User, Account),
@@ -363,7 +363,7 @@ test_get_all_accounts_with_data() ->
 
     flurm_fairshare:record_usage(User1, Account1, 1000, 100),
     flurm_fairshare:record_usage(User2, Account2, 2000, 200),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_fairshare),
 
     %% Get all accounts
     Accounts = flurm_fairshare:get_all_accounts(),
@@ -398,13 +398,13 @@ test_unknown_call() ->
 
 test_unknown_cast() ->
     gen_server:cast(flurm_fairshare, {unknown_message}),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_fairshare),
     %% Should not crash - verify server still responds
     {ok, _} = flurm_fairshare:get_shares(<<"user">>, <<"account">>).
 
 test_unknown_info() ->
     flurm_fairshare ! unknown_message,
-    timer:sleep(50),
+    _ = sys:get_state(flurm_fairshare),
     %% Should not crash - verify server still responds
     {ok, _} = flurm_fairshare:get_shares(<<"user">>, <<"account">>).
 
@@ -429,7 +429,7 @@ test_zero_shares() ->
 
     %% Record usage without setting shares (will use default of 1)
     flurm_fairshare:record_usage(User, Account, 1000, 100),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_fairshare),
 
     %% Should still get valid factor
     Factor = flurm_fairshare:get_priority_factor(User, Account),
@@ -444,7 +444,7 @@ test_large_usage() ->
 
     %% Record very large usage
     flurm_fairshare:record_usage(User, Account, 1000000000, 100000000),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_fairshare),
 
     %% Should still get valid factor
     Factor = flurm_fairshare:get_priority_factor(User, Account),
@@ -461,7 +461,7 @@ test_multiple_accounts_same_user() ->
 
     flurm_fairshare:record_usage(User, Account1, 1000, 100),
     flurm_fairshare:record_usage(User, Account2, 2000, 200),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_fairshare),
 
     %% Each account should have independent usage tracking
     {ok, Usage1} = flurm_fairshare:get_usage(User, Account1),

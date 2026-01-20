@@ -19,9 +19,7 @@ setup() ->
     case whereis(flurm_dbd_storage) of
         undefined -> ok;
         ExistingPid ->
-            unlink(ExistingPid),
-            exit(ExistingPid, shutdown),
-            timer:sleep(50)
+            flurm_test_utils:kill_and_wait(ExistingPid)
     end,
     %% Set backend to ETS (default)
     application:set_env(flurm_dbd, storage_backend, ets),
@@ -32,9 +30,7 @@ setup() ->
 cleanup(Pid) ->
     case is_process_alive(Pid) of
         true ->
-            unlink(Pid),
-            exit(Pid, shutdown),
-            timer:sleep(50);
+            gen_server:stop(Pid, normal, 5000);
         false ->
             ok
     end,
@@ -206,27 +202,27 @@ gen_server_callbacks_test_() ->
              end},
              {"handle_cast does not crash", fun() ->
                  gen_server:cast(flurm_dbd_storage, some_message),
-                 timer:sleep(10),
+                 _ = sys:get_state(flurm_dbd_storage),
                  ?assert(is_process_alive(whereis(flurm_dbd_storage)))
              end},
              {"handle_cast with complex message does not crash", fun() ->
                  gen_server:cast(flurm_dbd_storage, {complex, #{data => test}, [1,2,3]}),
-                 timer:sleep(10),
+                 _ = sys:get_state(flurm_dbd_storage),
                  ?assert(is_process_alive(whereis(flurm_dbd_storage)))
              end},
              {"handle_info does not crash", fun() ->
                  whereis(flurm_dbd_storage) ! some_message,
-                 timer:sleep(10),
+                 _ = sys:get_state(flurm_dbd_storage),
                  ?assert(is_process_alive(whereis(flurm_dbd_storage)))
              end},
              {"handle_info with timeout message does not crash", fun() ->
                  whereis(flurm_dbd_storage) ! timeout,
-                 timer:sleep(10),
+                 _ = sys:get_state(flurm_dbd_storage),
                  ?assert(is_process_alive(whereis(flurm_dbd_storage)))
              end},
              {"handle_info with EXIT message does not crash", fun() ->
                  whereis(flurm_dbd_storage) ! {'EXIT', self(), normal},
-                 timer:sleep(10),
+                 _ = sys:get_state(flurm_dbd_storage),
                  ?assert(is_process_alive(whereis(flurm_dbd_storage)))
              end}
          ]
@@ -317,33 +313,25 @@ start_link_test_() ->
              case whereis(flurm_dbd_storage) of
                  undefined -> ok;
                  OldPid ->
-                     unlink(OldPid),
-                     exit(OldPid, shutdown),
-                     timer:sleep(50)
+                     flurm_test_utils:kill_and_wait(OldPid)
              end,
              application:set_env(flurm_dbd, storage_backend, ets),
              {ok, NewPid} = flurm_dbd_storage:start_link(),
              ?assert(is_pid(NewPid)),
              ?assert(is_process_alive(NewPid)),
              ?assertEqual(NewPid, whereis(flurm_dbd_storage)),
-             unlink(NewPid),
-             exit(NewPid, shutdown),
-             timer:sleep(50)
+             gen_server:stop(NewPid, normal, 5000)
          end},
         {"start_link registers with correct name", fun() ->
              case whereis(flurm_dbd_storage) of
                  undefined -> ok;
                  OldPid ->
-                     unlink(OldPid),
-                     exit(OldPid, shutdown),
-                     timer:sleep(50)
+                     flurm_test_utils:kill_and_wait(OldPid)
              end,
              application:set_env(flurm_dbd, storage_backend, ets),
              {ok, Pid} = flurm_dbd_storage:start_link(),
              ?assertEqual(Pid, whereis(flurm_dbd_storage)),
-             unlink(Pid),
-             exit(Pid, shutdown),
-             timer:sleep(50)
+             gen_server:stop(Pid, normal, 5000)
          end}
     ].
 
@@ -502,9 +490,7 @@ terminate_test_() ->
              case whereis(flurm_dbd_storage) of
                  undefined -> ok;
                  OldPid ->
-                     unlink(OldPid),
-                     exit(OldPid, shutdown),
-                     timer:sleep(50)
+                     flurm_test_utils:kill_and_wait(OldPid)
              end,
              application:set_env(flurm_dbd, storage_backend, ets),
              {ok, Pid} = flurm_dbd_storage:start_link(),
@@ -514,9 +500,8 @@ terminate_test_() ->
              ok = flurm_dbd_storage:store(jobs, terminate_test, #{data => test}),
 
              %% Terminate and verify clean shutdown
-             unlink(Pid),
-             exit(Pid, shutdown),
-             timer:sleep(100),
+             gen_server:stop(Pid, normal, 5000),
+             flurm_test_utils:wait_for_death(Pid),
              ?assertNot(is_process_alive(Pid))
          end}
     ].

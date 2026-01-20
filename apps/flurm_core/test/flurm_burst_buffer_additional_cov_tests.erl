@@ -39,6 +39,7 @@ setup() ->
     meck:expect(lager, info, fun(_, _) -> ok end),
     meck:expect(lager, warning, fun(_, _) -> ok end),
     meck:expect(lager, error, fun(_, _) -> ok end),
+    meck:expect(lager, md, fun(_) -> ok end),
     ok.
 
 cleanup(_) ->
@@ -385,25 +386,25 @@ message_handling_tests(Pid) ->
     [
         {"handle_info cleanup", fun() ->
             Pid ! cleanup,
-            timer:sleep(10),
+            _ = sys:get_state(flurm_burst_buffer),
             ?assert(is_process_alive(Pid))
         end},
 
         {"handle_info stage_complete", fun() ->
             Pid ! {stage_complete, make_ref(), ok},
-            timer:sleep(10),
+            _ = sys:get_state(flurm_burst_buffer),
             ?assert(is_process_alive(Pid))
         end},
 
         {"handle_info unknown message", fun() ->
             Pid ! unknown_message,
-            timer:sleep(10),
+            _ = sys:get_state(flurm_burst_buffer),
             ?assert(is_process_alive(Pid))
         end},
 
         {"handle_cast unknown message", fun() ->
             gen_server:cast(Pid, unknown_cast),
-            timer:sleep(10),
+            _ = sys:get_state(flurm_burst_buffer),
             ?assert(is_process_alive(Pid))
         end}
     ].

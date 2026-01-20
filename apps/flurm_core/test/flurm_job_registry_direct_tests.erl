@@ -176,7 +176,7 @@ test_list_by_state() ->
 
     %% Move one to configuring
     ok = flurm_job:allocate(Pid1, [<<"node1">>]),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_job_registry),
 
     %% Update registry state
     ok = flurm_job_registry:update_state(JobId1, configuring),
@@ -307,7 +307,7 @@ test_monitor_down() ->
 
     %% Kill the job process
     exit(Pid, kill),
-    timer:sleep(100),
+    _ = sys:get_state(flurm_job_registry),
 
     %% Job should be automatically unregistered
     {error, not_found} = flurm_job_registry:lookup_job(JobId),
@@ -322,19 +322,19 @@ test_unknown_request() ->
 test_cast_handling() ->
     %% Send unknown cast - should not crash
     gen_server:cast(flurm_job_registry, {unknown_cast, data}),
-    timer:sleep(10),
+    _ = sys:get_state(flurm_job_registry),
     ?assert(is_process_alive(whereis(flurm_job_registry))),
     ok.
 
 test_info_handling() ->
     %% Send unknown info - should not crash
     whereis(flurm_job_registry) ! {random, info, message},
-    timer:sleep(10),
+    _ = sys:get_state(flurm_job_registry),
     ?assert(is_process_alive(whereis(flurm_job_registry))),
 
     %% Send DOWN message for unknown monitor - should not crash
     whereis(flurm_job_registry) ! {'DOWN', make_ref(), process, self(), normal},
-    timer:sleep(10),
+    _ = sys:get_state(flurm_job_registry),
     ?assert(is_process_alive(whereis(flurm_job_registry))),
     ok.
 

@@ -503,7 +503,7 @@ test_unknown_call() ->
 test_unknown_cast() ->
     %% Unknown cast should not crash the server
     ok = gen_server:cast(flurm_qos, {unknown_cast_message}),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_qos),
     ?assert(is_process_alive(whereis(flurm_qos))),
     %% Should still work
     _ = flurm_qos:list().
@@ -511,7 +511,7 @@ test_unknown_cast() ->
 test_unknown_info() ->
     %% Unknown info message should not crash the server
     flurm_qos ! {unknown_info_message, foo, bar},
-    timer:sleep(50),
+    _ = sys:get_state(flurm_qos),
     ?assert(is_process_alive(whereis(flurm_qos))),
     %% Should still work
     _ = flurm_qos:list().
@@ -529,11 +529,11 @@ test_terminate() ->
     %% Start a fresh QOS server for terminate test
     catch gen_server:stop(flurm_qos),
     catch ets:delete(flurm_qos),
-    timer:sleep(50),
+    ok,
     {ok, Pid} = flurm_qos:start_link(),
     ?assert(is_process_alive(Pid)),
     gen_server:stop(Pid, normal, 5000),
-    timer:sleep(50),
+    flurm_test_utils:wait_for_death(Pid),
     ?assertNot(is_process_alive(Pid)).
 
 %%====================================================================

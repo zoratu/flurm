@@ -231,7 +231,7 @@ test_fifo_scheduling_order() ->
     ),
 
     %% Wait for scheduling cycle
-    timer:sleep(300),
+    _ = sys:get_state(flurm_scheduler),
 
     %% First job should be scheduled (configuring or running)
     {1, FirstJobId} = lists:nth(1, Jobs),
@@ -257,7 +257,7 @@ test_single_job_allocation() ->
     {ok, JobId} = submit_job_via_manager(JobSpec),
 
     %% Wait for scheduling cycle
-    timer:sleep(500),
+    _ = sys:get_state(flurm_scheduler),
 
     %% Verify job was scheduled (moved to configuring or running)
     {ok, JobState} = get_job_state(JobId),
@@ -281,7 +281,7 @@ test_resource_allocation_tracking() ->
     {ok, JobId} = submit_job_via_manager(JobSpec),
 
     %% Wait for scheduling
-    timer:sleep(300),
+    _ = sys:get_state(flurm_scheduler),
 
     %% Verify job was allocated
     {ok, Info} = get_job_info(JobId),
@@ -291,7 +291,7 @@ test_resource_allocation_tracking() ->
     JobSpec2 = make_job_spec(#{num_cpus => 4}),
     {ok, JobId2} = submit_job_via_manager(JobSpec2),
 
-    timer:sleep(300),
+    _ = sys:get_state(flurm_scheduler),
 
     %% Should also be scheduled on same node (has 8 CPUs, each job uses 4)
     {ok, Info2} = get_job_info(JobId2),
@@ -307,7 +307,7 @@ test_resource_deallocation() ->
     {ok, JobId1} = submit_job_via_manager(JobSpec1),
 
     %% Wait for scheduling
-    timer:sleep(300),
+    _ = sys:get_state(flurm_scheduler),
 
     %% First job should be scheduled
     {ok, Job1State} = get_job_state(JobId1),
@@ -317,7 +317,7 @@ test_resource_deallocation() ->
     JobSpec2 = make_job_spec(#{num_cpus => 4}),
     {ok, JobId2} = submit_job_via_manager(JobSpec2),
 
-    timer:sleep(200),
+    _ = sys:get_state(flurm_scheduler),
 
     %% Second job should be pending
     {ok, pending} = get_job_state(JobId2),
@@ -329,7 +329,7 @@ test_resource_deallocation() ->
     ok = flurm_scheduler:job_completed(JobId1),
 
     %% Wait for scheduling cycle
-    timer:sleep(300),
+    _ = sys:get_state(flurm_scheduler),
 
     %% Second job should now be scheduled
     {ok, Job2State} = get_job_state(JobId2),
@@ -351,7 +351,7 @@ test_multiple_jobs_resource_competition() ->
     ),
 
     %% Wait for scheduling
-    timer:sleep(500),
+    _ = sys:get_state(flurm_scheduler),
 
     %% Count how many are scheduled vs pending
     States = lists:map(fun(JobId) ->
@@ -377,7 +377,7 @@ test_resource_exhaustion_wait() ->
     {ok, JobId} = submit_job_via_manager(JobSpec),
 
     %% Wait for scheduling cycle
-    timer:sleep(300),
+    _ = sys:get_state(flurm_scheduler),
 
     %% Job should still be pending (insufficient resources)
     {ok, JobState} = get_job_state(JobId),
@@ -400,7 +400,7 @@ test_priority_affects_scheduling() ->
     JobSpec1 = make_job_spec(#{num_cpus => 4, priority => 50}),
     {ok, JobId1} = submit_job_via_manager(JobSpec1),
 
-    timer:sleep(300),
+    _ = sys:get_state(flurm_scheduler),
 
     %% Job1 should be scheduled
     {ok, Job1State} = get_job_state(JobId1),
@@ -414,7 +414,7 @@ test_priority_affects_scheduling() ->
     JobSpec3 = make_job_spec(#{num_cpus => 4, priority => 50}),
     {ok, JobId3} = submit_job_via_manager(JobSpec3),
 
-    timer:sleep(200),
+    _ = sys:get_state(flurm_scheduler),
 
     %% Both should be pending
     {ok, pending} = get_job_state(JobId2),
@@ -424,7 +424,7 @@ test_priority_affects_scheduling() ->
     ok = flurm_job_manager:update_job(JobId1, #{state => completed}),
     ok = flurm_scheduler:job_completed(JobId1),
 
-    timer:sleep(300),
+    _ = sys:get_state(flurm_scheduler),
 
     %% The high-priority job (JobId2) should be scheduled first
     %% Note: The exact behavior depends on implementation details
@@ -447,7 +447,7 @@ test_high_priority_first() ->
     {ok, JobId2} = submit_job_via_manager(JobSpec2),
 
     %% Wait for scheduling
-    timer:sleep(500),
+    _ = sys:get_state(flurm_scheduler),
 
     %% At least one job should be scheduled
     {ok, State1} = get_job_state(JobId1),
@@ -480,7 +480,7 @@ test_scheduler_stats() ->
     ),
 
     %% Wait for scheduling
-    timer:sleep(400),
+    _ = sys:get_state(flurm_scheduler),
 
     %% Get stats
     {ok, Stats} = flurm_scheduler:get_stats(),
@@ -524,13 +524,13 @@ test_completion_triggers_scheduling() ->
     JobSpec = make_job_spec(#{num_cpus => 4}),
     {ok, JobId} = submit_job_via_manager(JobSpec),
 
-    timer:sleep(300),
+    _ = sys:get_state(flurm_scheduler),
 
     %% Complete the job
     ok = flurm_job_manager:update_job(JobId, #{state => completed}),
     ok = flurm_scheduler:job_completed(JobId),
 
-    timer:sleep(300),
+    _ = sys:get_state(flurm_scheduler),
 
     %% Verify completed count increased
     {ok, NewStats} = flurm_scheduler:get_stats(),
@@ -548,7 +548,7 @@ test_failure_triggers_scheduling() ->
     JobSpec = make_job_spec(#{num_cpus => 4}),
     {ok, JobId} = submit_job_via_manager(JobSpec),
 
-    timer:sleep(300),
+    _ = sys:get_state(flurm_scheduler),
 
     %% Get initial stats
     {ok, InitStats} = flurm_scheduler:get_stats(),
@@ -556,7 +556,7 @@ test_failure_triggers_scheduling() ->
 
     %% Notify job failed
     ok = flurm_scheduler:job_failed(JobId),
-    timer:sleep(200),
+    _ = sys:get_state(flurm_scheduler),
 
     %% Failed count should have increased
     {ok, NewStats} = flurm_scheduler:get_stats(),
@@ -571,7 +571,7 @@ test_trigger_schedule() ->
 
     %% Manually trigger schedule
     ok = flurm_scheduler:trigger_schedule(),
-    timer:sleep(200),
+    _ = sys:get_state(flurm_scheduler),
 
     %% Verify cycle count increased
     {ok, NewStats} = flurm_scheduler:get_stats(),
@@ -596,7 +596,7 @@ test_partition_isolation() ->
     {ok, JobId2} = submit_job_via_manager(JobSpec2),
 
     %% Wait for scheduling
-    timer:sleep(400),
+    _ = sys:get_state(flurm_scheduler),
 
     %% Both jobs should be scheduled on their respective nodes
     {ok, Info1} = get_job_info(JobId1),
@@ -632,7 +632,7 @@ test_node_failure_pool_removal() ->
 
     %% Kill node2 (simulate failure)
     exit(NodePid2, kill),
-    timer:sleep(100),
+    _ = sys:get_state(flurm_scheduler),
 
     %% Verify node2 is unregistered
     ?assertEqual({error, not_found}, flurm_node_registry:lookup_node(<<"node2">>)),
@@ -652,7 +652,7 @@ test_config_change_handling() ->
 
     %% Send partition config change
     flurm_scheduler ! {config_changed, partitions, [], [<<"default">>]},
-    timer:sleep(200),
+    _ = sys:get_state(flurm_scheduler),
 
     %% Should trigger a schedule cycle
     {ok, Stats1} = flurm_scheduler:get_stats(),
@@ -661,7 +661,7 @@ test_config_change_handling() ->
     %% Send node config change
     Cycles1 = maps:get(schedule_cycles, Stats1),
     flurm_scheduler ! {config_changed, nodes, [], [<<"node1">>]},
-    timer:sleep(200),
+    _ = sys:get_state(flurm_scheduler),
 
     {ok, Stats2} = flurm_scheduler:get_stats(),
     ?assert(maps:get(schedule_cycles, Stats2) > Cycles1),
@@ -669,14 +669,14 @@ test_config_change_handling() ->
     %% Send scheduler type change
     Cycles2 = maps:get(schedule_cycles, Stats2),
     flurm_scheduler ! {config_changed, schedulertype, fifo, backfill},
-    timer:sleep(200),
+    _ = sys:get_state(flurm_scheduler),
 
     {ok, Stats3} = flurm_scheduler:get_stats(),
     ?assert(maps:get(schedule_cycles, Stats3) > Cycles2),
 
     %% Unknown config change should not crash
     flurm_scheduler ! {config_changed, unknown_key, old, new},
-    timer:sleep(100),
+    _ = sys:get_state(flurm_scheduler),
     {ok, _Stats4} = flurm_scheduler:get_stats(),
     ok.
 
@@ -693,7 +693,7 @@ test_unknown_request_error() ->
 test_job_deps_satisfied() ->
     %% Verify job_deps_satisfied notification doesn't crash
     ok = flurm_scheduler:job_deps_satisfied(999),
-    timer:sleep(100),
+    _ = sys:get_state(flurm_scheduler),
     %% Should still work
     {ok, _Stats} = flurm_scheduler:get_stats(),
     ok.
@@ -811,7 +811,7 @@ no_nodes_test_() ->
              {ok, JobId} = submit_job_via_manager(JobSpec),
 
              %% Wait for scheduling attempt
-             timer:sleep(300),
+             _ = sys:get_state(flurm_scheduler),
 
              %% Job should still be pending
              {ok, JobState} = get_job_state(JobId),
@@ -844,7 +844,7 @@ info_message_test_() ->
          {"Scheduler ignores unknown info messages", fun() ->
              %% Send random info message
              flurm_scheduler ! random_info_message,
-             timer:sleep(50),
+             _ = sys:get_state(flurm_scheduler),
 
              %% Should still be operational
              {ok, Stats} = flurm_scheduler:get_stats(),
@@ -877,7 +877,7 @@ cast_message_test_() ->
          {"Scheduler ignores unknown cast messages", fun() ->
              %% Send random cast
              gen_server:cast(flurm_scheduler, random_cast),
-             timer:sleep(50),
+             _ = sys:get_state(flurm_scheduler),
 
              %% Should still be operational
              {ok, Stats} = flurm_scheduler:get_stats(),
@@ -927,7 +927,7 @@ multi_node_test_() ->
              {ok, JobId3} = submit_job_via_manager(JobSpec3),
 
              %% Wait for scheduling
-             timer:sleep(500),
+             _ = sys:get_state(flurm_scheduler),
 
              %% All jobs should be scheduled
              {ok, State1} = get_job_state(JobId1),

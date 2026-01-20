@@ -75,8 +75,8 @@ test_start_link_basic(#{tmp_dir := TmpDir}) ->
          ?assert(is_pid(Pid)),
          ?assert(is_process_alive(Pid)),
 
-         %% Give it time to run and stop
-         timer:sleep(500),
+         %% Wait for job to complete and process to exit
+         flurm_test_utils:wait_for_death(Pid),
          %% It should have stopped after executing
          ok
      end}.
@@ -103,7 +103,7 @@ test_get_status_pending(#{tmp_dir := TmpDir}) ->
 
          %% Cancel to clean up
          flurm_job_executor:cancel(Pid),
-         timer:sleep(100)
+         flurm_test_utils:wait_for_death(Pid)
      end}.
 
 test_get_status_running(#{tmp_dir := TmpDir}) ->
@@ -119,8 +119,8 @@ test_get_status_running(#{tmp_dir := TmpDir}) ->
 
          {ok, Pid} = flurm_job_executor:start_link(JobSpec),
 
-         %% Wait for execution to start
-         timer:sleep(200),
+         %% Poll until running status
+         ok = wait_for_running_status(Pid, 50),
 
          Status = flurm_job_executor:get_status(Pid),
 
@@ -129,7 +129,7 @@ test_get_status_running(#{tmp_dir := TmpDir}) ->
 
          %% Cancel to clean up
          flurm_job_executor:cancel(Pid),
-         timer:sleep(100)
+         flurm_test_utils:wait_for_death(Pid)
      end}.
 
 test_get_output(#{tmp_dir := TmpDir}) ->
@@ -146,9 +146,9 @@ test_get_output(#{tmp_dir := TmpDir}) ->
          {ok, Pid} = flurm_job_executor:start_link(JobSpec),
 
          %% Wait for execution to complete
-         timer:sleep(500),
+         flurm_test_utils:wait_for_death(Pid),
 
-         %% Process might have stopped, but we can still test the mechanism
+         %% Process has stopped after execution
          ok
      end}.
 
@@ -169,7 +169,7 @@ test_cancel_before_start(#{tmp_dir := TmpDir}) ->
          ok = flurm_job_executor:cancel(Pid),
 
          %% Should stop
-         timer:sleep(100),
+         flurm_test_utils:wait_for_death(Pid),
          ?assertNot(is_process_alive(Pid))
      end}.
 
@@ -187,13 +187,13 @@ test_cancel_running_job(#{tmp_dir := TmpDir}) ->
          {ok, Pid} = flurm_job_executor:start_link(JobSpec),
 
          %% Wait for job to start running
-         timer:sleep(200),
+         ok = wait_for_running_status(Pid, 50),
 
          %% Cancel the job
          ok = flurm_job_executor:cancel(Pid),
 
          %% Should stop
-         timer:sleep(200),
+         flurm_test_utils:wait_for_death(Pid),
          ?assertNot(is_process_alive(Pid)),
 
          %% Verify failure was reported
@@ -214,7 +214,7 @@ test_successful_job_execution(#{tmp_dir := TmpDir}) ->
          {ok, Pid} = flurm_job_executor:start_link(JobSpec),
 
          %% Wait for completion
-         timer:sleep(500),
+         flurm_test_utils:wait_for_death(Pid),
 
          %% Verify completion was reported
          ?assert(meck:called(flurm_controller_connector, report_job_complete, [1007, 0, '_', '_']))
@@ -234,7 +234,7 @@ test_failed_job_execution(#{tmp_dir := TmpDir}) ->
          {ok, Pid} = flurm_job_executor:start_link(JobSpec),
 
          %% Wait for completion
-         timer:sleep(500),
+         flurm_test_utils:wait_for_death(Pid),
 
          %% Verify failure was reported with exit code
          ?assert(meck:called(flurm_controller_connector, report_job_failed, [1008, {exit_code, 42}, '_', '_']))
@@ -254,8 +254,8 @@ test_job_timeout(#{tmp_dir := TmpDir}) ->
 
          {ok, Pid} = flurm_job_executor:start_link(JobSpec),
 
-         %% Wait for timeout (1 second + buffer)
-         timer:sleep(2000),
+         %% Wait for timeout - process will die when timeout occurs
+         flurm_test_utils:wait_for_death(Pid),
 
          %% Should have stopped
          ?assertNot(is_process_alive(Pid)),
@@ -276,14 +276,15 @@ test_unknown_call(#{tmp_dir := TmpDir}) ->
          },
 
          {ok, Pid} = flurm_job_executor:start_link(JobSpec),
-         timer:sleep(100),
+         %% Sync with gen_server to ensure it's ready
+         _ = sys:get_state(Pid),
 
          Result = gen_server:call(Pid, unknown_request),
 
          ?assertEqual({error, unknown_request}, Result),
 
          flurm_job_executor:cancel(Pid),
-         timer:sleep(100)
+         flurm_test_utils:wait_for_death(Pid)
      end}.
 
 test_unknown_cast(#{tmp_dir := TmpDir}) ->
@@ -298,16 +299,17 @@ test_unknown_cast(#{tmp_dir := TmpDir}) ->
          },
 
          {ok, Pid} = flurm_job_executor:start_link(JobSpec),
-         timer:sleep(100),
+         %% Sync with gen_server to ensure it's ready
+         _ = sys:get_state(Pid),
 
          gen_server:cast(Pid, unknown_message),
 
-         %% Should still be running
-         timer:sleep(50),
+         %% Sync again to ensure cast was processed
+         _ = sys:get_state(Pid),
          ?assert(is_process_alive(Pid)),
 
          flurm_job_executor:cancel(Pid),
-         timer:sleep(100)
+         flurm_test_utils:wait_for_death(Pid)
      end}.
 
 test_unknown_info(#{tmp_dir := TmpDir}) ->
@@ -322,16 +324,17 @@ test_unknown_info(#{tmp_dir := TmpDir}) ->
          },
 
          {ok, Pid} = flurm_job_executor:start_link(JobSpec),
-         timer:sleep(100),
+         %% Sync with gen_server to ensure it's ready
+         _ = sys:get_state(Pid),
 
          Pid ! random_info_message,
 
-         %% Should still be running
-         timer:sleep(50),
+         %% Sync again to ensure info was processed
+         _ = sys:get_state(Pid),
          ?assert(is_process_alive(Pid)),
 
          flurm_job_executor:cancel(Pid),
-         timer:sleep(100)
+         flurm_test_utils:wait_for_death(Pid)
      end}.
 
 %%====================================================================
@@ -363,7 +366,7 @@ test_job_with_gpus(#{tmp_dir := TmpDir}) ->
 
          {ok, Pid} = flurm_job_executor:start_link(JobSpec),
 
-         timer:sleep(500),
+         flurm_test_utils:wait_for_death(Pid),
          ok
      end}.
 
@@ -381,7 +384,7 @@ test_job_with_environment(#{tmp_dir := TmpDir}) ->
 
          {ok, Pid} = flurm_job_executor:start_link(JobSpec),
 
-         timer:sleep(500),
+         flurm_test_utils:wait_for_death(Pid),
          ok
      end}.
 
@@ -402,7 +405,7 @@ test_job_with_output_file(#{tmp_dir := TmpDir}) ->
          {ok, Pid} = flurm_job_executor:start_link(JobSpec),
 
          %% Wait for completion
-         timer:sleep(500),
+         flurm_test_utils:wait_for_death(Pid),
 
          %% Check output file exists
          ?assert(filelib:is_file(binary_to_list(OutputFile)))
@@ -483,7 +486,7 @@ test_prolog_success(#{tmp_dir := TmpDir, prolog_path := PrologPath}) ->
 
          {ok, Pid} = flurm_job_executor:start_link(JobSpec),
 
-         timer:sleep(500),
+         flurm_test_utils:wait_for_death(Pid),
          ok
      end}.
 
@@ -502,7 +505,7 @@ test_prolog_not_found(#{tmp_dir := TmpDir}) ->
 
          {ok, Pid} = flurm_job_executor:start_link(JobSpec),
 
-         timer:sleep(500),
+         flurm_test_utils:wait_for_death(Pid),
 
          %% Job should have failed due to prolog failure
          ?assert(meck:called(flurm_controller_connector, report_job_failed, ['_', '_', '_', '_']))
@@ -523,8 +526,33 @@ test_epilog_on_completion(#{tmp_dir := TmpDir, epilog_path := EpilogPath}) ->
 
          {ok, Pid} = flurm_job_executor:start_link(JobSpec),
 
-         timer:sleep(500),
+         flurm_test_utils:wait_for_death(Pid),
 
          %% Job should have completed
          ?assert(meck:called(flurm_controller_connector, report_job_complete, ['_', '_', '_', '_']))
      end}.
+
+%%====================================================================
+%% Helper Functions
+%%====================================================================
+
+%% Wait for the job executor to reach running status
+wait_for_running_status(Pid, MaxAttempts) ->
+    wait_for_running_status(Pid, MaxAttempts, 0).
+
+wait_for_running_status(_Pid, MaxAttempts, MaxAttempts) ->
+    {error, timeout};
+wait_for_running_status(Pid, MaxAttempts, Attempt) ->
+    case is_process_alive(Pid) of
+        false ->
+            {error, process_died};
+        true ->
+            Status = flurm_job_executor:get_status(Pid),
+            case maps:get(status, Status) of
+                running -> ok;
+                _ ->
+                    %% Use sys:get_state as a sync point to avoid busy loop
+                    _ = sys:get_state(Pid),
+                    wait_for_running_status(Pid, MaxAttempts, Attempt + 1)
+            end
+    end.

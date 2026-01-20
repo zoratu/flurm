@@ -35,7 +35,7 @@ setup() ->
         Pid ->
             unlink(Pid),
             exit(Pid, shutdown),
-            timer:sleep(100)
+            flurm_test_utils:wait_for_death(Pid)
     end,
 
     %% Clean up existing ETS tables
@@ -52,7 +52,7 @@ cleanup(_) ->
         Pid ->
             unlink(Pid),
             exit(Pid, shutdown),
-            timer:sleep(100)
+            flurm_test_utils:wait_for_death(Pid)
     end,
 
     %% Clean up ETS tables
@@ -211,10 +211,13 @@ test_start_link_already_started() ->
     {ok, Pid1} = flurm_node_registry:start_link(),
     ?assert(is_pid(Pid1)),
 
-    %% Try to start again - should get already_started error
+    %% Try to start again - should return the existing process pid
+    %% (graceful handling of already_started for supervisor restarts)
     Result = flurm_node_registry:start_link(),
 
-    ?assertMatch({error, {already_started, _}}, Result),
+    ?assertMatch({ok, _}, Result),
+    {ok, Pid2} = Result,
+    ?assertEqual(Pid1, Pid2),  %% Should be the same pid
     ok.
 
 %%====================================================================
@@ -621,7 +624,9 @@ test_handle_down_message() ->
 
     %% Kill the process to trigger DOWN message
     Pid ! stop,
-    timer:sleep(100),
+    flurm_test_utils:wait_for_death(Pid),
+    %% Wait for registry to process DOWN message
+    _ = sys:get_state(flurm_node_registry),
 
     %% Node should be automatically unregistered
     ?assertEqual({error, not_found}, flurm_node_registry:lookup_node(NodeName)),
@@ -636,7 +641,7 @@ test_handle_config_reload() ->
     NodeDefs = [#{nodename => <<"config-node">>, cpus => 16}],
 
     whereis(flurm_node_registry) ! {config_reload_nodes, NodeDefs},
-    timer:sleep(100),
+    _ = sys:get_state(flurm_node_registry),
 
     %% No crash should occur
     ?assert(is_process_alive(whereis(flurm_node_registry))),
@@ -653,14 +658,14 @@ test_handle_config_changed() ->
     NewNodes = [#{nodename => <<"changed-node">>, cpus => 32}],
 
     whereis(flurm_node_registry) ! {config_changed, nodes, [], NewNodes},
-    timer:sleep(100),
+    _ = sys:get_state(flurm_node_registry),
 
     %% No crash should occur
     ?assert(is_process_alive(whereis(flurm_node_registry))),
 
     %% Other config changes should be ignored
     whereis(flurm_node_registry) ! {config_changed, partitions, [], []},
-    timer:sleep(100),
+    _ = sys:get_state(flurm_node_registry),
     ?assert(is_process_alive(whereis(flurm_node_registry))),
 
     meck:unload(flurm_config_slurm),
@@ -668,7 +673,7 @@ test_handle_config_changed() ->
 
 test_handle_unknown_message() ->
     whereis(flurm_node_registry) ! {unknown_message, data},
-    timer:sleep(100),
+    _ = sys:get_state(flurm_node_registry),
 
     %% Should not crash
     ?assert(is_process_alive(whereis(flurm_node_registry))),
@@ -698,7 +703,7 @@ test_handle_call_unknown() ->
 test_handle_cast_ignored() ->
     %% Cast should not crash the server
     gen_server:cast(flurm_node_registry, {some_cast, data}),
-    timer:sleep(100),
+    _ = sys:get_state(flurm_node_registry),
 
     ?assert(is_process_alive(whereis(flurm_node_registry))),
     ok.

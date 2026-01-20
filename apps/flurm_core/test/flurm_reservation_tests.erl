@@ -812,13 +812,13 @@ test_unknown_call() ->
 
 test_unknown_cast() ->
     gen_server:cast(flurm_reservation, {unknown_message}),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_reservation),
     %% Should not crash - verify server is still running
     ?assert(is_pid(whereis(flurm_reservation))).
 
 test_unknown_info() ->
     flurm_reservation ! unknown_message,
-    timer:sleep(50),
+    _ = sys:get_state(flurm_reservation),
     %% Should not crash - verify server is still running
     ?assert(is_pid(whereis(flurm_reservation))).
 

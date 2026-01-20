@@ -41,3 +41,5 @@ _checkouts/
 # Debug/scratch files
 debug_*.erl
 test_*.erl
+*.coverdata
+rebar3.crashdump

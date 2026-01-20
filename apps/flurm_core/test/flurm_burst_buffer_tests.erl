@@ -21,19 +21,32 @@ setup() ->
     case whereis(flurm_burst_buffer) of
         undefined ->
             {ok, Pid} = flurm_burst_buffer:start_link(),
+            %% Unlink to prevent test process crash on shutdown
+            unlink(Pid),
             {started, Pid};
         Pid ->
             {existing, Pid}
     end.
 
-cleanup({started, _Pid}) ->
+cleanup({started, Pid}) ->
     %% Clean up ETS tables
     catch ets:delete(flurm_bb_pools),
     catch ets:delete(flurm_bb_allocations),
     catch ets:delete(flurm_bb_staging),
     catch ets:delete(flurm_bb_reservations),
     catch ets:delete(flurm_bb_persistent),
-    gen_server:stop(flurm_burst_buffer);
+    case is_process_alive(Pid) of
+        true ->
+            Ref = monitor(process, Pid),
+            catch gen_server:stop(flurm_burst_buffer, shutdown, 5000),
+            receive
+                {'DOWN', Ref, process, Pid, _} -> ok
+            after 5000 ->
+                demonitor(Ref, [flush])
+            end;
+        false ->
+            ok
+    end;
 cleanup({existing, _Pid}) ->
     ok.
 

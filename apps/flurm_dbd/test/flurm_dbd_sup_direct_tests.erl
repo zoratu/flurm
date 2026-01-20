@@ -44,6 +44,7 @@ setup() ->
     meck:expect(lager, debug, fun(_, _) -> ok end),
     meck:expect(lager, warning, fun(_, _) -> ok end),
     meck:expect(lager, error, fun(_, _) -> ok end),
+    meck:expect(lager, md, fun(_) -> ok end),
 
     %% Mock child processes to avoid starting actual servers
     meck:new(flurm_dbd_storage, [passthrough, no_link]),
@@ -66,8 +67,7 @@ cleanup(_) ->
         Pid ->
             catch supervisor:terminate_child(Pid, flurm_dbd_server),
             catch supervisor:terminate_child(Pid, flurm_dbd_storage),
-            catch exit(Pid, shutdown),
-            timer:sleep(50)
+            flurm_test_utils:kill_and_wait(Pid)
     end,
     catch meck:unload(flurm_dbd_server),
     catch meck:unload(flurm_dbd_storage),
@@ -217,6 +217,7 @@ setup_config() ->
     meck:expect(lager, debug, fun(_, _) -> ok end),
     meck:expect(lager, warning, fun(_, _) -> ok end),
     meck:expect(lager, error, fun(_, _) -> ok end),
+    meck:expect(lager, md, fun(_) -> ok end),
     ok.
 
 cleanup_config(_) ->
@@ -341,6 +342,7 @@ socket_options_test_() ->
          meck:new(lager, [no_link, non_strict]),
          meck:expect(lager, info, fun(_, _) -> ok end),
          meck:expect(lager, error, fun(_, _) -> ok end),
+    meck:expect(lager, md, fun(_) -> ok end),
          ok
      end,
      fun(_) ->

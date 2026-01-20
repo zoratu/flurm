@@ -177,6 +177,7 @@ test_prep_stop_save_error() ->
     meck:expect(lager, info, fun(_Fmt) -> ok end),
     meck:expect(lager, info, fun(_Fmt, _Args) -> ok end),
     meck:expect(lager, error, fun(_Fmt, _Args) -> ok end),
+    meck:expect(lager, md, fun(_) -> ok end),
     meck:expect(flurm_controller_connector, get_state, fun() ->
         #{running_jobs => 1}
     end),
@@ -195,6 +196,7 @@ test_prep_stop_exception() ->
     meck:expect(lager, info, fun(_Fmt) -> ok end),
     meck:expect(lager, info, fun(_Fmt, _Args) -> ok end),
     meck:expect(lager, error, fun(_Fmt, _Args) -> ok end),
+    meck:expect(lager, md, fun(_) -> ok end),
     meck:expect(flurm_controller_connector, get_state, fun() ->
         error(some_error)
     end),
@@ -242,6 +244,7 @@ test_full_lifecycle() ->
     meck:expect(lager, info, fun(_Fmt) -> ok end),
     meck:expect(lager, info, fun(_Fmt, _Args) -> ok end),
     meck:expect(lager, error, fun(_Fmt, _Args) -> ok end),
+    meck:expect(lager, md, fun(_) -> ok end),
     meck:expect(flurm_state_persistence, load_state, fun() -> {error, not_found} end),
     meck:expect(flurm_node_daemon_sup, start_link, fun() -> {ok, self()} end),
     meck:expect(flurm_controller_connector, get_state, fun() ->

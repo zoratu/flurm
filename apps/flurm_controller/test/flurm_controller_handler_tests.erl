@@ -40,6 +40,7 @@ handler_test_() ->
 setup() ->
     %% Start required applications
     application:ensure_all_started(sasl),
+    application:ensure_all_started(lager),
 
     %% Disable cluster mode
     application:set_env(flurm_controller, enable_cluster, false),
@@ -79,7 +80,9 @@ start_or_get(Name, StartFun) ->
     case whereis(Name) of
         undefined ->
             case StartFun() of
-                {ok, Pid} -> Pid;
+                {ok, Pid} ->
+                    unlink(Pid),
+                    Pid;
                 {error, {already_started, Pid}} -> Pid
             end;
         Pid -> Pid

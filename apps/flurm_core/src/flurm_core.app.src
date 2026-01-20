@@ -8,6 +8,7 @@
     {applications, [
         kernel,
         stdlib,
+        lager,
         flurm_config
     ]},
     {env, []},

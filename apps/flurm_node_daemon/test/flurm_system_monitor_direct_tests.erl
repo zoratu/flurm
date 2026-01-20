@@ -192,8 +192,8 @@ test_allocate_and_release_gpus(_) ->
                  %% Release GPUs
                  ok = flurm_system_monitor:release_gpus(1001),
 
-                 %% Wait for cast to process
-                 timer:sleep(10),
+                 %% Sync with gen_server to ensure cast was processed
+                 _ = sys:get_state(Pid),
 
                  %% Verify release
                  AllocationAfter = flurm_system_monitor:get_gpu_allocation(),
@@ -250,8 +250,8 @@ test_unknown_info(_) ->
          %% Send unknown message
          Pid ! unknown_message,
 
-         %% Verify server is still running
-         timer:sleep(10),
+         %% Sync with gen_server to ensure message was processed
+         _ = sys:get_state(Pid),
          ?assert(is_process_alive(Pid)),
 
          gen_server:stop(Pid)
@@ -268,8 +268,8 @@ test_collect_message(_) ->
          %% Trigger a collect manually
          Pid ! collect,
 
-         %% Wait for collection to complete
-         timer:sleep(100),
+         %% Sync with gen_server to ensure collect was processed
+         _ = sys:get_state(Pid),
 
          %% Get metrics again - should still work
          MetricsAfter = flurm_system_monitor:get_metrics(),
@@ -288,8 +288,8 @@ test_terminate(_) ->
          %% Stop should succeed
          gen_server:stop(Pid),
 
-         %% Process should be dead
-         timer:sleep(10),
+         %% Process should be dead - wait_for_death handles the synchronization
+         flurm_test_utils:wait_for_death(Pid),
          ?assertNot(is_process_alive(Pid))
      end}.
 
@@ -328,14 +328,14 @@ test_multiple_gpu_allocations() ->
 
             %% Release one job
             flurm_system_monitor:release_gpus(1001),
-            timer:sleep(10),
+            _ = sys:get_state(flurm_system_monitor),
 
             AllocationAfter1 = flurm_system_monitor:get_gpu_allocation(),
             ?assertEqual(1, maps:size(AllocationAfter1)),
 
             %% Release other job
             flurm_system_monitor:release_gpus(1002),
-            timer:sleep(10),
+            _ = sys:get_state(flurm_system_monitor),
 
             AllocationAfter2 = flurm_system_monitor:get_gpu_allocation(),
             ?assertEqual(0, maps:size(AllocationAfter2));
@@ -350,7 +350,7 @@ test_release_nonexistent_job() ->
 
     %% Should not crash when releasing non-existent job
     flurm_system_monitor:release_gpus(99999),
-    timer:sleep(10),
+    _ = sys:get_state(Pid),
 
     ?assert(is_process_alive(Pid)),
 

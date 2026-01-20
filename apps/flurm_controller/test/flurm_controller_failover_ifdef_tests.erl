@@ -50,7 +50,7 @@ calculate_leader_uptime_past_test() ->
 calculate_leader_uptime_valid_timestamp_test() ->
     %% Test that result is always a non-negative integer
     Timestamp = erlang:timestamp(),
-    timer:sleep(100),  % Wait a bit
+    %% Immediate check - uptime should be at least 0
     Result = flurm_controller_failover:calculate_leader_uptime(Timestamp),
     ?assert(is_integer(Result)),
     ?assert(Result >= 0).

@@ -540,7 +540,8 @@ update_node_state_test_() ->
           State = state_with_node(),
           Node0 = maps:get(<<"node1">>, State#ra_state.nodes),
           OldHeartbeat = Node0#ra_node.last_heartbeat,
-          timer:sleep(1), %% Ensure time passes
+          %% No sleep needed - we just verify heartbeat is >= old value
+          %% (monotonic, may be same if called within same microsecond)
           {NewState, ok, _} = flurm_db_ra:apply(#{}, {update_node_state, <<"node1">>, down}, State),
           Node = maps:get(<<"node1">>, NewState#ra_state.nodes),
           ?assert(Node#ra_node.last_heartbeat >= OldHeartbeat)

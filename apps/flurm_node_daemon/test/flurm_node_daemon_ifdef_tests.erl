@@ -59,7 +59,7 @@ list_running_jobs_no_server_test() ->
 get_job_status_not_found_test() ->
     %% Create a dead pid
     DeadPid = spawn(fun() -> ok end),
-    timer:sleep(50),  % Wait for it to die
+    flurm_test_utils:wait_for_death(DeadPid),
 
     try
         Result = flurm_node_daemon:get_job_status(DeadPid),
@@ -72,7 +72,7 @@ get_job_status_not_found_test() ->
 cancel_job_not_found_test() ->
     %% Create a dead pid
     DeadPid = spawn(fun() -> ok end),
-    timer:sleep(50),  % Wait for it to die
+    flurm_test_utils:wait_for_death(DeadPid),
 
     try
         Result = flurm_node_daemon:cancel_job(DeadPid),

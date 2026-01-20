@@ -409,7 +409,7 @@ test_node_unknown_cast() ->
     Pid = register_test_node(<<"unknown_cast">>),
     ok = gen_server:cast(Pid, {unknown_message, bar}),
     %% Should not crash - verify still alive
-    timer:sleep(50),
+    _ = sys:get_state(flurm_node_registry),
     ?assert(is_process_alive(Pid)),
     ok.
 
@@ -417,7 +417,7 @@ test_node_unknown_info() ->
     Pid = register_test_node(<<"unknown_info">>),
     Pid ! {unknown_info_message, baz},
     %% Should not crash - verify still alive
-    timer:sleep(50),
+    _ = sys:get_state(flurm_node_registry),
     ?assert(is_process_alive(Pid)),
     ok.
 
@@ -428,7 +428,7 @@ test_node_terminate() ->
     %% Stop the node
     gen_server:stop(Pid, normal, 5000),
     %% Verify it's unregistered
-    timer:sleep(100),
+    _ = sys:get_state(flurm_node_registry),
     ?assertEqual({error, not_found}, flurm_node_registry:lookup_node(<<"terminate">>)),
     ok.
 
@@ -680,14 +680,14 @@ test_registry_unknown_call() ->
 
 test_registry_unknown_cast() ->
     ok = gen_server:cast(flurm_node_registry, {unknown_message}),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_node_registry),
     %% Should not crash
     ?assertEqual(0, flurm_node_registry:count_nodes()),
     ok.
 
 test_registry_unknown_info() ->
     flurm_node_registry ! {unknown_info_message},
-    timer:sleep(50),
+    _ = sys:get_state(flurm_node_registry),
     %% Should not crash
     ?assertEqual(0, flurm_node_registry:count_nodes()),
     ok.
@@ -695,9 +695,11 @@ test_registry_unknown_info() ->
 test_registry_process_down() ->
     Pid = register_test_node(<<"down_test">>),
     {ok, Pid} = flurm_node_registry:lookup_node(<<"down_test">>),
-    %% Kill the node process
+    %% Kill the node process and wait for it to die
     exit(Pid, kill),
-    timer:sleep(100),
+    flurm_test_utils:wait_for_death(Pid),
+    %% Wait for registry to process DOWN message
+    _ = sys:get_state(flurm_node_registry),
     %% Node should be automatically unregistered
     ?assertEqual({error, not_found}, flurm_node_registry:lookup_node(<<"down_test">>)),
     ok.
@@ -706,7 +708,7 @@ test_registry_config_reload() ->
     _Pid = register_test_node(<<"config_node">>, #{partitions => [<<"default">>]}),
     %% Send config reload message
     flurm_node_registry ! {config_reload_nodes, [#{nodename => <<"config_node">>, cpus => 16}]},
-    timer:sleep(50),
+    _ = sys:get_state(flurm_node_registry),
     %% Should not crash
     ?assertEqual(1, flurm_node_registry:count_nodes()),
     ok.
@@ -715,12 +717,12 @@ test_registry_config_changed() ->
     _Pid = register_test_node(<<"config_chg">>, #{partitions => [<<"default">>]}),
     %% Send config changed message
     flurm_node_registry ! {config_changed, nodes, [], [#{nodename => <<"config_chg">>}]},
-    timer:sleep(50),
+    _ = sys:get_state(flurm_node_registry),
     %% Should not crash
     ?assertEqual(1, flurm_node_registry:count_nodes()),
     %% Send config changed for other key (should be ignored)
     flurm_node_registry ! {config_changed, partitions, [], []},
-    timer:sleep(50),
+    _ = sys:get_state(flurm_node_registry),
     ?assertEqual(1, flurm_node_registry:count_nodes()),
     ok.
 
@@ -763,7 +765,7 @@ test_sup_stop_node() ->
     {ok, Pid} = flurm_node_sup:start_node(NodeSpec),
     ?assert(is_process_alive(Pid)),
     ok = flurm_node_sup:stop_node(Pid),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_node_registry),
     ?assertNot(is_process_alive(Pid)),
     ok.
 

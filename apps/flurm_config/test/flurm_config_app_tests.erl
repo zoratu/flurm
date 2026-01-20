@@ -11,15 +11,22 @@
 
 setup() ->
     %% Stop any running config server
-    catch gen_server:stop(flurm_config_server),
-    timer:sleep(50),
+    case whereis(flurm_config_server) of
+        undefined -> ok;
+        Pid -> flurm_test_utils:kill_and_wait(Pid)
+    end,
     ok.
 
 cleanup(_) ->
     %% Make sure everything is stopped
-    catch gen_server:stop(flurm_config_server),
-    catch exit(whereis(flurm_config_sup), shutdown),
-    timer:sleep(50),
+    case whereis(flurm_config_server) of
+        undefined -> ok;
+        Pid1 -> flurm_test_utils:kill_and_wait(Pid1)
+    end,
+    case whereis(flurm_config_sup) of
+        undefined -> ok;
+        Pid2 -> flurm_test_utils:kill_and_wait(Pid2)
+    end,
     ok.
 
 %%====================================================================
@@ -43,9 +50,7 @@ test_app_start() ->
     ?assert(is_pid(Pid)),
     ?assert(is_process_alive(Pid)),
     %% Cleanup
-    unlink(Pid),
-    exit(Pid, shutdown),
-    timer:sleep(50).
+    flurm_test_utils:kill_and_wait(Pid).
 
 test_app_stop() ->
     %% Start first
@@ -54,9 +59,7 @@ test_app_stop() ->
     Result = flurm_config_app:stop(some_state),
     ?assertEqual(ok, Result),
     %% Cleanup
-    unlink(Pid),
-    exit(Pid, shutdown),
-    timer:sleep(50).
+    flurm_test_utils:kill_and_wait(Pid).
 
 %%====================================================================
 %% Supervisor Tests
@@ -80,9 +83,7 @@ test_sup_start_link() ->
     ?assert(is_pid(Pid)),
     ?assert(is_process_alive(Pid)),
     %% Cleanup
-    unlink(Pid),
-    exit(Pid, shutdown),
-    timer:sleep(50).
+    flurm_test_utils:kill_and_wait(Pid).
 
 test_sup_init() ->
     %% Call init directly to check the specification
@@ -107,14 +108,10 @@ test_sup_starts_server() ->
     %% Start the supervisor
     {ok, SupPid} = flurm_config_sup:start_link(),
 
-    %% Config server should be registered
-    timer:sleep(100),  %% Give it time to start
-    ServerPid = whereis(flurm_config_server),
-    ?assert(ServerPid =/= undefined),
+    %% Config server should be registered - wait for it
+    ServerPid = flurm_test_utils:wait_for_registered(flurm_config_server),
     ?assert(is_pid(ServerPid)),
     ?assert(is_process_alive(ServerPid)),
 
     %% Cleanup
-    unlink(SupPid),
-    exit(SupPid, shutdown),
-    timer:sleep(50).
+    flurm_test_utils:kill_and_wait(SupPid).

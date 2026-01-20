@@ -40,6 +40,7 @@ setup() ->
     meck:expect(lager, debug, fun(_Fmt, _Args) -> ok end),
     meck:expect(lager, warning, fun(_Fmt, _Args) -> ok end),
     meck:expect(lager, error, fun(_Fmt, _Args) -> ok end),
+    meck:expect(lager, md, fun(_) -> ok end),
 
     %% Mock the controller connector
     meck:new(flurm_controller_connector, [non_strict]),
@@ -306,6 +307,7 @@ setup_completion() ->
     meck:expect(lager, debug, fun(_Fmt, _Args) -> ok end),
     meck:expect(lager, warning, fun(_Fmt, _Args) -> ok end),
     meck:expect(lager, error, fun(_Fmt, _Args) -> ok end),
+    meck:expect(lager, md, fun(_) -> ok end),
 
     meck:new(flurm_controller_connector, [non_strict]),
     meck:expect(flurm_controller_connector, report_job_complete,
@@ -369,6 +371,7 @@ setup_timeout() ->
     meck:expect(lager, debug, fun(_Fmt, _Args) -> ok end),
     meck:expect(lager, warning, fun(_Fmt, _Args) -> ok end),
     meck:expect(lager, error, fun(_Fmt, _Args) -> ok end),
+    meck:expect(lager, md, fun(_) -> ok end),
 
     meck:new(flurm_controller_connector, [non_strict]),
     meck:expect(flurm_controller_connector, report_job_complete,
@@ -424,6 +427,7 @@ setup_live() ->
     meck:expect(lager, debug, fun(_Fmt, _Args) -> ok end),
     meck:expect(lager, warning, fun(_Fmt, _Args) -> ok end),
     meck:expect(lager, error, fun(_Fmt, _Args) -> ok end),
+    meck:expect(lager, md, fun(_) -> ok end),
 
     meck:new(flurm_controller_connector, [non_strict]),
     meck:expect(flurm_controller_connector, report_job_complete,
@@ -472,6 +476,7 @@ test_live_get_status() ->
     {ok, Pid} = flurm_job_executor:start_link(JobSpec),
 
     %% Give it a moment to start
+    %% Legitimate wait for async job startup
     timer:sleep(500),
 
     Status = flurm_job_executor:get_status(Pid),
@@ -481,7 +486,6 @@ test_live_get_status() ->
 
     %% Cancel and cleanup
     flurm_job_executor:cancel(Pid),
-    timer:sleep(100),
     ok.
 
 test_live_get_output() ->
@@ -518,6 +522,7 @@ test_live_cancel_job() ->
     {ok, Pid} = flurm_job_executor:start_link(JobSpec),
 
     %% Give it a moment to start
+    %% Legitimate wait for async job startup
     timer:sleep(500),
 
     %% Cancel the job

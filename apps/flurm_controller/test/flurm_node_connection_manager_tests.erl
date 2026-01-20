@@ -51,18 +51,36 @@ setup() ->
     case whereis(flurm_node_connection_manager) of
         undefined -> ok;
         Pid ->
-            gen_server:stop(Pid),
-            timer:sleep(50)
+            catch unlink(Pid),
+            Ref = monitor(process, Pid),
+            catch gen_server:stop(Pid, shutdown, 2000),
+            receive
+                {'DOWN', Ref, process, Pid, _} -> ok
+            after 2000 ->
+                demonitor(Ref, [flush])
+            end
     end,
 
     %% Start fresh server
     {ok, ServerPid} = flurm_node_connection_manager:start_link(),
+    unlink(ServerPid),
     {server_pid, ServerPid}.
 
 cleanup({server_pid, Pid}) ->
-    catch gen_server:stop(Pid),
+    case is_process_alive(Pid) of
+        true ->
+            catch unlink(Pid),
+            Ref = monitor(process, Pid),
+            catch gen_server:stop(Pid, shutdown, 2000),
+            receive
+                {'DOWN', Ref, process, Pid, _} -> ok
+            after 2000 ->
+                demonitor(Ref, [flush])
+            end;
+        false ->
+            ok
+    end,
     catch meck:unload(flurm_node_manager_server),
-    timer:sleep(50),
     ok.
 
 %%====================================================================
@@ -126,7 +144,7 @@ test_unregister_connection() ->
     ?assert(flurm_node_connection_manager:is_node_connected(Hostname)),
 
     ok = flurm_node_connection_manager:unregister_connection(Hostname),
-    timer:sleep(50),  % Cast is async
+    _ = sys:get_state(flurm_node_connection_manager),
 
     ?assertNot(flurm_node_connection_manager:is_node_connected(Hostname)),
     FakePid ! stop,
@@ -135,7 +153,7 @@ test_unregister_connection() ->
 test_unregister_connection_missing() ->
     %% Should not crash when unregistering non-existent connection
     ok = flurm_node_connection_manager:unregister_connection(<<"nonexistent">>),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_node_connection_manager),
     ok.
 
 %%====================================================================
@@ -319,8 +337,9 @@ test_list_connected_nodes() ->
 
 test_list_connected_nodes_empty() ->
     %% Start fresh to ensure no connections
-    gen_server:stop(flurm_node_connection_manager),
-    timer:sleep(50),
+    Pid = whereis(flurm_node_connection_manager),
+    gen_server:stop(Pid),
+    flurm_test_utils:wait_for_death(Pid),
     {ok, _} = flurm_node_connection_manager:start_link(),
 
     ConnectedNodes = flurm_node_connection_manager:list_connected_nodes(),
@@ -364,7 +383,9 @@ test_process_down() ->
 
     %% Kill the connection process
     ConnPid ! stop,
-    timer:sleep(100),  % Wait for DOWN message to be processed
+    flurm_test_utils:wait_for_death(ConnPid),
+    %% Sync to ensure DOWN message is processed
+    _ = sys:get_state(flurm_node_connection_manager),
 
     %% Connection should be removed
     ?assertNot(flurm_node_connection_manager:is_node_connected(Hostname)),
@@ -385,7 +406,7 @@ test_unknown_call() ->
 test_unknown_cast() ->
     %% Should not crash
     gen_server:cast(flurm_node_connection_manager, {unknown_cast, data}),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_node_connection_manager),
     %% Server should still be alive
     ?assert(is_process_alive(whereis(flurm_node_connection_manager))),
     ok.
@@ -393,7 +414,7 @@ test_unknown_cast() ->
 test_unknown_info() ->
     %% Send unknown info message directly
     whereis(flurm_node_connection_manager) ! {unknown_info, data},
-    timer:sleep(50),
+    _ = sys:get_state(flurm_node_connection_manager),
     %% Server should still be alive
     ?assert(is_process_alive(whereis(flurm_node_connection_manager))),
     ok.
@@ -406,7 +427,7 @@ test_terminate() ->
     %% Verify server terminates cleanly
     Pid = whereis(flurm_node_connection_manager),
     gen_server:stop(Pid),
-    timer:sleep(50),
+    flurm_test_utils:wait_for_death(Pid),
     ?assertEqual(undefined, whereis(flurm_node_connection_manager)),
 
     %% Restart for cleanup
@@ -480,7 +501,7 @@ test_init_state() ->
     %% Stop existing server
     case whereis(flurm_node_connection_manager) of
         undefined -> ok;
-        Pid -> gen_server:stop(Pid), timer:sleep(50)
+        Pid -> gen_server:stop(Pid), flurm_test_utils:wait_for_death(Pid)
     end,
 
     {ok, NewPid} = flurm_node_connection_manager:start_link(),

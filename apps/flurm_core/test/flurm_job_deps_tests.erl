@@ -279,7 +279,7 @@ test_on_job_state_change() ->
 
     %% State change (this is async)
     ok = flurm_job_deps:on_job_state_change(900, completed),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_job_deps),
 
     %% The dependency should be marked as satisfied internally
     %% (depends on actual implementation behavior)
@@ -291,7 +291,7 @@ test_notify_completion() ->
 
     %% Notify completion (async)
     ok = flurm_job_deps:notify_completion(950, completed),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_job_deps),
     ok.
 
 %%====================================================================
@@ -344,14 +344,14 @@ test_unknown_request() ->
 test_cast_message_handling() ->
     %% Send unknown cast - should not crash server
     gen_server:cast(flurm_job_deps, unknown_cast),
-    timer:sleep(10),
+    _ = sys:get_state(flurm_job_deps),
     ?assertEqual(true, is_process_alive(whereis(flurm_job_deps))),
     ok.
 
 test_info_message_handling() ->
     %% Send info message - should not crash server
     whereis(flurm_job_deps) ! {arbitrary, info, message},
-    timer:sleep(10),
+    _ = sys:get_state(flurm_job_deps),
     ?assertEqual(true, is_process_alive(whereis(flurm_job_deps))),
     ok.
 

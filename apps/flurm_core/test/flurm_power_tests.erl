@@ -21,18 +21,31 @@ setup() ->
     case whereis(flurm_power) of
         undefined ->
             {ok, Pid} = flurm_power:start_link(),
+            %% Unlink to prevent test process crash on shutdown
+            unlink(Pid),
             {started, Pid};
         Pid ->
             {existing, Pid}
     end.
 
-cleanup({started, _Pid}) ->
+cleanup({started, Pid}) ->
     %% Clean up ETS tables
     catch ets:delete(flurm_power_state),
     catch ets:delete(flurm_energy_metrics),
     catch ets:delete(flurm_job_energy),
     catch ets:delete(flurm_node_releases),
-    gen_server:stop(flurm_power);
+    case is_process_alive(Pid) of
+        true ->
+            Ref = monitor(process, Pid),
+            catch gen_server:stop(flurm_power, shutdown, 5000),
+            receive
+                {'DOWN', Ref, process, Pid, _} -> ok
+            after 5000 ->
+                demonitor(Ref, [flush])
+            end;
+        false ->
+            ok
+    end;
 cleanup({existing, _Pid}) ->
     %% Clean tables but leave server running
     catch ets:delete_all_objects(flurm_power_state),
@@ -313,7 +326,7 @@ test_record_power_usage() ->
     flurm_power:record_power_usage(NodeName, 350),
 
     %% Give async cast time to process
-    timer:sleep(50),
+    _ = sys:get_state(flurm_power),
 
     %% Verify power was recorded via power policy
     {ok, Policy} = flurm_power:get_power_policy(NodeName),
@@ -331,11 +344,11 @@ test_get_node_energy_with_samples() ->
     %% Record multiple power samples using the API
     %% (This uses gen_server:cast so give it time to process)
     flurm_power:record_power_usage(NodeName, 300),
-    timer:sleep(100),
+    _ = sys:get_state(flurm_power),
     flurm_power:record_power_usage(NodeName, 350),
-    timer:sleep(100),
+    _ = sys:get_state(flurm_power),
     flurm_power:record_power_usage(NodeName, 400),
-    timer:sleep(100),
+    _ = sys:get_state(flurm_power),
 
     Now = erlang:system_time(second),
 
@@ -355,7 +368,7 @@ test_record_job_energy() ->
     flurm_power:record_job_energy(JobId, Nodes, 100.5),
 
     %% Give async cast time to process
-    timer:sleep(50),
+    _ = sys:get_state(flurm_power),
 
     %% Retrieve job energy
     {ok, Energy} = flurm_power:get_job_energy(JobId),
@@ -363,7 +376,7 @@ test_record_job_energy() ->
 
     %% Record more energy
     flurm_power:record_job_energy(JobId, Nodes, 50.0),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_power),
 
     %% Should be cumulative
     {ok, TotalEnergy} = flurm_power:get_job_energy(JobId),
@@ -428,7 +441,7 @@ test_notify_job_start() ->
     flurm_power:notify_job_start(JobId, Nodes),
 
     %% Give async cast time to process
-    timer:sleep(50),
+    _ = sys:get_state(flurm_power),
 
     %% Job energy entry should be created
     {ok, Energy} = flurm_power:get_job_energy(JobId),
@@ -443,11 +456,11 @@ test_notify_job_end() ->
 
     %% Start job
     flurm_power:notify_job_start(JobId, Nodes),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_power),
 
     %% End job
     flurm_power:notify_job_end(JobId),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_power),
 
     %% Job should still be retrievable
     {ok, _Energy} = flurm_power:get_job_energy(JobId).
@@ -460,7 +473,7 @@ test_release_node_for_power_off() ->
     flurm_power:release_node_for_power_off(NodeName),
 
     %% Give async cast time to process
-    timer:sleep(50),
+    _ = sys:get_state(flurm_power),
 
     %% Node should still be powered on (release just marks it as available)
     {ok, State} = flurm_power:get_node_power_state(NodeName),

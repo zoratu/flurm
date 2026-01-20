@@ -109,7 +109,7 @@ test_get_job_status() ->
 test_get_job_status_not_found() ->
     %% Create and immediately kill a process
     DeadPid = spawn(fun() -> ok end),
-    timer:sleep(10),
+    flurm_test_utils:wait_for_death(DeadPid),
     meck:expect(flurm_job_executor, get_status, fun(_Pid) ->
         exit({noproc, {gen_server, call, [self(), get_status]}})
     end),
@@ -127,7 +127,7 @@ test_cancel_job() ->
 
 test_cancel_job_not_found() ->
     DeadPid = spawn(fun() -> ok end),
-    timer:sleep(10),
+    flurm_test_utils:wait_for_death(DeadPid),
     meck:expect(flurm_job_executor, cancel, fun(_Pid) ->
         exit({noproc, {gen_server, cast, [self(), cancel]}})
     end),
@@ -231,6 +231,7 @@ test_app_prep_stop() ->
     meck:expect(lager, info, fun(_Fmt) -> ok end),
     meck:expect(lager, info, fun(_Fmt, _Args) -> ok end),
     meck:expect(lager, error, fun(_Fmt, _Args) -> ok end),
+    meck:expect(lager, md, fun(_) -> ok end),
     meck:expect(flurm_controller_connector, get_state, fun() ->
         #{running_jobs => 2, draining => false, drain_reason => undefined}
     end),

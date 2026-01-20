@@ -25,9 +25,7 @@ cleanup(_) ->
     case whereis(flurm_node_daemon_sup) of
         undefined -> ok;
         Pid ->
-            unlink(Pid),
-            exit(Pid, shutdown),
-            timer:sleep(100)
+            flurm_test_utils:kill_and_wait(Pid)
     end,
     ok.
 
@@ -215,9 +213,7 @@ test_start_link_name() ->
         case whereis(flurm_node_daemon_sup) of
             undefined -> ok;
             OldPid ->
-                unlink(OldPid),
-                exit(OldPid, shutdown),
-                timer:sleep(100)
+                flurm_test_utils:kill_and_wait(OldPid)
         end,
 
         Result = flurm_node_daemon_sup:start_link(),
@@ -231,9 +227,7 @@ test_start_link_name() ->
         ?assertEqual(Pid, whereis(flurm_node_daemon_sup)),
 
         %% Cleanup
-        unlink(Pid),
-        exit(Pid, shutdown),
-        timer:sleep(100)
+        flurm_test_utils:kill_and_wait(Pid)
     after
         meck:unload(flurm_system_monitor),
         meck:unload(flurm_controller_connector),

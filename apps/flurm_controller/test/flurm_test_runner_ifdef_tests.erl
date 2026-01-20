@@ -25,10 +25,11 @@ run_function_exported_test() ->
     Exports = flurm_test_runner:module_info(exports),
     ?assert(lists:member({run, 0}, Exports)).
 
-run_job_test_exported_test() ->
-    %% Verify run_job_test/0 is exported (via -ifdef(TEST))
+run_job_impl_exported_test() ->
+    %% Verify run_job_impl/0 is exported (via -ifdef(TEST))
+    %% Note: renamed from run_job_test to avoid EUnit auto-discovery
     Exports = flurm_test_runner:module_info(exports),
-    ?assert(lists:member({run_job_test, 0}, Exports)).
+    ?assert(lists:member({run_job_impl, 0}, Exports)).
 
 monitor_job_exported_test() ->
     %% Verify monitor_job/2 is exported (via -ifdef(TEST))
@@ -47,13 +48,13 @@ monitor_job_timeout_zero_iterations_test() ->
     ?assertEqual({error, timeout}, Result).
 
 %%====================================================================
-%% Test: Job specification structure used by run_job_test
+%% Test: Job specification structure used by run_job_impl
 %%====================================================================
 
 %% This test verifies the structure of the job specification
-%% that would be submitted by run_job_test/0
+%% that would be submitted by run_job_impl/0
 job_spec_structure_test() ->
-    %% The job spec used in run_job_test has this structure
+    %% The job spec used in run_job_impl has this structure
     JobSpec = #{
         name => <<"test_job">>,
         script => <<"#!/bin/bash\necho Hello from FLURM\nsleep 2\necho Done">>,

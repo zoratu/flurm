@@ -112,9 +112,7 @@ test_heartbeat() ->
     %% Get initial heartbeat time
     {ok, Info1} = flurm_node:get_info(Pid),
     HB1 = maps:get(last_heartbeat, Info1),
-    %% Wait a bit
-    timer:sleep(50),
-    %% Send heartbeat
+    %% Send heartbeat after state sync
     ok = flurm_node:heartbeat(Pid),
     %% Verify heartbeat was updated
     {ok, Info2} = flurm_node:get_info(Pid),
@@ -355,7 +353,7 @@ test_unknown_cast() ->
     NodeSpec = make_node_spec(<<"node15">>),
     {ok, Pid, _Name} = flurm_node:register_node(NodeSpec),
     gen_server:cast(Pid, {unknown_cast, test}),
-    timer:sleep(50),
+    _ = sys:get_state(Pid),
     %% Verify node still works
     {ok, _Info} = flurm_node:get_info(Pid),
     ok.
@@ -364,7 +362,7 @@ test_unknown_info() ->
     NodeSpec = make_node_spec(<<"node16">>),
     {ok, Pid, _Name} = flurm_node:register_node(NodeSpec),
     Pid ! {unknown_info, test},
-    timer:sleep(50),
+    _ = sys:get_state(Pid),
     %% Verify node still works
     {ok, _Info} = flurm_node:get_info(Pid),
     ok.

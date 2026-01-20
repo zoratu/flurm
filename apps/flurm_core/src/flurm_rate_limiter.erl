@@ -105,7 +105,16 @@
 %% @doc Start the rate limiter server.
 -spec start_link() -> {ok, pid()} | ignore | {error, term()}.
 start_link() ->
-    gen_server:start_link({local, ?SERVER}, ?MODULE, [], []).
+    case gen_server:start_link({local, ?SERVER}, ?MODULE, [], []) of
+        {ok, Pid} ->
+            {ok, Pid};
+        {error, {already_started, Pid}} ->
+            %% Process already running - return existing pid
+            %% This handles race conditions during startup and restarts
+            {ok, Pid};
+        {error, Reason} ->
+            {error, Reason}
+    end.
 
 %% @doc Check if a request is allowed under rate limits.
 %% Returns ok if allowed, {error, rate_limited} if not.

@@ -51,12 +51,19 @@ cleanup(_) ->
     case whereis(flurm_controller_sup) of
         undefined -> ok;
         Pid ->
+            %% Unlink first to prevent test process from being killed
+            catch unlink(Pid),
             %% Stop listeners first
             catch flurm_controller_sup:stop_listener(),
             catch flurm_controller_sup:stop_node_listener(),
-            catch exit(Pid, shutdown)
+            Ref = monitor(process, Pid),
+            catch exit(Pid, shutdown),
+            receive
+                {'DOWN', Ref, process, Pid, _} -> ok
+            after 2000 ->
+                demonitor(Ref, [flush])
+            end
     end,
-    timer:sleep(100),
     ok.
 
 %%====================================================================
@@ -106,7 +113,7 @@ test_listener_functions() ->
 
     %% Stop any existing listener
     catch flurm_controller_sup:stop_listener(),
-    timer:sleep(100),
+    flurm_test_utils:wait_for_unregistered(flurm_controller_listener),
 
     %% Start listener
     {ok, ListenerPid} = flurm_controller_sup:start_listener(),
@@ -120,7 +127,7 @@ test_listener_functions() ->
 
     %% Stop listener
     ok = flurm_controller_sup:stop_listener(),
-    timer:sleep(100),
+    flurm_test_utils:wait_for_unregistered(flurm_controller_listener),
 
     %% Info should return error now
     ?assertEqual({error, not_found}, flurm_controller_sup:listener_info()),
@@ -133,7 +140,7 @@ test_node_listener_functions() ->
 
     %% Stop any existing node listener
     catch flurm_controller_sup:stop_node_listener(),
-    timer:sleep(100),
+    flurm_test_utils:wait_for_unregistered(flurm_node_listener),
 
     %% Start node listener
     {ok, ListenerPid} = flurm_controller_sup:start_node_listener(),
@@ -147,7 +154,7 @@ test_node_listener_functions() ->
 
     %% Stop node listener
     ok = flurm_controller_sup:stop_node_listener(),
-    timer:sleep(100),
+    flurm_test_utils:wait_for_unregistered(flurm_node_listener),
 
     %% Info should return error now
     ?assertEqual({error, not_found}, flurm_controller_sup:node_listener_info()),
@@ -161,7 +168,9 @@ test_node_listener_functions() ->
 ensure_supervisor_running() ->
     case whereis(flurm_controller_sup) of
         undefined ->
-            {ok, _} = flurm_controller_sup:start_link();
+            {ok, Pid} = flurm_controller_sup:start_link(),
+            unlink(Pid),
+            ok;
         _Pid ->
             ok
     end.

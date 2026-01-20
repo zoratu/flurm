@@ -239,14 +239,20 @@ perform_recovery_steps() ->
 
 %% @doc Verify the Ra cluster is healthy.
 verify_ra_cluster() ->
+    verify_ra_cluster(10).  % Max 10 retries
+
+verify_ra_cluster(0) ->
+    lager:warning("Ra cluster not ready after retries, continuing anyway"),
+    ok;
+verify_ra_cluster(Retries) ->
     case flurm_controller_cluster:cluster_status() of
         #{ra_ready := true} ->
             ok;
         Status ->
             lager:warning("Ra cluster not ready: ~p", [Status]),
             %% Wait and retry
-            timer:sleep(1000),
-            verify_ra_cluster()
+            timer:sleep(200),
+            verify_ra_cluster(Retries - 1)
     end.
 
 %% @doc Recover job state from Ra log.

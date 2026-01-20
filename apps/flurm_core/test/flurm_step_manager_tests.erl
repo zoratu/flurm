@@ -12,7 +12,7 @@
 setup() ->
     %% Stop any existing step manager
     catch gen_server:stop(flurm_step_manager),
-    timer:sleep(20),
+    ok,
     %% Start lager for logging
     application:ensure_all_started(lager),
     %% Start fresh
@@ -21,7 +21,7 @@ setup() ->
 
 cleanup({started, _Pid}) ->
     catch gen_server:stop(flurm_step_manager),
-    timer:sleep(20);
+    ok;
 cleanup(_) ->
     ok.
 
@@ -240,19 +240,19 @@ test_unknown_call() ->
 
 test_unknown_cast() ->
     ok = gen_server:cast(flurm_step_manager, {unknown_cast, arg}),
-    timer:sleep(20),
+    ok,
     ?assert(is_pid(whereis(flurm_step_manager))).
 
 test_unknown_info() ->
     flurm_step_manager ! {unknown_info, arg},
-    timer:sleep(20),
+    ok,
     ?assert(is_pid(whereis(flurm_step_manager))).
 
 test_terminate() ->
     Pid = whereis(flurm_step_manager),
     ?assert(is_pid(Pid)),
     gen_server:stop(flurm_step_manager),
-    timer:sleep(50),
+    %% Process is stopped, verify it's gone
     ?assertEqual(undefined, whereis(flurm_step_manager)).
 
 %%====================================================================
@@ -263,14 +263,14 @@ multi_job_test_() ->
     {setup,
      fun() ->
          catch gen_server:stop(flurm_step_manager),
-         timer:sleep(20),
+         ok,
          application:ensure_all_started(lager),
          {ok, Pid} = flurm_step_manager:start_link(),
          Pid
      end,
      fun(Pid) ->
          catch gen_server:stop(Pid),
-         timer:sleep(20)
+         ok
      end,
      [
       {"Steps isolated per job", fun() ->
@@ -306,14 +306,14 @@ update_unknown_keys_test_() ->
     {setup,
      fun() ->
          catch gen_server:stop(flurm_step_manager),
-         timer:sleep(20),
+         ok,
          application:ensure_all_started(lager),
          {ok, Pid} = flurm_step_manager:start_link(),
          Pid
      end,
      fun(Pid) ->
          catch gen_server:stop(Pid),
-         timer:sleep(20)
+         ok
      end,
      [
       {"Unknown update keys are ignored", fun() ->

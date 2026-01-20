@@ -17,14 +17,12 @@ setup() ->
     %% Clean up any test env vars
     os:unsetenv("FLURM_TEST_KEY"),
     os:unsetenv("FLURM_CORE_SOME_KEY"),
-    timer:sleep(10),
     ok.
 
 cleanup(_) ->
     catch ets:delete(?CONFIG_TABLE),
     os:unsetenv("FLURM_TEST_KEY"),
     os:unsetenv("FLURM_CORE_SOME_KEY"),
-    timer:sleep(10),
     ok.
 
 %%====================================================================

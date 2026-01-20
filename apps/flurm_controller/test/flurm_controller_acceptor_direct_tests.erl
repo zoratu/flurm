@@ -53,7 +53,7 @@ test_start_link() ->
     ?assert(is_pid(Pid)),
 
     %% Wait for process to terminate
-    timer:sleep(100),
+    flurm_test_utils:wait_for_death(Pid),
     ?assertEqual(false, is_process_alive(Pid)),
 
     meck:unload(mock_transport).
@@ -68,7 +68,7 @@ test_init_success() ->
 
     %% Spawn init and let it run until connection closes
     Pid = spawn(fun() -> flurm_controller_acceptor:init(test_ref, mock_transport, #{}) end),
-    timer:sleep(100),
+    flurm_test_utils:wait_for_death(Pid),
 
     %% Process should have finished due to closed connection
     ?assertEqual(false, is_process_alive(Pid)),

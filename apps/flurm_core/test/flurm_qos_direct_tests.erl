@@ -42,7 +42,7 @@ setup() ->
     end,
     %% Clean up ETS table
     catch ets:delete(flurm_qos),
-    timer:sleep(50),
+    ok,
     ok.
 
 cleanup(_) ->
@@ -54,7 +54,7 @@ cleanup(_) ->
             catch gen_server:stop(Pid, shutdown, 5000)
     end,
     catch ets:delete(flurm_qos),
-    timer:sleep(50),
+    ok,
     ok.
 
 %%====================================================================
@@ -490,6 +490,6 @@ test_terminate() ->
     catch unlink(Pid),
     gen_server:stop(Pid, shutdown, 5000),
 
-    timer:sleep(50),
+    ok,
     ?assertNot(is_process_alive(Pid)),
     ok.

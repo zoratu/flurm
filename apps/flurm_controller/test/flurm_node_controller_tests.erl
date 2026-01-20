@@ -49,8 +49,8 @@ setup_conn_mgr() ->
 cleanup_conn_mgr(Pid) ->
     unlink(Pid),
     catch gen_server:stop(Pid, shutdown, 5000),
+    flurm_test_utils:wait_for_death(Pid),
     catch meck:unload(flurm_node_manager_server),
-    timer:sleep(50),
     ok.
 
 test_conn_mgr_start() ->
@@ -71,7 +71,7 @@ test_conn_mgr_unregister() ->
     ok = flurm_node_connection_manager:register_connection(<<"unreg_node">>, TestPid),
     {ok, TestPid} = flurm_node_connection_manager:get_connection(<<"unreg_node">>),
     ok = flurm_node_connection_manager:unregister_connection(<<"unreg_node">>),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_node_connection_manager),
     {error, not_connected} = flurm_node_connection_manager:get_connection(<<"unreg_node">>),
     TestPid ! stop,
     ok.
@@ -145,7 +145,7 @@ test_conn_mgr_find_by_socket() ->
     {ok, <<"socket_node">>} = flurm_node_connection_manager:find_by_socket(fake_socket),
     %% Unregister so we can test error case
     ok = flurm_node_connection_manager:unregister_connection(<<"socket_node">>),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_node_connection_manager),
     error = flurm_node_connection_manager:find_by_socket(fake_socket),
     ok.
 
@@ -168,7 +168,7 @@ test_conn_mgr_unknown_call() ->
 
 test_conn_mgr_unknown_cast() ->
     ok = gen_server:cast(flurm_node_connection_manager, {unknown_message}),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_node_connection_manager),
     %% Should not crash
     Nodes = flurm_node_connection_manager:list_connected_nodes(),
     ?assert(is_list(Nodes)),
@@ -176,7 +176,7 @@ test_conn_mgr_unknown_cast() ->
 
 test_conn_mgr_unknown_info() ->
     flurm_node_connection_manager ! {unknown_info_message},
-    timer:sleep(50),
+    _ = sys:get_state(flurm_node_connection_manager),
     %% Should not crash
     Nodes = flurm_node_connection_manager:list_connected_nodes(),
     ?assert(is_list(Nodes)),
@@ -252,6 +252,7 @@ setup_node_manager() ->
     meck:expect(lager, debug, fun(_, _) -> ok end),
     meck:expect(lager, warning, fun(_, _) -> ok end),
     meck:expect(lager, error, fun(_, _) -> ok end),
+    meck:expect(lager, md, fun(_) -> ok end),
     meck:new(flurm_config_slurm, [non_strict]),
     meck:expect(flurm_config_slurm, expand_hostlist, fun(Name) -> [Name] end),
     {ok, Pid} = flurm_node_manager_server:start_link(),
@@ -357,7 +358,7 @@ test_node_mgr_release() ->
     {ok, Node1} = flurm_node_manager_server:get_node(<<"release_node">>),
     ?assert(lists:member(1, Node1#node.running_jobs)),
     ok = flurm_node_manager_server:release_resources(<<"release_node">>, 1),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_node_manager_server),
     {ok, Node2} = flurm_node_manager_server:get_node(<<"release_node">>),
     ?assertNot(lists:member(1, Node2#node.running_jobs)),
     ok.
@@ -490,7 +491,7 @@ test_node_mgr_release_gres() ->
     ok = flurm_node_manager_server:register_node_gres(<<"rel_gres_node">>, GRESList),
     {ok, _} = flurm_node_manager_server:allocate_gres(<<"rel_gres_node">>, 1, <<"gpu:2">>, false),
     ok = flurm_node_manager_server:release_gres(<<"rel_gres_node">>, 1),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_node_manager_server),
     ok.
 
 test_node_mgr_available_with_gres() ->
@@ -504,7 +505,7 @@ test_node_mgr_available_with_gres() ->
 test_node_mgr_check_heartbeats() ->
     %% Trigger heartbeat check manually
     flurm_node_manager_server ! check_heartbeats,
-    timer:sleep(100),
+    _ = sys:get_state(flurm_node_manager_server),
     %% Should not crash
     ok.
 
@@ -515,30 +516,30 @@ test_node_mgr_unknown_call() ->
 
 test_node_mgr_unknown_cast() ->
     ok = gen_server:cast(flurm_node_manager_server, {unknown_message}),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_node_manager_server),
     %% Should not crash
     ok.
 
 test_node_mgr_unknown_info() ->
     flurm_node_manager_server ! {unknown_info_message},
-    timer:sleep(50),
+    _ = sys:get_state(flurm_node_manager_server),
     %% Should not crash
     ok.
 
 test_node_mgr_config_reload() ->
     flurm_node_manager_server ! {config_reload_nodes, [#{nodename => <<"config_node">>, cpus => 4}]},
-    timer:sleep(100),
+    _ = sys:get_state(flurm_node_manager_server),
     %% Should not crash
     ok.
 
 test_node_mgr_config_changed() ->
     flurm_node_manager_server ! {config_changed, nodes, [], [#{nodename => <<"changed_node">>}]},
-    timer:sleep(100),
+    _ = sys:get_state(flurm_node_manager_server),
     %% Should not crash
     ok.
 
 test_node_mgr_config_changed_other() ->
     flurm_node_manager_server ! {config_changed, partitions, [], []},
-    timer:sleep(50),
+    _ = sys:get_state(flurm_node_manager_server),
     %% Should not crash (ignored)
     ok.

@@ -272,7 +272,7 @@ test_heartbeat() ->
     }),
 
     %% Give async cast time to process
-    timer:sleep(50),
+    _ = sys:get_state(flurm_node_manager_server),
 
     %% Verify heartbeat was processed
     {ok, Node} = flurm_node_manager_server:get_node(<<"hb-node1">>),
@@ -288,7 +288,7 @@ test_heartbeat_unknown() ->
         load_avg => 1.0
     }),
 
-    timer:sleep(50),
+    _ = sys:get_state(flurm_node_manager_server),
 
     %% Server should still be alive
     ?assert(is_process_alive(whereis(flurm_node_manager_server))),
@@ -377,7 +377,7 @@ test_release_resources_success() ->
 
     %% Release resources (async cast)
     flurm_node_manager_server:release_resources(<<"rel-node1">>, 1),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_node_manager_server),
 
     %% Verify release
     {ok, Node} = flurm_node_manager_server:get_node(<<"rel-node1">>),
@@ -396,7 +396,7 @@ test_release_resources_state_update() ->
 
     %% Release resources
     flurm_node_manager_server:release_resources(<<"state-node1">>, 1),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_node_manager_server),
 
     %% Node should return to idle
     {ok, Node2} = flurm_node_manager_server:get_node(<<"state-node1">>),
@@ -665,7 +665,7 @@ test_release_gres() ->
 
     %% Release GRES (async cast) - should not crash
     flurm_node_manager_server:release_gres(<<"gres-rel-node1">>, 1),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_node_manager_server),
 
     ?assert(is_process_alive(whereis(flurm_node_manager_server))),
     ok.
@@ -673,7 +673,7 @@ test_release_gres() ->
 test_release_gres_unknown() ->
     %% Release on unknown node should not crash
     flurm_node_manager_server:release_gres(<<"unknown-gres-node">>, 1),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_node_manager_server),
 
     ?assert(is_process_alive(whereis(flurm_node_manager_server))),
     ok.
@@ -713,7 +713,7 @@ test_unknown_call() ->
 test_unknown_cast() ->
     Pid = whereis(flurm_node_manager_server),
     ok = gen_server:cast(Pid, {unknown_cast, test}),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_node_manager_server),
 
     %% Server should still be alive
     ?assert(is_process_alive(Pid)),
@@ -722,7 +722,7 @@ test_unknown_cast() ->
 test_unknown_info() ->
     Pid = whereis(flurm_node_manager_server),
     Pid ! {unknown_info_message, data},
-    timer:sleep(50),
+    _ = sys:get_state(flurm_node_manager_server),
 
     %% Server should still be alive
     ?assert(is_process_alive(Pid)),
@@ -736,7 +736,7 @@ test_check_heartbeats_timeout() ->
     %% This tests the handle_info(check_heartbeats, ...) callback
     Pid = whereis(flurm_node_manager_server),
     Pid ! check_heartbeats,
-    timer:sleep(100),
+    _ = sys:get_state(flurm_node_manager_server),
 
     %% Server should still be alive
     ?assert(is_process_alive(Pid)),
@@ -754,7 +754,7 @@ test_terminate() ->
 test_config_changed_nodes() ->
     Pid = whereis(flurm_node_manager_server),
     Pid ! {config_changed, nodes, [], [#{nodename => <<"config-node1">>}]},
-    timer:sleep(50),
+    _ = sys:get_state(flurm_node_manager_server),
 
     %% Server should still be alive
     ?assert(is_process_alive(Pid)),
@@ -763,7 +763,7 @@ test_config_changed_nodes() ->
 test_config_changed_other() ->
     Pid = whereis(flurm_node_manager_server),
     Pid ! {config_changed, partitions, [], []},
-    timer:sleep(50),
+    _ = sys:get_state(flurm_node_manager_server),
 
     %% Server should still be alive and ignore the message
     ?assert(is_process_alive(Pid)),
@@ -932,7 +932,7 @@ test_state_allocated_to_mixed() ->
 
     %% Release one
     flurm_node_manager_server:release_resources(<<"trans-node3">>, 1),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_node_manager_server),
 
     {ok, Node2} = flurm_node_manager_server:get_node(<<"trans-node3">>),
     ?assertEqual(mixed, Node2#node.state),
@@ -949,7 +949,7 @@ test_state_mixed_to_idle() ->
 
     %% Release all
     flurm_node_manager_server:release_resources(<<"trans-node4">>, 1),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_node_manager_server),
 
     {ok, Node2} = flurm_node_manager_server:get_node(<<"trans-node4">>),
     ?assertEqual(idle, Node2#node.state),
@@ -995,7 +995,7 @@ test_concurrent_registrations() ->
     end) || I <- lists:seq(1, 10)],
 
     %% Wait for all to complete
-    timer:sleep(200),
+    _ = sys:get_state(flurm_node_manager_server),
 
     %% Verify all nodes registered
     Nodes = flurm_node_manager_server:list_nodes(),
@@ -1010,7 +1010,7 @@ test_concurrent_allocations() ->
         flurm_node_manager_server:allocate_resources(<<"conc-alloc-node">>, I, 1, 1000)
     end) || I <- lists:seq(1, 10)],
 
-    timer:sleep(200),
+    _ = sys:get_state(flurm_node_manager_server),
 
     %% Verify some allocations succeeded
     {ok, Node} = flurm_node_manager_server:get_node(<<"conc-alloc-node">>),

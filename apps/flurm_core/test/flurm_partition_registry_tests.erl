@@ -13,14 +13,30 @@ setup() ->
     case whereis(flurm_partition_registry) of
         undefined ->
             {ok, Pid} = flurm_partition_registry:start_link(),
+            %% Unlink immediately to prevent test process from crashing
+            %% when gen_server shuts down
+            unlink(Pid),
             {started, Pid};
         Pid ->
             {existing, Pid}
     end.
 
-cleanup({started, _Pid}) ->
+cleanup({started, Pid}) ->
     catch ets:delete(flurm_partitions),
-    gen_server:stop(flurm_partition_registry);
+    case is_process_alive(Pid) of
+        true ->
+            %% Unlink first to prevent test process from being killed
+            catch unlink(Pid),
+            Ref = monitor(process, Pid),
+            catch gen_server:stop(flurm_partition_registry, shutdown, 5000),
+            receive
+                {'DOWN', Ref, process, Pid, _} -> ok
+            after 5000 ->
+                demonitor(Ref, [flush])
+            end;
+        false ->
+            ok
+    end;
 cleanup({existing, _Pid}) ->
     ok.
 
@@ -253,7 +269,7 @@ test_config_reload_create() ->
     flurm_partition_registry ! {config_reload_partitions, [
         #{partitionname => <<"config_part">>, prioritytier => 1500, state => <<"UP">>}
     ]},
-    timer:sleep(100),
+    _ = sys:get_state(flurm_partition_registry),
 
     %% Partition should exist
     {ok, Info} = flurm_partition_registry:get_partition(<<"config_part">>),
@@ -272,7 +288,7 @@ test_config_reload_update() ->
     flurm_partition_registry ! {config_reload_partitions, [
         #{partitionname => <<"reload_part">>, prioritytier => 3000, nodes => <<"new_node1,new_node2">>}
     ]},
-    timer:sleep(100),
+    _ = sys:get_state(flurm_partition_registry),
 
     %% Verify updates
     {ok, Info} = flurm_partition_registry:get_partition(<<"reload_part">>),
@@ -286,7 +302,7 @@ test_config_reload_states() ->
         #{partitionname => <<"state_drain">>, state => <<"DRAIN">>},
         #{partitionname => <<"state_atom">>, state => down}
     ]},
-    timer:sleep(100),
+    _ = sys:get_state(flurm_partition_registry),
 
     {ok, UpInfo} = flurm_partition_registry:get_partition(<<"state_up">>),
     ?assertEqual(up, maps:get(state, UpInfo)),
@@ -305,7 +321,7 @@ test_config_changed_handler() ->
     flurm_partition_registry ! {config_changed, partitions, [], [
         #{partitionname => <<"changed_part">>, prioritytier => 999}
     ]},
-    timer:sleep(100),
+    _ = sys:get_state(flurm_partition_registry),
 
     %% Partition should be created
     {ok, Info} = flurm_partition_registry:get_partition(<<"changed_part">>),
@@ -319,7 +335,7 @@ test_config_changed_other_keys() ->
     flurm_partition_registry ! {config_changed, nodes, [], []},
     flurm_partition_registry ! {config_changed, qos, [], []},
     flurm_partition_registry ! {config_changed, unknown_key, [], []},
-    timer:sleep(100),
+    _ = sys:get_state(flurm_partition_registry),
 
     %% Partition count should be unchanged
     PartsAfter = flurm_partition_registry:list_partitions(),
@@ -348,7 +364,7 @@ test_unknown_call() ->
 test_unknown_cast() ->
     %% Unknown cast should not crash the server
     ok = gen_server:cast(flurm_partition_registry, {unknown_cast_message}),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_partition_registry),
     ?assert(is_process_alive(whereis(flurm_partition_registry))),
     %% Should still work
     _ = flurm_partition_registry:list_partitions().
@@ -356,7 +372,7 @@ test_unknown_cast() ->
 test_unknown_info() ->
     %% Unknown info message should not crash the server
     flurm_partition_registry ! {unknown_info_message, foo, bar},
-    timer:sleep(50),
+    _ = sys:get_state(flurm_partition_registry),
     ?assert(is_process_alive(whereis(flurm_partition_registry))),
     %% Should still work
     _ = flurm_partition_registry:list_partitions().
@@ -373,11 +389,11 @@ test_code_change() ->
 test_terminate() ->
     %% Start a fresh registry for terminate test
     catch gen_server:stop(flurm_partition_registry),
-    timer:sleep(50),
+    %% Process is stopped, start fresh
     {ok, Pid} = flurm_partition_registry:start_link(),
     ?assert(is_process_alive(Pid)),
     gen_server:stop(Pid, normal, 5000),
-    timer:sleep(50),
+    %% Process is stopped, verify it's gone
     ?assertNot(is_process_alive(Pid)).
 
 %%====================================================================

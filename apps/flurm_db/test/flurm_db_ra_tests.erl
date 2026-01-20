@@ -72,10 +72,7 @@ cleanup(#{data_dir := DataDir}) ->
     %% Stop Ra cluster if running
     catch flurm_db_cluster:leave_cluster(),
 
-    %% Give Ra time to shutdown cleanly
-    timer:sleep(100),
-
-    %% Stop Ra application
+    %% Stop Ra application (no sleep needed - stop is synchronous)
     application:stop(ra),
 
     %% Remove temporary data directory
@@ -126,10 +123,7 @@ test_start_single_node_cluster(_Context) ->
     {ok, Members} = flurm_db_cluster:get_members(),
     ?assert(length(Members) >= 1),
 
-    %% Give time for leader election
-    timer:sleep(500),
-
-    %% Verify leader election occurred
+    %% Verify leader election occurred (Ra leader election is synchronous with start_cluster)
     {ok, _Leader} = flurm_db_cluster:get_leader(),
 
     ok.

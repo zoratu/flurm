@@ -177,7 +177,7 @@ test_stop_job(_) ->
          ok = flurm_job_executor_sup:stop_job(JobPid),
 
          %% Should be terminated
-         timer:sleep(50),
+         flurm_test_utils:wait_for_death(JobPid),
          ?assertNot(is_process_alive(JobPid)),
 
          gen_server:stop(SupPid)

@@ -98,15 +98,20 @@ handle_request_test_() ->
     {setup,
      fun() ->
          %% Start flurm_metrics if needed for format_prometheus
+         case whereis(flurm_metrics) of
+             undefined -> ok;
+             OldPid ->
+                 gen_server:stop(OldPid, normal, 5000),
+                 flurm_test_utils:wait_for_death(OldPid)
+         end,
          catch ets:delete(flurm_metrics),
          catch ets:delete(flurm_histograms),
-         catch gen_server:stop(flurm_metrics),
-         timer:sleep(20),
          {ok, MetricsPid} = flurm_metrics:start_link(),
          MetricsPid
      end,
      fun(MetricsPid) ->
-         catch gen_server:stop(MetricsPid),
+         catch gen_server:stop(MetricsPid, normal, 5000),
+         flurm_test_utils:wait_for_death(MetricsPid),
          catch ets:delete(flurm_metrics),
          catch ets:delete(flurm_histograms)
      end,
@@ -125,9 +130,8 @@ handle_request_test_() ->
               %% Spawn handle_request (it closes the socket when done)
               spawn(fun() -> flurm_metrics_http:handle_request(ServerSock) end),
 
-              %% Receive response
-              timer:sleep(100),
-              case gen_tcp:recv(ClientSock, 0, 1000) of
+              %% Receive response with appropriate timeout
+              case gen_tcp:recv(ClientSock, 0, 2000) of
                   {ok, Data} ->
                       ?assert(binary:match(Data, <<"200 OK">>) =/= nomatch);
                   {error, closed} ->
@@ -146,8 +150,7 @@ handle_request_test_() ->
               ok = gen_tcp:send(ClientSock, <<"GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n">>),
               spawn(fun() -> flurm_metrics_http:handle_request(ServerSock) end),
 
-              timer:sleep(100),
-              case gen_tcp:recv(ClientSock, 0, 1000) of
+              case gen_tcp:recv(ClientSock, 0, 2000) of
                   {ok, Data} ->
                       ?assert(binary:match(Data, <<"status">>) =/= nomatch);
                   {error, closed} ->
@@ -165,8 +168,7 @@ handle_request_test_() ->
               ok = gen_tcp:send(ClientSock, <<"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n">>),
               spawn(fun() -> flurm_metrics_http:handle_request(ServerSock) end),
 
-              timer:sleep(100),
-              case gen_tcp:recv(ClientSock, 0, 1000) of
+              case gen_tcp:recv(ClientSock, 0, 2000) of
                   {ok, Data} ->
                       ?assert(binary:match(Data, <<"FLURM">>) =/= nomatch);
                   {error, closed} ->
@@ -184,8 +186,7 @@ handle_request_test_() ->
               ok = gen_tcp:send(ClientSock, <<"GET /unknown HTTP/1.1\r\nHost: localhost\r\n\r\n">>),
               spawn(fun() -> flurm_metrics_http:handle_request(ServerSock) end),
 
-              timer:sleep(100),
-              case gen_tcp:recv(ClientSock, 0, 1000) of
+              case gen_tcp:recv(ClientSock, 0, 2000) of
                   {ok, Data} ->
                       ?assert(binary:match(Data, <<"404">>) =/= nomatch);
                   {error, closed} ->

@@ -82,12 +82,11 @@ cancel_timer_valid_ref_test() ->
 cancel_timer_already_fired_test() ->
     %% cancel_timer with a timer that already fired
     Ref = erlang:send_after(0, self(), test_msg),
-    timer:sleep(10),
+    %% Wait for the message to arrive instead of using timer:sleep
+    receive test_msg -> ok end,
     Result = flurm_controller_connector:cancel_timer(Ref),
     %% Should return false when timer has already fired
-    ?assertEqual(false, Result),
-    %% Clean up the message from the mailbox
-    receive test_msg -> ok after 0 -> ok end.
+    ?assertEqual(false, Result).
 
 %%====================================================================
 %% detect_features/0 Tests

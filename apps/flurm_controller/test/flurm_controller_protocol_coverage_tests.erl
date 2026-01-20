@@ -39,6 +39,8 @@ flurm_controller_protocol_coverage_test_() ->
 setup() ->
     meck:new(ranch, [non_strict]),
     meck:new(lager, [non_strict]),
+    meck:expect(lager, md, fun() -> [] end),
+    meck:expect(lager, md, fun(_) -> ok end),
     meck:new(flurm_job_manager, [non_strict]),
     meck:new(flurm_node_manager_server, [non_strict]),
     meck:new(flurm_partition_manager, [non_strict]),
@@ -72,7 +74,7 @@ test_start_link() ->
     after 100 ->
         ok  % Expected - ranch:handshake may exit
     end,
-    timer:sleep(10).
+    flurm_test_utils:wait_for_death(Pid).
 
 %%====================================================================
 %% handle_message Tests (testing internal message handling logic)

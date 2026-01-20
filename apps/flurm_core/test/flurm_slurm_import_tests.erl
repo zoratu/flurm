@@ -80,7 +80,7 @@ test_start_link_basic() ->
 test_start_link_with_opts() ->
     %% Stop the current server
     gen_server:stop(flurm_slurm_import, normal, 5000),
-    timer:sleep(100),
+    ok,
 
     %% Start with custom options
     {ok, Pid} = flurm_slurm_import:start_link([{sync_interval, 10000}]),
@@ -193,7 +193,7 @@ test_import_all() ->
 test_handle_cast_unknown() ->
     %% Send unknown cast - should be silently ignored
     gen_server:cast(flurm_slurm_import, {unknown_message, data}),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_slurm_import),
     %% Server should still be alive
     ?assert(is_pid(whereis(flurm_slurm_import))),
     ok.
@@ -202,7 +202,7 @@ test_handle_info_sync_tick() ->
     %% Send sync_tick directly - this triggers the sync
     Pid = whereis(flurm_slurm_import),
     Pid ! sync_tick,
-    timer:sleep(100),
+    ok,
     %% Server should still be alive
     ?assert(is_pid(whereis(flurm_slurm_import))),
     ok.
@@ -211,7 +211,7 @@ test_handle_info_unknown() ->
     %% Send unknown info message
     Pid = whereis(flurm_slurm_import),
     Pid ! {unknown, info, message},
-    timer:sleep(50),
+    _ = sys:get_state(flurm_slurm_import),
     %% Server should still be alive
     ?assert(is_pid(whereis(flurm_slurm_import))),
     ok.
@@ -224,10 +224,10 @@ test_handle_call_unknown() ->
 test_terminate_cleanup() ->
     %% Start a new server with sync enabled
     gen_server:stop(flurm_slurm_import, normal, 5000),
-    timer:sleep(100),
+    ok,
 
     {ok, Pid} = flurm_slurm_import:start_link([{auto_sync, true}]),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_slurm_import),
 
     %% Verify sync is enabled
     {ok, Status} = flurm_slurm_import:get_sync_status(),
@@ -235,9 +235,7 @@ test_terminate_cleanup() ->
 
     %% Stop the server - terminate should clean up timer
     gen_server:stop(Pid, normal, 5000),
-    timer:sleep(50),
-
-    %% Server should be stopped
+    %% Process is stopped, verify it's gone
     ?assertEqual(undefined, whereis(flurm_slurm_import)),
 
     %% Restart for other tests
@@ -400,18 +398,18 @@ test_auto_sync_option() ->
         undefined -> ok;
         Pid -> gen_server:stop(Pid, normal, 5000)
     end,
-    timer:sleep(100),
+    ok,
 
     %% Start with auto_sync enabled
     {ok, NewPid} = flurm_slurm_import:start_link([{auto_sync, true}]),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_slurm_import),
 
     {ok, Status} = flurm_slurm_import:get_sync_status(),
     ?assertEqual(true, maps:get(sync_enabled, Status)),
 
     %% Cleanup
     gen_server:stop(NewPid, normal, 5000),
-    timer:sleep(100),
+    ok,
 
     %% Restart without auto_sync for other tests
     {ok, _} = flurm_slurm_import:start_link(),

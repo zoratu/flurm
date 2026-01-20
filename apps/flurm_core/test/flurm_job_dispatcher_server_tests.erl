@@ -55,7 +55,14 @@ cleanup(_) ->
     case whereis(flurm_job_dispatcher_server) of
         undefined -> ok;
         Pid ->
-            try gen_server:stop(Pid) catch _:_ -> ok end
+            catch unlink(Pid),
+            Ref = monitor(process, Pid),
+            catch gen_server:stop(Pid, shutdown, 2000),
+            receive
+                {'DOWN', Ref, process, Pid, _} -> ok
+            after 2000 ->
+                demonitor(Ref, [flush])
+            end
     end,
 
     meck:unload(flurm_node_connection_manager),
@@ -593,8 +600,14 @@ setup_live() ->
     case whereis(flurm_job_dispatcher_server) of
         undefined -> ok;
         Pid ->
-            try gen_server:stop(Pid) catch _:_ -> ok end,
-            timer:sleep(100)
+            catch unlink(Pid),
+            Ref = monitor(process, Pid),
+            catch gen_server:stop(Pid, shutdown, 2000),
+            receive
+                {'DOWN', Ref, process, Pid, _} -> ok
+            after 2000 ->
+                demonitor(Ref, [flush])
+            end
     end,
     ok.
 
@@ -602,8 +615,14 @@ cleanup_live(_) ->
     case whereis(flurm_job_dispatcher_server) of
         undefined -> ok;
         Pid ->
-            try gen_server:stop(Pid) catch _:_ -> ok end,
-            timer:sleep(100)
+            catch unlink(Pid),
+            Ref = monitor(process, Pid),
+            catch gen_server:stop(Pid, shutdown, 2000),
+            receive
+                {'DOWN', Ref, process, Pid, _} -> ok
+            after 2000 ->
+                demonitor(Ref, [flush])
+            end
     end,
 
     meck:unload(flurm_node_connection_manager),

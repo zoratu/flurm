@@ -123,7 +123,7 @@ test_submit_job() ->
     meck:expect(flurm_job_registry, lookup_job, fun(_) -> {error, not_found} end),
 
     ok = flurm_scheduler_advanced:submit_job(1),
-    timer:sleep(200),
+    _ = sys:get_state(flurm_scheduler_advanced),
 
     {ok, Stats} = flurm_scheduler_advanced:get_stats(),
     %% Job should be in pending list (as tuples with priority)
@@ -139,7 +139,7 @@ test_job_completed() ->
     InitCompleted = maps:get(completed_count, InitStats),
 
     ok = flurm_scheduler_advanced:job_completed(1),
-    timer:sleep(100),
+    _ = sys:get_state(flurm_scheduler_advanced),
 
     {ok, NewStats} = flurm_scheduler_advanced:get_stats(),
     ?assertEqual(InitCompleted + 1, maps:get(completed_count, NewStats)),
@@ -154,7 +154,7 @@ test_job_failed() ->
     InitFailed = maps:get(failed_count, InitStats),
 
     ok = flurm_scheduler_advanced:job_failed(1),
-    timer:sleep(100),
+    _ = sys:get_state(flurm_scheduler_advanced),
 
     {ok, NewStats} = flurm_scheduler_advanced:get_stats(),
     ?assertEqual(InitFailed + 1, maps:get(failed_count, NewStats)),
@@ -167,7 +167,7 @@ test_trigger_schedule() ->
     InitCycles = maps:get(schedule_cycles, InitStats),
 
     ok = flurm_scheduler_advanced:trigger_schedule(),
-    timer:sleep(200),
+    _ = sys:get_state(flurm_scheduler_advanced),
 
     {ok, NewStats} = flurm_scheduler_advanced:get_stats(),
     ?assert(maps:get(schedule_cycles, NewStats) > InitCycles),
@@ -249,7 +249,7 @@ test_unknown_cast() ->
     {ok, _Pid} = flurm_scheduler_advanced:start_link(),
 
     gen_server:cast(flurm_scheduler_advanced, {unknown_message}),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_scheduler_advanced),
 
     %% Should still be running
     {ok, _Stats} = flurm_scheduler_advanced:get_stats(),
@@ -259,7 +259,7 @@ test_unknown_info() ->
     {ok, _Pid} = flurm_scheduler_advanced:start_link(),
 
     flurm_scheduler_advanced ! unknown_message,
-    timer:sleep(50),
+    _ = sys:get_state(flurm_scheduler_advanced),
 
     %% Should still be running
     {ok, _Stats} = flurm_scheduler_advanced:get_stats(),
@@ -270,7 +270,7 @@ test_priority_decay() ->
 
     %% Send priority_decay message
     flurm_scheduler_advanced ! priority_decay,
-    timer:sleep(100),
+    _ = sys:get_state(flurm_scheduler_advanced),
 
     %% Should still be running
     {ok, _Stats} = flurm_scheduler_advanced:get_stats(),
@@ -324,7 +324,7 @@ test_fifo_scheduler() ->
     meck:expect(flurm_node_registry, list_nodes_by_partition, fun(_) -> [] end),
 
     ok = flurm_scheduler_advanced:submit_job(1),
-    timer:sleep(300),
+    _ = sys:get_state(flurm_scheduler_advanced),
 
     {ok, Stats} = flurm_scheduler_advanced:get_stats(),
     ?assert(maps:get(schedule_cycles, Stats) > 0),
@@ -344,7 +344,7 @@ test_priority_scheduler() ->
 
     ok = flurm_scheduler_advanced:submit_job(1),
     ok = flurm_scheduler_advanced:submit_job(2),
-    timer:sleep(300),
+    _ = sys:get_state(flurm_scheduler_advanced),
 
     {ok, Stats} = flurm_scheduler_advanced:get_stats(),
     ?assert(maps:get(schedule_cycles, Stats) > 0),
@@ -364,7 +364,7 @@ test_backfill_scheduler() ->
 
     ok = flurm_scheduler_advanced:submit_job(1),
     ok = flurm_scheduler_advanced:submit_job(2),
-    timer:sleep(300),
+    _ = sys:get_state(flurm_scheduler_advanced),
 
     {ok, Stats} = flurm_scheduler_advanced:get_stats(),
     ?assert(maps:get(schedule_cycles, Stats) > 0),
@@ -387,7 +387,7 @@ test_preempt_scheduler() ->
     meck:expect(flurm_preemption, check_preemption, fun(_) -> {error, no_preemption} end),
 
     ok = flurm_scheduler_advanced:submit_job(1),
-    timer:sleep(300),
+    _ = sys:get_state(flurm_scheduler_advanced),
 
     {ok, Stats} = flurm_scheduler_advanced:get_stats(),
     ?assert(maps:get(schedule_cycles, Stats) > 0),
@@ -415,7 +415,7 @@ test_job_not_found() ->
     meck:expect(flurm_job_registry, lookup_job, fun(_) -> {error, not_found} end),
 
     ok = flurm_scheduler_advanced:submit_job(1),
-    timer:sleep(300),
+    _ = sys:get_state(flurm_scheduler_advanced),
 
     {ok, Stats} = flurm_scheduler_advanced:get_stats(),
     %% Job should be removed from queue
@@ -434,7 +434,7 @@ test_job_not_pending() ->
     end),
 
     ok = flurm_scheduler_advanced:submit_job(1),
-    timer:sleep(300),
+    _ = sys:get_state(flurm_scheduler_advanced),
 
     {ok, Stats} = flurm_scheduler_advanced:get_stats(),
     ?assertEqual(0, maps:get(pending_count, Stats)),
@@ -457,7 +457,7 @@ test_job_allocation() ->
     meck:expect(flurm_job, allocate, fun(_, _) -> ok end),
 
     ok = flurm_scheduler_advanced:submit_job(1),
-    timer:sleep(300),
+    _ = sys:get_state(flurm_scheduler_advanced),
 
     {ok, Stats} = flurm_scheduler_advanced:get_stats(),
     %% Job should be running now
@@ -481,7 +481,7 @@ test_allocation_failure() ->
     meck:expect(flurm_node, release, fun(_, _) -> ok end),
 
     ok = flurm_scheduler_advanced:submit_job(1),
-    timer:sleep(300),
+    _ = sys:get_state(flurm_scheduler_advanced),
     ok.
 
 test_partition_nodes() ->
@@ -504,7 +504,7 @@ test_partition_nodes() ->
     meck:expect(flurm_job, allocate, fun(_, _) -> ok end),
 
     ok = flurm_scheduler_advanced:submit_job(1),
-    timer:sleep(300),
+    _ = sys:get_state(flurm_scheduler_advanced),
     ok.
 
 %%====================================================================
@@ -538,7 +538,7 @@ test_backfill_finds_candidates() ->
 
     ok = flurm_scheduler_advanced:submit_job(1),
     ok = flurm_scheduler_advanced:submit_job(2),
-    timer:sleep(300),
+    _ = sys:get_state(flurm_scheduler_advanced),
     ok.
 
 test_backfill_disabled() ->
@@ -557,7 +557,7 @@ test_backfill_disabled() ->
     meck:expect(flurm_node_registry, get_available_nodes, fun(_) -> [] end),
 
     ok = flurm_scheduler_advanced:submit_job(1),
-    timer:sleep(300),
+    _ = sys:get_state(flurm_scheduler_advanced),
     ok.
 
 %%====================================================================
@@ -596,7 +596,7 @@ test_preemption_finds_jobs() ->
     meck:expect(flurm_preemption, preempt_jobs, fun(_, _) -> {ok, [99]} end),
 
     ok = flurm_scheduler_advanced:submit_job(1),
-    timer:sleep(300),
+    _ = sys:get_state(flurm_scheduler_advanced),
 
     {ok, Stats} = flurm_scheduler_advanced:get_stats(),
     ?assert(maps:get(preempt_count, Stats) >= 0),
@@ -623,7 +623,7 @@ test_preemption_requeue() ->
     meck:expect(flurm_preemption, preempt_jobs, fun(_, _) -> {ok, [99]} end),
 
     ok = flurm_scheduler_advanced:submit_job(1),
-    timer:sleep(300),
+    _ = sys:get_state(flurm_scheduler_advanced),
     ok.
 
 test_preemption_cancel() ->
@@ -647,7 +647,7 @@ test_preemption_cancel() ->
     meck:expect(flurm_preemption, preempt_jobs, fun(_, _) -> {ok, [99]} end),
 
     ok = flurm_scheduler_advanced:submit_job(1),
-    timer:sleep(300),
+    _ = sys:get_state(flurm_scheduler_advanced),
     ok.
 
 test_preemption_disabled() ->
@@ -667,7 +667,7 @@ test_preemption_disabled() ->
 
     ok = flurm_scheduler_advanced:submit_job(1),
     ok = flurm_scheduler_advanced:submit_job(2),
-    timer:sleep(300),
+    _ = sys:get_state(flurm_scheduler_advanced),
     ok.
 
 %%====================================================================
@@ -691,7 +691,7 @@ test_priority_calculation() ->
     meck:expect(flurm_priority, calculate_priority, fun(_) -> 500 end),
 
     ok = flurm_scheduler_advanced:submit_job(1),
-    timer:sleep(100),
+    _ = sys:get_state(flurm_scheduler_advanced),
 
     %% Priority should be calculated
     ?assert(meck:called(flurm_priority, calculate_priority, ['_'])),
@@ -704,11 +704,11 @@ test_priority_recalculation() ->
     meck:expect(flurm_priority, calculate_priority, fun(_) -> 100 end),
 
     ok = flurm_scheduler_advanced:submit_job(1),
-    timer:sleep(100),
+    _ = sys:get_state(flurm_scheduler_advanced),
 
     %% Trigger priority decay
     flurm_scheduler_advanced ! priority_decay,
-    timer:sleep(100),
+    _ = sys:get_state(flurm_scheduler_advanced),
     ok.
 
 test_insert_by_priority() ->
@@ -732,7 +732,7 @@ test_insert_by_priority() ->
     ok = flurm_scheduler_advanced:submit_job(1),
     ok = flurm_scheduler_advanced:submit_job(2),
     ok = flurm_scheduler_advanced:submit_job(3),
-    timer:sleep(200),
+    _ = sys:get_state(flurm_scheduler_advanced),
 
     {ok, Stats} = flurm_scheduler_advanced:get_stats(),
     ?assert(maps:get(pending_count, Stats) >= 0),
@@ -766,7 +766,7 @@ test_job_finished_release() ->
     meck:expect(flurm_node, release, fun(_, _) -> ok end),
 
     ok = flurm_scheduler_advanced:job_completed(1),
-    timer:sleep(100),
+    _ = sys:get_state(flurm_scheduler_advanced),
 
     %% Verify release was called
     ?assert(meck:called(flurm_node, release, ['_', '_'])),
@@ -785,7 +785,7 @@ test_job_finished_usage() ->
     end),
 
     ok = flurm_scheduler_advanced:job_completed(1),
-    timer:sleep(100),
+    _ = sys:get_state(flurm_scheduler_advanced),
 
     %% Verify fairshare usage was recorded
     ?assert(meck:called(flurm_fairshare, record_usage, ['_', '_', '_', '_'])),
@@ -797,7 +797,7 @@ test_job_finished_not_found() ->
     meck:expect(flurm_job_registry, lookup_job, fun(_) -> {error, not_found} end),
 
     ok = flurm_scheduler_advanced:job_completed(999),
-    timer:sleep(100),
+    _ = sys:get_state(flurm_scheduler_advanced),
 
     {ok, Stats} = flurm_scheduler_advanced:get_stats(),
     ?assertEqual(1, maps:get(completed_count, Stats)),
@@ -825,7 +825,7 @@ test_job_info_error() ->
     meck:expect(flurm_job, get_info, fun(_) -> {error, process_dead} end),
 
     ok = flurm_scheduler_advanced:submit_job(1),
-    timer:sleep(300),
+    _ = sys:get_state(flurm_scheduler_advanced),
     ok.
 
 test_job_info_crash() ->
@@ -837,7 +837,7 @@ test_job_info_crash() ->
     meck:expect(flurm_job, get_info, fun(_) -> erlang:error(badarg) end),
 
     ok = flurm_scheduler_advanced:submit_job(1),
-    timer:sleep(300),
+    _ = sys:get_state(flurm_scheduler_advanced),
     ok.
 
 %%====================================================================
@@ -867,7 +867,7 @@ test_usage_timestamp_tuple() ->
     end),
 
     ok = flurm_scheduler_advanced:job_completed(1),
-    timer:sleep(100),
+    _ = sys:get_state(flurm_scheduler_advanced),
     ok.
 
 test_usage_integer_timestamp() ->
@@ -883,7 +883,7 @@ test_usage_integer_timestamp() ->
     end),
 
     ok = flurm_scheduler_advanced:job_completed(1),
-    timer:sleep(100),
+    _ = sys:get_state(flurm_scheduler_advanced),
     ok.
 
 test_usage_undefined_start() ->
@@ -899,7 +899,7 @@ test_usage_undefined_start() ->
     end),
 
     ok = flurm_scheduler_advanced:job_completed(1),
-    timer:sleep(100),
+    _ = sys:get_state(flurm_scheduler_advanced),
     ok.
 
 %%====================================================================
@@ -935,7 +935,7 @@ test_node_entry_not_up() ->
     end),
 
     ok = flurm_scheduler_advanced:submit_job(1),
-    timer:sleep(300),
+    _ = sys:get_state(flurm_scheduler_advanced),
     ok.
 
 test_node_entry_insufficient_cpus() ->
@@ -956,7 +956,7 @@ test_node_entry_insufficient_cpus() ->
     end),
 
     ok = flurm_scheduler_advanced:submit_job(1),
-    timer:sleep(300),
+    _ = sys:get_state(flurm_scheduler_advanced),
     ok.
 
 test_node_entry_insufficient_memory() ->
@@ -977,7 +977,7 @@ test_node_entry_insufficient_memory() ->
     end),
 
     ok = flurm_scheduler_advanced:submit_job(1),
-    timer:sleep(300),
+    _ = sys:get_state(flurm_scheduler_advanced),
     ok.
 
 test_node_entry_error() ->
@@ -998,7 +998,7 @@ test_node_entry_error() ->
     end),
 
     ok = flurm_scheduler_advanced:submit_job(1),
-    timer:sleep(300),
+    _ = sys:get_state(flurm_scheduler_advanced),
     ok.
 
 %%====================================================================
@@ -1041,7 +1041,7 @@ test_allocation_rollback() ->
     meck:expect(flurm_node, release, fun(_, _) -> ok end),
 
     ok = flurm_scheduler_advanced:submit_job(1),
-    timer:sleep(300),
+    _ = sys:get_state(flurm_scheduler_advanced),
 
     %% Verify rollback was performed
     ?assert(meck:called(flurm_node, release, ['_', '_'])),
@@ -1065,7 +1065,7 @@ test_job_allocate_error() ->
     meck:expect(flurm_node, release, fun(_, _) -> ok end),
 
     ok = flurm_scheduler_advanced:submit_job(1),
-    timer:sleep(300),
+    _ = sys:get_state(flurm_scheduler_advanced),
 
     %% Verify rollback was performed
     ?assert(meck:called(flurm_node, release, ['_', '_'])),

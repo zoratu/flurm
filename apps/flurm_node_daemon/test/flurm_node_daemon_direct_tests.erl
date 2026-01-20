@@ -178,7 +178,7 @@ test_get_job_status_not_found(_) ->
      fun() ->
          %% Create and kill a process to get a dead pid
          TestPid = spawn(fun() -> ok end),
-         timer:sleep(10),
+         flurm_test_utils:wait_for_death(TestPid),
 
          meck:expect(flurm_job_executor, get_status, fun(_Pid) ->
              meck:exception(exit, {noproc, {gen_server, call, [self(), get_status]}})
@@ -208,7 +208,7 @@ test_cancel_job_not_found(_) ->
     {"cancel_job returns error for dead process",
      fun() ->
          TestPid = spawn(fun() -> ok end),
-         timer:sleep(10),
+         flurm_test_utils:wait_for_death(TestPid),
 
          meck:expect(flurm_job_executor, cancel, fun(_Pid) ->
              meck:exception(exit, {noproc, {gen_server, cast, [self(), cancel]}})

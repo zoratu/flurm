@@ -247,10 +247,23 @@ setup_api() ->
     end),
 
     {ok, Pid} = flurm_partition_manager:start_link(),
+    unlink(Pid),
     Pid.
 
 cleanup_api(Pid) ->
-    gen_server:stop(Pid),
+    case is_process_alive(Pid) of
+        true ->
+            catch unlink(Pid),
+            Ref = monitor(process, Pid),
+            catch gen_server:stop(Pid, shutdown, 5000),
+            receive
+                {'DOWN', Ref, process, Pid, _} -> ok
+            after 2000 ->
+                demonitor(Ref, [flush])
+            end;
+        false ->
+            ok
+    end,
     meck:unload(flurm_core),
     ok.
 

@@ -66,9 +66,9 @@ job_manager_test_() ->
 
 setup() ->
     application:ensure_all_started(sasl),
+    application:ensure_all_started(lager),
 
-    %% Unload any existing mocks first
-    catch meck:unload(lager),
+    %% Unload any existing mocks first (except lager - we use real lager)
     catch meck:unload(flurm_db_persist),
     catch meck:unload(flurm_limits),
     catch meck:unload(flurm_license),
@@ -78,16 +78,6 @@ setup() ->
     catch meck:unload(flurm_job_dispatcher_server),
     catch meck:unload(flurm_job_array),
     catch meck:unload(flurm_core),
-
-    %% Setup mocks for dependencies
-    %% Note: Don't use passthrough for lager to avoid call loops
-    meck:new(lager, [non_strict]),
-    meck:expect(lager, info, fun(_Fmt, _Args) -> ok end),
-    meck:expect(lager, info, fun(_Fmt) -> ok end),
-    meck:expect(lager, warning, fun(_Fmt, _Args) -> ok end),
-    meck:expect(lager, warning, fun(_Fmt) -> ok end),
-    meck:expect(lager, error, fun(_Fmt, _Args) -> ok end),
-    meck:expect(lager, error, fun(_Fmt) -> ok end),
 
     meck:new(flurm_db_persist, [non_strict]),
     meck:expect(flurm_db_persist, persistence_mode, fun() -> none end),
@@ -140,7 +130,7 @@ setup() ->
     #{manager_pid => Pid}.
 
 cleanup(#{manager_pid := Pid}) ->
-    catch meck:unload(lager),
+    %% Note: We don't unload lager - we use real lager
     catch meck:unload(flurm_db_persist),
     catch meck:unload(flurm_limits),
     catch meck:unload(flurm_license),
@@ -605,14 +595,14 @@ test_unknown_request() ->
 
 test_unknown_cast() ->
     gen_server:cast(flurm_job_manager, unknown_cast),
-    timer:sleep(10),
+    _ = sys:get_state(flurm_job_manager),
     %% Server should still be alive
     ?assert(is_process_alive(whereis(flurm_job_manager))),
     ok.
 
 test_unknown_info() ->
     flurm_job_manager ! unknown_info_message,
-    timer:sleep(10),
+    _ = sys:get_state(flurm_job_manager),
     %% Server should still be alive
     ?assert(is_process_alive(whereis(flurm_job_manager))),
     ok.
@@ -649,9 +639,9 @@ persistence_test_() ->
 
 setup_with_persistence() ->
     application:ensure_all_started(sasl),
+    application:ensure_all_started(lager),
 
-    %% Unload any existing mocks first
-    catch meck:unload(lager),
+    %% Unload any existing mocks first (except lager - we use real lager)
     catch meck:unload(flurm_db_persist),
     catch meck:unload(flurm_limits),
     catch meck:unload(flurm_license),
@@ -660,14 +650,6 @@ setup_with_persistence() ->
     catch meck:unload(flurm_metrics),
     catch meck:unload(flurm_job_dispatcher_server),
     catch meck:unload(flurm_core),
-
-    meck:new(lager, [non_strict]),
-    meck:expect(lager, info, fun(_Fmt, _Args) -> ok end),
-    meck:expect(lager, info, fun(_Fmt) -> ok end),
-    meck:expect(lager, warning, fun(_Fmt, _Args) -> ok end),
-    meck:expect(lager, warning, fun(_Fmt) -> ok end),
-    meck:expect(lager, error, fun(_Fmt, _Args) -> ok end),
-    meck:expect(lager, error, fun(_Fmt) -> ok end),
 
     %% Setup persistence with ETS mode and pre-existing jobs
     meck:new(flurm_db_persist, [non_strict]),

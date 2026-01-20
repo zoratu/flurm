@@ -213,28 +213,40 @@ setup_api() ->
     meck:expect(flurm_scheduler, trigger_schedule, fun() -> ok end),
 
     {ok, Pid} = flurm_controller_failover:start_link(),
+    unlink(Pid),
     Pid.
 
 cleanup_api(Pid) ->
-    gen_server:stop(Pid),
-    meck:unload(flurm_controller_cluster),
-    meck:unload(flurm_job_manager),
-    meck:unload(flurm_node_manager_server),
-    meck:unload(flurm_scheduler),
+    case is_process_alive(Pid) of
+        true ->
+            catch unlink(Pid),
+            Ref = monitor(process, Pid),
+            catch gen_server:stop(Pid, shutdown, 5000),
+            receive
+                {'DOWN', Ref, process, Pid, _} -> ok
+            after 2000 ->
+                demonitor(Ref, [flush])
+            end;
+        false -> ok
+    end,
+    catch meck:unload(flurm_controller_cluster),
+    catch meck:unload(flurm_job_manager),
+    catch meck:unload(flurm_node_manager_server),
+    catch meck:unload(flurm_scheduler),
     ok.
 
 test_api_on_became_leader() ->
     %% Should not crash
     Result = flurm_controller_failover:on_became_leader(),
     ?assertEqual(ok, Result),
-    %% Give time for cast to be processed
-    timer:sleep(100).
+    %% Sync with server to ensure cast is processed
+    _ = sys:get_state(flurm_controller_failover).
 
 test_api_on_lost_leadership() ->
     %% Should not crash
     Result = flurm_controller_failover:on_lost_leadership(),
     ?assertEqual(ok, Result),
-    timer:sleep(50).
+    _ = sys:get_state(flurm_controller_failover).
 
 test_api_get_status() ->
     Status = flurm_controller_failover:get_status(),

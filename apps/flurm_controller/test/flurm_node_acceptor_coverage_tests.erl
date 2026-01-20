@@ -84,7 +84,8 @@ test_start_link() ->
     Result = flurm_node_acceptor:start_link(test_ref, ranch_tcp, #{}),
 
     ?assertMatch({ok, _Pid}, Result),
-    timer:sleep(20).
+    {ok, Pid} = Result,
+    flurm_test_utils:wait_for_death(Pid).
 
 %%====================================================================
 %% handle_message Tests (node_register)

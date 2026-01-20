@@ -44,6 +44,8 @@ job_manager_test_() ->
      ]}.
 
 setup() ->
+    application:ensure_all_started(lager),
+
     meck:new(flurm_db_persist, [passthrough, non_strict]),
     meck:new(flurm_scheduler, [passthrough, non_strict]),
     meck:new(flurm_limits, [passthrough, non_strict]),

@@ -39,6 +39,7 @@ setup() ->
     meck:expect(lager, info, fun(_, _) -> ok end),
     meck:expect(lager, warning, fun(_, _) -> ok end),
     meck:expect(lager, error, fun(_, _) -> ok end),
+    meck:expect(lager, md, fun(_) -> ok end),
 
     %% Mock httpc for cluster communication
     meck:new(httpc, [unstick, no_link]),
@@ -330,25 +331,25 @@ message_handling_tests(Pid) ->
     [
         {"handle_info health_check", fun() ->
             Pid ! health_check,
-            timer:sleep(50),
+            _ = sys:get_state(flurm_federation),
             ?assert(is_process_alive(Pid))
         end},
 
         {"handle_info sync_clusters", fun() ->
             Pid ! sync_clusters,
-            timer:sleep(50),
+            _ = sys:get_state(flurm_federation),
             ?assert(is_process_alive(Pid))
         end},
 
         {"handle_info unknown message", fun() ->
             Pid ! unknown_message,
-            timer:sleep(10),
+            _ = sys:get_state(flurm_federation),
             ?assert(is_process_alive(Pid))
         end},
 
         {"handle_cast unknown message", fun() ->
             gen_server:cast(Pid, unknown_cast),
-            timer:sleep(10),
+            _ = sys:get_state(flurm_federation),
             ?assert(is_process_alive(Pid))
         end}
     ].

@@ -44,9 +44,7 @@ setup() ->
     Pid.
 
 cleanup(Pid) ->
-    unlink(Pid),
-    exit(Pid, shutdown),
-    timer:sleep(10).
+    flurm_test_utils:kill_and_wait(Pid).
 
 %%====================================================================
 %% Basic Get/Set Tests
@@ -244,9 +242,7 @@ extended_api_test_() ->
          Pid
      end,
      fun(Pid) ->
-         unlink(Pid),
-         exit(Pid, shutdown),
-         timer:sleep(10)
+         flurm_test_utils:kill_and_wait(Pid)
      end,
      [
       {"reload/0 is alias for reconfigure/0", fun test_reload_alias/0},
@@ -350,9 +346,7 @@ gen_server_callbacks_test_() ->
          Pid
      end,
      fun(Pid) ->
-         unlink(Pid),
-         exit(Pid, shutdown),
-         timer:sleep(10)
+         flurm_test_utils:kill_and_wait(Pid)
      end,
      [
       {"handle_call with unknown request", fun test_unknown_call/0},
@@ -370,33 +364,38 @@ test_unknown_call() ->
 test_unknown_cast() ->
     %% Send unknown cast - should be ignored (noreply)
     ok = gen_server:cast(flurm_config_server, {unknown_cast_message, bar}),
-    %% Server should still be alive
-    timer:sleep(50),
+    %% Sync via sys:get_state to ensure cast was processed
+    _ = sys:get_state(flurm_config_server),
     ?assert(is_process_alive(whereis(flurm_config_server))).
 
 test_unknown_info() ->
     %% Send unknown info message - should be ignored (noreply)
     whereis(flurm_config_server) ! {unknown_info_message, baz},
-    timer:sleep(50),
-    %% Server should still be alive
+    %% Sync via sys:get_state to ensure message was processed
+    _ = sys:get_state(flurm_config_server),
     ?assert(is_process_alive(whereis(flurm_config_server))).
 
 test_down_message() ->
     %% Subscribe a process
     ok = flurm_config_server:subscribe(),
 
+    Self = self(),
     %% Spawn a subscriber process that will die
     Subscriber = spawn(fun() ->
         ok = flurm_config_server:subscribe_changes(all),
+        Self ! subscribed,
         receive
             die -> ok
         end
     end),
-    timer:sleep(50),
+    %% Wait for subscription to complete
+    receive subscribed -> ok after 1000 -> error(timeout) end,
 
-    %% Kill the subscriber
+    %% Kill the subscriber and wait for death
     Subscriber ! die,
-    timer:sleep(100),
+    flurm_test_utils:wait_for_death(Subscriber),
+    %% Sync to ensure DOWN message was processed
+    _ = sys:get_state(flurm_config_server),
 
     %% Server should still be alive
     ?assert(is_process_alive(whereis(flurm_config_server))),
@@ -424,10 +423,8 @@ file_loading_test_() ->
          Pid
      end,
      fun(Pid) ->
-         unlink(Pid),
-         exit(Pid, shutdown),
-         file:del_dir_r("/tmp/flurm_config_test"),
-         timer:sleep(10)
+         flurm_test_utils:kill_and_wait(Pid),
+         file:del_dir_r("/tmp/flurm_config_test")
      end,
      [
       {"Load .conf file (slurm format)", fun test_load_conf_file/0},
@@ -475,9 +472,7 @@ node_partition_lookup_test_() ->
          Pid
      end,
      fun(Pid) ->
-         unlink(Pid),
-         exit(Pid, shutdown),
-         timer:sleep(10)
+         flurm_test_utils:kill_and_wait(Pid)
      end,
      [
       {"Find node with hostlist pattern", fun test_find_node_hostlist/0},

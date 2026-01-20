@@ -179,7 +179,7 @@ test_state_satisfaction() ->
     ok = flurm_job_deps:on_job_state_change(3001, completed),
     ok = flurm_job_deps:on_job_state_change(3002, failed),
     ok = flurm_job_deps:on_job_state_change(3003, cancelled),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_job_deps),
     ok.
 
 %%====================================================================
@@ -198,7 +198,7 @@ test_singleton_lifecycle() ->
 
     %% First job completes - singleton should be released
     ok = flurm_job_deps:on_job_state_change(400, completed),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_job_deps),
 
     %% Note: Without full job manager, release may not fully propagate
     ok.
@@ -272,7 +272,7 @@ test_terminal_state_cleanup() ->
 
     %% Notify completion - should clean up dependents table
     ok = flurm_job_deps:on_job_state_change(8000, completed),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_job_deps),
     ok.
 
 test_clear_completed() ->
@@ -345,7 +345,7 @@ test_notify_completion_satisfaction() ->
 
     %% Notify completion with 'completed' result
     ok = flurm_job_deps:notify_completion(11000, completed),
-    timer:sleep(100),
+    _ = sys:get_state(flurm_job_deps),
 
     %% afterok (1100) and afterany (1102) should be satisfied
     %% afternotok (1101) should NOT be satisfied by 'completed'
@@ -518,12 +518,12 @@ error_handlers_test_() ->
              end},
              {"Unknown gen_server cast is handled", fun() ->
                  gen_server:cast(flurm_job_deps, {unknown_cast, data}),
-                 timer:sleep(10),
+                 _ = sys:get_state(flurm_job_deps),
                  ?assert(is_process_alive(whereis(flurm_job_deps)))
              end},
              {"Unknown info message is handled", fun() ->
                  whereis(flurm_job_deps) ! {random, info, message},
-                 timer:sleep(10),
+                 _ = sys:get_state(flurm_job_deps),
                  ?assert(is_process_alive(whereis(flurm_job_deps)))
              end}
          ]

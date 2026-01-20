@@ -331,25 +331,25 @@ test_info_messages_all_states() ->
     %% Test in pending
     Pid ! {some_random, message},
     Pid ! timeout,
-    timer:sleep(10),
+    _ = sys:get_state(Pid),
     {ok, pending} = flurm_job:get_state(Pid),
 
     %% Test in configuring
     ok = flurm_job:allocate(Pid, [<<"node1">>]),
     Pid ! {another, info},
-    timer:sleep(10),
+    _ = sys:get_state(Pid),
     {ok, configuring} = flurm_job:get_state(Pid),
 
     %% Test in running
     ok = flurm_job:signal_config_complete(Pid),
     Pid ! {running, info},
-    timer:sleep(10),
+    _ = sys:get_state(Pid),
     {ok, running} = flurm_job:get_state(Pid),
 
     %% Test in suspended
     ok = flurm_job:suspend(Pid),
     Pid ! {suspended, info},
-    timer:sleep(10),
+    _ = sys:get_state(Pid),
     {ok, suspended} = flurm_job:get_state(Pid),
 
     %% Resume and complete
@@ -358,14 +358,14 @@ test_info_messages_all_states() ->
 
     %% Test in completing
     Pid ! {completing, info},
-    timer:sleep(10),
+    _ = sys:get_state(Pid),
     {ok, completing} = flurm_job:get_state(Pid),
 
     ok = flurm_job:signal_cleanup_complete(Pid),
 
     %% Test in completed
     Pid ! {completed, info},
-    timer:sleep(10),
+    _ = sys:get_state(Pid),
     {ok, completed} = flurm_job:get_state(Pid),
     ok.
 
@@ -379,7 +379,7 @@ test_state_timeout_edges() ->
     {ok, running} = flurm_job:get_state(Pid),
 
     %% Wait for timeout
-    timer:sleep(1200),
+    timer:sleep(1200), %% Legitimate wait for 1-second job timeout to expire
     {ok, timeout} = flurm_job:get_state(Pid),
 
     %% Verify terminal state behavior
@@ -407,7 +407,7 @@ test_concurrent_signals() ->
     gen_statem:cast(Pid, {job_complete, 0}),
 
     %% Should transition to completing
-    timer:sleep(50),
+    _ = sys:get_state(flurm_job_registry),
     {ok, completing} = flurm_job:get_state(Pid),
     ok.
 
@@ -649,7 +649,7 @@ terminal_state_info_test_() ->
                  {ok, Pid, _} = flurm_job:submit(JobSpec),
                  ok = flurm_job:allocate(Pid, [<<"node1">>]),
                  ok = flurm_job:signal_config_complete(Pid),
-                 timer:sleep(1200),
+                 timer:sleep(1200), %% Legitimate wait for 1-second job timeout to expire
                  {ok, timeout} = flurm_job:get_state(Pid),
                  {ok, Info} = flurm_job:get_info(Pid),
                  ?assertEqual(timeout, maps:get(state, Info))

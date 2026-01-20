@@ -14,7 +14,7 @@ setup() ->
     catch gen_server:stop(flurm_metrics),
     catch ets:delete(flurm_metrics),
     catch ets:delete(flurm_histograms),
-    timer:sleep(10),
+    ok,
     %% Start the metrics server
     {ok, Pid} = flurm_metrics:start_link(),
     {started, Pid}.
@@ -23,7 +23,7 @@ cleanup({started, _Pid}) ->
     catch ets:delete(flurm_metrics),
     catch ets:delete(flurm_histograms),
     catch gen_server:stop(flurm_metrics),
-    timer:sleep(10);
+    ok;
 cleanup(_) ->
     ok.
 
@@ -65,62 +65,62 @@ metrics_comprehensive_test_() ->
 
 test_increment_by_one() ->
     flurm_metrics:increment(flurm_jobs_submitted_total),
-    timer:sleep(20),
+    _ = sys:get_state(flurm_metrics),
     {ok, Value} = flurm_metrics:get_metric(flurm_jobs_submitted_total),
     ?assert(Value >= 1).
 
 test_increment_by_n() ->
     flurm_metrics:increment(flurm_jobs_submitted_total, 5),
-    timer:sleep(20),
+    _ = sys:get_state(flurm_metrics),
     {ok, Value} = flurm_metrics:get_metric(flurm_jobs_submitted_total),
     ?assert(Value >= 5).
 
 test_increment_new_counter() ->
     flurm_metrics:increment(my_custom_counter, 10),
-    timer:sleep(20),
+    _ = sys:get_state(flurm_metrics),
     {ok, Value} = flurm_metrics:get_metric(my_custom_counter),
     ?assertEqual(10, Value).
 
 test_decrement_counter() ->
     %% First increment to have something to decrement
     flurm_metrics:increment(test_dec_counter, 10),
-    timer:sleep(20),
+    _ = sys:get_state(flurm_metrics),
     flurm_metrics:decrement(test_dec_counter, 3),
-    timer:sleep(20),
+    _ = sys:get_state(flurm_metrics),
     {ok, Value} = flurm_metrics:get_metric(test_dec_counter),
     ?assertEqual(7, Value).
 
 test_decrement_gauge() ->
     flurm_metrics:gauge(test_dec_gauge, 10),
-    timer:sleep(20),
+    _ = sys:get_state(flurm_metrics),
     flurm_metrics:decrement(test_dec_gauge, 3),
-    timer:sleep(20),
+    _ = sys:get_state(flurm_metrics),
     {ok, Value} = flurm_metrics:get_metric(test_dec_gauge),
     ?assertEqual(7, Value).
 
 test_decrement_nonexistent() ->
     flurm_metrics:decrement(nonexistent_counter),
-    timer:sleep(20),
+    _ = sys:get_state(flurm_metrics),
     {ok, Value} = flurm_metrics:get_metric(nonexistent_counter),
     ?assertEqual(0, Value).
 
 test_decrement_floor() ->
     flurm_metrics:increment(test_floor_counter, 5),
-    timer:sleep(20),
+    _ = sys:get_state(flurm_metrics),
     flurm_metrics:decrement(test_floor_counter, 100),
-    timer:sleep(20),
+    _ = sys:get_state(flurm_metrics),
     {ok, Value} = flurm_metrics:get_metric(test_floor_counter),
     ?assertEqual(0, Value).
 
 test_gauge() ->
     flurm_metrics:gauge(test_gauge, 42),
-    timer:sleep(20),
+    _ = sys:get_state(flurm_metrics),
     {ok, Value1} = flurm_metrics:get_metric(test_gauge),
     ?assertEqual(42, Value1),
 
     %% Update gauge
     flurm_metrics:gauge(test_gauge, 100),
-    timer:sleep(20),
+    _ = sys:get_state(flurm_metrics),
     {ok, Value2} = flurm_metrics:get_metric(test_gauge),
     ?assertEqual(100, Value2).
 
@@ -132,7 +132,7 @@ test_histogram() ->
     flurm_metrics:histogram(flurm_request_duration_ms, 500),
     flurm_metrics:histogram(flurm_request_duration_ms, 5000),
     flurm_metrics:histogram(flurm_request_duration_ms, 20000),
-    timer:sleep(50),
+    _ = sys:get_state(flurm_metrics),
 
     AllMetrics = flurm_metrics:get_all_metrics(),
     HistData = maps:get(flurm_request_duration_ms, AllMetrics),
@@ -143,7 +143,7 @@ test_histogram() ->
 test_histogram_new() ->
     %% Histogram on a new name should auto-initialize
     flurm_metrics:histogram(my_new_histogram, 42),
-    timer:sleep(20),
+    _ = sys:get_state(flurm_metrics),
     AllMetrics = flurm_metrics:get_all_metrics(),
     HistData = maps:get(my_new_histogram, AllMetrics),
     ?assertEqual(histogram, maps:get(type, HistData)),
@@ -152,7 +152,7 @@ test_histogram_new() ->
 test_observe() ->
     %% observe is an alias for histogram
     flurm_metrics:observe(test_observe_hist, 123),
-    timer:sleep(20),
+    _ = sys:get_state(flurm_metrics),
     AllMetrics = flurm_metrics:get_all_metrics(),
     HistData = maps:get(test_observe_hist, AllMetrics),
     ?assertEqual(histogram, maps:get(type, HistData)).
@@ -176,7 +176,7 @@ test_format_prometheus() ->
     flurm_metrics:gauge(flurm_jobs_running, 10),
     flurm_metrics:increment(flurm_jobs_submitted_total, 100),
     flurm_metrics:histogram(flurm_request_duration_ms, 50),
-    timer:sleep(30),
+    _ = sys:get_state(flurm_metrics),
 
     Output = flurm_metrics:format_prometheus(),
     ?assert(is_list(Output)),
@@ -202,7 +202,7 @@ test_reset() ->
     %% Set some values
     flurm_metrics:gauge(flurm_jobs_pending, 100),
     flurm_metrics:increment(flurm_jobs_submitted_total, 50),
-    timer:sleep(20),
+    _ = sys:get_state(flurm_metrics),
 
     %% Reset
     ok = flurm_metrics:reset(),
@@ -222,21 +222,21 @@ test_unknown_call() ->
 test_unknown_cast() ->
     %% Unknown cast should be silently ignored
     ok = gen_server:cast(flurm_metrics, {unknown_cast, arg1}),
-    timer:sleep(20),
+    _ = sys:get_state(flurm_metrics),
     %% Server should still be running
     ?assert(is_pid(whereis(flurm_metrics))).
 
 test_unknown_info() ->
     %% Unknown info message should be silently ignored
     flurm_metrics ! {unknown_info_message, arg1, arg2},
-    timer:sleep(20),
+    _ = sys:get_state(flurm_metrics),
     %% Server should still be running
     ?assert(is_pid(whereis(flurm_metrics))).
 
 test_collect_metrics() ->
     %% Trigger collect_metrics manually
     flurm_metrics ! collect_metrics,
-    timer:sleep(50),
+    _ = sys:get_state(flurm_metrics),
     %% Server should still be running and have collected something
     ?assert(is_pid(whereis(flurm_metrics))).
 
@@ -251,7 +251,7 @@ test_terminate() ->
     Pid = whereis(flurm_metrics),
     ?assert(is_pid(Pid)),
     gen_server:stop(flurm_metrics),
-    timer:sleep(50),
+    %% Process is now stopped, verify it's gone
     ?assertEqual(undefined, whereis(flurm_metrics)).
 
 %%====================================================================
@@ -263,7 +263,7 @@ format_value_test_() ->
      {"Integer format", fun() ->
          {ok, Pid} = flurm_metrics:start_link(),
          flurm_metrics:gauge(test_int, 42),
-         timer:sleep(20),
+         _ = sys:get_state(flurm_metrics),
          Output = flurm_metrics:format_prometheus(),
          OutputStr = lists:flatten(Output),
          ?assert(string:find(OutputStr, "test_int 42") =/= nomatch),
@@ -272,7 +272,7 @@ format_value_test_() ->
      {"Float format", fun() ->
          {ok, Pid} = flurm_metrics:start_link(),
          flurm_metrics:histogram(test_float_hist, 3.14159),
-         timer:sleep(20),
+         _ = sys:get_state(flurm_metrics),
          Output = flurm_metrics:format_prometheus(),
          OutputStr = lists:flatten(Output),
          ?assert(string:find(OutputStr, "test_float_hist_sum") =/= nomatch),
@@ -290,7 +290,7 @@ help_text_test_() ->
          catch gen_server:stop(flurm_metrics),
          catch ets:delete(flurm_metrics),
          catch ets:delete(flurm_histograms),
-         timer:sleep(20),
+         %% Process is stopped, start fresh
          {ok, Pid} = flurm_metrics:start_link(),
          Pid
      end,

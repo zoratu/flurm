@@ -31,6 +31,7 @@ setup() ->
     meck:expect(lager, info, fun(_, _) -> ok end),
     meck:expect(lager, warning, fun(_, _) -> ok end),
     meck:expect(lager, error, fun(_, _) -> ok end),
+    meck:expect(lager, md, fun(_) -> ok end),
     ok.
 
 cleanup(_) ->
@@ -95,7 +96,7 @@ energy_tracking_tests(_Pid) ->
     [
         {"record_power_usage works", fun() ->
             ?assertEqual(ok, flurm_power:record_power_usage(<<"node01">>, 150)),
-            timer:sleep(10)
+            _ = sys:get_state(flurm_power)
         end},
 
         {"get_job_energy for unknown", fun() ->
@@ -104,9 +105,9 @@ energy_tracking_tests(_Pid) ->
 
         {"record_job_energy accumulates", fun() ->
             ?assertEqual(ok, flurm_power:record_job_energy(12345, [<<"n1">>], 5.0)),
-            timer:sleep(10),
+            _ = sys:get_state(flurm_power),
             ?assertEqual(ok, flurm_power:record_job_energy(12345, [<<"n1">>], 3.0)),
-            timer:sleep(10),
+            _ = sys:get_state(flurm_power),
             {ok, Energy} = flurm_power:get_job_energy(12345),
             ?assertEqual(8.0, Energy)
         end}
@@ -152,19 +153,19 @@ message_handling_tests(Pid) ->
     [
         {"handle_info check_power", fun() ->
             Pid ! check_power,
-            timer:sleep(50),
+            _ = sys:get_state(flurm_power),
             ?assert(is_process_alive(Pid))
         end},
 
         {"handle_info sample_energy", fun() ->
             Pid ! sample_energy,
-            timer:sleep(50),
+            _ = sys:get_state(flurm_power),
             ?assert(is_process_alive(Pid))
         end},
 
         {"handle_info unknown", fun() ->
             Pid ! unknown,
-            timer:sleep(10),
+            _ = sys:get_state(flurm_power),
             ?assert(is_process_alive(Pid))
         end},
 
