@@ -191,19 +191,23 @@ start_link_test_() ->
      ]}.
 
 test_start_link_name() ->
+    %% Trap exits to handle linked process deaths gracefully
+    process_flag(trap_exit, true),
+
     %% Mock the child modules to prevent actual startup errors
     meck:new(flurm_system_monitor, [non_strict]),
     meck:new(flurm_controller_connector, [non_strict]),
     meck:new(flurm_job_executor_sup, [non_strict]),
 
+    %% Use spawn (not spawn_link) to avoid exit signal propagation
     meck:expect(flurm_system_monitor, start_link, fun() ->
-        {ok, spawn_link(fun() -> receive stop -> ok end end)}
+        {ok, spawn(fun() -> receive stop -> ok end end)}
     end),
     meck:expect(flurm_controller_connector, start_link, fun() ->
-        {ok, spawn_link(fun() -> receive stop -> ok end end)}
+        {ok, spawn(fun() -> receive stop -> ok end end)}
     end),
     meck:expect(flurm_job_executor_sup, start_link, fun() ->
-        {ok, spawn_link(fun() -> receive stop -> ok end end)}
+        {ok, spawn(fun() -> receive stop -> ok end end)}
     end),
 
     try
@@ -227,12 +231,15 @@ test_start_link_name() ->
         ?assertEqual(Pid, whereis(flurm_node_daemon_sup)),
 
         %% Cleanup
+        unlink(Pid),
         exit(Pid, shutdown),
         timer:sleep(100)
     after
         meck:unload(flurm_system_monitor),
         meck:unload(flurm_controller_connector),
-        meck:unload(flurm_job_executor_sup)
+        meck:unload(flurm_job_executor_sup),
+        %% Drain any exit messages
+        receive {'EXIT', _, _} -> ok after 0 -> ok end
     end,
     ok.
 

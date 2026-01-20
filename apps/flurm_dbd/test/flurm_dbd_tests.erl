@@ -33,7 +33,9 @@ setup() ->
 cleanup(Pid) ->
     %% Stop the server if running
     case is_process_alive(Pid) of
-        true -> exit(Pid, shutdown);
+        true ->
+            unlink(Pid),
+            exit(Pid, shutdown);
         false -> ok
     end,
     timer:sleep(50),

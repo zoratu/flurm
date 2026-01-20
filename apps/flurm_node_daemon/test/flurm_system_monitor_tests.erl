@@ -301,13 +301,13 @@ platform_test_() ->
           ?assert(is_integer(TotalMem)),
           ?assert(TotalMem > 0)
       end},
-      {"Load average is float", fun() ->
-          %% Wait for collect timer
+      {"Load average is float", {timeout, 10, fun() ->
+          %% Wait for collect timer (5 second interval)
           timer:sleep(5500),
           Metrics = flurm_system_monitor:get_metrics(),
           LoadAvg = maps:get(load_avg, Metrics),
           ?assert(is_float(LoadAvg))
-      end}
+      end}}
      ]}.
 
 %%====================================================================

@@ -35,6 +35,7 @@ setup() ->
 cleanup(Pid) ->
     case is_process_alive(Pid) of
         true ->
+            unlink(Pid),
             exit(Pid, shutdown),
             timer:sleep(50);
         false ->
@@ -801,6 +802,7 @@ handle_info_listener_test_() ->
              case whereis(flurm_dbd_server) of
                  undefined -> ok;
                  ExistingPid ->
+                     unlink(ExistingPid),
                      exit(ExistingPid, shutdown),
                      timer:sleep(50)
              end,
@@ -814,6 +816,7 @@ handle_info_listener_test_() ->
              ?assert(is_process_alive(Pid)),
 
              %% Cleanup
+             unlink(Pid),
              exit(Pid, shutdown),
              timer:sleep(50),
              catch meck:unload(flurm_dbd_sup)

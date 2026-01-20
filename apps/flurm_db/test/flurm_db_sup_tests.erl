@@ -93,6 +93,7 @@ start_link_test_() ->
                      ?assert(is_pid(Pid)),
                      ?assert(is_process_alive(Pid)),
                      %% Stop the supervisor
+                     unlink(Pid),
                      exit(Pid, shutdown),
                      timer:sleep(100);
                  {error, {already_started, _}} ->
@@ -119,6 +120,7 @@ start_link_test_() ->
              case flurm_db_sup:start_link(Config) of
                  {ok, Pid} ->
                      ?assert(is_pid(Pid)),
+                     unlink(Pid),
                      exit(Pid, shutdown),
                      timer:sleep(100);
                  {error, {already_started, _}} ->
