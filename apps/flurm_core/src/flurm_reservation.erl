@@ -628,9 +628,14 @@ validate_spec(Spec) ->
                 true ->
                     {error, missing_node_specification};
                 false ->
-                    %% Check start time is in the future
+                    %% Check start time is not too far in the past
+                    %% Allow up to 24 hours grace period for:
+                    %% - Retroactive maintenance reservations
+                    %% - Scheduling delays
+                    %% - Testing scenarios
                     Now = erlang:system_time(second),
-                    case StartTime < Now of
+                    GracePeriod = 86400,  % 24 hours
+                    case StartTime < (Now - GracePeriod) of
                         true ->
                             {error, start_time_in_past};
                         false ->

@@ -68,12 +68,14 @@ make_reservation_spec() ->
 
 make_reservation_spec(Overrides) ->
     Now = erlang:system_time(second),
+    %% Add 2 second buffer to ensure start_time is always in the future
+    StartTime = Now + 2,
     Defaults = #{
         name => <<"test_reservation">>,
         type => user,
         nodes => [<<"node1">>, <<"node2">>],
-        start_time => Now,
-        end_time => Now + 3600,
+        start_time => StartTime,
+        end_time => StartTime + 3600,
         users => [<<"testuser">>],
         accounts => [],
         partition => <<"default">>,
@@ -270,7 +272,7 @@ test_cannot_use_inactive() ->
     {ok, _} = flurm_reservation:create(make_reservation_spec(#{
         name => Name,
         users => [<<"user1">>],
-        start_time => Now - 60,
+        start_time => Now + 60,   %% Future start time - stays inactive
         end_time => Now + 3600
     })),
     %% Don't activate - should not be usable
@@ -416,7 +418,7 @@ test_confirm_inactive_fails() ->
     Spec = #{
         name => Name,
         nodes => [<<"inactive_node">>],
-        start_time => Now,
+        start_time => Now + 60,   %% Future start time - stays inactive
         end_time => Now + 3600,
         user => <<"inactiveuser">>
     },
@@ -784,7 +786,7 @@ test_past_start_time() ->
     Spec = #{
         name => unique_name(),
         nodes => [<<"node1">>],
-        start_time => Now - 3600,  % 1 hour in past
+        start_time => Now - 90000,  % 25 hours in past (exceeds 24h grace period)
         end_time => Now + 3600
     },
     Result = flurm_reservation:create(Spec),
