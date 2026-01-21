@@ -296,6 +296,15 @@ init([]) ->
             shutdown => 5000,
             type => worker,
             modules => [flurm_account_manager]
+        },
+        %% srun Callback Manager - handles callbacks to srun clients
+        #{
+            id => flurm_srun_callback,
+            start => {flurm_srun_callback, start_link, []},
+            restart => permanent,
+            shutdown => 5000,
+            type => worker,
+            modules => [flurm_srun_callback]
         }
     ],
 

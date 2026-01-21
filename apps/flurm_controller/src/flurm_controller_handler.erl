@@ -129,9 +129,17 @@ handle(#slurm_header{msg_type = ?REQUEST_SUBMIT_BATCH_JOB},
 
 %% REQUEST_RESOURCE_ALLOCATION (4001) -> RESPONSE_RESOURCE_ALLOCATION
 %% Used by srun for interactive jobs
+%% Returns {ok, MsgType, Response, CallbackInfo} where CallbackInfo contains
+%% the callback port for the acceptor to register.
 handle(#slurm_header{msg_type = ?REQUEST_RESOURCE_ALLOCATION},
        #resource_allocation_request{} = Request) ->
     lager:info("Handling srun resource allocation: ~s", [Request#resource_allocation_request.name]),
+
+    %% Extract callback info from the request
+    CallbackPort = Request#resource_allocation_request.alloc_resp_port,
+    SrunPid = Request#resource_allocation_request.srun_pid,
+    lager:info("srun callback port=~p, pid=~p", [CallbackPort, SrunPid]),
+
     JobSpec = resource_request_to_job_spec(Request),
     Result = case is_cluster_enabled() of
         true ->
@@ -150,10 +158,23 @@ handle(#slurm_header{msg_type = ?REQUEST_RESOURCE_ALLOCATION},
     case Result of
         {ok, JobId} ->
             lager:info("srun job ~p allocated", [JobId]),
+            %% Get actual node for allocation
+            Nodes = flurm_node_manager_server:list_nodes(),
+            NodeName = case Nodes of
+                [] -> <<"localhost">>;
+                [FirstNode | _] ->
+                    %% Node is a #node{} record with hostname field
+                    case FirstNode of
+                        #node{hostname = H} when is_binary(H) -> H;
+                        #{hostname := H} -> H;
+                        _ -> <<"localhost">>
+                    end
+            end,
+            lager:info("srun job ~p assigned to node ~s", [JobId, NodeName]),
             %% Return successful allocation with SLURM 22.05 format
             Response = #resource_allocation_response{
                 job_id = JobId,
-                node_list = <<"localhost">>,  % Will be set by scheduler
+                node_list = NodeName,
                 num_nodes = 1,
                 partition = <<"default">>,
                 error_code = 0,
@@ -161,7 +182,14 @@ handle(#slurm_header{msg_type = ?REQUEST_RESOURCE_ALLOCATION},
                 cpus_per_node = [],
                 num_cpu_groups = 0
             },
-            {ok, ?RESPONSE_RESOURCE_ALLOCATION, Response};
+            %% Include callback info for the acceptor to register
+            CallbackInfo = #{
+                job_id => JobId,
+                port => CallbackPort,
+                srun_pid => SrunPid,
+                node_list => NodeName
+            },
+            {ok, ?RESPONSE_RESOURCE_ALLOCATION, Response, CallbackInfo};
         {error, Reason2} ->
             lager:warning("srun allocation failed: ~p", [Reason2]),
             Response = #resource_allocation_response{
@@ -196,10 +224,22 @@ handle(#slurm_header{msg_type = ?REQUEST_JOB_ALLOCATION_INFO}, Body) ->
         _ -> 0
     end,
     lager:info("Handling job allocation info request for job_id=~p", [JobId]),
-    %% Return the same allocation info format
+    %% Get actual node for the allocation
+    Nodes = flurm_node_manager_server:list_nodes(),
+    NodeName = case Nodes of
+        [] -> <<"localhost">>;
+        [FirstNode | _] ->
+            %% Node is a #node{} record with hostname field
+            case FirstNode of
+                #node{hostname = H} when is_binary(H) -> H;
+                #{hostname := H} -> H;
+                _ -> <<"localhost">>
+            end
+    end,
+    %% Return the allocation info with actual node
     Response = #resource_allocation_response{
         job_id = JobId,
-        node_list = <<"localhost">>,
+        node_list = NodeName,
         num_nodes = 1,
         partition = <<"default">>,
         error_code = 0,
@@ -214,6 +254,39 @@ handle(#slurm_header{msg_type = ?REQUEST_KILL_TIMELIMIT}, _Body) ->
     lager:debug("Handling kill timelimit request"),
     Response = #slurm_rc_response{return_code = 0},
     {ok, ?RESPONSE_SLURM_RC, Response};
+
+%% REQUEST_JOB_STEP_CREATE (5001) -> RESPONSE_JOB_STEP_CREATE
+%% srun sends this to create a job step for running the command
+handle(#slurm_header{msg_type = ?REQUEST_JOB_STEP_CREATE},
+       #job_step_create_request{job_id = JobId, name = StepName} = _Request) ->
+    lager:info("Handling job step create for job_id=~p, step_name=~p", [JobId, StepName]),
+    %% Create a step with ID 0 (the first/only step for srun)
+    StepId = 0,
+    %% For now, return success with basic step info
+    %% srun will use this to connect to slurmd
+    Response = #job_step_create_response{
+        job_step_id = StepId,
+        error_code = 0,
+        error_msg = <<>>
+    },
+    lager:info("Created step ~p for job ~p", [StepId, JobId]),
+    {ok, ?RESPONSE_JOB_STEP_CREATE, Response};
+
+%% Fallback for raw binary body for job step create
+handle(#slurm_header{msg_type = ?REQUEST_JOB_STEP_CREATE}, Body) when is_binary(Body) ->
+    lager:info("Handling job step create (raw binary)"),
+    %% Try to extract job_id from binary
+    JobId = case Body of
+        <<JId:32/big, _/binary>> -> JId;
+        _ -> 0
+    end,
+    Response = #job_step_create_response{
+        job_step_id = 0,
+        error_code = 0,
+        error_msg = <<>>
+    },
+    lager:info("Created step 0 for job ~p (from raw)", [JobId]),
+    {ok, ?RESPONSE_JOB_STEP_CREATE, Response};
 
 %% REQUEST_JOB_INFO (2003) -> RESPONSE_JOB_INFO
 handle(#slurm_header{msg_type = ?REQUEST_JOB_INFO},

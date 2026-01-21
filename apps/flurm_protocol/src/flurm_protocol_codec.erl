@@ -587,6 +587,14 @@ encode_body(?RESPONSE_JOB_WILL_RUN, Resp) ->
 encode_body(?RESPONSE_SLURM_RC, Resp) ->
     encode_slurm_rc_response(Resp);
 
+%% SRUN_JOB_COMPLETE (7004)
+encode_body(?SRUN_JOB_COMPLETE, Resp) ->
+    encode_srun_job_complete(Resp);
+
+%% SRUN_PING (7001)
+encode_body(?SRUN_PING, Resp) ->
+    encode_srun_ping(Resp);
+
 %% RESPONSE_SUBMIT_BATCH_JOB (4004)
 encode_body(?RESPONSE_SUBMIT_BATCH_JOB, Resp) ->
     encode_batch_job_response(Resp);
@@ -682,6 +690,14 @@ encode_body(?RESPONSE_CONFIG_INFO, Resp) ->
 %% RESPONSE_STATS_INFO (2027)
 encode_body(?RESPONSE_STATS_INFO, Resp) ->
     encode_stats_info_response(Resp);
+
+%% RESPONSE_LAUNCH_TASKS (5009) - Response to srun task launch
+encode_body(?RESPONSE_LAUNCH_TASKS, Resp) ->
+    encode_launch_tasks_response(Resp);
+
+%% RESPONSE_REATTACH_TASKS (5013)
+encode_body(?RESPONSE_REATTACH_TASKS, Resp) ->
+    encode_reattach_tasks_response(Resp);
 
 %% Raw binary passthrough
 encode_body(_MsgType, Binary) when is_binary(Binary) ->
@@ -850,6 +866,7 @@ decode_job_info_request(Binary) ->
 
 %% Decode REQUEST_RESOURCE_ALLOCATION (4001) - srun interactive job
 %% Similar to batch job but for interactive execution
+%% Includes callback port where srun listens for job updates
 decode_resource_allocation_request(Binary) ->
     try
         %% Resource allocation is similar to batch job in format
@@ -869,6 +886,13 @@ decode_resource_allocation_request(Binary) ->
             _ -> 1
         end,
 
+        %% Extract srun callback info - port is typically at a known offset
+        %% In SLURM protocol, alloc_resp_port is a uint16 early in the message
+        {AllocRespPort, OtherPort, SrunPid} = extract_srun_callback_info(Binary),
+
+        lager:debug("srun callback info: port=~p, other_port=~p, pid=~p",
+                    [AllocRespPort, OtherPort, SrunPid]),
+
         Req = #resource_allocation_request{
             name = Name,
             partition = <<>>,
@@ -881,13 +905,69 @@ decode_resource_allocation_request(Binary) ->
             time_limit = 3600,  % Default 1 hour
             priority = 0,
             user_id = UserId,
-            group_id = GroupId
+            group_id = GroupId,
+            alloc_resp_port = AllocRespPort,
+            other_port = OtherPort,
+            srun_pid = SrunPid,
+            resp_host = <<>>  % Will be filled from connection info
         },
         {ok, Req}
     catch
         _:Reason ->
             {error, {resource_allocation_decode_failed, Reason}}
     end.
+
+%% Extract srun callback information from the request binary
+%% The callback port is where srun listens for job state updates
+extract_srun_callback_info(Binary) ->
+    %% Scan for port-like values (1024-65535 range, big-endian uint16)
+    %% In SLURM protocol, ports appear early in the message
+    %% Look for patterns that match typical ephemeral ports (32768-60999)
+    Ports = find_port_values(Binary, 0, []),
+
+    %% The first valid ephemeral port is likely the callback port
+    {AllocRespPort, OtherPort} = case Ports of
+        [P1, P2 | _] when P1 >= 1024, P1 =< 65535, P2 >= 1024, P2 =< 65535 ->
+            {P1, P2};
+        [P1 | _] when P1 >= 1024, P1 =< 65535 ->
+            {P1, 0};
+        _ ->
+            {0, 0}
+    end,
+
+    %% Try to find srun PID (typically a 32-bit value in process ID range)
+    SrunPid = find_srun_pid(Binary),
+
+    {AllocRespPort, OtherPort, SrunPid}.
+
+%% Find port values in the binary by scanning for uint16 in valid port range
+find_port_values(Binary, Offset, Acc) when Offset + 2 =< byte_size(Binary) ->
+    <<_:Offset/binary, Port:16/big, _/binary>> = Binary,
+    NewAcc = case Port of
+        P when P >= 30000, P =< 65000 -> [P | Acc];  % Ephemeral port range
+        _ -> Acc
+    end,
+    find_port_values(Binary, Offset + 1, NewAcc);
+find_port_values(_Binary, _Offset, Acc) ->
+    lists:reverse(Acc).
+
+%% Find srun PID from the binary
+find_srun_pid(Binary) when byte_size(Binary) >= 8 ->
+    %% PID is typically a 32-bit value, look for values in typical PID range
+    find_pid_value(Binary, 0);
+find_srun_pid(_) ->
+    0.
+
+find_pid_value(Binary, Offset) when Offset + 4 =< byte_size(Binary) ->
+    <<_:Offset/binary, Val:32/big, _/binary>> = Binary,
+    case Val of
+        P when P >= 1000, P =< 4194304 ->  % Typical PID range
+            P;
+        _ ->
+            find_pid_value(Binary, Offset + 1)
+    end;
+find_pid_value(_, _) ->
+    0.
 
 %% Decode REQUEST_SUBMIT_BATCH_JOB (4003) - Pattern-based version
 %% SLURM batch job format has many optional fields with SLURM_NO_VAL (0xFFFFFFFE)
@@ -2053,6 +2133,15 @@ encode_kill_job_request(#kill_job_request{
 encode_slurm_rc_response(#slurm_rc_response{return_code = RC}) ->
     {ok, <<RC:32/big-signed>>}.
 
+%% Encode SRUN_JOB_COMPLETE (7004)
+%% Sent to srun to indicate job is ready/complete
+encode_srun_job_complete(#srun_job_complete{job_id = JobId, step_id = StepId}) ->
+    {ok, <<JobId:32/big, StepId:32/big>>}.
+
+%% Encode SRUN_PING (7001)
+encode_srun_ping(#srun_ping{job_id = JobId, step_id = StepId}) ->
+    {ok, <<JobId:32/big, StepId:32/big>>}.
+
 %% Encode RESPONSE_SUBMIT_BATCH_JOB (4004)
 encode_batch_job_response(#batch_job_response{
     job_id = JobId,
@@ -2741,6 +2830,88 @@ encode_single_job_step_info(#job_step_info{} = S) ->
         flurm_protocol_pack:pack_string(S#job_step_info.tres_alloc_str),
         <<(S#job_step_info.exit_code):32/big>>
     ].
+
+%% Encode RESPONSE_LAUNCH_TASKS (5009)
+%% Format: return_code(32), node_name(string), srun_node_id(32),
+%%         count_of_pids(32), local_pids(32 each), gtids(32 each)
+encode_launch_tasks_response(#launch_tasks_response{
+    return_code = ReturnCode,
+    node_name = NodeName,
+    srun_node_id = SrunNodeId,
+    count_of_pids = CountOfPids,
+    local_pids = LocalPids,
+    gtids = Gtids
+}) ->
+    PidsBin = [<<P:32/big>> || P <- LocalPids],
+    GtidsBin = [<<G:32/big>> || G <- Gtids],
+    Parts = [
+        <<ReturnCode:32/signed-big>>,
+        flurm_protocol_pack:pack_string(ensure_binary(NodeName)),
+        <<SrunNodeId:32/big>>,
+        <<CountOfPids:32/big>>,
+        PidsBin,
+        GtidsBin
+    ],
+    {ok, iolist_to_binary(Parts)};
+encode_launch_tasks_response(#{return_code := ReturnCode} = Map) ->
+    %% Support map format as well as record
+    NodeName = maps:get(node_name, Map, <<>>),
+    SrunNodeId = maps:get(srun_node_id, Map, 0),
+    LocalPids = maps:get(local_pids, Map, []),
+    Gtids = maps:get(gtids, Map, []),
+    CountOfPids = length(LocalPids),
+    encode_launch_tasks_response(#launch_tasks_response{
+        return_code = ReturnCode,
+        node_name = NodeName,
+        srun_node_id = SrunNodeId,
+        count_of_pids = CountOfPids,
+        local_pids = LocalPids,
+        gtids = Gtids
+    });
+encode_launch_tasks_response(_) ->
+    %% Default empty response
+    encode_launch_tasks_response(#launch_tasks_response{}).
+
+%% Encode RESPONSE_REATTACH_TASKS (5013)
+%% Format: return_code(32), node_name(string), count_of_pids(32),
+%%         local_pids(32 each), gtids(32 each), executable_names(strings)
+encode_reattach_tasks_response(#reattach_tasks_response{
+    return_code = ReturnCode,
+    node_name = NodeName,
+    count_of_pids = CountOfPids,
+    local_pids = LocalPids,
+    gtids = Gtids,
+    executable_names = ExecNames
+}) ->
+    PidsBin = [<<P:32/big>> || P <- LocalPids],
+    GtidsBin = [<<G:32/big>> || G <- Gtids],
+    ExecNamesBin = [flurm_protocol_pack:pack_string(ensure_binary(N)) || N <- ExecNames],
+    Parts = [
+        <<ReturnCode:32/signed-big>>,
+        flurm_protocol_pack:pack_string(ensure_binary(NodeName)),
+        <<CountOfPids:32/big>>,
+        PidsBin,
+        GtidsBin,
+        ExecNamesBin
+    ],
+    {ok, iolist_to_binary(Parts)};
+encode_reattach_tasks_response(#{return_code := ReturnCode} = Map) ->
+    NodeName = maps:get(node_name, Map, <<>>),
+    LocalPids = maps:get(local_pids, Map, []),
+    Gtids = maps:get(gtids, Map, []),
+    ExecNames = maps:get(executable_names, Map, []),
+    CountOfPids = length(LocalPids),
+    encode_reattach_tasks_response(#reattach_tasks_response{
+        return_code = ReturnCode,
+        node_name = NodeName,
+        count_of_pids = CountOfPids,
+        local_pids = LocalPids,
+        gtids = Gtids,
+        executable_names = ExecNames
+    });
+encode_reattach_tasks_response(_) ->
+    %% Default empty response
+    encode_reattach_tasks_response(#reattach_tasks_response{}).
 
 %% Helper to extract name from binary
 extract_name_from_binary(Binary) ->

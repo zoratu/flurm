@@ -18,24 +18,34 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile.flurm-node
+    hostname: flurm-node1
     depends_on:
       - flurm-server
     environment:
       - FLURM_CONTROLLER_HOST=flurm-server
       - FLURM_CONTROLLER_PORT=6818
     networks:
-      - flurm-net
+      flurm-net:
+        aliases:
+          - flurm-node1
 
   slurm-client:
     build:
       context: .
       dockerfile: Dockerfile.slurm-client-munge
+    hostname: slurm-client
     depends_on:
       - flurm-server
+    environment:
+      # Tell srun to bind callback listener to all interfaces (0.0.0.0)
+      # so the controller can connect back from another container
+      - SLURM_SRUN_COMM_HOST=0.0.0.0
     volumes:
       - munge-key:/etc/munge
     networks:
-      - flurm-net
+      flurm-net:
+        aliases:
+          - slurm-client
     stdin_open: true
     tty: true
 

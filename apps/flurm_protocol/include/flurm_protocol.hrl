@@ -166,6 +166,19 @@
 -define(RESPONSE_SLURM_RC, 8001).
 -define(RESPONSE_SLURM_RC_MSG, 8002).
 
+%%% srun Callback Messages (7001-7010)
+%% These are sent from slurmctld to srun (on callback or main connection)
+-define(SRUN_PING, 7001).
+-define(SRUN_TIMEOUT, 7002).
+-define(SRUN_NODE_FAIL, 7003).
+-define(SRUN_JOB_COMPLETE, 7004).
+-define(SRUN_REQUEST_SUSPEND, 7005).
+-define(SRUN_USER_MSG, 7006).
+-define(SRUN_STEP_MISSING, 7007).
+-define(SRUN_REQUEST_SWITCH_JOB, 7008).
+-define(SRUN_NET_FORWARD, 7009).
+-define(SRUN_STEP_SIGNAL, 7010).
+
 %%% Accounting (9001-9050)
 -define(ACCOUNTING_UPDATE_MSG, 9001).
 -define(ACCOUNTING_FIRST_REG, 9002).
@@ -647,7 +660,11 @@
     time_limit = 0 :: non_neg_integer(),
     user_id = 0 :: non_neg_integer(),
     wait_all_nodes = 0 :: non_neg_integer(),
-    work_dir = <<>> :: binary()
+    work_dir = <<>> :: binary(),
+    %% Additional callback fields for srun - controller connects back to srun
+    other_port = 0 :: non_neg_integer(),       % Secondary port (I/O forwarding)
+    srun_pid = 0 :: non_neg_integer(),         % srun process ID
+    resp_host = <<>> :: binary()               % Host where srun is running
 }).
 
 %% Resource allocation response (RESPONSE_RESOURCE_ALLOCATION - 4002)
@@ -670,6 +687,19 @@
 %% Generic return code response (RESPONSE_SLURM_RC - 8001)
 -record(slurm_rc_response, {
     return_code = 0 :: integer()
+}).
+
+%% srun job complete message (SRUN_JOB_COMPLETE - 7004)
+%% Sent to srun to indicate job is ready/complete
+-record(srun_job_complete, {
+    job_id = 0 :: non_neg_integer(),
+    step_id = 0 :: non_neg_integer()
+}).
+
+%% srun ping message (SRUN_PING - 7001)
+-record(srun_ping, {
+    job_id = 0 :: non_neg_integer(),
+    step_id = 0 :: non_neg_integer()
 }).
 
 %% Node info request (REQUEST_NODE_INFO - 2007)
@@ -852,6 +882,28 @@
     last_update = 0 :: non_neg_integer(),
     step_count = 0 :: non_neg_integer(),
     steps = [] :: [#job_step_info{}]
+}).
+
+%% Launch tasks response (RESPONSE_LAUNCH_TASKS - 5009)
+%% Sent by slurmd to srun after launching tasks
+-record(launch_tasks_response, {
+    return_code = 0 :: integer(),
+    node_name = <<>> :: binary(),
+    srun_node_id = 0 :: non_neg_integer(),
+    count_of_pids = 0 :: non_neg_integer(),
+    local_pids = [] :: [non_neg_integer()],
+    gtids = [] :: [non_neg_integer()]
+}).
+
+%% Reattach tasks response (RESPONSE_REATTACH_TASKS - 5013)
+%% Sent by slurmd when srun reattaches to running tasks
+-record(reattach_tasks_response, {
+    return_code = 0 :: integer(),
+    node_name = <<>> :: binary(),
+    count_of_pids = 0 :: non_neg_integer(),
+    local_pids = [] :: [non_neg_integer()],
+    gtids = [] :: [non_neg_integer()],
+    executable_names = [] :: [binary()]
 }).
 
 %% Reservation info request (REQUEST_RESERVATION_INFO - 2012)

@@ -1,0 +1,6 @@
+FROM erlang:26
+WORKDIR /app
+RUN curl -o /usr/local/bin/rebar3 https://s3.amazonaws.com/rebar3/rebar3 && chmod +x /usr/local/bin/rebar3
+COPY . .
+RUN rm -rf _build && rebar3 compile && rebar3 as test compile
+CMD ["rebar3", "eunit"]

@@ -3,7 +3,7 @@
 %%%
 %%% This supervisor manages all the child processes of the FLURM
 %%% node daemon, including the controller connector, job executor,
-%%% and system monitor.
+%%% system monitor, and the srun connection listener.
 %%% @end
 %%%-------------------------------------------------------------------
 -module(flurm_node_daemon_sup).
@@ -14,6 +14,8 @@
 -export([init/1]).
 
 -define(SERVER, ?MODULE).
+-define(SRUN_LISTENER_NAME, flurm_srun_listener).
+-define(DEFAULT_SRUN_PORT, 6818).
 
 %%====================================================================
 %% API
@@ -32,6 +34,10 @@ init([]) ->
         intensity => 5,
         period => 10
     },
+
+    %% Start Ranch listener for srun connections on port 6818
+    Port = application:get_env(flurm_node_daemon, srun_port, ?DEFAULT_SRUN_PORT),
+    start_srun_listener(Port),
 
     Children = [
         %% System Monitor - collects node metrics
@@ -64,3 +70,38 @@ init([]) ->
     ],
 
     {ok, {SupFlags, Children}}.
+
+%%====================================================================
+%% Internal Functions
+%%====================================================================
+
+%% @doc Start the Ranch listener for srun connections.
+%% This allows srun to connect directly to the node daemon to launch tasks.
+-spec start_srun_listener(non_neg_integer()) -> {ok, pid()} | {error, term()}.
+start_srun_listener(Port) ->
+    lager:info("Starting srun listener on port ~p", [Port]),
+    TransportOpts = #{
+        socket_opts => [
+            {port, Port},
+            {reuseaddr, true}
+        ],
+        num_acceptors => 10
+    },
+    ProtocolOpts = #{},
+    case ranch:start_listener(
+        ?SRUN_LISTENER_NAME,
+        ranch_tcp,
+        TransportOpts,
+        flurm_srun_acceptor,
+        ProtocolOpts
+    ) of
+        {ok, Pid} ->
+            lager:info("srun listener started on port ~p (pid=~p)", [Port, Pid]),
+            {ok, Pid};
+        {error, {already_started, Pid}} ->
+            lager:info("srun listener already running on port ~p (pid=~p)", [Port, Pid]),
+            {ok, Pid};
+        {error, Reason} ->
+            lager:error("Failed to start srun listener on port ~p: ~p", [Port, Reason]),
+            {error, Reason}
+    end.

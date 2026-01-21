@@ -26,4 +26,7 @@ RUN echo '#!/bin/bash' > /entrypoint.sh && \
     echo 'cd /flurm && escript escripts/start_node.erl $CONTROLLER_HOST' >> /entrypoint.sh && \
     chmod +x /entrypoint.sh
 
+# Expose port 6818 for srun connections
+EXPOSE 6818
+
 CMD ["/entrypoint.sh"]

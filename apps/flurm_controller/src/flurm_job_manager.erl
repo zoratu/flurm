@@ -390,21 +390,52 @@ submit_regular_job(JobSpec, Jobs, Counter, State) ->
                             %% Register dependencies with flurm_job_deps
                             HasDeps = register_job_dependencies(JobId, DepSpec),
 
-                            %% Notify scheduler about new job (unless held for dependencies)
-                            case HasDeps of
-                                true ->
+                            %% Check if this is an interactive job (srun)
+                            IsInteractive = maps:get(interactive, JobSpec, false),
+
+                            %% Notify scheduler about new job (unless interactive or held for dependencies)
+                            FinalJobs = case {IsInteractive, HasDeps} of
+                                {true, _} ->
+                                    %% Interactive job (srun) - immediately allocate and start
+                                    %% srun expects the job to be RUNNING with allocated nodes
+                                    Now = erlang:system_time(second),
+                                    %% Get first available node
+                                    Nodes = flurm_node_manager_server:list_nodes(),
+                                    AllocatedNode = case Nodes of
+                                        [] -> <<"localhost">>;
+                                        [FirstNode | _] ->
+                                            case FirstNode of
+                                                #node{hostname = H} when is_binary(H) -> H;
+                                                #{hostname := H} -> H;
+                                                _ -> <<"localhost">>
+                                            end
+                                    end,
+                                    %% Update job to running state with allocated node
+                                    RunningJob = Job#job{
+                                        state = running,
+                                        start_time = Now,
+                                        allocated_nodes = [AllocatedNode]
+                                    },
+                                    lager:info("Interactive job ~p allocated on ~s (state=running)",
+                                               [JobId, AllocatedNode]),
+                                    %% Persist the updated job
+                                    persist_job(RunningJob),
+                                    maps:put(JobId, RunningJob, Jobs);
+                                {false, true} ->
                                     %% Job has dependencies - it will be held
                                     %% and released when deps are satisfied
                                     lager:info("Job ~p has dependencies, held pending", [JobId]),
                                     %% Still submit to scheduler queue but it will be skipped
                                     %% until dependencies are satisfied
-                                    flurm_scheduler:submit_job(JobId);
-                                false ->
+                                    flurm_scheduler:submit_job(JobId),
+                                    NewJobs;
+                                {false, false} ->
                                     %% No dependencies, submit to scheduler immediately
-                                    flurm_scheduler:submit_job(JobId)
+                                    flurm_scheduler:submit_job(JobId),
+                                    NewJobs
                             end,
 
-                            {reply, {ok, JobId}, State#state{jobs = NewJobs, job_counter = Counter + 1}};
+                            {reply, {ok, JobId}, State#state{jobs = FinalJobs, job_counter = Counter + 1}};
                         {error, DepError} ->
                             %% Dependency validation failed (e.g., circular dependency)
                             lager:warning("Job submission rejected due to invalid dependencies: ~p", [DepError]),

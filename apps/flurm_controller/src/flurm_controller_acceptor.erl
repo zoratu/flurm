@@ -195,6 +195,17 @@ handle_message(MessageBin, #{socket := Socket, transport := Transport,
                 {ok, ResponseType, ResponseBody} ->
                     send_response(Socket, Transport, ResponseType, ResponseBody),
                     {ok, State#{request_count => Count + 1}};
+                {ok, ResponseType, ResponseBody, CallbackInfo} ->
+                    %% Handler returned callback info - try connecting to callback BEFORE
+                    %% sending response (srun's callback listener should be open now)
+                    CallbackResult = register_srun_callback(Socket, Transport, CallbackInfo),
+                    lager:info("Callback registration result: ~p", [CallbackResult]),
+                    %% Send the allocation response
+                    send_response(Socket, Transport, ResponseType, ResponseBody),
+                    %% Note: If callback connection fails in Docker, srun will time out.
+                    %% This is a known limitation - srun requires callback mechanism.
+                    %% Use sbatch for batch jobs, or configure Docker networking properly.
+                    {ok, State#{request_count => Count + 1}};
                 {error, Reason} ->
                     %% Send error response
                     ErrorResponse = #slurm_rc_response{return_code = -1},
@@ -299,6 +310,45 @@ extract_message(Buffer) ->
 calculate_duration(EndTime, StartTime) ->
     EndTime - StartTime.
 -endif.
+
+%%====================================================================
+%% srun Callback Registration
+%%====================================================================
+
+%% @doc Register a callback for srun job updates.
+%% Gets the client's IP from the socket and registers with the callback manager.
+%% Called BEFORE sending the allocation response to ensure callback is ready.
+-spec register_srun_callback(inet:socket(), module(), map()) -> ok | {error, term()}.
+register_srun_callback(Socket, _Transport, CallbackInfo) ->
+    JobId = maps:get(job_id, CallbackInfo, 0),
+    Port = maps:get(port, CallbackInfo, 0),
+    SrunPid = maps:get(srun_pid, CallbackInfo, 0),
+
+    %% Only register if we have a valid callback port
+    case Port of
+        P when P > 0 ->
+            %% Get the client's IP address from the socket
+            case inet:peername(Socket) of
+                {ok, {IpAddr, _ClientPort}} ->
+                    %% Convert IP tuple to binary string
+                    Host = case IpAddr of
+                        {A, B, C, D} ->
+                            list_to_binary(io_lib:format("~p.~p.~p.~p", [A, B, C, D]));
+                        _ ->
+                            <<"127.0.0.1">>
+                    end,
+                    lager:info("Registering srun callback for job ~p: ~s:~p",
+                               [JobId, Host, Port]),
+                    %% Register with the callback manager (synchronous - will connect and send job ready)
+                    flurm_srun_callback:register_callback(JobId, Host, Port, SrunPid);
+                {error, Reason} ->
+                    lager:warning("Failed to get peer address for srun callback: ~p", [Reason]),
+                    {error, Reason}
+            end;
+        _ ->
+            lager:debug("No callback port specified for job ~p", [JobId]),
+            ok
+    end.
 
 %%====================================================================
 %% Connection Management

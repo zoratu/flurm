@@ -7,12 +7,14 @@
         kernel,
         stdlib,
         lager,
+        ranch,
         flurm_protocol,
         flurm_core
     ]},
     {env, [
         {controller_host, "localhost"},
         {controller_port, 6819},
+        {srun_port, 6818},           % Port for srun connections
         {heartbeat_interval, 30000},  % 30 seconds
         %% Prolog/Epilog scripts - uncomment to enable
         %% {prolog_path, "/etc/flurm/prolog.sh"},
