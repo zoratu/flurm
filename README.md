@@ -207,7 +207,7 @@ FLURM is currently in **active development** (January 2026). The following compo
 - [x] Raft consensus integration (Ra library)
 - [x] Controller failover
 - [x] Hot code reloading (slurm.conf live reload)
-- [x] srun support (interactive jobs)
+- [x] srun support (interactive jobs) - *partial, see Known Limitations*
 - [x] Job steps management
 - [x] sacctmgr (accounting management)
 - [x] slurmdbd (accounting daemon)
@@ -235,6 +235,18 @@ FLURM is currently in **active development** (January 2026). The following compo
 - [ ] Kubernetes operator deployment
 - [ ] SPANK plugin compatibility layer
 - [ ] Integration test coverage for core modules
+
+## Known Limitations
+
+### srun Interactive Job Protocol
+
+The `srun` command for interactive jobs has a known protocol compatibility issue with SLURM 22.05 clients. The RESPONSE_RESOURCE_ALLOCATION message format causes a "Header lengths are longer than data received" error in the SLURM client.
+
+**Workaround**: Use `sbatch` for batch job submission, which works correctly.
+
+**Status**: Under investigation. The issue appears to be related to authentication section handling for persistent connections used by srun.
+
+**Working CLI commands**: sbatch, squeue, scancel, sinfo, scontrol show job/partition/node
 
 ## Contributing
 

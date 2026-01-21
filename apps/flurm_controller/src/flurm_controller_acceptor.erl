@@ -214,7 +214,7 @@ handle_message(MessageBin, #{socket := Socket, transport := Transport,
     end.
 
 %% @doc Send a response message back to the client.
-%% All responses use encode_response which includes auth section.
+%% All responses use encode_response with MUNGE auth section.
 -spec send_response(inet:socket(), module(), non_neg_integer(), term()) -> ok | {error, term()}.
 send_response(Socket, Transport, MsgType, Body) ->
     case flurm_protocol_codec:encode_response(MsgType, Body) of

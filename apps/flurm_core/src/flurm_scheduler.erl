@@ -63,7 +63,9 @@
     failed_count    :: non_neg_integer(),
     %% Track why jobs are pending (for debugging and user info)
     %% #{JobId => {Reason, Timestamp}}
-    pending_reasons :: #{pos_integer() => {term(), non_neg_integer()}}
+    pending_reasons :: #{pos_integer() => {term(), non_neg_integer()}},
+    %% Track if a schedule trigger is already pending (for coalescing)
+    schedule_pending :: boolean()
 }).
 
 %%====================================================================
@@ -142,7 +144,8 @@ init([]) ->
         schedule_cycles = 0,
         completed_count = 0,
         failed_count = 0,
-        pending_reasons = #{}
+        pending_reasons = #{},
+        schedule_pending = false
     },
     {ok, State}.
 
@@ -162,41 +165,41 @@ handle_call(_Request, _From, State) ->
 
 %% @private
 handle_cast({submit_job, JobId}, State) ->
-    lager:info("Scheduler received job ~p for scheduling", [JobId]),
+    lager:debug("Scheduler received job ~p for scheduling", [JobId]),
     %% Add job to pending queue
     NewPending = queue:in(JobId, State#scheduler_state.pending_jobs),
     NewState = State#scheduler_state{pending_jobs = NewPending},
-    %% Trigger immediate scheduling attempt
-    self() ! schedule_cycle,
-    {noreply, NewState};
+    %% Trigger scheduling - coalesce with pending trigger if already scheduled
+    FinalState = maybe_trigger_schedule(NewState),
+    {noreply, FinalState};
 
 handle_cast({job_completed, JobId}, State) ->
     NewState = handle_job_finished(JobId, completed, State),
-    FinalState = NewState#scheduler_state{
+    State1 = NewState#scheduler_state{
         completed_count = NewState#scheduler_state.completed_count + 1
     },
-    %% Trigger scheduling to fill freed resources
-    self() ! schedule_cycle,
+    %% Trigger scheduling to fill freed resources (coalesced)
+    FinalState = maybe_trigger_schedule(State1),
     {noreply, FinalState};
 
 handle_cast({job_failed, JobId}, State) ->
     NewState = handle_job_finished(JobId, failed, State),
-    FinalState = NewState#scheduler_state{
+    State1 = NewState#scheduler_state{
         failed_count = NewState#scheduler_state.failed_count + 1
     },
-    %% Trigger scheduling to fill freed resources
-    self() ! schedule_cycle,
+    %% Trigger scheduling to fill freed resources (coalesced)
+    FinalState = maybe_trigger_schedule(State1),
     {noreply, FinalState};
 
 handle_cast(trigger_schedule, State) ->
-    self() ! schedule_cycle,
-    {noreply, State};
+    NewState = maybe_trigger_schedule(State),
+    {noreply, NewState};
 
 handle_cast({job_deps_satisfied, JobId}, State) ->
     %% Job dependencies are satisfied, trigger scheduling
-    lager:info("Job ~p dependencies satisfied, triggering schedule", [JobId]),
-    self() ! schedule_cycle,
-    {noreply, State};
+    lager:debug("Job ~p dependencies satisfied, triggering schedule", [JobId]),
+    NewState = maybe_trigger_schedule(State),
+    {noreply, NewState};
 
 handle_cast(_Msg, State) ->
     {noreply, State}.
@@ -214,10 +217,13 @@ handle_info(schedule_cycle, State) ->
         OldTimer -> erlang:cancel_timer(OldTimer)
     end,
 
-    %% Run scheduling cycle
-    NewState = schedule_cycle(State),
+    %% Clear schedule_pending flag since we're running the cycle now
+    State1 = State#scheduler_state{schedule_pending = false},
 
-    %% Record metrics
+    %% Run scheduling cycle
+    NewState = schedule_cycle(State1),
+
+    %% Record metrics (batch update)
     Duration = erlang:monotonic_time(millisecond) - StartTime,
     catch flurm_metrics:increment(flurm_scheduler_cycles_total),
     catch flurm_metrics:histogram(flurm_scheduler_duration_ms, Duration),
@@ -236,21 +242,20 @@ handle_info(schedule_cycle, State) ->
 handle_info({config_changed, partitions, _OldPartitions, NewPartitions}, State) ->
     lager:info("Scheduler received partition config change: ~p partitions", [length(NewPartitions)]),
     %% Trigger a scheduling cycle to re-evaluate jobs with new partition definitions
-    self() ! schedule_cycle,
-    {noreply, State};
+    NewState = maybe_trigger_schedule(State),
+    {noreply, NewState};
 
 handle_info({config_changed, nodes, _OldNodes, NewNodes}, State) ->
     lager:info("Scheduler received node config change: ~p node definitions", [length(NewNodes)]),
     %% Trigger a scheduling cycle to re-evaluate jobs with new node definitions
-    self() ! schedule_cycle,
-    {noreply, State};
+    NewState = maybe_trigger_schedule(State),
+    {noreply, NewState};
 
 handle_info({config_changed, schedulertype, _OldType, NewType}, State) ->
     lager:info("Scheduler type changed to ~p - applying new scheduler configuration", [NewType]),
     %% Could implement scheduler type switching here (FIFO, backfill, etc.)
-    %% For now, just trigger a schedule cycle
-    self() ! schedule_cycle,
-    {noreply, State};
+    NewState = maybe_trigger_schedule(State),
+    {noreply, NewState};
 
 handle_info({config_changed, _Key, _OldValue, _NewValue}, State) ->
     %% Ignore other config changes
@@ -280,6 +285,18 @@ code_change(_OldVsn, State, _Extra) ->
 %% Schedule the next cycle timer
 schedule_next_cycle() ->
     erlang:send_after(?SCHEDULE_INTERVAL, self(), schedule_cycle).
+
+%% @private
+%% Trigger a schedule cycle if one isn't already pending
+%% This coalesces multiple rapid submit/complete events into a single cycle
+%% Returns the updated state with schedule_pending flag set
+maybe_trigger_schedule(#scheduler_state{schedule_pending = true} = State) ->
+    %% Schedule cycle already pending, don't send another message
+    State;
+maybe_trigger_schedule(State) ->
+    %% No pending cycle, trigger one and mark as pending
+    self() ! schedule_cycle,
+    State#scheduler_state{schedule_pending = true}.
 
 %% @private
 %% Handle job finished (completed or failed) - release resources
@@ -353,8 +370,11 @@ notify_job_deps_completion(JobId, FinalState) ->
             ok
     end.
 
+%% Maximum number of jobs to schedule per cycle (for batch processing)
+-define(MAX_JOBS_PER_CYCLE, 100).
+
 %% @private
-%% Run a scheduling cycle - try to schedule pending jobs
+%% Run a scheduling cycle - try to schedule pending jobs in batches
 schedule_cycle(State) ->
     PendingCount = queue:len(State#scheduler_state.pending_jobs),
     case PendingCount > 0 of
@@ -363,43 +383,57 @@ schedule_cycle(State) ->
         false ->
             ok
     end,
-    %% Process pending jobs in FIFO order
-    schedule_pending_jobs(State).
+    %% Process pending jobs in batches for better throughput
+    schedule_pending_jobs_batch(State, ?MAX_JOBS_PER_CYCLE).
 
 %% @private
-%% Try to schedule pending jobs with backfill support
-schedule_pending_jobs(State) ->
+%% Schedule pending jobs in batches for better throughput
+%% Processes up to MaxJobs in a single cycle
+schedule_pending_jobs_batch(State, MaxJobs) ->
+    schedule_pending_jobs_batch(State, MaxJobs, 0).
+
+schedule_pending_jobs_batch(State, MaxJobs, Scheduled) when Scheduled >= MaxJobs ->
+    %% Reached batch limit, stop for this cycle
+    State;
+schedule_pending_jobs_batch(State, MaxJobs, Scheduled) ->
     case queue:out(State#scheduler_state.pending_jobs) of
         {empty, _} ->
-            %% No pending jobs
+            %% No more pending jobs
             State;
         {{value, JobId}, RestQueue} ->
-            %% Try to schedule this job (highest priority / FIFO first)
+            %% Try to schedule this job
             case try_schedule_job(JobId, State) of
                 {ok, NewState} ->
                     %% Job scheduled, continue with rest of queue
-                    schedule_pending_jobs(NewState#scheduler_state{
-                        pending_jobs = RestQueue
-                    });
+                    schedule_pending_jobs_batch(
+                        NewState#scheduler_state{pending_jobs = RestQueue},
+                        MaxJobs,
+                        Scheduled + 1
+                    );
                 {wait, Reason} ->
                     %% Job cannot be scheduled (insufficient resources)
                     %% Try backfill: schedule smaller jobs that can fit
-                    lager:info("Job ~p waiting (~p), trying backfill", [JobId, Reason]),
+                    lager:debug("Job ~p waiting (~p), trying backfill", [JobId, Reason]),
                     BackfillState = try_backfill_jobs(RestQueue, State),
                     %% Keep original job at front of queue
                     BackfillState;
                 {error, job_not_found} ->
-                    %% Job no longer exists, skip it
-                    schedule_pending_jobs(State#scheduler_state{
-                        pending_jobs = RestQueue
-                    });
+                    %% Job no longer exists, skip it and continue
+                    schedule_pending_jobs_batch(
+                        State#scheduler_state{pending_jobs = RestQueue},
+                        MaxJobs,
+                        Scheduled
+                    );
                 {error, _Reason} ->
-                    %% Other error, skip this job
-                    schedule_pending_jobs(State#scheduler_state{
-                        pending_jobs = RestQueue
-                    })
+                    %% Other error, skip this job and continue
+                    schedule_pending_jobs_batch(
+                        State#scheduler_state{pending_jobs = RestQueue},
+                        MaxJobs,
+                        Scheduled
+                    )
             end
     end.
+
 
 %% @private
 %% Try to backfill smaller jobs while high-priority job waits
@@ -541,7 +575,7 @@ remove_jobs_from_queue(JobsToRemove, Queue) ->
 %% Now includes resource limits checking via flurm_limits module
 %% Also checks job dependencies via flurm_job_deps before scheduling
 try_schedule_job(JobId, State) ->
-    lager:info("Trying to schedule job ~p", [JobId]),
+    lager:debug("Trying to schedule job ~p", [JobId]),
     case flurm_job_manager:get_job(JobId) of
         {ok, Job} ->
             JobState = flurm_core:job_state(Job),
@@ -555,7 +589,7 @@ try_schedule_job(JobId, State) ->
                             schedule_job_with_limits(JobId, Job, State);
                         {wait, deps_not_satisfied} ->
                             %% Dependencies not satisfied, skip this job
-                            lager:info("Job ~p waiting for dependencies", [JobId]),
+                            lager:debug("Job ~p waiting for dependencies", [JobId]),
                             {wait, dependencies_not_satisfied};
                         {error, DepError} ->
                             %% Dependency error (e.g., missing dependency job)
@@ -630,11 +664,11 @@ schedule_job_with_limits(JobId, Job, State) ->
                     end;
                 {ok, use_reservation, ReservedNodes} ->
                     %% Job has valid reservation, use reserved nodes
-                    lager:info("Job ~p using reservation nodes: ~p", [JobId, ReservedNodes]),
+                    lager:debug("Job ~p using reservation nodes: ~p", [JobId, ReservedNodes]),
                     try_allocate_job_with_reservation(JobId, Info, ReservedNodes, State);
                 {wait, ReservationReason} ->
                     %% Reservation not yet active or other wait condition
-                    lager:info("Job ~p waiting for reservation: ~p", [JobId, ReservationReason]),
+                    lager:debug("Job ~p waiting for reservation: ~p", [JobId, ReservationReason]),
                     {wait, {reservation_wait, ReservationReason}};
                 {error, ReservationError} ->
                     %% Reservation error (invalid, expired, no access)
@@ -643,7 +677,7 @@ schedule_job_with_limits(JobId, Job, State) ->
             end;
         {error, LimitReason} ->
             %% Limits exceeded, keep job pending
-            lager:info("Job ~p blocked by limits: ~p", [JobId, LimitReason]),
+            lager:debug("Job ~p blocked by limits: ~p", [JobId, LimitReason]),
             {wait, {limit_exceeded, LimitReason}}
     end.
 
@@ -813,13 +847,13 @@ find_nodes_excluding_reserved(NumNodes, NumCpus, MemoryMb, Partition) ->
     %% Get the full node records for available nodes
     AvailableNodes = [N || N <- AllNodes, lists:member(N#node.hostname, AvailableNodeNames)],
 
-    lager:info("find_nodes_excluding_reserved: need ~p nodes with ~p cpus, ~p MB, found ~p after excluding reserved",
+    lager:debug("find_nodes_excluding_reserved: need ~p nodes with ~p cpus, ~p MB, found ~p after excluding reserved",
                [NumNodes, NumCpus, MemoryMb, length(AvailableNodes)]),
 
     if
         length(AvailableNodes) >= NumNodes ->
             SelectedNodes = lists:sublist(AvailableNodes, NumNodes),
-            lager:info("Selected nodes (excluding reserved): ~p", [[N#node.hostname || N <- SelectedNodes]]),
+            lager:debug("Selected nodes (excluding reserved): ~p", [[N#node.hostname || N <- SelectedNodes]]),
             {ok, SelectedNodes};
         true ->
             lager:warning("Insufficient nodes: need ~p, have ~p (after excluding reserved)",
@@ -956,7 +990,7 @@ find_nodes_for_job(NumNodes, NumCpus, MemoryMb, Partition, GRESSpec) ->
             %% Use GRES-aware node selection
             flurm_node_manager:get_available_nodes_with_gres(NumCpus, MemoryMb, Partition, GRESSpec)
     end,
-    lager:info("find_nodes_for_job: need ~p nodes with ~p cpus, ~p MB, GRES ~p for partition ~p, found ~p nodes",
+    lager:debug("find_nodes_for_job: need ~p nodes with ~p cpus, ~p MB, GRES ~p for partition ~p, found ~p nodes",
                 [NumNodes, NumCpus, MemoryMb, GRESSpec, Partition, length(AllNodes)]),
 
     %% If GRES is specified, also filter through flurm_gres module for advanced constraints
@@ -973,7 +1007,7 @@ find_nodes_for_job(NumNodes, NumCpus, MemoryMb, Partition, GRESSpec) ->
         length(FilteredNodes) >= NumNodes ->
             %% Take first N nodes (could be improved with better selection based on GRES topology)
             SelectedNodes = lists:sublist(FilteredNodes, NumNodes),
-            lager:info("Selected nodes: ~p", [[N#node.hostname || N <- SelectedNodes]]),
+            lager:debug("Selected nodes: ~p", [[N#node.hostname || N <- SelectedNodes]]),
             {ok, SelectedNodes};
         true ->
             case GRESSpec of

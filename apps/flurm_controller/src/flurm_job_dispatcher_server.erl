@@ -96,7 +96,7 @@ handle_call({dispatch_job, JobId, JobInfo}, _From, #state{dispatched_jobs = Jobs
         true -> <<(binary:part(Script, 0, 80))/binary, "...">>;
         false -> Script
     end,
-    log(info, "Dispatching job ~p: script_size=~p, script_preview=~p",
+    log(debug, "Dispatching job ~p: script_size=~p, script_preview=~p",
         [JobId, ScriptLen, ScriptPreview]),
     case AllocatedNodes of
         [] ->
@@ -117,7 +117,7 @@ handle_call({dispatch_job, JobId, JobInfo}, _From, #state{dispatched_jobs = Jobs
 
             case Failed of
                 [] ->
-                    log(info, "Dispatched job ~p to ~p nodes", [JobId, length(Succeeded)]),
+                    log(debug, "Dispatched job ~p to ~p nodes", [JobId, length(Succeeded)]),
                     %% Job state is updated to 'running' by the scheduler
                     NewJobs = maps:put(JobId, Nodes, Jobs),
                     {reply, ok, State#state{dispatched_jobs = NewJobs}};
@@ -216,7 +216,7 @@ handle_cast({cancel_job, JobId, Nodes}, #state{dispatched_jobs = Jobs} = State) 
 
     %% Send cancel to all nodes
     _ = flurm_node_connection_manager:send_to_nodes(Nodes, CancelMsg),
-    log(info, "Sent cancel for job ~p to ~p nodes", [JobId, length(Nodes)]),
+    log(debug, "Sent cancel for job ~p to ~p nodes", [JobId, length(Nodes)]),
 
     NewJobs = maps:remove(JobId, Jobs),
     {noreply, State#state{dispatched_jobs = NewJobs}};

@@ -37,6 +37,7 @@
 
     %% Response encoding/decoding (with auth section)
     encode_response/2,
+    encode_response_no_auth/2,
     decode_response/1,
 
     %% Body encode/decode
@@ -263,6 +264,35 @@ encode_response(MsgType, Body) ->
             BodyError
     end.
 
+%% @doc Encode a response message WITHOUT auth section.
+%% Some message types (like RESPONSE_RESOURCE_ALLOCATION for srun) don't expect auth.
+%% Wire format: <<OuterLength:32, Header:10, Body>>
+-spec encode_response_no_auth(non_neg_integer(), term()) -> {ok, binary()} | {error, term()}.
+encode_response_no_auth(MsgType, Body) ->
+    case encode_body(MsgType, Body) of
+        {ok, BodyBin} ->
+            BodySize = byte_size(BodyBin),
+            Header = #slurm_header{
+                version = flurm_protocol_header:protocol_version(),
+                flags = 0,
+                msg_index = 0,
+                msg_type = MsgType,
+                body_length = BodySize
+            },
+            case flurm_protocol_header:encode_header(Header) of
+                {ok, HeaderBin} ->
+                    TotalPayload = <<HeaderBin/binary, BodyBin/binary>>,
+                    OuterLength = byte_size(TotalPayload),
+                    lager:debug("Response (no auth): header=~p body=~p total=~p",
+                               [byte_size(HeaderBin), BodySize, OuterLength]),
+                    {ok, <<OuterLength:32/big, TotalPayload/binary>>};
+                {error, _} = HeaderError ->
+                    HeaderError
+            end;
+        {error, _} = BodyError ->
+            BodyError
+    end.
+
 %% @doc Decode a response message (with auth section stripped).
 %%
 %% Response wire format (server to client):
@@ -318,9 +348,9 @@ strip_auth_section_from_response(BodyWithAuth, BodyLen) ->
     {error, {body_too_short, byte_size(BodyWithAuth), BodyLen}}.
 
 %% @doc Create auth section with MUNGE credential
-%% Format: 10-byte header + credential length + credential
-%% Header format: 8 bytes padding/zeros + 2 bytes auth type indicator
-%% This format was empirically determined to work with SLURM 22.05 clients
+%% OLD FORMAT that worked for sbatch (empirically determined):
+%% 10-byte header (8 zeros + auth type 101) + 4-byte length + credential
+%% Note: This format doesn't match SLURM source code expectations but works in practice
 -spec create_auth_section() -> binary().
 create_auth_section() ->
     case get_munge_credential() of

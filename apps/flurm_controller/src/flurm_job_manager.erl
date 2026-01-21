@@ -163,7 +163,7 @@ handle_call({cancel_job, JobId}, _From, #state{jobs = Jobs} = State) ->
             %% Update job state to cancelled
             UpdatedJob = flurm_core:update_job_state(Job, cancelled),
             NewJobs = maps:put(JobId, UpdatedJob, Jobs),
-            lager:info("Job ~p cancelled", [JobId]),
+            lager:debug("Job ~p cancelled", [JobId]),
 
             %% Record metrics
             catch flurm_metrics:increment(flurm_jobs_cancelled_total),
@@ -375,7 +375,7 @@ submit_regular_job(JobSpec, Jobs, Counter, State) ->
                             JobSpecWithLicenses = JobSpec#{licenses => Licenses},
                             Job = create_job(Counter, JobSpecWithLicenses),
                             JobId = Job#job.id,
-                            lager:info("Job ~p submitted: ~p (licenses: ~p)",
+                            lager:debug("Job ~p submitted: ~p (licenses: ~p)",
                                        [JobId, maps:get(name, JobSpec, <<"unnamed">>), Licenses]),
 
                             %% Record metrics
