@@ -150,24 +150,29 @@ handle(#slurm_header{msg_type = ?REQUEST_RESOURCE_ALLOCATION},
     case Result of
         {ok, JobId} ->
             lager:info("srun job ~p allocated", [JobId]),
-            %% Get allocated nodes for the response
-            {ok, Job} = flurm_job_manager:get_job(JobId),
-            NodeList = format_allocated_nodes(Job#job.allocated_nodes),
+            %% Return successful allocation with SLURM 22.05 format
             Response = #resource_allocation_response{
                 job_id = JobId,
-                node_list = NodeList,
-                num_nodes = Job#job.num_nodes,
-                partition = Job#job.partition,
+                node_list = <<"localhost">>,  % Will be set by scheduler
+                num_nodes = 1,
+                partition = <<"default">>,
                 error_code = 0,
-                job_submit_user_msg = <<"Job allocated successfully">>
+                job_submit_user_msg = <<>>,
+                cpus_per_node = [],
+                num_cpu_groups = 0
             },
             {ok, ?RESPONSE_RESOURCE_ALLOCATION, Response};
         {error, Reason2} ->
             lager:warning("srun allocation failed: ~p", [Reason2]),
             Response = #resource_allocation_response{
                 job_id = 0,
+                node_list = <<>>,
+                num_nodes = 0,
+                partition = <<"default">>,
                 error_code = 1,
-                job_submit_user_msg = error_to_binary(Reason2)
+                job_submit_user_msg = error_to_binary(Reason2),
+                cpus_per_node = [],
+                num_cpu_groups = 0
             },
             {ok, ?RESPONSE_RESOURCE_ALLOCATION, Response}
     end;
@@ -181,6 +186,34 @@ handle(#slurm_header{msg_type = ?REQUEST_RESOURCE_ALLOCATION}, _Body) ->
         job_submit_user_msg = <<"Failed to decode request">>
     },
     {ok, ?RESPONSE_RESOURCE_ALLOCATION, Response};
+
+%% REQUEST_JOB_ALLOCATION_INFO (4019) -> RESPONSE_JOB_ALLOCATION_INFO
+%% srun sends this to query allocation info after getting RESPONSE_RESOURCE_ALLOCATION
+handle(#slurm_header{msg_type = ?REQUEST_JOB_ALLOCATION_INFO}, Body) ->
+    %% Body should contain job_id
+    JobId = case Body of
+        <<JId:32/big, _Rest/binary>> -> JId;
+        _ -> 0
+    end,
+    lager:info("Handling job allocation info request for job_id=~p", [JobId]),
+    %% Return the same allocation info format
+    Response = #resource_allocation_response{
+        job_id = JobId,
+        node_list = <<"localhost">>,
+        num_nodes = 1,
+        partition = <<"default">>,
+        error_code = 0,
+        job_submit_user_msg = <<>>,
+        cpus_per_node = [],
+        num_cpu_groups = 0
+    },
+    {ok, ?RESPONSE_JOB_ALLOCATION_INFO, Response};
+
+%% REQUEST_KILL_TIMELIMIT (5017) - srun sends this periodically
+handle(#slurm_header{msg_type = ?REQUEST_KILL_TIMELIMIT}, _Body) ->
+    lager:debug("Handling kill timelimit request"),
+    Response = #slurm_rc_response{return_code = 0},
+    {ok, ?RESPONSE_SLURM_RC, Response};
 
 %% REQUEST_JOB_INFO (2003) -> RESPONSE_JOB_INFO
 handle(#slurm_header{msg_type = ?REQUEST_JOB_INFO},

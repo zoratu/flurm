@@ -240,11 +240,15 @@ FLURM is currently in **active development** (January 2026). The following compo
 
 ### srun Interactive Job Protocol
 
-The `srun` command for interactive jobs has a known protocol compatibility issue with SLURM 22.05 clients. The RESPONSE_RESOURCE_ALLOCATION message format causes a "Header lengths are longer than data received" error in the SLURM client.
+The `srun` command for interactive jobs has a known execution flow limitation with SLURM 22.05 clients. While the RESPONSE_RESOURCE_ALLOCATION protocol encoding is now correct (job allocations are received successfully), srun reports "Job allocation has been revoked" because:
+
+1. FLURM's job scheduler auto-dispatches jobs to compute nodes
+2. srun expects to create job steps and connect directly to slurmd
+3. The job completes on the node before srun can set up I/O channels
 
 **Workaround**: Use `sbatch` for batch job submission, which works correctly.
 
-**Status**: Under investigation. The issue appears to be related to authentication section handling for persistent connections used by srun.
+**Status**: Protocol encoding fixed. Remaining work involves implementing the full srun execution flow: job step creation, direct srun-to-slurmd connection, and I/O streaming.
 
 **Working CLI commands**: sbatch, squeue, scancel, sinfo, scontrol show job/partition/node
 

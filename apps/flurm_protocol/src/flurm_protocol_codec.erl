@@ -38,6 +38,7 @@
     %% Response encoding/decoding (with auth section)
     encode_response/2,
     encode_response_no_auth/2,
+    encode_response_proper_auth/2,
     decode_response/1,
 
     %% Body encode/decode
@@ -238,8 +239,8 @@ encode_response(MsgType, Body) ->
     case encode_body(MsgType, Body) of
         {ok, BodyBin} ->
             BodySize = byte_size(BodyBin),
-            %% Get MUNGE credential for auth section
-            AuthSection = create_auth_section(),
+            %% Get MUNGE credential for auth section (using OLD format for sbatch compat)
+            AuthSection = create_old_auth_section(),
             AuthSize = byte_size(AuthSection),
 
             Header = #slurm_header{
@@ -265,7 +266,6 @@ encode_response(MsgType, Body) ->
     end.
 
 %% @doc Encode a response message WITHOUT auth section.
-%% Some message types (like RESPONSE_RESOURCE_ALLOCATION for srun) don't expect auth.
 %% Wire format: <<OuterLength:32, Header:10, Body>>
 -spec encode_response_no_auth(non_neg_integer(), term()) -> {ok, binary()} | {error, term()}.
 encode_response_no_auth(MsgType, Body) ->
@@ -285,6 +285,38 @@ encode_response_no_auth(MsgType, Body) ->
                     OuterLength = byte_size(TotalPayload),
                     lager:debug("Response (no auth): header=~p body=~p total=~p",
                                [byte_size(HeaderBin), BodySize, OuterLength]),
+                    {ok, <<OuterLength:32/big, TotalPayload/binary>>};
+                {error, _} = HeaderError ->
+                    HeaderError
+            end;
+        {error, _} = BodyError ->
+            BodyError
+    end.
+
+%% @doc Encode a response with proper SLURM MUNGE auth format.
+%% For srun RESPONSE_RESOURCE_ALLOCATION compatibility.
+%% Wire format: <<OuterLength:32, Header:10, AuthSection, Body>>
+%% Where AuthSection uses proper MUNGE format: plugin_id, magic, errno, credential_packstr
+-spec encode_response_proper_auth(non_neg_integer(), term()) -> {ok, binary()} | {error, term()}.
+encode_response_proper_auth(MsgType, Body) ->
+    case encode_body(MsgType, Body) of
+        {ok, BodyBin} ->
+            BodySize = byte_size(BodyBin),
+            AuthSection = create_proper_auth_section(),
+            AuthSize = byte_size(AuthSection),
+            Header = #slurm_header{
+                version = flurm_protocol_header:protocol_version(),
+                flags = 0,
+                msg_index = 0,
+                msg_type = MsgType,
+                body_length = BodySize
+            },
+            case flurm_protocol_header:encode_header(Header) of
+                {ok, HeaderBin} ->
+                    TotalPayload = <<HeaderBin/binary, AuthSection/binary, BodyBin/binary>>,
+                    OuterLength = byte_size(TotalPayload),
+                    lager:info("Response (proper auth): header=~p auth=~p body=~p total=~p",
+                               [byte_size(HeaderBin), AuthSize, BodySize, OuterLength]),
                     {ok, <<OuterLength:32/big, TotalPayload/binary>>};
                 {error, _} = HeaderError ->
                     HeaderError
@@ -347,12 +379,21 @@ strip_auth_section_from_response(BodyWithAuth, BodyLen) when byte_size(BodyWithA
 strip_auth_section_from_response(BodyWithAuth, BodyLen) ->
     {error, {body_too_short, byte_size(BodyWithAuth), BodyLen}}.
 
-%% @doc Create auth section with MUNGE credential
-%% OLD FORMAT that worked for sbatch (empirically determined):
-%% 10-byte header (8 zeros + auth type 101) + 4-byte length + credential
-%% Note: This format doesn't match SLURM source code expectations but works in practice
--spec create_auth_section() -> binary().
-create_auth_section() ->
+%% @doc Get MUNGE credential by calling munge command
+-spec get_munge_credential() -> {ok, binary()} | {error, term()}.
+get_munge_credential() ->
+    case os:cmd("munge -n 2>/dev/null") of
+        [] -> {error, munge_not_available};
+        Result ->
+            %% Remove trailing newline
+            Cred = string:trim(Result, trailing, "\n"),
+            {ok, list_to_binary(Cred)}
+    end.
+
+%% @doc Create auth section using OLD empirical format
+%% This format worked for sbatch - 10-byte header + 4-byte length + credential
+-spec create_old_auth_section() -> binary().
+create_old_auth_section() ->
     case get_munge_credential() of
         {ok, Credential} ->
             CredLen = byte_size(Credential),
@@ -365,15 +406,32 @@ create_auth_section() ->
             <<AuthHeader/binary, 0:32/big>>
     end.
 
-%% @doc Get MUNGE credential by calling munge command
--spec get_munge_credential() -> {ok, binary()} | {error, term()}.
-get_munge_credential() ->
-    case os:cmd("munge -n 2>/dev/null") of
-        [] -> {error, munge_not_available};
-        Result ->
-            %% Remove trailing newline
-            Cred = string:trim(Result, trailing, "\n"),
-            {ok, list_to_binary(Cred)}
+%% @doc Create auth section with proper SLURM MUNGE format
+%% Format from auth_munge.c pack_auth_munge:
+%%   plugin_id:32 (101 = AUTH_PLUGIN_MUNGE)
+%%   MUNGE_MAGIC:32 (0x4D554E47 = "MUNG")
+%%   cr_errno:32 (0 for success)
+%%   credential_packstr (length:32, credential, null:8)
+-spec create_proper_auth_section() -> binary().
+create_proper_auth_section() ->
+    PluginId = 101,  %% AUTH_PLUGIN_MUNGE
+    MungeMagic = 16#4D554E47,  %% "MUNG" in ASCII
+    Errno = 0,
+    case get_munge_credential() of
+        {ok, Credential} ->
+            CredLen = byte_size(Credential),
+            CredPackstr = flurm_protocol_pack:pack_string(Credential),
+            AuthBin = <<PluginId:32/big, MungeMagic:32/big, Errno:32/big, CredPackstr/binary>>,
+            lager:info("PROPER AUTH: plugin=~p magic=~.16B errno=~p cred_len=~p packstr_len=~p auth_total=~p",
+                       [PluginId, MungeMagic, Errno, CredLen, byte_size(CredPackstr), byte_size(AuthBin)]),
+            AuthBin;
+        {error, _} ->
+            %% No MUNGE - use empty credential
+            EmptyPackstr = flurm_protocol_pack:pack_string(<<>>),
+            AuthBin = <<PluginId:32/big, MungeMagic:32/big, Errno:32/big, EmptyPackstr/binary>>,
+            lager:info("PROPER AUTH (no munge): plugin=~p magic=~.16B errno=~p auth_total=~p",
+                       [PluginId, MungeMagic, Errno, byte_size(AuthBin)]),
+            AuthBin
     end.
 
 %%%===================================================================
@@ -581,6 +639,10 @@ encode_body(?RESPONSE_PARTITION_INFO, Resp) ->
 encode_body(?RESPONSE_RESOURCE_ALLOCATION, Resp) ->
     encode_resource_allocation_response(Resp);
 
+%% RESPONSE_JOB_ALLOCATION_INFO (4020) - same format as RESPONSE_RESOURCE_ALLOCATION
+encode_body(?RESPONSE_JOB_ALLOCATION_INFO, Resp) ->
+    encode_resource_allocation_response(Resp);
+
 %% RESPONSE_JOB_STEP_CREATE (5002)
 encode_body(?RESPONSE_JOB_STEP_CREATE, Resp) ->
     encode_job_step_create_response(Resp);
@@ -649,6 +711,9 @@ message_type_name(?REQUEST_PARTITION_INFO) -> request_partition_info;
 message_type_name(?RESPONSE_PARTITION_INFO) -> response_partition_info;
 message_type_name(?REQUEST_RESOURCE_ALLOCATION) -> request_resource_allocation;
 message_type_name(?RESPONSE_RESOURCE_ALLOCATION) -> response_resource_allocation;
+message_type_name(?REQUEST_JOB_ALLOCATION_INFO) -> request_job_allocation_info;
+message_type_name(?RESPONSE_JOB_ALLOCATION_INFO) -> response_job_allocation_info;
+message_type_name(?REQUEST_KILL_TIMELIMIT) -> request_kill_timelimit;
 message_type_name(?REQUEST_SUBMIT_BATCH_JOB) -> request_submit_batch_job;
 message_type_name(?RESPONSE_SUBMIT_BATCH_JOB) -> response_submit_batch_job;
 message_type_name(?REQUEST_CANCEL_JOB) -> request_cancel_job;
@@ -726,6 +791,7 @@ is_response(?RESPONSE_JOB_INFO) -> true;
 is_response(?RESPONSE_NODE_INFO) -> true;
 is_response(?RESPONSE_PARTITION_INFO) -> true;
 is_response(?RESPONSE_RESOURCE_ALLOCATION) -> true;
+is_response(?RESPONSE_JOB_ALLOCATION_INFO) -> true;
 is_response(?RESPONSE_SUBMIT_BATCH_JOB) -> true;
 is_response(?RESPONSE_CANCEL_JOB_STEP) -> true;
 is_response(?RESPONSE_JOB_STEP_CREATE) -> true;
@@ -2001,65 +2067,131 @@ encode_batch_job_response(#batch_job_response{
     {ok, iolist_to_binary(Parts)}.
 
 %% Encode RESPONSE_RESOURCE_ALLOCATION (4002)
-%% For srun: this should return job allocation info
-%% However, the protocol is complex - for now, let's return RESPONSE_SLURM_RC instead
-%% which srun should understand as an error
+%% For srun: this returns job allocation info
+%% SLURM 22.05 _unpack_resource_allocation_response_msg format:
+%% From src/common/slurm_protocol_pack.c (SLURM_22_05_PROTOCOL_VERSION):
+%%  1. account: string
+%%  2. alias_list: string
+%%  3. batch_host: string
+%%  4. environment: string array
+%%  5. error_code: uint32
+%%  6. job_submit_user_msg: string
+%%  7. job_id: uint32
+%%  8. node_cnt: uint32
+%%  9. node_addr_present: uint8 (0 = no, 1 = yes)
+%% 10. (node_addr array if present)
+%% 11. node_list: string
+%% 12. ntasks_per_board: uint16
+%% 13. ntasks_per_core: uint16
+%% 14. ntasks_per_tres: uint16
+%% 15. ntasks_per_socket: uint16
+%% 16. num_cpu_groups: uint32
+%% 17. (cpus_per_node array if num_cpu_groups > 0)
+%% 18. (cpu_count_reps array if num_cpu_groups > 0)
+%% 19. partition: string
+%% 20. pn_min_memory: uint64
+%% 21. qos: string
+%% 22. resv_name: string
+%% 23. select_jobinfo (via select_g_select_jobinfo_unpack)
+%% 24. cluster_rec_present: uint8 (0 = NULL, 1 = present)
+%% 25. (working_cluster_rec if present)
+
 encode_resource_allocation_response(#resource_allocation_response{
     error_code = ErrorCode
 }) when ErrorCode =/= 0 ->
-    %% For errors, just return an error code
-    %% SLURM clients check error_code first
-    {ok, <<ErrorCode:32/big-signed>>};
+    %% For errors, encode with proper format but error_code set
+    encode_resource_allocation_response(#resource_allocation_response{
+        job_id = 0,
+        node_list = <<>>,
+        num_nodes = 0,
+        partition = <<"default">>,
+        error_code = ErrorCode,
+        job_submit_user_msg = <<>>,
+        cpus_per_node = [],
+        num_cpu_groups = 0
+    });
 
 encode_resource_allocation_response(#resource_allocation_response{
     job_id = JobId,
-    node_list = _NodeList,
-    num_nodes = _NumNodes,
+    node_list = NodeList,
+    num_nodes = NumNodes,
     partition = Partition,
     error_code = ErrorCode,
     job_submit_user_msg = UserMsg,
     cpus_per_node = _CpusPerNode,
     num_cpu_groups = _NumCpuGroups
 }) ->
-    %% SLURM _unpack_resource_allocation_response_msg format (22.05):
-    %% From src/common/slurm_protocol_pack.c:
-    %% 1. cpu_bind_type: uint16
-    %% 2. error_code: uint32
-    %% 3. gid: uint32
-    %% 4. job_id: uint32
-    %% 5. job_submit_user_msg: string
-    %% 6. node_cnt: uint32
-    %% 7. node_list: string
-    %% 8. ntasks_per_board: uint16
-    %% 9. ntasks_per_core: uint16
-    %% 10. ntasks_per_socket: uint16
-    %% 11. ntasks_per_tres: uint16
-    %% 12. partition: string
-    %% 13. pn_min_memory: uint64
-    %% 14. uid: uint32
-    %% 15. working_cluster_rec: conditional (NULL = no data, non-NULL = pack_cluster_rec)
-    %% 16. If node_cnt > 0: unpack_job_resources (complex structure)
-    %%
-    %% For a minimal response, set node_cnt = 0 to avoid needing job_resources
-    %% The working_cluster_rec is unpacked with slurm_unpack_slurmdb_cluster_rec
-    %% which reads a uint8 first (0 = NULL record)
+    %% Use actual NodeList or empty string
+    NodeListBin = case NodeList of
+        undefined -> <<>>;
+        _ when is_binary(NodeList) -> NodeList;
+        _ when is_list(NodeList) -> list_to_binary(NodeList);
+        _ -> <<>>
+    end,
+
+    %% Use actual NumNodes or 0
+    NodeCnt = case NumNodes of
+        undefined -> 0;
+        N when is_integer(N), N >= 0 -> N;
+        _ -> 0
+    end,
 
     Parts = [
-        <<0:16/big>>,                                 % cpu_bind_type = 0
-        <<ErrorCode:32/big>>,                         % error_code
-        <<0:32/big>>,                                 % gid = 0
-        <<JobId:32/big>>,                             % job_id
-        flurm_protocol_pack:pack_string(UserMsg),     % job_submit_user_msg
-        <<0:32/big>>,                                 % node_cnt = 0 (no allocation yet)
-        flurm_protocol_pack:pack_string(<<>>),        % node_list = empty
-        <<16#FFFF:16/big>>,                           % ntasks_per_board
-        <<16#FFFF:16/big>>,                           % ntasks_per_core
-        <<16#FFFF:16/big>>,                           % ntasks_per_socket
-        <<16#FFFF:16/big>>,                           % ntasks_per_tres
-        flurm_protocol_pack:pack_string(Partition),   % partition
-        <<0:64/big>>,                                 % pn_min_memory = 0
-        <<0:32/big>>,                                 % uid = 0
-        <<0:8>>                                       % working_cluster_rec = NULL
+        %% 1. account
+        flurm_protocol_pack:pack_string(<<>>),
+        %% 2. alias_list
+        flurm_protocol_pack:pack_string(<<>>),
+        %% 3. batch_host
+        flurm_protocol_pack:pack_string(<<>>),
+        %% 4. environment - empty string array (count=0)
+        <<0:32/big>>,
+        %% 5. error_code
+        <<ErrorCode:32/big>>,
+        %% 6. job_submit_user_msg
+        flurm_protocol_pack:pack_string(UserMsg),
+        %% 7. job_id
+        <<JobId:32/big>>,
+        %% 8. node_cnt
+        <<NodeCnt:32/big>>,
+        %% 9. node_addr_present = 0 (no node addresses)
+        <<0:8>>,
+        %% 10. (skip node_addr - not present)
+        %% 11. node_list
+        flurm_protocol_pack:pack_string(NodeListBin),
+        %% 12. ntasks_per_board = NO_VAL16
+        <<16#FFFF:16/big>>,
+        %% 13. ntasks_per_core = NO_VAL16
+        <<16#FFFF:16/big>>,
+        %% 14. ntasks_per_tres = NO_VAL16
+        <<16#FFFF:16/big>>,
+        %% 15. ntasks_per_socket = NO_VAL16
+        <<16#FFFF:16/big>>,
+        %% 16. num_cpu_groups = 0
+        <<0:32/big>>,
+        %% 17-18. (skip cpu arrays - num_cpu_groups = 0)
+        %% 19. partition
+        flurm_protocol_pack:pack_string(Partition),
+        %% 20. pn_min_memory = 0
+        <<0:64/big>>,
+        %% 21. qos
+        flurm_protocol_pack:pack_string(<<>>),
+        %% 22. resv_name
+        flurm_protocol_pack:pack_string(<<>>),
+        %% 23. select_jobinfo via select_g_select_jobinfo_unpack:
+        %%     First: plugin_id: uint32 (109 = SELECT_PLUGIN_CONS_TRES)
+        %%     Then plugin-specific data from cons_common/cons_common.c:
+        %%       alloc_cpus: uint16
+        %%       alloc_memory: uint64
+        %%       tres_alloc_fmt_str: string
+        %%       tres_alloc_weighted: double
+        <<109:32/big>>,                            % plugin_id = SELECT_PLUGIN_CONS_TRES (109)
+        <<1:16/big>>,                              % alloc_cpus = 1
+        <<0:64/big>>,                              % alloc_memory = 0
+        flurm_protocol_pack:pack_string(<<>>),    % tres_alloc_fmt_str = empty
+        <<0:64/big>>,                              % tres_alloc_weighted = 0.0 (as uint64 bits)
+        %% 24. cluster_rec_present = 0 (NULL)
+        <<0:8>>
+        %% 25. (skip working_cluster_rec - not present)
     ],
     {ok, iolist_to_binary(Parts)}.
 
