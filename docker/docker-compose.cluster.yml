@@ -1,0 +1,172 @@
+version: '3.8'
+
+# FLURM Cluster Test Configuration
+# Tests multi-controller leader election and job forwarding
+
+services:
+  # Three FLURM controllers forming a cluster
+  controller1:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: flurm-ctrl1
+    hostname: flurm-ctrl1
+    environment:
+      - FLURM_MODE=controller
+      - FLURM_NODE_NAME=flurm_ctrl@flurm-ctrl1
+      - FLURM_CLUSTER_NODES=flurm_ctrl@flurm-ctrl1,flurm_ctrl@flurm-ctrl2,flurm_ctrl@flurm-ctrl3
+      - FLURM_CLUSTER_MODE=true
+      - ERLANG_COOKIE=flurm_cluster_cookie
+    ports:
+      - "6817:6817"
+      - "9100:9100"
+    networks:
+      flurm_cluster:
+        ipv4_address: 172.28.0.10
+    volumes:
+      - cluster_data1:/var/lib/flurm
+      - ./jobs:/opt/flurm/jobs:ro
+    healthcheck:
+      test: ["CMD", "bash", "-c", "echo > /dev/tcp/localhost/6817"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  controller2:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: flurm-ctrl2
+    hostname: flurm-ctrl2
+    environment:
+      - FLURM_MODE=controller
+      - FLURM_NODE_NAME=flurm_ctrl@flurm-ctrl2
+      - FLURM_CLUSTER_NODES=flurm_ctrl@flurm-ctrl1,flurm_ctrl@flurm-ctrl2,flurm_ctrl@flurm-ctrl3
+      - FLURM_CLUSTER_MODE=true
+      - ERLANG_COOKIE=flurm_cluster_cookie
+    ports:
+      - "6818:6817"
+      - "9101:9100"
+    networks:
+      flurm_cluster:
+        ipv4_address: 172.28.0.11
+    volumes:
+      - cluster_data2:/var/lib/flurm
+      - ./jobs:/opt/flurm/jobs:ro
+    depends_on:
+      controller1:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "bash", "-c", "echo > /dev/tcp/localhost/6817"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  controller3:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: flurm-ctrl3
+    hostname: flurm-ctrl3
+    environment:
+      - FLURM_MODE=controller
+      - FLURM_NODE_NAME=flurm_ctrl@flurm-ctrl3
+      - FLURM_CLUSTER_NODES=flurm_ctrl@flurm-ctrl1,flurm_ctrl@flurm-ctrl2,flurm_ctrl@flurm-ctrl3
+      - FLURM_CLUSTER_MODE=true
+      - ERLANG_COOKIE=flurm_cluster_cookie
+    ports:
+      - "6819:6817"
+      - "9102:9100"
+    networks:
+      flurm_cluster:
+        ipv4_address: 172.28.0.12
+    volumes:
+      - cluster_data3:/var/lib/flurm
+      - ./jobs:/opt/flurm/jobs:ro
+    depends_on:
+      controller2:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "bash", "-c", "echo > /dev/tcp/localhost/6817"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Compute nodes
+  node1:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.node
+    container_name: flurm-node1
+    hostname: flurm-node1
+    environment:
+      - FLURM_MODE=node
+      - FLURM_CONTROLLER=flurm-ctrl1:6817
+      - FLURM_NODE_CPUS=4
+      - FLURM_NODE_MEMORY=4096
+    networks:
+      flurm_cluster:
+        ipv4_address: 172.28.0.20
+    volumes:
+      - shared_tmp:/tmp
+      - shared_data:/data
+    depends_on:
+      controller1:
+        condition: service_healthy
+
+  node2:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.node
+    container_name: flurm-node2
+    hostname: flurm-node2
+    environment:
+      - FLURM_MODE=node
+      - FLURM_CONTROLLER=flurm-ctrl1:6817
+      - FLURM_NODE_CPUS=4
+      - FLURM_NODE_MEMORY=4096
+    networks:
+      flurm_cluster:
+        ipv4_address: 172.28.0.21
+    volumes:
+      - shared_tmp:/tmp
+      - shared_data:/data
+    depends_on:
+      controller1:
+        condition: service_healthy
+
+  # SLURM client for testing
+  client:
+    image: giovtorres/slurm-docker-cluster:latest
+    container_name: flurm-cluster-client
+    hostname: flurm-cluster-client
+    entrypoint: /bin/bash
+    command: ["-c", "while true; do sleep 3600; done"]
+    networks:
+      flurm_cluster:
+        ipv4_address: 172.28.0.100
+    volumes:
+      - ./jobs:/opt/jobs:ro
+      - shared_tmp:/tmp
+      - shared_data:/data
+      - ./slurm-client.conf:/etc/slurm/slurm.conf:ro
+    depends_on:
+      - controller1
+      - controller2
+      - controller3
+      - node1
+      - node2
+
+networks:
+  flurm_cluster:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
+
+volumes:
+  cluster_data1:
+  cluster_data2:
+  cluster_data3:
+  shared_tmp:
+  shared_data:

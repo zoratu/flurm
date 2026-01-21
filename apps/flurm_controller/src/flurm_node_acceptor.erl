@@ -107,6 +107,22 @@ handle_message(Socket, Transport, #{type := node_register, payload := Payload}) 
     case flurm_node_manager_server:register_node(NodeSpec) of
         ok ->
             log(info, "Node ~s registered with node_manager", [Hostname]),
+            %% Also register with node_registry for scheduler access
+            RegistrySpec = #{
+                hostname => Hostname,
+                cpus => maps:get(cpus, NodeSpec, 1),
+                memory_mb => maps:get(memory_mb, NodeSpec, 1024),
+                state => up,
+                partitions => maps:get(partitions, NodeSpec, [<<"default">>])
+            },
+            case flurm_node_registry:register_node_direct(RegistrySpec) of
+                ok ->
+                    log(info, "Node ~s registered with node_registry", [Hostname]);
+                {error, already_registered} ->
+                    log(debug, "Node ~s already in registry", [Hostname]);
+                RegistryErr ->
+                    log(warning, "Node ~s registry error: ~p", [Hostname, RegistryErr])
+            end,
             %% Register socket with connection manager
             case flurm_node_connection_manager:register_connection(Hostname, self()) of
                 ok ->

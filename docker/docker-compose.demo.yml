@@ -1,0 +1,137 @@
+# FLURM Demo Environment
+# Demonstrates full SLURM capabilities with multiple compute nodes
+#
+# Usage:
+#   docker-compose -f docker-compose.demo.yml up --build
+#   docker exec -it flurm-client bash
+#   ./run_all_demos.sh
+
+services:
+  # FLURM Controller (slurmctld replacement)
+  flurm-server:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.flurm-server
+    container_name: flurm-controller
+    hostname: flurm-controller
+    ports:
+      - "6817:6817"   # SLURM protocol port
+      - "6818:6818"   # Node daemon port
+      - "9090:9090"   # Prometheus metrics
+    volumes:
+      - munge-key:/etc/munge
+      - flurm-data:/var/lib/flurm
+    networks:
+      flurm-net:
+        aliases:
+          - slurmctld
+          - flurm-server
+    healthcheck:
+      test: ["CMD", "bash", "-c", "echo > /dev/tcp/localhost/6817"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # Compute Node 1
+  flurm-node-1:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.flurm-node
+    container_name: flurm-node-1
+    hostname: node001
+    depends_on:
+      flurm-server:
+        condition: service_healthy
+    environment:
+      - FLURM_CONTROLLER_HOST=flurm-server
+      - FLURM_CONTROLLER_PORT=6818
+      - FLURM_NODE_NAME=node001
+      - FLURM_NODE_CPUS=4
+      - FLURM_NODE_MEMORY=4096
+    volumes:
+      - shared-tmp:/tmp
+      - shared-data:/data
+    networks:
+      - flurm-net
+
+  # Compute Node 2
+  flurm-node-2:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.flurm-node
+    container_name: flurm-node-2
+    hostname: node002
+    depends_on:
+      flurm-server:
+        condition: service_healthy
+    environment:
+      - FLURM_CONTROLLER_HOST=flurm-server
+      - FLURM_CONTROLLER_PORT=6818
+      - FLURM_NODE_NAME=node002
+      - FLURM_NODE_CPUS=4
+      - FLURM_NODE_MEMORY=4096
+    volumes:
+      - shared-tmp:/tmp
+      - shared-data:/data
+    networks:
+      - flurm-net
+
+  # Compute Node 3
+  flurm-node-3:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.flurm-node
+    container_name: flurm-node-3
+    hostname: node003
+    depends_on:
+      flurm-server:
+        condition: service_healthy
+    environment:
+      - FLURM_CONTROLLER_HOST=flurm-server
+      - FLURM_CONTROLLER_PORT=6818
+      - FLURM_NODE_NAME=node003
+      - FLURM_NODE_CPUS=8
+      - FLURM_NODE_MEMORY=8192
+      - FLURM_NODE_GRES=gpu:1
+    volumes:
+      - shared-tmp:/tmp
+      - shared-data:/data
+    networks:
+      - flurm-net
+
+  # SLURM Client (sbatch, squeue, etc.)
+  slurm-client:
+    build:
+      context: .
+      dockerfile: Dockerfile.slurm-client-munge
+    container_name: flurm-client
+    hostname: submit-host
+    depends_on:
+      flurm-server:
+        condition: service_healthy
+    volumes:
+      - munge-key:/etc/munge
+      - shared-tmp:/tmp
+      - shared-data:/data
+      - ./jobs:/jobs:ro
+    networks:
+      - flurm-net
+    stdin_open: true
+    tty: true
+    working_dir: /jobs
+
+volumes:
+  munge-key:
+    name: flurm-munge-key
+  flurm-data:
+    name: flurm-controller-data
+  shared-tmp:
+    name: flurm-shared-tmp
+  shared-data:
+    name: flurm-shared-data
+
+networks:
+  flurm-net:
+    name: flurm-network
+    driver: bridge

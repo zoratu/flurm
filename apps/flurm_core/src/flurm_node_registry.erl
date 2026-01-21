@@ -24,6 +24,7 @@
 -export([
     start_link/0,
     register_node/2,
+    register_node_direct/1,
     unregister_node/1,
     lookup_node/1,
     list_nodes/0,
@@ -35,7 +36,9 @@
     update_entry/2,
     get_node_entry/1,
     count_by_state/0,
-    count_nodes/0
+    count_nodes/0,
+    allocate_resources/3,
+    release_resources/3
 ]).
 
 %% gen_server callbacks
@@ -82,6 +85,13 @@ start_link() ->
 -spec register_node(binary(), pid()) -> ok | {error, already_registered}.
 register_node(NodeName, Pid) when is_binary(NodeName), is_pid(Pid) ->
     gen_server:call(?SERVER, {register, NodeName, Pid}).
+
+%% @doc Register a node directly with a map of properties.
+%% Used by node acceptor when no flurm_node process exists (remote node daemons).
+%% NodeInfo must contain: hostname, cpus, memory_mb, state, partitions
+-spec register_node_direct(map()) -> ok | {error, already_registered}.
+register_node_direct(NodeInfo) when is_map(NodeInfo) ->
+    gen_server:call(?SERVER, {register_direct, NodeInfo}).
 
 %% @doc Unregister a node.
 -spec unregister_node(binary()) -> ok.
@@ -191,6 +201,44 @@ count_nodes() ->
 list_all_nodes() ->
     list_nodes().
 
+%% @doc Allocate resources on a node (for nodes registered with register_node_direct).
+%% Decrements cpus_avail and memory_avail in the node entry.
+-spec allocate_resources(binary(), pos_integer(), pos_integer()) -> ok | {error, term()}.
+allocate_resources(NodeName, Cpus, Memory) when is_binary(NodeName) ->
+    case ets:lookup(?NODES_BY_NAME, NodeName) of
+        [#node_entry{cpus_avail = CpusAvail, memory_avail = MemAvail} = Entry] ->
+            if
+                CpusAvail >= Cpus andalso MemAvail >= Memory ->
+                    NewEntry = Entry#node_entry{
+                        cpus_avail = CpusAvail - Cpus,
+                        memory_avail = MemAvail - Memory
+                    },
+                    ets:insert(?NODES_BY_NAME, NewEntry),
+                    ok;
+                true ->
+                    {error, insufficient_resources}
+            end;
+        [] ->
+            {error, not_found}
+    end.
+
+%% @doc Release resources on a node.
+%% Increments cpus_avail and memory_avail back in the node entry.
+-spec release_resources(binary(), pos_integer(), pos_integer()) -> ok | {error, term()}.
+release_resources(NodeName, Cpus, Memory) when is_binary(NodeName) ->
+    case ets:lookup(?NODES_BY_NAME, NodeName) of
+        [#node_entry{cpus_avail = CpusAvail, memory_avail = MemAvail,
+                     cpus_total = CpusTotal, memory_total = MemTotal} = Entry] ->
+            NewEntry = Entry#node_entry{
+                cpus_avail = min(CpusAvail + Cpus, CpusTotal),
+                memory_avail = min(MemAvail + Memory, MemTotal)
+            },
+            ets:insert(?NODES_BY_NAME, NewEntry),
+            ok;
+        [] ->
+            {error, not_found}
+    end.
+
 %%====================================================================
 %% gen_server callbacks
 %%====================================================================
@@ -267,6 +315,52 @@ handle_call({register, NodeName, Pid}, _From, State) ->
             NewMonitors = maps:put(MonRef, NodeName, State#state.monitors),
 
             {reply, ok, State#state{monitors = NewMonitors}}
+    end;
+
+%% Direct registration without a local pid (for remote node daemons)
+handle_call({register_direct, NodeInfo}, _From, State) ->
+    NodeName = maps:get(hostname, NodeInfo),
+    case ets:lookup(?NODES_BY_NAME, NodeName) of
+        [_] ->
+            {reply, {error, already_registered}, State};
+        [] ->
+            Cpus = maps:get(cpus, NodeInfo, 1),
+            MemoryMb = maps:get(memory_mb, NodeInfo, 1024),
+            NodeState = maps:get(state, NodeInfo, up),
+            Partitions = maps:get(partitions, NodeInfo, [<<"default">>]),
+
+            %% Create entry with available = total (node starts idle)
+            Entry = #node_entry{
+                name = NodeName,
+                pid = self(),  %% Use calling process as placeholder
+                hostname = NodeName,
+                state = NodeState,
+                partitions = Partitions,
+                cpus_total = Cpus,
+                cpus_avail = Cpus,
+                memory_total = MemoryMb,
+                memory_avail = MemoryMb,
+                gpus_total = 0,
+                gpus_avail = 0
+            },
+
+            %% Insert into primary table
+            ets:insert(?NODES_BY_NAME, Entry),
+
+            %% Insert into state index
+            ets:insert(?NODES_BY_STATE, {NodeState, NodeName, self()}),
+
+            %% Insert into partition indexes
+            lists:foreach(
+                fun(Partition) ->
+                    ets:insert(?NODES_BY_PARTITION, {Partition, NodeName, self()})
+                end,
+                Partitions
+            ),
+
+            lager:info("Node ~s registered directly (cpus=~p, mem=~p, state=~p)",
+                      [NodeName, Cpus, MemoryMb, NodeState]),
+            {reply, ok, State}
     end;
 
 handle_call({unregister, NodeName}, _From, State) ->

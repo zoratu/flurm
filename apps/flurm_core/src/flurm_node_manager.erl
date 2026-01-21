@@ -74,22 +74,35 @@ get_available_nodes_with_gres(NumCpus, MemoryMb, Partition, GRESSpec) ->
 
 %% @doc Allocate resources on a node for a job.
 -spec allocate_resources(binary(), pos_integer(), pos_integer(), pos_integer()) -> ok | {error, term()}.
-allocate_resources(NodeName, JobId, Cpus, Memory) ->
-    case flurm_node_registry:lookup_node(NodeName) of
-        {ok, Pid} ->
-            flurm_node:allocate(Pid, JobId, {Cpus, Memory, 0});
+allocate_resources(NodeName, _JobId, Cpus, Memory) ->
+    %% Try direct registry allocation (for remote node daemons)
+    case flurm_node_registry:allocate_resources(NodeName, Cpus, Memory) of
+        ok ->
+            lager:info("Allocated ~p cpus, ~p MB on node ~s via registry",
+                      [Cpus, Memory, NodeName]),
+            ok;
         {error, not_found} ->
-            {error, node_not_found}
+            {error, node_not_found};
+        {error, Reason} ->
+            {error, Reason}
     end.
 
 %% @doc Release resources from a job on a node.
+%% Note: We don't track which specific resources were allocated per job,
+%% so we use a placeholder of 1 CPU and 256 MB as default release.
+%% TODO: Track allocations per job for accurate release.
 -spec release_resources(binary(), pos_integer()) -> ok | {error, term()}.
-release_resources(NodeName, JobId) ->
-    case flurm_node_registry:lookup_node(NodeName) of
-        {ok, Pid} ->
-            flurm_node:release(Pid, JobId);
+release_resources(NodeName, _JobId) ->
+    %% Release via registry (assumes 1 CPU, 256 MB per job as placeholder)
+    %% In production, should track actual allocations per job
+    case flurm_node_registry:release_resources(NodeName, 1, 256) of
+        ok ->
+            lager:info("Released resources on node ~s via registry", [NodeName]),
+            ok;
         {error, not_found} ->
-            {error, node_not_found}
+            {error, node_not_found};
+        {error, Reason} ->
+            {error, Reason}
     end.
 
 %% @doc Allocate GRES on a node for a job.

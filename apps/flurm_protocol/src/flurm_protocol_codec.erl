@@ -821,18 +821,19 @@ decode_batch_job_request_scan(Binary) ->
     %% Extract time limit from #SBATCH directive in script if present
     TimeLimit = extract_time_limit(Script),
 
-    %% Extract node/task counts - first try protocol binary, then script directives
-    {ProtoNodes, ProtoCpus} = extract_resources_from_protocol(Binary),
+    %% Extract node/task counts from script SBATCH directives (most reliable)
     {ScriptNodes, ScriptTasks} = extract_resources(Script),
 
-    %% Use protocol values if set (not 0 or SLURM_NO_VAL), else script values
-    MinNodes = case ProtoNodes of
-        N when N > 0, N < 16#FFFFFFFE -> N;
-        _ -> ScriptNodes
-    end,
+    %% Also try to get from protocol binary (less reliable due to field position scanning)
+    {_ProtoNodes, ProtoCpus} = extract_resources_from_protocol(Binary),
+
+    %% Prefer script values - they are explicitly set by user and reliably parsed.
+    %% Protocol binary scanning can misidentify values (e.g., memory as node count).
+    %% Default to 1 node if not specified in either place.
+    MinNodes = max(1, ScriptNodes),
     MinCpus = case ProtoCpus of
-        C when C > 0, C < 16#FFFFFFFE -> C;
-        _ -> 1
+        C when C > 0, C < 16#FFFFFFFE, C =< 1000 -> C;
+        _ -> max(1, ScriptTasks)
     end,
     NumTasks = ScriptTasks,
 

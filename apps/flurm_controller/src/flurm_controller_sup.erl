@@ -216,6 +216,15 @@ init([]) ->
             type => worker,
             modules => [flurm_limits]
         },
+        %% Node Registry - tracks node processes (needed by backfill scheduler)
+        #{
+            id => flurm_node_registry,
+            start => {flurm_node_registry, start_link, []},
+            restart => permanent,
+            shutdown => 5000,
+            type => worker,
+            modules => [flurm_node_registry]
+        },
         %% Job Manager - handles job lifecycle
         #{
             id => flurm_job_manager,
