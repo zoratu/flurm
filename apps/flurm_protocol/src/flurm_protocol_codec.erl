@@ -812,6 +812,15 @@ decode_batch_job_request_scan(Binary) ->
     %% Find the script by looking for "#!/" shebang
     Script = find_script(Binary),
 
+    %% Debug: Log extracted script info
+    ScriptLen = byte_size(Script),
+    ScriptPreview = case ScriptLen > 80 of
+        true -> <<(binary:part(Script, 0, 80))/binary, "...">>;
+        false -> Script
+    end,
+    lager:info("Protocol decode: job=~s, script_size=~p, script_preview=~p",
+               [Name, ScriptLen, ScriptPreview]),
+
     %% Find working directory - look for path patterns
     WorkDir = find_work_dir(Binary),
 

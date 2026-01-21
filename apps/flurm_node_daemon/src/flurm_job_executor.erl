@@ -112,8 +112,15 @@ init(JobSpec) ->
     StdErr = maps:get(std_err, JobSpec, undefined),
     GPUs = maps:get(gpus, JobSpec, []),
 
+    %% Debug: Log script content details
+    ScriptLen = byte_size(Script),
+    ScriptPreview = case ScriptLen > 100 of
+        true -> <<(binary:part(Script, 0, 100))/binary, "...">>;
+        false -> Script
+    end,
     lager:info("Job executor ~p started for job ~p (CPUs: ~p, Memory: ~pMB, TimeLimit: ~p, GPUs: ~p, StdOut: ~p)",
                [self(), JobId, NumCpus, MemoryMB, TimeLimit, GPUs, StdOut]),
+    lager:info("Job ~p script: ~p bytes, content: ~p", [JobId, ScriptLen, ScriptPreview]),
 
     %% Start execution asynchronously
     self() ! setup_and_execute,
@@ -184,6 +191,9 @@ handle_info(setup_and_execute, #state{job_id = JobId} = State) ->
     %% Read initial energy consumption for accounting
     EnergyStart = read_current_energy(),
 
+    %% Ensure working directory exists, fall back to /tmp if not
+    WorkDir = ensure_working_dir(State#state.working_dir, JobId),
+
     %% Execute prolog script if configured
     PrologStatus = execute_prolog(JobId, EnvList),
     case PrologStatus of
@@ -195,7 +205,7 @@ handle_info(setup_and_execute, #state{job_id = JobId} = State) ->
         ok ->
             %% Execute the script using a port
             PortOpts = [
-                {cd, binary_to_list(State#state.working_dir)},
+                {cd, WorkDir},
                 {env, EnvList},
                 exit_status,
                 use_stdio,
@@ -378,9 +388,50 @@ terminate(Reason, #state{job_id = JobId} = State) ->
 
 create_script_file(JobId, Script) ->
     Filename = "/tmp/flurm_job_" ++ integer_to_list(JobId) ++ ".sh",
-    ok = file:write_file(Filename, Script),
+    WriteResult = file:write_file(Filename, Script),
+    lager:info("Job ~p script file: ~s, write_result: ~p, script_size: ~p bytes",
+               [JobId, Filename, WriteResult, byte_size(Script)]),
+    ok = WriteResult,
     ok = file:change_mode(Filename, 8#755),
+    %% Verify file was written
+    case file:read_file_info(Filename) of
+        {ok, FileInfo} ->
+            lager:info("Job ~p script file created: size=~p, mode=~.8B",
+                       [JobId, element(2, FileInfo), element(9, FileInfo)]);
+        {error, Err} ->
+            lager:error("Job ~p script file NOT created: ~p", [JobId, Err])
+    end,
     Filename.
+
+%% Ensure working directory exists, creating it if necessary
+%% Falls back to /tmp if directory cannot be created
+ensure_working_dir(WorkingDir, JobId) ->
+    Dir = binary_to_list(WorkingDir),
+    case filelib:is_dir(Dir) of
+        true ->
+            Dir;
+        false ->
+            %% Try to create the directory
+            case filelib:ensure_dir(Dir ++ "/") of
+                ok ->
+                    case file:make_dir(Dir) of
+                        ok ->
+                            lager:info("Job ~p: Created working directory ~s", [JobId, Dir]),
+                            Dir;
+                        {error, eexist} ->
+                            %% Race condition - directory was created
+                            Dir;
+                        {error, Reason} ->
+                            lager:warning("Job ~p: Cannot create working directory ~s: ~p, using /tmp",
+                                         [JobId, Dir, Reason]),
+                            "/tmp"
+                    end;
+                {error, Reason} ->
+                    lager:warning("Job ~p: Cannot create parent directories for ~s: ~p, using /tmp",
+                                 [JobId, Dir, Reason]),
+                    "/tmp"
+            end
+    end.
 
 build_environment(#state{job_id = JobId, environment = Env, num_cpus = Cpus,
                          memory_mb = Mem, gpus = GPUs}) ->
@@ -535,11 +586,13 @@ cleanup_job(State) ->
 
 %% Write job output to file(s)
 write_output_files(JobId, Output, StdOut, _StdErr) ->
-    OutPath = case StdOut of
+    RawPath = case StdOut of
         undefined -> "/tmp/slurm-" ++ integer_to_list(JobId) ++ ".out";
         <<>> -> "/tmp/slurm-" ++ integer_to_list(JobId) ++ ".out";
         Path when is_binary(Path) -> binary_to_list(Path)
     end,
+    %% Expand SLURM placeholders in the path
+    OutPath = expand_output_path(RawPath, JobId),
     %% Ensure parent directory exists
     case filelib:ensure_dir(OutPath) of
         ok ->
@@ -555,6 +608,24 @@ write_output_files(JobId, Output, StdOut, _StdErr) ->
             lager:error("Failed to create output directory for ~s: ~p",
                        [OutPath, DirReason])
     end.
+
+%% Expand SLURM-style placeholders in output paths
+%% %j - job ID
+%% %N - node name (short hostname)
+%% %n - node number in allocation (0 for single node)
+%% %t - task number (0 for batch jobs)
+%% %% - literal %
+expand_output_path(Path, JobId) ->
+    {ok, Hostname} = inet:gethostname(),
+    JobIdStr = integer_to_list(JobId),
+    %% Apply replacements
+    Path1 = re:replace(Path, "%j", JobIdStr, [global, {return, list}]),
+    Path2 = re:replace(Path1, "%J", JobIdStr, [global, {return, list}]),
+    Path3 = re:replace(Path2, "%N", Hostname, [global, {return, list}]),
+    Path4 = re:replace(Path3, "%n", "0", [global, {return, list}]),
+    Path5 = re:replace(Path4, "%t", "0", [global, {return, list}]),
+    Path6 = re:replace(Path5, "%%", "%", [global, {return, list}]),
+    Path6.
 
 report_completion(Status, ExitCode, State) ->
     %% Default to 0 energy for backward compatibility

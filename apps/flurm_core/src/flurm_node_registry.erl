@@ -245,6 +245,7 @@ release_resources(NodeName, Cpus, Memory) when is_binary(NodeName) ->
 
 %% @private
 init([]) ->
+    lager:info("[node_registry] Starting Node Registry..."),
     %% Create ETS tables
     %% Primary table: set indexed by node name
     ets:new(?NODES_BY_NAME, [
@@ -268,6 +269,7 @@ init([]) ->
         public,
         {read_concurrency, true}
     ]),
+    lager:info("[node_registry] Node Registry started, ETS tables created"),
     {ok, #state{}}.
 
 %% @private
@@ -321,8 +323,31 @@ handle_call({register, NodeName, Pid}, _From, State) ->
 handle_call({register_direct, NodeInfo}, _From, State) ->
     NodeName = maps:get(hostname, NodeInfo),
     case ets:lookup(?NODES_BY_NAME, NodeName) of
-        [_] ->
-            {reply, {error, already_registered}, State};
+        [ExistingEntry] ->
+            %% Node already registered - update state to 'up' and reset resources
+            %% This handles node reconnection after disconnect/restart
+            Cpus = maps:get(cpus, NodeInfo, ExistingEntry#node_entry.cpus_total),
+            MemoryMb = maps:get(memory_mb, NodeInfo, ExistingEntry#node_entry.memory_total),
+            NewState = maps:get(state, NodeInfo, up),
+            OldState = ExistingEntry#node_entry.state,
+
+            %% Update entry with fresh state and reset available resources
+            UpdatedEntry = ExistingEntry#node_entry{
+                state = NewState,
+                cpus_total = Cpus,
+                cpus_avail = Cpus,
+                memory_total = MemoryMb,
+                memory_avail = MemoryMb
+            },
+            ets:insert(?NODES_BY_NAME, UpdatedEntry),
+
+            %% Update state index
+            ets:delete_object(?NODES_BY_STATE, {OldState, NodeName, ExistingEntry#node_entry.pid}),
+            ets:insert(?NODES_BY_STATE, {NewState, NodeName, self()}),
+
+            lager:info("Node ~s re-registered (state: ~p -> ~p, cpus=~p, mem=~p)",
+                      [NodeName, OldState, NewState, Cpus, MemoryMb]),
+            {reply, ok, State};
         [] ->
             Cpus = maps:get(cpus, NodeInfo, 1),
             MemoryMb = maps:get(memory_mb, NodeInfo, 1024),

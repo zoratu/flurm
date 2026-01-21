@@ -89,6 +89,15 @@ init([]) ->
 
 handle_call({dispatch_job, JobId, JobInfo}, _From, #state{dispatched_jobs = Jobs} = State) ->
     AllocatedNodes = maps:get(allocated_nodes, JobInfo, []),
+    %% Debug: Log script content being dispatched
+    Script = maps:get(script, JobInfo, <<>>),
+    ScriptLen = byte_size(Script),
+    ScriptPreview = case ScriptLen > 80 of
+        true -> <<(binary:part(Script, 0, 80))/binary, "...">>;
+        false -> Script
+    end,
+    log(info, "Dispatching job ~p: script_size=~p, script_preview=~p",
+        [JobId, ScriptLen, ScriptPreview]),
     case AllocatedNodes of
         [] ->
             log(warning, "No nodes allocated for job ~p", [JobId]),

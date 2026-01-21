@@ -1,5 +1,8 @@
 services:
   flurm-server:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.flurm-server
     image: flurm-server:latest
     ports:
       - "6817:6817"
