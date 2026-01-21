@@ -196,15 +196,34 @@ handle_message(MessageBin, #{socket := Socket, transport := Transport,
                     send_response(Socket, Transport, ResponseType, ResponseBody),
                     {ok, State#{request_count => Count + 1}};
                 {ok, ResponseType, ResponseBody, CallbackInfo} ->
-                    %% Handler returned callback info - try connecting to callback BEFORE
-                    %% sending response (srun's callback listener should be open now)
-                    CallbackResult = register_srun_callback(Socket, Transport, CallbackInfo),
-                    lager:info("Callback registration result: ~p", [CallbackResult]),
-                    %% Send the allocation response
+                    %% Handler returned callback info for srun allocation
+                    %% IMPORTANT: Connect to callback BEFORE sending response
+                    %% srun may close its listener after receiving the allocation response
+                    JobId = maps:get(job_id, CallbackInfo, 0),
+                    Port = maps:get(port, CallbackInfo, 0),
+                    lager:info("srun allocation for job ~p, callback port ~p", [JobId, Port]),
+
+                    %% Try callback connection FIRST (before response)
+                    CallbackResult = case Port of
+                        P when P > 0 ->
+                            %% Get client IP from socket
+                            case inet:peername(Socket) of
+                                {ok, {IpAddr, _}} ->
+                                    Host = format_ip(IpAddr),
+                                    lager:info("Attempting callback connection to ~s:~p BEFORE response", [Host, P]),
+                                    try_callback_connection(Host, P, JobId);
+                                _ ->
+                                    lager:warning("Could not get peer address for callback"),
+                                    {error, no_peer_address}
+                            end;
+                        _ ->
+                            lager:warning("No callback port specified for job ~p", [JobId]),
+                            {error, no_port}
+                    end,
+                    lager:info("Callback result: ~p, now sending allocation response", [CallbackResult]),
+
+                    %% Send the allocation response after callback attempt
                     send_response(Socket, Transport, ResponseType, ResponseBody),
-                    %% Note: If callback connection fails in Docker, srun will time out.
-                    %% This is a known limitation - srun requires callback mechanism.
-                    %% Use sbatch for batch jobs, or configure Docker networking properly.
                     {ok, State#{request_count => Count + 1}};
                 {error, Reason} ->
                     %% Send error response
@@ -312,47 +331,72 @@ calculate_duration(EndTime, StartTime) ->
 -endif.
 
 %%====================================================================
-%% srun Callback Registration
-%%====================================================================
-
-%% @doc Register a callback for srun job updates.
-%% Gets the client's IP from the socket and registers with the callback manager.
-%% Called BEFORE sending the allocation response to ensure callback is ready.
--spec register_srun_callback(inet:socket(), module(), map()) -> ok | {error, term()}.
-register_srun_callback(Socket, _Transport, CallbackInfo) ->
-    JobId = maps:get(job_id, CallbackInfo, 0),
-    Port = maps:get(port, CallbackInfo, 0),
-    SrunPid = maps:get(srun_pid, CallbackInfo, 0),
-
-    %% Only register if we have a valid callback port
-    case Port of
-        P when P > 0 ->
-            %% Get the client's IP address from the socket
-            case inet:peername(Socket) of
-                {ok, {IpAddr, _ClientPort}} ->
-                    %% Convert IP tuple to binary string
-                    Host = case IpAddr of
-                        {A, B, C, D} ->
-                            list_to_binary(io_lib:format("~p.~p.~p.~p", [A, B, C, D]));
-                        _ ->
-                            <<"127.0.0.1">>
-                    end,
-                    lager:info("Registering srun callback for job ~p: ~s:~p",
-                               [JobId, Host, Port]),
-                    %% Register with the callback manager (synchronous - will connect and send job ready)
-                    flurm_srun_callback:register_callback(JobId, Host, Port, SrunPid);
-                {error, Reason} ->
-                    lager:warning("Failed to get peer address for srun callback: ~p", [Reason]),
-                    {error, Reason}
-            end;
-        _ ->
-            lager:debug("No callback port specified for job ~p", [JobId]),
-            ok
-    end.
-
-%%====================================================================
 %% Connection Management
 %%====================================================================
+
+%% @doc Format an IP address tuple as a string.
+-spec format_ip(inet:ip_address()) -> string().
+format_ip({A, B, C, D}) ->
+    lists:flatten(io_lib:format("~p.~p.~p.~p", [A, B, C, D]));
+format_ip({A, B, C, D, E, F, G, H}) ->
+    lists:flatten(io_lib:format("~.16B:~.16B:~.16B:~.16B:~.16B:~.16B:~.16B:~.16B",
+                                [A, B, C, D, E, F, G, H])).
+
+%% @doc Try to connect to srun's callback port and send job ready message.
+%% This is attempted after sending the allocation response.
+%% Uses retry logic since srun may take time to be ready for callback.
+-spec try_callback_connection(string(), non_neg_integer(), non_neg_integer()) -> ok | {error, term()}.
+try_callback_connection(Host, Port, JobId) ->
+    try_callback_connection(Host, Port, JobId, 5).  %% 5 retries
+
+try_callback_connection(_Host, _Port, _JobId, 0) ->
+    lager:warning("Callback connection failed after all retries"),
+    {error, max_retries};
+try_callback_connection(Host, Port, JobId, Retries) ->
+    lager:info("Attempting callback to ~s:~p for job ~p (retries left: ~p)", [Host, Port, JobId, Retries]),
+    Options = [binary, {packet, raw}, {active, false}, {nodelay, true}],
+    case gen_tcp:connect(Host, Port, Options, 1000) of
+        {error, econnrefused} when Retries > 1 ->
+            lager:debug("Connection refused, retrying in 200ms"),
+            timer:sleep(200),
+            try_callback_connection(Host, Port, JobId, Retries - 1);
+        {ok, Socket} ->
+            lager:info("Connected to srun callback at ~s:~p", [Host, Port]),
+            %% Send SRUN_PING (7001) to acknowledge the connection
+            Ping = #srun_ping{job_id = JobId, step_id = 0},
+            case flurm_protocol_codec:encode_response(?SRUN_PING, Ping) of
+                {ok, MessageBin} ->
+                    case gen_tcp:send(Socket, MessageBin) of
+                        ok ->
+                            lager:info("Sent SRUN_PING to callback for job ~p", [JobId]),
+                            %% Wait for srun's response and keep connection open
+                            case gen_tcp:recv(Socket, 0, 2000) of
+                                {ok, RespData} ->
+                                    lager:info("Got callback response: ~p bytes", [byte_size(RespData)]);
+                                {error, timeout} ->
+                                    lager:debug("No immediate callback response (ok)");
+                                {error, RecvErr} ->
+                                    lager:warning("Callback recv error: ~p", [RecvErr])
+                            end,
+                            %% Close the callback socket after processing
+                            %% srun should have received our response by now
+                            gen_tcp:close(Socket),
+                            ok;
+                        {error, Reason} ->
+                            lager:warning("Failed to send to callback: ~p", [Reason]),
+                            gen_tcp:close(Socket),
+                            {error, Reason}
+                    end;
+                {error, Reason} ->
+                    lager:warning("Failed to encode callback message: ~p", [Reason]),
+                    gen_tcp:close(Socket),
+                    {error, Reason}
+            end;
+        {error, Reason} ->
+            lager:warning("Failed to connect to srun callback at ~s:~p: ~p",
+                          [Host, Port, Reason]),
+            {error, Reason}
+    end.
 
 %% @doc Close the connection gracefully.
 -spec close_connection(map()) -> ok.

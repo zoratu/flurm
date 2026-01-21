@@ -869,6 +869,19 @@ decode_job_info_request(Binary) ->
 %% Includes callback port where srun listens for job updates
 decode_resource_allocation_request(Binary) ->
     try
+        %% Log first 200 bytes for debugging callback port extraction
+        DumpSize = min(200, byte_size(Binary)),
+        <<DumpBytes:DumpSize/binary, _/binary>> = Binary,
+        HexDump = list_to_binary([[io_lib:format("~2.16.0B", [B]) || B <- binary_to_list(DumpBytes)]]),
+        lager:info("Resource allocation request first ~p bytes: ~s", [DumpSize, HexDump]),
+
+        %% Search for ALL uint16 values in ephemeral port range (30000-65000)
+        PortCandidates = find_all_port_candidates(Binary, 0, []),
+        %% Filter to likely callback ports (high ephemeral range used by srun)
+        HighPorts = [{O, P} || {O, P} <- PortCandidates, P >= 40000, P =< 65000],
+        lager:info("High port candidates (40000-65000): ~p", [HighPorts]),
+        lager:info("Message body size: ~p bytes", [byte_size(Binary)]),
+
         %% Resource allocation is similar to batch job in format
         %% Reuse similar scanning approach
         Name = find_job_name(Binary),
@@ -919,55 +932,166 @@ decode_resource_allocation_request(Binary) ->
 
 %% Extract srun callback information from the request binary
 %% The callback port is where srun listens for job state updates
+%%
+%% SLURM job_desc_msg_t packing order (from slurm_pack_job_desc_msg):
+%% Protocol version 0x2600 (SLURM 23.11):
+%% 1. site_factor (uint32) - SLURM 21.08+
+%% 2. account (packstr - uint32 len + string)
+%% 3. acctg_freq (packstr)
+%% 4. admin_comment (packstr)
+%% 5. alloc_node (packstr)
+%% 6. alloc_resp_port (uint16) <-- THIS IS WHAT WE WANT
+%% 7. alloc_sid (uint32)
+%% ...
+%%
+%% Note: Looking at actual traffic, there appear to be 5 packstrs before the port,
+%% not 4 as documented. This may be due to version differences.
 extract_srun_callback_info(Binary) ->
-    %% Scan for port-like values (1024-65535 range, big-endian uint16)
-    %% In SLURM protocol, ports appear early in the message
-    %% Look for patterns that match typical ephemeral ports (32768-60999)
-    Ports = find_port_values(Binary, 0, []),
+    try
+        %% Skip site_factor (4 bytes)
+        <<SiteFactor:32/big, Rest1/binary>> = Binary,
+        lager:debug("Callback info: site_factor=~p (~.16B)", [SiteFactor, SiteFactor]),
 
-    %% The first valid ephemeral port is likely the callback port
-    {AllocRespPort, OtherPort} = case Ports of
-        [P1, P2 | _] when P1 >= 1024, P1 =< 65535, P2 >= 1024, P2 =< 65535 ->
-            {P1, P2};
-        [P1 | _] when P1 >= 1024, P1 =< 65535 ->
-            {P1, 0};
+        %% Skip packstrs until we find a non-packstr pattern
+        %% In SLURM 23.11, there are 5 packstrs before the port:
+        %% account, acctg_freq, admin_comment, alloc_node, + one more
+        {Rest2, Str1} = skip_packstr(Rest1),
+        {Rest3, Str2} = skip_packstr(Rest2),
+        {Rest4, Str3} = skip_packstr(Rest3),
+        {Rest5, Str4} = skip_packstr(Rest4),
+        {Rest6, Str5} = skip_packstr(Rest5),
+
+        lager:debug("Skipped 5 packstrs: ~p, ~p, ~p, ~p, ~p",
+                    [Str1, Str2, Str3, Str4, Str5]),
+
+        %% Now we should be at alloc_resp_port (uint16) and alloc_sid (uint32)
+        <<AllocRespPort:16/big, AllocSid:32/big, _/binary>> = Rest6,
+
+        lager:info("Parsed srun callback: port=~p (0x~.16B), sid=~p",
+                   [AllocRespPort, AllocRespPort, AllocSid]),
+
+        %% Check for NO_VAL16 (0xFFFE = 65534) which means no callback port
+        ActualPort = case AllocRespPort of
+            16#FFFE -> 0;  % NO_VAL16 means no port
+            16#FFFF -> 0;  % Also treat 0xFFFF as no port
+            P when P =< 1024 -> 0;  % Invalid low port
+            P -> P
+        end,
+
+        {ActualPort, 0, AllocSid}
+    catch
+        _:Reason ->
+            lager:warning("Failed to parse srun callback info: ~p, trying 4 packstrs",
+                          [Reason]),
+            %% Try with 4 packstrs (older format)
+            try_parse_4_packstrs(Binary)
+    end.
+
+%% Try to find callback port using direct offset reading
+%% Based on empirical observation, the alloc_resp_port field is at offset 341
+%% in the job_desc_msg for SLURM 23.11/24.11 protocol version 0x2600
+try_parse_4_packstrs(Binary) when byte_size(Binary) >= 348 ->
+    %% Scan for callback port at common offsets
+    %% The exact offset varies based on variable-length fields before it
+    Candidates = scan_for_callback_port_at_offsets(Binary, [340, 341, 342, 343, 344, 345, 346, 347, 348, 349, 350]),
+    lager:info("Port candidates: ~p", [Candidates]),
+    %% Preferred offsets 347-348 are most reliable for the callback port
+    %% Try these offsets FIRST regardless of port value
+    PreferredOffsets = [347, 348],
+    case find_port_at_offsets(Candidates, PreferredOffsets) of
+        {ok, Offset, Port} ->
+            lager:info("Found callback port at preferred offset ~p: ~p", [Offset, Port]),
+            {Port, 0, 0};
+        not_found ->
+            %% srun uses ephemeral ports typically in 32768-60999 range
+            %% Fall back to ports in this range at any offset
+            EphemeralCandidates = [{O, P} || {O, P} <- Candidates, P >= 32768, P =< 60999],
+            lager:info("Ephemeral port candidates (32768-60999): ~p", [EphemeralCandidates]),
+            case EphemeralCandidates of
+                [{Offset2, Port2} | _] ->
+                    lager:info("Found callback port at offset ~p: ~p (ephemeral fallback)", [Offset2, Port2]),
+                    {Port2, 0, 0};
+                [] ->
+                    %% Fall back to first candidate
+                    case Candidates of
+                        [{Offset3, Port3} | _] ->
+                            lager:info("Found callback port at offset ~p: ~p (last resort)", [Offset3, Port3]),
+                            {Port3, 0, 0};
+                        [] ->
+                            lager:warning("No callback port found in known offsets"),
+                            scan_for_callback_port(Binary)
+                    end
+            end
+    end;
+try_parse_4_packstrs(Binary) ->
+    %% Message too short, try scanning
+    lager:warning("Message too short (~p bytes), trying scan", [byte_size(Binary)]),
+    scan_for_callback_port(Binary).
+
+%% Find first candidate at one of the preferred offsets
+find_port_at_offsets(_Candidates, []) ->
+    not_found;
+find_port_at_offsets(Candidates, [Offset | Rest]) ->
+    case lists:keyfind(Offset, 1, Candidates) of
+        {Offset, Port} -> {ok, Offset, Port};
+        false -> find_port_at_offsets(Candidates, Rest)
+    end.
+
+%% Check specific offsets for callback port
+scan_for_callback_port_at_offsets(Binary, Offsets) ->
+    [{O, P} || O <- Offsets,
+               byte_size(Binary) > O + 2,
+               begin
+                   <<_:O/binary, P:16/big, _/binary>> = Binary,
+                   P >= 30000 andalso P =< 60000
+               end].
+
+%% Scan for callback port as fallback
+scan_for_callback_port(Binary) ->
+    Candidates = find_all_port_candidates(Binary, 0, []),
+    %% Filter to likely callback ports (ephemeral range, offset 300-400)
+    EphemeralPorts = [{O, P} || {O, P} <- Candidates,
+                                P >= 32000, P =< 60000,
+                                O >= 300, O =< 400],
+    case EphemeralPorts of
+        [{_, Port} | _] ->
+            lager:info("Scan found callback port: ~p", [Port]),
+            {Port, 0, 0};
+        [] ->
+            lager:warning("No callback port found"),
+            {0, 0, 0}
+    end.
+
+%% Skip a length-prefixed string (packstr format: uint32 length + string bytes)
+%% Returns {RemainingBinary, StringValue}
+skip_packstr(<<16#FFFFFFFF:32/big, Rest/binary>>) ->
+    %% NO_VAL / null string
+    {Rest, <<>>};
+skip_packstr(<<Len:32/big, Rest/binary>>) when Len < 16#FFFFFFFE ->
+    case Rest of
+        <<Str:Len/binary, Remaining/binary>> ->
+            {Remaining, Str};
         _ ->
-            {0, 0}
-    end,
+            %% Not enough data
+            throw({incomplete_packstr, Len, byte_size(Rest)})
+    end;
+skip_packstr(<<Len:32/big, _/binary>>) ->
+    %% Invalid length (NO_VAL or similar)
+    throw({invalid_packstr_len, Len});
+skip_packstr(_) ->
+    throw(insufficient_data).
 
-    %% Try to find srun PID (typically a 32-bit value in process ID range)
-    SrunPid = find_srun_pid(Binary),
-
-    {AllocRespPort, OtherPort, SrunPid}.
-
-%% Find port values in the binary by scanning for uint16 in valid port range
-find_port_values(Binary, Offset, Acc) when Offset + 2 =< byte_size(Binary) ->
+%% Find all potential port values in binary for debugging
+%% Returns list of {Offset, Port} tuples for ports in typical ephemeral range
+find_all_port_candidates(Binary, Offset, Acc) when Offset + 2 =< byte_size(Binary) ->
     <<_:Offset/binary, Port:16/big, _/binary>> = Binary,
     NewAcc = case Port of
-        P when P >= 30000, P =< 65000 -> [P | Acc];  % Ephemeral port range
+        P when P >= 30000, P =< 60000 -> [{Offset, P} | Acc];  % Ephemeral port range
         _ -> Acc
     end,
-    find_port_values(Binary, Offset + 1, NewAcc);
-find_port_values(_Binary, _Offset, Acc) ->
+    find_all_port_candidates(Binary, Offset + 1, NewAcc);
+find_all_port_candidates(_Binary, _Offset, Acc) ->
     lists:reverse(Acc).
-
-%% Find srun PID from the binary
-find_srun_pid(Binary) when byte_size(Binary) >= 8 ->
-    %% PID is typically a 32-bit value, look for values in typical PID range
-    find_pid_value(Binary, 0);
-find_srun_pid(_) ->
-    0.
-
-find_pid_value(Binary, Offset) when Offset + 4 =< byte_size(Binary) ->
-    <<_:Offset/binary, Val:32/big, _/binary>> = Binary,
-    case Val of
-        P when P >= 1000, P =< 4194304 ->  % Typical PID range
-            P;
-        _ ->
-            find_pid_value(Binary, Offset + 1)
-    end;
-find_pid_value(_, _) ->
-    0.
 
 %% Decode REQUEST_SUBMIT_BATCH_JOB (4003) - Pattern-based version
 %% SLURM batch job format has many optional fields with SLURM_NO_VAL (0xFFFFFFFE)

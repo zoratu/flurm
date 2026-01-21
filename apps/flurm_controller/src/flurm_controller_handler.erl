@@ -172,6 +172,7 @@ handle(#slurm_header{msg_type = ?REQUEST_RESOURCE_ALLOCATION},
             end,
             lager:info("srun job ~p assigned to node ~s", [JobId, NodeName]),
             %% Return successful allocation with SLURM 22.05 format
+            lager:info("Returning allocation for job_id=~p, node=~s, error_code=0", [JobId, NodeName]),
             Response = #resource_allocation_response{
                 job_id = JobId,
                 node_list = NodeName,
@@ -219,11 +220,14 @@ handle(#slurm_header{msg_type = ?REQUEST_RESOURCE_ALLOCATION}, _Body) ->
 %% srun sends this to query allocation info after getting RESPONSE_RESOURCE_ALLOCATION
 handle(#slurm_header{msg_type = ?REQUEST_JOB_ALLOCATION_INFO}, Body) ->
     %% Body should contain job_id
-    JobId = case Body of
-        <<JId:32/big, _Rest/binary>> -> JId;
-        _ -> 0
+    {JobId, BodyHex} = case Body of
+        <<JId:32/big, _Rest/binary>> ->
+            Hex = [io_lib:format("~2.16.0B", [B]) || B <- binary_to_list(Body)],
+            {JId, iolist_to_binary(Hex)};
+        _ ->
+            {0, <<"invalid">>}
     end,
-    lager:info("Handling job allocation info request for job_id=~p", [JobId]),
+    lager:info("Handling job allocation info request for job_id=~p, body_hex=~s", [JobId, BodyHex]),
     %% Get actual node for the allocation
     Nodes = flurm_node_manager_server:list_nodes(),
     NodeName = case Nodes of
@@ -247,11 +251,20 @@ handle(#slurm_header{msg_type = ?REQUEST_JOB_ALLOCATION_INFO}, Body) ->
         cpus_per_node = [],
         num_cpu_groups = 0
     },
+    lager:info("Returning allocation info for job_id=~p, node=~s", [JobId, NodeName]),
     {ok, ?RESPONSE_JOB_ALLOCATION_INFO, Response};
 
-%% REQUEST_KILL_TIMELIMIT (5017) - srun sends this periodically
-handle(#slurm_header{msg_type = ?REQUEST_KILL_TIMELIMIT}, _Body) ->
-    lager:debug("Handling kill timelimit request"),
+%% REQUEST_KILL_TIMELIMIT (5017) - srun sends this to cancel jobs
+handle(#slurm_header{msg_type = ?REQUEST_KILL_TIMELIMIT}, Body) ->
+    BodyHex = iolist_to_binary([io_lib:format("~2.16.0B", [B]) || B <- binary_to_list(Body)]),
+    lager:info("REQUEST_KILL_TIMELIMIT (5017): body_len=~p, hex=~s", [byte_size(Body), BodyHex]),
+    %% Try to decode: typically job_id:32, step_id:32 or similar
+    {JobId, StepId} = case Body of
+        <<JId:32/big, SId:32/big, _/binary>> -> {JId, SId};
+        <<JId2:32/big, _/binary>> -> {JId2, 0};
+        _ -> {0, 0}
+    end,
+    lager:info("Kill timelimit request: job_id=~p, step_id=~p", [JobId, StepId]),
     Response = #slurm_rc_response{return_code = 0},
     {ok, ?RESPONSE_SLURM_RC, Response};
 
