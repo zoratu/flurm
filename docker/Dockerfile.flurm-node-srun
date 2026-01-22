@@ -1,0 +1,61 @@
+FROM rockylinux:9
+
+# Install Erlang/OTP, build tools, and srun for callback support
+RUN dnf install -y epel-release && \
+    dnf install -y erlang git make procps-ng hostname iproute && \
+    dnf clean all
+
+# Install rebar3 manually
+RUN curl -o /usr/local/bin/rebar3 https://s3.amazonaws.com/rebar3/rebar3 && \
+    chmod +x /usr/local/bin/rebar3
+
+# Copy FLURM source
+WORKDIR /flurm
+COPY . /flurm/
+
+# Build FLURM
+RUN rm -rf _build && rebar3 compile
+
+# Create entrypoint that registers with controller and listens for tasks
+COPY <<'ENTRYPOINT' /entrypoint.sh
+#!/bin/bash
+set -e
+
+CONTROLLER_HOST=${FLURM_CONTROLLER_HOST:-flurm-server}
+CONTROLLER_PORT=${FLURM_CONTROLLER_PORT:-6818}
+NODE_NAME=${FLURM_NODE_NAME:-$(hostname)}
+
+echo "======================================"
+echo "FLURM Node Daemon Starting"
+echo "Controller: $CONTROLLER_HOST:$CONTROLLER_PORT"
+echo "Node Name: $NODE_NAME"
+echo "======================================"
+
+# Get our IP address for callback
+MY_IP=$(hostname -I | awk '{print $1}')
+echo "Node IP: $MY_IP"
+
+# Wait for controller to be available
+echo "Waiting for controller..."
+for i in {1..30}; do
+    if nc -z $CONTROLLER_HOST $CONTROLLER_PORT 2>/dev/null; then
+        echo "Controller is available"
+        break
+    fi
+    echo "Waiting... ($i/30)"
+    sleep 2
+done
+
+cd /flurm
+
+# Start node daemon using the escript
+echo "Starting FLURM node daemon..."
+exec escript escripts/start_node.erl $CONTROLLER_HOST
+ENTRYPOINT
+
+RUN chmod +x /entrypoint.sh
+
+# Port for srun callbacks
+EXPOSE 6818
+
+CMD ["/entrypoint.sh"]

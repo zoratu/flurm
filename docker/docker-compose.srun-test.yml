@@ -1,0 +1,84 @@
+# Docker Compose for srun testing
+# Tests the full job execution flow: client -> controller -> node daemon
+#
+# Usage:
+#   docker-compose -f docker-compose.srun-test.yml up --build
+#   docker exec -it docker-slurm-client-1 bash
+#   srun hostname  # Should work end-to-end
+#
+services:
+  # FLURM Controller - handles slurmctld protocol (port 6817)
+  flurm-server:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.flurm-server
+    image: flurm-server:srun-test
+    hostname: flurm-server
+    ports:
+      - "6817:6817"
+      - "6818:6818"
+      - "9090:9090"
+    volumes:
+      - munge-key:/etc/munge
+      - flurm-data:/var/lib/flurm
+    networks:
+      flurm-net:
+        aliases:
+          - flurm-server
+          - slurmctld
+    healthcheck:
+      test: ["CMD", "bash", "-c", "echo > /dev/tcp/localhost/6817"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+
+  # FLURM Node Daemon - compute node that runs jobs
+  flurm-node1:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.flurm-node-srun
+    image: flurm-node:srun-test
+    hostname: flurm-node1
+    depends_on:
+      flurm-server:
+        condition: service_healthy
+    environment:
+      - FLURM_CONTROLLER_HOST=flurm-server
+      - FLURM_CONTROLLER_PORT=6818
+      - FLURM_NODE_NAME=flurm-node1
+    networks:
+      flurm-net:
+        aliases:
+          - flurm-node1
+          - node001
+    cap_add:
+      - SYS_PTRACE  # For process tracking
+
+  # SLURM Client with MUNGE for running srun
+  slurm-client:
+    build:
+      context: .
+      dockerfile: Dockerfile.slurm-client-srun
+    hostname: slurm-client
+    depends_on:
+      flurm-server:
+        condition: service_healthy
+      flurm-node1:
+        condition: service_started
+    volumes:
+      - munge-key:/etc/munge
+    networks:
+      flurm-net:
+        aliases:
+          - slurm-client
+    stdin_open: true
+    tty: true
+
+volumes:
+  munge-key:
+  flurm-data:
+
+networks:
+  flurm-net:
+    driver: bridge

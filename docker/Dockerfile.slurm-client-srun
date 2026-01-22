@@ -1,0 +1,117 @@
+FROM rockylinux:9
+
+# Install SLURM client tools with MUNGE
+RUN dnf install -y epel-release && \
+    dnf install -y slurm munge nmap-ncat hostname iproute && \
+    dnf clean all
+
+# Create slurm.conf pointing to flurm-server with node definitions
+RUN mkdir -p /etc/slurm && \
+    cat > /etc/slurm/slurm.conf << 'SLURMCONF'
+# FLURM Cluster Configuration for srun testing
+ClusterName=flurm
+SlurmctldHost=flurm-server
+SlurmctldPort=6817
+SlurmdPort=6818
+
+# Authentication
+AuthType=auth/munge
+
+# Process tracking
+ProctrackType=proctrack/linuxproc
+TaskPlugin=task/none
+
+# Scheduling
+SchedulerType=sched/builtin
+SelectType=select/cons_tres
+SelectTypeParameters=CR_Core
+
+# Paths
+SlurmctldPidFile=/var/run/slurmctld.pid
+SlurmdPidFile=/var/run/slurmd.pid
+SlurmdSpoolDir=/var/spool/slurmd
+StateSaveLocation=/var/spool/slurmctld
+SlurmUser=root
+
+# Miscellaneous
+MpiDefault=none
+ReturnToService=1
+SwitchType=switch/none
+
+# Debug
+SlurmctldDebug=info
+SlurmdDebug=info
+
+# Define compute nodes
+NodeName=flurm-node1 CPUs=4 RealMemory=4096 State=UNKNOWN
+
+# Partition
+PartitionName=default Nodes=flurm-node1 Default=YES MaxTime=INFINITE State=UP
+SLURMCONF
+
+# Create munge directories
+RUN mkdir -p /var/run/munge /var/log/munge /var/spool/slurmd /var/spool/slurmctld && \
+    chown -R munge:munge /var/run/munge /var/log/munge
+
+# Create test scripts
+RUN mkdir -p /jobs && \
+    echo '#!/bin/bash' > /jobs/test_srun.sh && \
+    echo 'echo "Running srun test..."' >> /jobs/test_srun.sh && \
+    echo 'srun hostname' >> /jobs/test_srun.sh && \
+    echo 'echo "srun test completed"' >> /jobs/test_srun.sh && \
+    chmod +x /jobs/test_srun.sh
+
+# Create entrypoint
+COPY <<'ENTRYPOINT' /entrypoint.sh
+#!/bin/bash
+set -e
+
+# Wait for munge key to exist (from shared volume)
+echo "Waiting for MUNGE key..."
+for i in {1..30}; do
+    if [ -f /etc/munge/munge.key ]; then
+        break
+    fi
+    sleep 1
+done
+
+# Fix munge permissions - need to be root to do this
+chown -R munge:munge /etc/munge 2>/dev/null || true
+chmod 700 /etc/munge 2>/dev/null || true
+chmod 400 /etc/munge/munge.key 2>/dev/null || true
+
+# Start munge daemon
+echo "Starting MUNGE daemon..."
+runuser -u munge -- /usr/sbin/munged || {
+    echo "Failed to start munged, trying without auth..."
+}
+sleep 1
+
+# Verify munge works
+if munge -n </dev/null >/dev/null 2>&1; then
+    echo "MUNGE is working"
+else
+    echo "WARNING: MUNGE test failed"
+fi
+
+# Show configuration
+echo ""
+echo "SLURM Client Ready"
+echo "=================="
+echo "Controller: flurm-server:6817"
+echo "Node: flurm-node1"
+echo ""
+echo "Test commands:"
+echo "  sbatch --wrap='hostname'  # Submit batch job"
+echo "  squeue                     # List jobs"
+echo "  srun hostname              # Run interactive job"
+echo ""
+
+exec "$@"
+ENTRYPOINT
+
+RUN chmod +x /entrypoint.sh
+
+WORKDIR /jobs
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["/bin/bash"]
