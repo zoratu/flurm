@@ -244,22 +244,35 @@ handle_message(MessageBin, #{socket := Socket, transport := Transport,
     end.
 
 %% @doc Send a response message back to the client.
-%% All responses use encode_response with MUNGE auth section.
+%% Responses include proper MUNGE auth section.
+%% SLURM clients expect auth section in all messages.
 -spec send_response(inet:socket(), module(), non_neg_integer(), term()) -> ok | {error, term()}.
 send_response(Socket, Transport, MsgType, Body) ->
     case flurm_protocol_codec:encode_response(MsgType, Body) of
         {ok, ResponseBin} ->
-            %% Log hex of first 24 bytes for debugging
+            %% Log hex of first 40 bytes for debugging (to see auth section start)
             HexPrefix = case byte_size(ResponseBin) of
-                N when N >= 24 ->
-                    <<First24:24/binary, _/binary>> = ResponseBin,
-                    binary_to_hex(First24);
+                N when N >= 40 ->
+                    <<First40:40/binary, _/binary>> = ResponseBin,
+                    binary_to_hex(First40);
                 _ ->
                     binary_to_hex(ResponseBin)
             end,
-            lager:info("Sending response type=~p (~s) size=~p hex=~s",
+            lager:info("Sending response type=~p (~s) size=~p hex40=~s",
                        [MsgType, flurm_protocol_codec:message_type_name(MsgType),
                         byte_size(ResponseBin), HexPrefix]),
+            %% Log individual byte breakdown for debugging
+            <<OuterLen:32/big, Version:16/big, Flags:16/big, MsgT:16/big,
+              BodyLen:32/big, FwdCnt:16/big, RetCnt:16/big, AuthStart:12/binary, _/binary>> = ResponseBin,
+            lager:info("Response breakdown: outer=~p ver=~.16B flags=~p msgtype=~p bodylen=~p fwd=~p ret=~p",
+                       [OuterLen, Version, Flags, MsgT, BodyLen, FwdCnt, RetCnt]),
+            %% Show auth section bytes 0-11 (plugin_id, magic, errno)
+            <<PluginId:32/big, Magic:32/big, Errno:32/big>> = AuthStart,
+            lager:info("Auth section: plugin_id=~p (0x~.16B) magic=0x~.16B (~s) errno=~p",
+                       [PluginId, PluginId, Magic, <<Magic:32>>, Errno]),
+            %% Show bytes 16-25 relative to message start (where client might be reading)
+            <<_:16/binary, Bytes16_25:10/binary, _/binary>> = ResponseBin,
+            lager:info("Bytes 16-25: ~w", [binary_to_list(Bytes16_25)]),
             case Transport:send(Socket, ResponseBin) of
                 ok ->
                     lager:info("Response sent successfully"),
@@ -362,40 +375,50 @@ try_callback_connection(Host, Port, JobId, Retries) ->
             try_callback_connection(Host, Port, JobId, Retries - 1);
         {ok, Socket} ->
             lager:info("Connected to srun callback at ~s:~p", [Host, Port]),
-            %% Send SRUN_PING (7001) to acknowledge the connection
-            Ping = #srun_ping{job_id = JobId, step_id = 0},
-            case flurm_protocol_codec:encode_response(?SRUN_PING, Ping) of
-                {ok, MessageBin} ->
-                    case gen_tcp:send(Socket, MessageBin) of
-                        ok ->
-                            lager:info("Sent SRUN_PING to callback for job ~p", [JobId]),
-                            %% Wait for srun's response and keep connection open
-                            case gen_tcp:recv(Socket, 0, 2000) of
-                                {ok, RespData} ->
-                                    lager:info("Got callback response: ~p bytes", [byte_size(RespData)]);
-                                {error, timeout} ->
-                                    lager:debug("No immediate callback response (ok)");
-                                {error, RecvErr} ->
-                                    lager:warning("Callback recv error: ~p", [RecvErr])
-                            end,
-                            %% Close the callback socket after processing
-                            %% srun should have received our response by now
-                            gen_tcp:close(Socket),
-                            ok;
-                        {error, Reason} ->
-                            lager:warning("Failed to send to callback: ~p", [Reason]),
-                            gen_tcp:close(Socket),
-                            {error, Reason}
-                    end;
-                {error, Reason} ->
-                    lager:warning("Failed to encode callback message: ~p", [Reason]),
-                    gen_tcp:close(Socket),
-                    {error, Reason}
-            end;
-        {error, Reason} ->
+            %% Don't send anything on callback socket yet - just keep it open
+            %% srun expects the callback socket to be available for job event notifications
+            %% Spawn handler to keep socket alive and handle incoming messages
+            spawn(fun() ->
+                lager:info("Callback handler started for job ~p (no initial message)", [JobId]),
+                inet:setopts(Socket, [{active, true}]),
+                callback_socket_loop(Socket, JobId)
+            end),
+            ok;
+        {error, ConnectErr} ->
             lager:warning("Failed to connect to srun callback at ~s:~p: ~p",
-                          [Host, Port, Reason]),
-            {error, Reason}
+                          [Host, Port, ConnectErr]),
+            {error, ConnectErr}
+    end.
+
+%% @doc Handle callback socket - keep it alive for job event notifications.
+callback_socket_loop(Socket, JobId) ->
+    receive
+        {tcp, Socket, Data} ->
+            lager:info("Callback data from srun for job ~p: ~p bytes", [JobId, byte_size(Data)]),
+            callback_socket_loop(Socket, JobId);
+        {tcp_closed, Socket} ->
+            lager:info("Callback socket closed for job ~p", [JobId]),
+            ok;
+        {tcp_error, Socket, Reason} ->
+            lager:warning("Callback socket error for job ~p: ~p", [JobId, Reason]),
+            ok;
+        {send_job_complete, ExitCode} ->
+            %% Send SRUN_JOB_COMPLETE to srun
+            lager:info("Sending job complete to srun for job ~p, exit=~p", [JobId, ExitCode]),
+            Complete = #srun_job_complete{job_id = JobId, step_id = 0},
+            case flurm_protocol_codec:encode_response(?SRUN_JOB_COMPLETE, Complete) of
+                {ok, Bin} -> gen_tcp:send(Socket, Bin);
+                _ -> ok
+            end,
+            gen_tcp:close(Socket),
+            ok;
+        stop ->
+            gen_tcp:close(Socket),
+            ok
+    after 300000 ->  %% 5 minute timeout
+        lager:debug("Callback socket timeout for job ~p", [JobId]),
+        gen_tcp:close(Socket),
+        ok
     end.
 
 %% @doc Close the connection gracefully.

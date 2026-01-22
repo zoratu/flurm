@@ -23,9 +23,9 @@ constants_test_() ->
             ?assertEqual(?SLURM_PROTOCOL_VERSION, Version)
         end},
 
-        {"header_size returns 10 bytes", fun() ->
+        {"header_size returns 22 bytes", fun() ->
             Size = flurm_protocol_header:header_size(),
-            ?assertEqual(10, Size),
+            ?assertEqual(22, Size),
             ?assertEqual(?SLURM_HEADER_SIZE, Size)
         end}
     ].
@@ -34,10 +34,16 @@ constants_test_() ->
 %%% parse_header Tests
 %%%===================================================================
 
+%% Helper to create 16-byte header (minimum with AF_UNSPEC orig_addr)
+%% Format: version:16, flags:16, msg_type:16, body_len:32, fwd_cnt:16, ret_cnt:16, family:16
+make_header_bin(Version, Flags, MsgType, BodyLen) ->
+    <<Version:16/big, Flags:16/big, MsgType:16/big, BodyLen:32/big,
+      0:16/big, 0:16/big, 0:16/big>>.
+
 parse_header_success_test_() ->
     [
         {"parse default header", fun() ->
-            Binary = <<0:16/big, 0:16/big, 0:16/big, 0:32/big>>,
+            Binary = make_header_bin(0, 0, 0, 0),
             {ok, Header, Rest} = flurm_protocol_header:parse_header(Binary),
             ?assertEqual(0, Header#slurm_header.version),
             ?assertEqual(0, Header#slurm_header.flags),
@@ -47,31 +53,31 @@ parse_header_success_test_() ->
         end},
 
         {"parse header with protocol version", fun() ->
-            Binary = <<?SLURM_PROTOCOL_VERSION:16/big, 0:16/big, 0:16/big, 0:32/big>>,
+            Binary = make_header_bin(?SLURM_PROTOCOL_VERSION, 0, 0, 0),
             {ok, Header, <<>>} = flurm_protocol_header:parse_header(Binary),
             ?assertEqual(?SLURM_PROTOCOL_VERSION, Header#slurm_header.version)
         end},
 
         {"parse header with flags", fun() ->
-            Binary = <<0:16/big, 16#1234:16/big, 0:16/big, 0:32/big>>,
+            Binary = make_header_bin(0, 16#1234, 0, 0),
             {ok, Header, <<>>} = flurm_protocol_header:parse_header(Binary),
             ?assertEqual(16#1234, Header#slurm_header.flags)
         end},
 
         {"parse header with msg_type", fun() ->
-            Binary = <<0:16/big, 0:16/big, ?REQUEST_PING:16/big, 0:32/big>>,
+            Binary = make_header_bin(0, 0, ?REQUEST_PING, 0),
             {ok, Header, <<>>} = flurm_protocol_header:parse_header(Binary),
             ?assertEqual(?REQUEST_PING, Header#slurm_header.msg_type)
         end},
 
         {"parse header with body_length", fun() ->
-            Binary = <<0:16/big, 0:16/big, 0:16/big, 12345:32/big>>,
+            Binary = make_header_bin(0, 0, 0, 12345),
             {ok, Header, <<>>} = flurm_protocol_header:parse_header(Binary),
             ?assertEqual(12345, Header#slurm_header.body_length)
         end},
 
         {"parse header with max uint16 values", fun() ->
-            Binary = <<65535:16/big, 65535:16/big, 65535:16/big, 0:32/big>>,
+            Binary = make_header_bin(65535, 65535, 65535, 0),
             {ok, Header, <<>>} = flurm_protocol_header:parse_header(Binary),
             ?assertEqual(65535, Header#slurm_header.version),
             ?assertEqual(65535, Header#slurm_header.flags),
@@ -79,21 +85,23 @@ parse_header_success_test_() ->
         end},
 
         {"parse header with max uint32 body_length", fun() ->
-            Binary = <<0:16/big, 0:16/big, 0:16/big, 16#FFFFFFFF:32/big>>,
+            Binary = make_header_bin(0, 0, 0, 16#FFFFFFFF),
             {ok, Header, <<>>} = flurm_protocol_header:parse_header(Binary),
             ?assertEqual(16#FFFFFFFF, Header#slurm_header.body_length)
         end},
 
         {"parse header with trailing data returns rest", fun() ->
-            Binary = <<0:16/big, 0:16/big, 0:16/big, 0:32/big, "trailing data">>,
+            HeaderBin = make_header_bin(0, 0, 0, 0),
+            Binary = <<HeaderBin/binary, "trailing data">>,
             {ok, Header, Rest} = flurm_protocol_header:parse_header(Binary),
             ?assertEqual(0, Header#slurm_header.msg_type),
             ?assertEqual(<<"trailing data">>, Rest)
         end},
 
         {"parse header with large trailing data", fun() ->
+            HeaderBin = make_header_bin(0, 0, 0, 0),
             TrailingData = list_to_binary(lists:duplicate(10000, $x)),
-            Binary = <<0:16/big, 0:16/big, 0:16/big, 0:32/big, TrailingData/binary>>,
+            Binary = <<HeaderBin/binary, TrailingData/binary>>,
             {ok, _Header, Rest} = flurm_protocol_header:parse_header(Binary),
             ?assertEqual(TrailingData, Rest)
         end},
@@ -110,7 +118,7 @@ parse_header_success_test_() ->
                 ?RESPONSE_SUBMIT_BATCH_JOB
             ],
             lists:foreach(fun(MsgType) ->
-                Binary = <<0:16/big, 0:16/big, MsgType:16/big, 0:32/big>>,
+                Binary = make_header_bin(0, 0, MsgType, 0),
                 {ok, Header, <<>>} = flurm_protocol_header:parse_header(Binary),
                 ?assertEqual(MsgType, Header#slurm_header.msg_type)
             end, MsgTypes)
@@ -121,22 +129,22 @@ parse_header_error_test_() ->
     [
         {"parse empty binary returns incomplete error", fun() ->
             Result = flurm_protocol_header:parse_header(<<>>),
-            ?assertMatch({error, {incomplete_header, 0, 10}}, Result)
+            ?assertMatch({error, {incomplete_header, 0, 16}}, Result)
         end},
 
         {"parse 1 byte returns incomplete error", fun() ->
             Result = flurm_protocol_header:parse_header(<<1>>),
-            ?assertMatch({error, {incomplete_header, 1, 10}}, Result)
+            ?assertMatch({error, {incomplete_header, 1, 16}}, Result)
         end},
 
         {"parse 5 bytes returns incomplete error", fun() ->
             Result = flurm_protocol_header:parse_header(<<1, 2, 3, 4, 5>>),
-            ?assertMatch({error, {incomplete_header, 5, 10}}, Result)
+            ?assertMatch({error, {incomplete_header, 5, 16}}, Result)
         end},
 
-        {"parse 9 bytes returns incomplete error", fun() ->
-            Result = flurm_protocol_header:parse_header(<<1, 2, 3, 4, 5, 6, 7, 8, 9>>),
-            ?assertMatch({error, {incomplete_header, 9, 10}}, Result)
+        {"parse 15 bytes returns incomplete error", fun() ->
+            Result = flurm_protocol_header:parse_header(<<1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15>>),
+            ?assertMatch({error, {incomplete_header, 15, 16}}, Result)
         end},
 
         {"parse non-binary returns invalid error", fun() ->
@@ -164,14 +172,14 @@ encode_header_success_test_() ->
         {"encode default header", fun() ->
             Header = #slurm_header{},
             {ok, Binary} = flurm_protocol_header:encode_header(Header),
-            ?assertEqual(10, byte_size(Binary))
+            ?assertEqual(22, byte_size(Binary))
         end},
 
         {"encode header with protocol version", fun() ->
             Header = #slurm_header{version = ?SLURM_PROTOCOL_VERSION},
             {ok, Binary} = flurm_protocol_header:encode_header(Header),
             <<?SLURM_PROTOCOL_VERSION:16/big, _Rest/binary>> = Binary,
-            ?assertEqual(10, byte_size(Binary))
+            ?assertEqual(22, byte_size(Binary))
         end},
 
         {"encode header preserves all fields", fun() ->
@@ -179,10 +187,14 @@ encode_header_success_test_() ->
                 version = 16#1234,
                 flags = 16#5678,
                 msg_type = ?REQUEST_PING,
-                body_length = 12345
+                body_length = 12345,
+                forward_cnt = 0,
+                ret_cnt = 0
             },
             {ok, Binary} = flurm_protocol_header:encode_header(Header),
-            <<Ver:16/big, Flags:16/big, MsgType:16/big, BodyLen:32/big>> = Binary,
+            %% 22-byte format: version:16 + flags:16 + msg_type:16 + body_length:32 + forward_cnt:16 + ret_cnt:16 + orig_addr:64
+            <<Ver:16/big, Flags:16/big, MsgType:16/big, BodyLen:32/big,
+              _FwdCnt:16/big, _RetCnt:16/big, _OrigAddr:64/big>> = Binary,
             ?assertEqual(16#1234, Ver),
             ?assertEqual(16#5678, Flags),
             ?assertEqual(?REQUEST_PING, MsgType),
@@ -197,7 +209,9 @@ encode_header_success_test_() ->
                 body_length = 0
             },
             {ok, Binary} = flurm_protocol_header:encode_header(Header),
-            ?assertEqual(<<0:80>>, Binary)
+            %% 22 bytes with AF_INET orig_addr (family=2)
+            ?assertEqual(22, byte_size(Binary)),
+            <<0:16, 0:16, 0:16, 0:32, 0:16, 0:16, 2:16/big, 0:32, 0:16>> = Binary
         end},
 
         {"encode header with max uint16 values", fun() ->
@@ -208,8 +222,8 @@ encode_header_success_test_() ->
                 body_length = 0
             },
             {ok, Binary} = flurm_protocol_header:encode_header(Header),
-            <<65535:16/big, 65535:16/big, 65535:16/big, 0:32/big>> = Binary,
-            ?assert(true)
+            <<65535:16/big, 65535:16/big, 65535:16/big, 0:32/big, _Rest:96/big>> = Binary,
+            ?assertEqual(22, byte_size(Binary))
         end},
 
         {"encode header with max uint32 body_length", fun() ->
@@ -220,11 +234,11 @@ encode_header_success_test_() ->
                 body_length = 4294967295
             },
             {ok, Binary} = flurm_protocol_header:encode_header(Header),
-            <<0:48, 16#FFFFFFFF:32/big>> = Binary,
-            ?assert(true)
+            <<0:48, 16#FFFFFFFF:32/big, _Rest:96/big>> = Binary,
+            ?assertEqual(22, byte_size(Binary))
         end},
 
-        {"encoded header is always 10 bytes", fun() ->
+        {"encoded header is always 22 bytes", fun() ->
             Headers = [
                 #slurm_header{},
                 #slurm_header{version = 65535},
@@ -233,7 +247,7 @@ encode_header_success_test_() ->
             ],
             lists:foreach(fun(H) ->
                 {ok, Binary} = flurm_protocol_header:encode_header(H),
-                ?assertEqual(10, byte_size(Binary))
+                ?assertEqual(22, byte_size(Binary))
             end, Headers)
         end}
     ].
@@ -414,7 +428,8 @@ wire_format_test_() ->
         {"header is big endian (body_length)", fun() ->
             Header = #slurm_header{body_length = 16#01020304},
             {ok, Binary} = flurm_protocol_header:encode_header(Header),
-            <<_:48, B1, B2, B3, B4>> = Binary,
+            %% body_length is at bytes 6-9 (after version:2, flags:2, msg_type:2)
+            <<_:48, B1, B2, B3, B4, _Rest/binary>> = Binary,
             ?assertEqual(1, B1),
             ?assertEqual(2, B2),
             ?assertEqual(3, B3),
@@ -426,10 +441,16 @@ wire_format_test_() ->
                 version = 16#1122,
                 flags = 16#3344,
                 msg_type = 16#5566,
-                body_length = 16#778899AA
+                body_length = 16#778899AA,
+                forward_cnt = 0,
+                ret_cnt = 0
             },
             {ok, Binary} = flurm_protocol_header:encode_header(Header),
-            Expected = <<16#11, 16#22, 16#33, 16#44, 16#55, 16#66, 16#77, 16#88, 16#99, 16#AA>>,
+            %% 22-byte header: version(2) + flags(2) + msg_type(2) + body_len(4) + fwd_cnt(2) + ret_cnt(2) + orig_addr(8)
+            %% orig_addr for AF_INET: family(2)=0x0002 + addr(4)=0 + port(2)=0
+            Expected = <<16#11, 16#22, 16#33, 16#44, 16#55, 16#66, 16#77, 16#88, 16#99, 16#AA,
+                         0, 0, 0, 0,  %% fwd_cnt=0, ret_cnt=0
+                         0, 2, 0, 0, 0, 0, 0, 0>>,  %% orig_addr: family=2, addr=0, port=0
             ?assertEqual(Expected, Binary)
         end}
     ].

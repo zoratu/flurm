@@ -36,10 +36,6 @@ services:
     hostname: slurm-client
     depends_on:
       - flurm-server
-    environment:
-      # Tell srun to bind callback listener to all interfaces (0.0.0.0)
-      # so the controller can connect back from another container
-      - SLURM_SRUN_COMM_HOST=0.0.0.0
     volumes:
       - munge-key:/etc/munge
     networks:

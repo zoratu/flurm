@@ -18,7 +18,11 @@
 
 %% Protocol header size (length prefix + header)
 -define(SLURM_LENGTH_PREFIX_SIZE, 4).  % 4-byte length prefix
--define(SLURM_HEADER_SIZE, 10).        % 10-byte message header (version:16, flags:16, msg_type:16, body_length:32)
+-define(SLURM_HEADER_SIZE_MIN, 16).    % Minimum 16-byte message header (with AF_UNSPEC orig_addr)
+                                        % (version:16, flags:16, msg_type:16, body_length:32,
+                                        %  forward_cnt:16, ret_cnt:16, orig_addr_family:16)
+-define(SLURM_HEADER_SIZE, 22).        % 22-byte header for responses (with AF_INET orig_addr)
+                                        % orig_addr: family(16) + ipv4_addr(32) + port(16) = 64 bits
 
 %% Maximum message size (64 MB)
 -define(SLURM_MAX_MESSAGE_SIZE, 67108864).
@@ -28,6 +32,9 @@
 -define(SLURM_NO_VAL64, 16#FFFFFFFFFFFFFFFE). % -2 as 64-bit unsigned
 -define(SLURM_INFINITE, 16#FFFFFFFD).   % -3 as unsigned
 -define(SLURM_INFINITE64, 16#FFFFFFFFFFFFFFFD).
+
+%% Header flags
+-define(SLURM_NO_AUTH_CRED, 16#0001).   % No auth credential present in message
 
 %%%===================================================================
 %%% SLURM Message Types
@@ -228,15 +235,19 @@
 %%% Record Definitions
 %%%===================================================================
 
-%% SLURM message header (12 bytes)
-%% Wire format: version(2) + flags(2) + msg_index(2) + msg_type(2) + body_length(4)
+%% SLURM message header (14 bytes on wire)
+%% Wire format: version(2) + flags(2) + msg_type(2) + body_length(4) + forward_cnt(2) + ret_cnt(2)
 %% Note: body_length in header is 32-bit to support large messages (up to 64MB)
+%% If forward_cnt > 0: followed by forward nodelist, timeout, tree_width, [net_cred], tree_depth
+%% If ret_cnt > 0: followed by ret_list packed messages
 -record(slurm_header, {
     version = ?SLURM_PROTOCOL_VERSION :: non_neg_integer(),
     flags = 0 :: non_neg_integer(),
-    msg_index = 0 :: non_neg_integer(),
+    msg_index = 0 :: non_neg_integer(),  % Not on wire, kept for internal use
     msg_type = 0 :: non_neg_integer(),
-    body_length = 0 :: non_neg_integer()  % 32-bit, not 16-bit
+    body_length = 0 :: non_neg_integer(),  % 32-bit, not 16-bit
+    forward_cnt = 0 :: non_neg_integer(),  % Number of forward targets (usually 0)
+    ret_cnt = 0 :: non_neg_integer()       % Number of return messages (usually 0)
 }).
 
 %% Complete SLURM message
@@ -680,6 +691,9 @@
     job_submit_user_msg = <<>> :: binary(),
     node_cnt = 0 :: non_neg_integer(),
     select_jobinfo = <<>> :: binary(),
+    %% Node addresses for srun to connect to slurmd for step creation
+    %% Each entry is {IP, Port} where IP is a tuple like {172,19,0,3}
+    node_addrs = [] :: [{tuple(), non_neg_integer()}],
     %% Credential fields for srun to authenticate with compute nodes
     cred = <<>> :: binary()
 }).

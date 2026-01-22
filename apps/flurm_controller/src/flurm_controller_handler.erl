@@ -171,8 +171,19 @@ handle(#slurm_header{msg_type = ?REQUEST_RESOURCE_ALLOCATION},
                     end
             end,
             lager:info("srun job ~p assigned to node ~s", [JobId, NodeName]),
+            %% Resolve node hostname to IP address for srun to connect to slurmd
+            SlurmdPort = try flurm_config_server:get(slurmd_port, 6818) catch _:_ -> 6818 end,
+            NodeAddrs = case inet:getaddr(binary_to_list(NodeName), inet) of
+                {ok, IP} ->
+                    lager:info("Resolved ~s to ~p:~p for srun step connection", [NodeName, IP, SlurmdPort]),
+                    [{IP, SlurmdPort}];
+                {error, _} ->
+                    lager:warning("Could not resolve ~s, trying localhost", [NodeName]),
+                    [{{127, 0, 0, 1}, SlurmdPort}]
+            end,
             %% Return successful allocation with SLURM 22.05 format
-            lager:info("Returning allocation for job_id=~p, node=~s, error_code=0", [JobId, NodeName]),
+            lager:info("Returning allocation for job_id=~p, node=~s, node_addrs=~p, error_code=0",
+                       [JobId, NodeName, NodeAddrs]),
             Response = #resource_allocation_response{
                 job_id = JobId,
                 node_list = NodeName,
@@ -181,7 +192,8 @@ handle(#slurm_header{msg_type = ?REQUEST_RESOURCE_ALLOCATION},
                 error_code = 0,
                 job_submit_user_msg = <<>>,
                 cpus_per_node = [],
-                num_cpu_groups = 0
+                num_cpu_groups = 0,
+                node_addrs = NodeAddrs
             },
             %% Include callback info for the acceptor to register
             CallbackInfo = #{
@@ -240,7 +252,17 @@ handle(#slurm_header{msg_type = ?REQUEST_JOB_ALLOCATION_INFO}, Body) ->
                 _ -> <<"localhost">>
             end
     end,
-    %% Return the allocation info with actual node
+    %% Resolve node hostname to IP address for srun to connect to slurmd
+    SlurmdPort = try flurm_config_server:get(slurmd_port, 6818) catch _:_ -> 6818 end,
+    NodeAddrs = case inet:getaddr(binary_to_list(NodeName), inet) of
+        {ok, IP} ->
+            lager:info("Resolved ~s to ~p:~p for step connection", [NodeName, IP, SlurmdPort]),
+            [{IP, SlurmdPort}];
+        {error, _} ->
+            lager:warning("Could not resolve ~s, trying localhost", [NodeName]),
+            [{{127, 0, 0, 1}, SlurmdPort}]
+    end,
+    %% Return the allocation info with actual node and addresses
     Response = #resource_allocation_response{
         job_id = JobId,
         node_list = NodeName,
@@ -249,9 +271,10 @@ handle(#slurm_header{msg_type = ?REQUEST_JOB_ALLOCATION_INFO}, Body) ->
         error_code = 0,
         job_submit_user_msg = <<>>,
         cpus_per_node = [],
-        num_cpu_groups = 0
+        num_cpu_groups = 0,
+        node_addrs = NodeAddrs
     },
-    lager:info("Returning allocation info for job_id=~p, node=~s", [JobId, NodeName]),
+    lager:info("Returning allocation info for job_id=~p, node=~s, node_addrs=~p", [JobId, NodeName, NodeAddrs]),
     {ok, ?RESPONSE_JOB_ALLOCATION_INFO, Response};
 
 %% REQUEST_KILL_TIMELIMIT (5017) - srun sends this to cancel jobs

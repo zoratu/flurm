@@ -1,0 +1,84 @@
+FROM rockylinux:9
+
+# Install EPEL and SLURM
+RUN dnf install -y epel-release && \
+    dnf install -y slurm slurm-slurmctld slurm-slurmd munge && \
+    dnf clean all
+
+# Install Erlang (minimal)
+RUN dnf install -y erlang
+
+# Install rebar3
+RUN curl -o /usr/local/bin/rebar3 https://s3.amazonaws.com/rebar3/rebar3 && \
+    chmod +x /usr/local/bin/rebar3
+
+# Setup MUNGE (required for SLURM auth)
+RUN create-munge-key && \
+    chown munge:munge /etc/munge/munge.key && \
+    chmod 400 /etc/munge/munge.key
+
+# Create SLURM config pointing to localhost:6817
+RUN mkdir -p /etc/slurm && \
+    echo "ClusterName=test" > /etc/slurm/slurm.conf && \
+    echo "SlurmctldHost=localhost" >> /etc/slurm/slurm.conf && \
+    echo "SlurmctldPort=6817" >> /etc/slurm/slurm.conf && \
+    echo "AuthType=auth/munge" >> /etc/slurm/slurm.conf && \
+    echo "PluginDir=/usr/lib64/slurm" >> /etc/slurm/slurm.conf && \
+    echo "SlurmdPort=6818" >> /etc/slurm/slurm.conf && \
+    echo "StateSaveLocation=/var/spool/slurm/ctld" >> /etc/slurm/slurm.conf && \
+    echo "SlurmdSpoolDir=/var/spool/slurm/d" >> /etc/slurm/slurm.conf && \
+    echo "SwitchType=switch/none" >> /etc/slurm/slurm.conf && \
+    echo "MpiDefault=none" >> /etc/slurm/slurm.conf && \
+    echo "ProctrackType=proctrack/linuxproc" >> /etc/slurm/slurm.conf && \
+    echo "ReturnToService=1" >> /etc/slurm/slurm.conf && \
+    echo "SchedulerType=sched/builtin" >> /etc/slurm/slurm.conf && \
+    echo "SelectType=select/linear" >> /etc/slurm/slurm.conf && \
+    echo "AccountingStorageType=accounting_storage/none" >> /etc/slurm/slurm.conf && \
+    echo "NodeName=localhost CPUs=1 State=UNKNOWN" >> /etc/slurm/slurm.conf && \
+    echo "PartitionName=debug Nodes=localhost Default=YES MaxTime=INFINITE State=UP" >> /etc/slurm/slurm.conf
+
+# Create required directories
+RUN mkdir -p /var/spool/slurm/ctld /var/spool/slurm/d /var/run/munge /var/lib/flurm/db && \
+    chown munge:munge /var/run/munge
+
+WORKDIR /app
+COPY . .
+
+# Build FLURM
+RUN rm -rf _build && rebar3 compile
+
+# Test script
+COPY <<'TESTSCRIPT' /test.sh
+#!/bin/bash
+set -e
+
+# Start munge daemon
+runuser -u munge -- /usr/sbin/munged
+
+# Start FLURM controller in background
+cd /app
+erl -pa _build/default/lib/*/ebin -noshell -eval "
+application:ensure_all_started(lager),
+lager:set_loglevel(lager_console_backend, info),
+application:ensure_all_started(flurm_controller),
+receive after infinity -> ok end
+" &
+FLURM_PID=$!
+
+sleep 3
+
+# Test with sbatch
+echo "Testing sbatch..."
+sbatch --wrap="sleep 1" -o /dev/null 2>&1 || echo "sbatch exit code: $?"
+
+# Show SLURM version
+echo ""
+echo "SLURM version:"
+sbatch --version
+
+kill $FLURM_PID 2>/dev/null || true
+TESTSCRIPT
+
+RUN chmod +x /test.sh
+
+CMD ["/test.sh"]

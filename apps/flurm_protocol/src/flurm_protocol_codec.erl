@@ -5,9 +5,9 @@
 %%% protocol messages. It handles the complete message wire format:
 %%%
 %%% Wire format:
-%%%   <<Length:32/big, Header:10/binary, Body/binary>>
+%%%   <<Length:32/big, Header:22/binary, Body/binary>>
 %%%
-%%% Where Length = byte_size(Header) + byte_size(Body) = 10 + body_size
+%%% Where Length = byte_size(Header) + byte_size(Body) = 22 + body_size
 %%%
 %%% The codec supports the following priority message types:
 %%% Requests:
@@ -66,18 +66,18 @@
 
 %% @doc Decode a complete message from wire format.
 %%
-%% Expects: <<Length:32/big, Header:12/binary, Body:BodySize/binary>>
-%% where Length = 12 + BodySize
+%% Expects: <<Length:32/big, Header/binary, Body:BodySize/binary>>
+%% Header is variable length (16-34 bytes depending on orig_addr family)
 %%
 %% Returns {ok, Message, Rest} on success, where Message is a #slurm_msg{}
 %% record with the body decoded to an appropriate record type.
 -spec decode(binary()) -> {ok, #slurm_msg{}, binary()} | {error, term()}.
 decode(<<Length:32/big, Rest/binary>> = _Data)
-  when byte_size(Rest) >= Length, Length >= ?SLURM_HEADER_SIZE ->
-    BodySize = Length - ?SLURM_HEADER_SIZE,
-    <<HeaderBin:?SLURM_HEADER_SIZE/binary, BodyBin:BodySize/binary, Remaining/binary>> = Rest,
-    case flurm_protocol_header:parse_header(HeaderBin) of
-        {ok, Header, <<>>} ->
+  when byte_size(Rest) >= Length, Length >= ?SLURM_HEADER_SIZE_MIN ->
+    <<MsgData:Length/binary, Remaining/binary>> = Rest,
+    %% Parse header with variable-length orig_addr support
+    case flurm_protocol_header:parse_header(MsgData) of
+        {ok, Header, BodyBin} ->
             MsgType = Header#slurm_header.msg_type,
             case decode_body(MsgType, BodyBin) of
                 {ok, Body} ->
@@ -86,9 +86,6 @@ decode(<<Length:32/big, Rest/binary>> = _Data)
                 {error, _} = BodyError ->
                     BodyError
             end;
-        {ok, Header, Extra} ->
-            %% This shouldn't happen with exact 10-byte header
-            {error, {extra_header_data, Header, Extra}};
         {error, _} = HeaderError ->
             HeaderError
     end;
@@ -96,7 +93,7 @@ decode(<<Length:32/big, Rest/binary>>)
   when byte_size(Rest) < Length ->
     {error, {incomplete_message, Length, byte_size(Rest)}};
 decode(<<Length:32/big, _/binary>>)
-  when Length < ?SLURM_HEADER_SIZE ->
+  when Length < ?SLURM_HEADER_SIZE_MIN ->
     {error, {invalid_message_length, Length}};
 decode(Binary) when byte_size(Binary) < 4 ->
     {error, {incomplete_length_prefix, byte_size(Binary)}};
@@ -132,19 +129,19 @@ encode(MsgType, Body) ->
 %% @doc Decode a complete message with auth credentials from wire format.
 %%
 %% SLURM wire format for requests (client to server):
-%%   <<Length:32/big, Header:10/binary, AuthSection/binary, MsgBody/binary>>
+%%   <<Length:32/big, Header:22/binary, AuthSection/binary, MsgBody/binary>>
 %%
-%% Auth section format:
-%%   <<AuthHeader:10/binary, CredLen:32/big, Credential:CredLen/binary>>
+%% Auth section format (from slurm_auth.c):
+%%   <<PluginId:32/big, CredLen:32/big, Credential:CredLen/binary>>
 %%
 %% Returns {ok, Message, ExtraInfo, Rest} on success.
 -spec decode_with_extra(binary()) -> {ok, #slurm_msg{}, map(), binary()} | {error, term()}.
 decode_with_extra(<<Length:32/big, Rest/binary>> = _Data)
-  when byte_size(Rest) >= Length, Length >= ?SLURM_HEADER_SIZE ->
+  when byte_size(Rest) >= Length, Length >= ?SLURM_HEADER_SIZE_MIN ->
     <<MsgData:Length/binary, Remaining/binary>> = Rest,
-    <<HeaderBin:?SLURM_HEADER_SIZE/binary, BodyWithAuth/binary>> = MsgData,
-    case flurm_protocol_header:parse_header(HeaderBin) of
-        {ok, Header, <<>>} ->
+    %% Parse header with variable-length orig_addr support
+    case flurm_protocol_header:parse_header(MsgData) of
+        {ok, Header, BodyWithAuth} ->
             MsgType = Header#slurm_header.msg_type,
             %% Strip auth section from beginning of body
             case strip_auth_section(BodyWithAuth) of
@@ -171,20 +168,29 @@ decode_with_extra(_) ->
     {error, invalid_message_data}.
 
 %% @doc Strip the auth section from the beginning of a message body.
-%% Auth section format: <<AuthHeader:10/binary, CredLen:32/big, Credential:CredLen/binary>>
+%% Auth section format from slurm_auth.c:
+%%   plugin_id:32 (4 bytes)
+%%   credential packstr: length:32 + data (variable length)
+%% Note: The packstr includes length + data (no null terminator in SLURM packstr for auth)
 -spec strip_auth_section(binary()) -> {ok, binary(), map()} | {error, term()}.
-strip_auth_section(<<_AuthHeader:10/binary, CredLen:32/big, Rest/binary>>) when CredLen =< byte_size(Rest) ->
-    <<Credential:CredLen/binary, ActualBody/binary>> = Rest,
-    %% Check if credential is MUNGE
-    AuthType = case Credential of
-        <<"MUNGE:", _/binary>> -> munge;
+strip_auth_section(<<PluginId:32/big, CredLen:32/big, Rest/binary>> = Full) when CredLen =< byte_size(Rest) ->
+    lager:debug("strip_auth: plugin_id=~p, cred_len=~p, rest_size=~p, full_size=~p",
+                [PluginId, CredLen, byte_size(Rest), byte_size(Full)]),
+    <<_Credential:CredLen/binary, ActualBody/binary>> = Rest,
+    lager:debug("strip_auth: stripped ~p bytes auth, body_size=~p", [8 + CredLen, byte_size(ActualBody)]),
+    %% Check if credential is MUNGE (plugin_id 101)
+    AuthType = case PluginId of
+        101 -> munge;
         _ -> unknown
     end,
-    AuthInfo = #{auth_type => AuthType, cred_len => CredLen},
+    AuthInfo = #{auth_type => AuthType, plugin_id => PluginId, cred_len => CredLen},
     {ok, ActualBody, AuthInfo};
-strip_auth_section(<<_AuthHeader:10/binary, CredLen:32/big, _Rest/binary>>) ->
+strip_auth_section(<<PluginId:32/big, CredLen:32/big, Rest/binary>>) ->
+    lager:warning("strip_auth FAIL: plugin_id=~p, cred_len=~p, rest_size=~p (too short)",
+                  [PluginId, CredLen, byte_size(Rest)]),
     {error, {auth_cred_too_short, CredLen}};
-strip_auth_section(Binary) when byte_size(Binary) < 14 ->
+strip_auth_section(Binary) when byte_size(Binary) < 8 ->
+    lager:warning("strip_auth FAIL: binary too short (~p bytes)", [byte_size(Binary)]),
     {error, {auth_section_too_short, byte_size(Binary)}};
 strip_auth_section(_) ->
     {error, invalid_auth_section}.
@@ -227,35 +233,37 @@ encode_with_extra(MsgType, Body, Hostname) ->
 
 %% @doc Encode a response message.
 %%
-%% SLURM 22.05 response wire format (server to client):
-%%   <<OuterLength:32, Header:10, AuthSection/binary, Body/binary>>
+%% SLURM 24.11 response wire format (server to client):
+%%   <<OuterLength:32, Header:14, AuthSection/binary, Body/binary>>
 %% Where:
-%%   - AuthSection = <<AuthHeader:10, CredLen:32, Credential:CredLen>>
-%%   - Header.body_length = BodySize only (NOT including auth section)
-%%   - AuthSection uses MUNGE credential for proper authentication
+%%   - Header = <<Version:16, Flags:16, MsgType:16, BodyLen:32, ForwardCnt:16, RetCnt:16>>
+%%   - AuthSection = <<PluginId:32, MungeMagic:32, Errno:32, CredPackstr/binary>>
+%%   - Header.body_length = BodySize only (auth is unpacked separately)
+%%   - ForwardCnt and RetCnt are 0 for simple responses
 %%
 -spec encode_response(non_neg_integer(), term()) -> {ok, binary()} | {error, term()}.
 encode_response(MsgType, Body) ->
     case encode_body(MsgType, Body) of
         {ok, BodyBin} ->
             BodySize = byte_size(BodyBin),
-            %% Get MUNGE credential for auth section (using OLD format for sbatch compat)
-            AuthSection = create_old_auth_section(),
+            %% Get MUNGE credential for auth section (proper format for srun compat)
+            AuthSection = create_proper_auth_section(),
             AuthSize = byte_size(AuthSection),
+            lager:info("encode_response: auth_section_size=~p, body_size=~p", [AuthSize, BodySize]),
 
             Header = #slurm_header{
                 version = flurm_protocol_header:protocol_version(),
                 flags = 0,
                 msg_index = 0,
                 msg_type = MsgType,
-                body_length = BodySize  %% Just body, not auth
+                body_length = BodySize  %% Only body size, auth is handled separately
             },
             case flurm_protocol_header:encode_header(Header) of
                 {ok, HeaderBin} ->
                     %% Wire format: outer_length, header, auth_section, body
                     TotalPayload = <<HeaderBin/binary, AuthSection/binary, BodyBin/binary>>,
                     OuterLength = byte_size(TotalPayload),
-                    lager:debug("Response: header=~p auth=~p body=~p total=~p",
+                    lager:info("Response: header=~p auth=~p body=~p total=~p",
                                [byte_size(HeaderBin), AuthSize, BodySize, OuterLength]),
                     {ok, <<OuterLength:32/big, TotalPayload/binary>>};
                 {error, _} = HeaderError ->
@@ -266,7 +274,8 @@ encode_response(MsgType, Body) ->
     end.
 
 %% @doc Encode a response message WITHOUT auth section.
-%% Wire format: <<OuterLength:32, Header:10, Body>>
+%% Wire format: <<OuterLength:32, Header:14, Body>>
+%% Sets SLURM_NO_AUTH_CRED flag to tell client to skip auth parsing.
 -spec encode_response_no_auth(non_neg_integer(), term()) -> {ok, binary()} | {error, term()}.
 encode_response_no_auth(MsgType, Body) ->
     case encode_body(MsgType, Body) of
@@ -274,7 +283,7 @@ encode_response_no_auth(MsgType, Body) ->
             BodySize = byte_size(BodyBin),
             Header = #slurm_header{
                 version = flurm_protocol_header:protocol_version(),
-                flags = 0,
+                flags = ?SLURM_NO_AUTH_CRED,  %% Flag: no auth credential present
                 msg_index = 0,
                 msg_type = MsgType,
                 body_length = BodySize
@@ -295,7 +304,7 @@ encode_response_no_auth(MsgType, Body) ->
 
 %% @doc Encode a response with proper SLURM MUNGE auth format.
 %% For srun RESPONSE_RESOURCE_ALLOCATION compatibility.
-%% Wire format: <<OuterLength:32, Header:10, AuthSection, Body>>
+%% Wire format: <<OuterLength:32, Header:14, AuthSection, Body>>
 %% Where AuthSection uses proper MUNGE format: plugin_id, magic, errno, credential_packstr
 -spec encode_response_proper_auth(non_neg_integer(), term()) -> {ok, binary()} | {error, term()}.
 encode_response_proper_auth(MsgType, Body) ->
@@ -328,21 +337,20 @@ encode_response_proper_auth(MsgType, Body) ->
 %% @doc Decode a response message (with auth section stripped).
 %%
 %% Response wire format (server to client):
-%%   <<OuterLength:32, Header:10, AuthSection/binary, Body/binary>>
-%% Where AuthSection = <<AuthHeader:10, CredLen:32, Credential:CredLen>>
+%%   <<OuterLength:32, Header:14, AuthSection/binary, Body/binary>>
+%% Where Header = <<Version:16, Flags:16, MsgType:16, BodyLen:32, ForwardCnt:16, RetCnt:16>>
 %%
 %% This decoder strips the auth section and returns just the message.
 -spec decode_response(binary()) -> {ok, #slurm_msg{}, binary()} | {error, term()}.
 decode_response(<<Length:32/big, Rest/binary>> = _Data)
-  when byte_size(Rest) >= Length, Length >= ?SLURM_HEADER_SIZE ->
+  when byte_size(Rest) >= Length, Length >= ?SLURM_HEADER_SIZE_MIN ->
     <<MsgData:Length/binary, Remaining/binary>> = Rest,
-    <<HeaderBin:?SLURM_HEADER_SIZE/binary, BodyWithAuth/binary>> = MsgData,
-    case flurm_protocol_header:parse_header(HeaderBin) of
-        {ok, Header, <<>>} ->
+    %% Parse header with variable-length orig_addr support
+    case flurm_protocol_header:parse_header(MsgData) of
+        {ok, Header, BodyWithAuth} ->
             MsgType = Header#slurm_header.msg_type,
             BodyLen = Header#slurm_header.body_length,
             %% Auth section is between header and body
-            %% AuthSection = 10-byte header + 4-byte cred_len + credential
             case strip_auth_section_from_response(BodyWithAuth, BodyLen) of
                 {ok, ActualBody} ->
                     case decode_body(MsgType, ActualBody) of
@@ -355,8 +363,6 @@ decode_response(<<Length:32/big, Rest/binary>> = _Data)
                 {error, _} = AuthError ->
                     AuthError
             end;
-        {ok, _Header, _Extra} ->
-            {error, extra_header_data};
         {error, _} = HeaderError ->
             HeaderError
     end;
@@ -390,47 +396,30 @@ get_munge_credential() ->
             {ok, list_to_binary(Cred)}
     end.
 
-%% @doc Create auth section using OLD empirical format
-%% This format worked for sbatch - 10-byte header + 4-byte length + credential
--spec create_old_auth_section() -> binary().
-create_old_auth_section() ->
-    case get_munge_credential() of
-        {ok, Credential} ->
-            CredLen = byte_size(Credential),
-            %% 10-byte header: 8 zeros + auth type hint (101 = munge)
-            AuthHeader = <<0:64/big, 101:16/big>>,
-            <<AuthHeader/binary, CredLen:32/big, Credential/binary>>;
-        {error, _} ->
-            %% Fallback: empty auth section
-            AuthHeader = <<0:64/big, 101:16/big>>,
-            <<AuthHeader/binary, 0:32/big>>
-    end.
+%% Old auth section format removed - using create_proper_auth_section only
 
-%% @doc Create auth section with proper SLURM MUNGE format
-%% Format from auth_munge.c pack_auth_munge:
+%% @doc Create auth section with proper SLURM format
+%% Format from slurm_auth.c auth_g_pack:
 %%   plugin_id:32 (101 = AUTH_PLUGIN_MUNGE)
-%%   MUNGE_MAGIC:32 (0x4D554E47 = "MUNG")
-%%   cr_errno:32 (0 for success)
+%% Then plugin-specific data (auth_munge.c auth_p_pack):
 %%   credential_packstr (length:32, credential, null:8)
+%% Note: MUNGE magic and errno are NOT part of the wire format
 -spec create_proper_auth_section() -> binary().
 create_proper_auth_section() ->
     PluginId = 101,  %% AUTH_PLUGIN_MUNGE
-    MungeMagic = 16#4D554E47,  %% "MUNG" in ASCII
-    Errno = 0,
     case get_munge_credential() of
         {ok, Credential} ->
             CredLen = byte_size(Credential),
             CredPackstr = flurm_protocol_pack:pack_string(Credential),
-            AuthBin = <<PluginId:32/big, MungeMagic:32/big, Errno:32/big, CredPackstr/binary>>,
-            lager:info("PROPER AUTH: plugin=~p magic=~.16B errno=~p cred_len=~p packstr_len=~p auth_total=~p",
-                       [PluginId, MungeMagic, Errno, CredLen, byte_size(CredPackstr), byte_size(AuthBin)]),
+            AuthBin = <<PluginId:32/big, CredPackstr/binary>>,
+            lager:info("AUTH: plugin_id=~p cred_len=~p packstr_len=~p total=~p",
+                       [PluginId, CredLen, byte_size(CredPackstr), byte_size(AuthBin)]),
             AuthBin;
         {error, _} ->
             %% No MUNGE - use empty credential
             EmptyPackstr = flurm_protocol_pack:pack_string(<<>>),
-            AuthBin = <<PluginId:32/big, MungeMagic:32/big, Errno:32/big, EmptyPackstr/binary>>,
-            lager:info("PROPER AUTH (no munge): plugin=~p magic=~.16B errno=~p auth_total=~p",
-                       [PluginId, MungeMagic, Errno, byte_size(AuthBin)]),
+            AuthBin = <<PluginId:32/big, EmptyPackstr/binary>>,
+            lager:info("AUTH (no munge): plugin_id=~p total=~p", [PluginId, byte_size(AuthBin)]),
             AuthBin
     end.
 
@@ -993,11 +982,12 @@ extract_srun_callback_info(Binary) ->
 try_parse_4_packstrs(Binary) when byte_size(Binary) >= 348 ->
     %% Scan for callback port at common offsets
     %% The exact offset varies based on variable-length fields before it
-    Candidates = scan_for_callback_port_at_offsets(Binary, [340, 341, 342, 343, 344, 345, 346, 347, 348, 349, 350]),
+    %% Extend scan range to cover more variations
+    Candidates = scan_for_callback_port_at_offsets(Binary, [340, 341, 342, 343, 344, 345, 346, 347, 348, 349, 350, 351, 352, 353, 354]),
     lager:info("Port candidates: ~p", [Candidates]),
-    %% Preferred offsets 347-348 are most reliable for the callback port
-    %% Try these offsets FIRST regardless of port value
-    PreferredOffsets = [347, 348],
+    %% Preferred offsets 347-350 are most reliable for the callback port
+    %% Try higher offsets first as they're more likely to be correct
+    PreferredOffsets = [350, 349, 348, 347],
     case find_port_at_offsets(Candidates, PreferredOffsets) of
         {ok, Offset, Port} ->
             lager:info("Found callback port at preferred offset ~p: ~p", [Offset, Port]),
@@ -2332,7 +2322,8 @@ encode_resource_allocation_response(#resource_allocation_response{
     error_code = ErrorCode,
     job_submit_user_msg = UserMsg,
     cpus_per_node = _CpusPerNode,
-    num_cpu_groups = _NumCpuGroups
+    num_cpu_groups = _NumCpuGroups,
+    node_addrs = NodeAddrs
 }) ->
     %% Use actual NodeList or empty string
     NodeListBin = case NodeList of
@@ -2349,10 +2340,26 @@ encode_resource_allocation_response(#resource_allocation_response{
         _ -> 0
     end,
 
+    %% Pack node addresses if present
+    %% SLURM format:
+    %%   node_addr_present:8 (0 or 1)
+    %%   if present: count:32, then for each: slurm_addr_t
+    %%   slurm_addr_t for IPv4: <<AF_INET:16/big, IP:32/big, Port:16/big>>
+    NodeAddrParts = case NodeAddrs of
+        [] ->
+            %% No addresses - node_addr_present = 0
+            [<<0:8>>];
+        Addrs when is_list(Addrs) ->
+            %% Pack addresses - node_addr_present = 1, then count, then addresses
+            AddrCount = length(Addrs),
+            AddrBins = [pack_slurm_addr(IP, Port) || {IP, Port} <- Addrs],
+            [<<1:8, AddrCount:32/big>> | AddrBins]
+    end,
+
     Parts = [
         %% 1. account
         flurm_protocol_pack:pack_string(<<>>),
-        %% 2. alias_list
+        %% 2. alias_list (deprecated, pack null)
         flurm_protocol_pack:pack_string(<<>>),
         %% 3. batch_host
         flurm_protocol_pack:pack_string(<<>>),
@@ -2366,9 +2373,8 @@ encode_resource_allocation_response(#resource_allocation_response{
         <<JobId:32/big>>,
         %% 8. node_cnt
         <<NodeCnt:32/big>>,
-        %% 9. node_addr_present = 0 (no node addresses)
-        <<0:8>>,
-        %% 10. (skip node_addr - not present)
+        %% 9-10. node_addr_present + node_addr (if present)
+        NodeAddrParts,
         %% 11. node_list
         flurm_protocol_pack:pack_string(NodeListBin),
         %% 12. ntasks_per_board = NO_VAL16
@@ -2407,6 +2413,27 @@ encode_resource_allocation_response(#resource_allocation_response{
         %% 25. (skip working_cluster_rec - not present)
     ],
     {ok, iolist_to_binary(Parts)}.
+
+%% Pack a SLURM network address (slurm_addr_t)
+%% Wire format (from slurm_addr_pack in slurm_protocol_pack.c):
+%%   family:16/big, port:16/big, ip:32/big
+%% IP is a tuple like {172, 19, 0, 3}
+pack_slurm_addr({A, B, C, D}, Port) when is_integer(A), is_integer(B),
+                                         is_integer(C), is_integer(D),
+                                         is_integer(Port) ->
+    %% AF_INET = 2 for IPv4
+    %% Order: family, port, IP (NOT family, IP, port!)
+    IP = (A bsl 24) bor (B bsl 16) bor (C bsl 8) bor D,
+    <<2:16/big, Port:16/big, IP:32/big>>;
+pack_slurm_addr(IPBin, Port) when is_binary(IPBin), is_integer(Port) ->
+    %% Parse "172.19.0.3" format
+    case inet:parse_address(binary_to_list(IPBin)) of
+        {ok, {A, B, C, D}} ->
+            pack_slurm_addr({A, B, C, D}, Port);
+        _ ->
+            %% Fallback to localhost
+            pack_slurm_addr({127, 0, 0, 1}, Port)
+    end.
 
 %% Encode RESPONSE_JOB_INFO (2004)
 %% Note: For SLURM 21.08+ (protocol version >= 0x2500), the format is:
