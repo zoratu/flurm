@@ -1,8 +1,8 @@
 FROM rockylinux:9
 
-# Install Erlang/OTP, build tools, and srun for callback support
+# Install Erlang/OTP, build tools, and network utilities
 RUN dnf install -y epel-release && \
-    dnf install -y erlang git make procps-ng hostname iproute && \
+    dnf install -y erlang git make procps-ng hostname iproute nmap-ncat && \
     dnf clean all
 
 # Install rebar3 manually

@@ -11,8 +11,15 @@
 %%%   - ret_cnt:     2 bytes (uint16) - number of return messages (usually 0)
 %%%   - orig_addr:   variable length based on address family:
 %%%                  - AF_UNSPEC (0): just family (2 bytes)
-%%%                  - AF_INET (2): family(2) + addr(4) + port(2) = 8 bytes
-%%%                  - AF_INET6 (10): family(2) + addr(16) + port(2) = 20 bytes
+%%%                  - AF_INET (2): family(2) + port(2) + addr(4) = 8 bytes
+%%%                  - AF_INET6 (10): family(2) + port(2) + addr(16) = 20 bytes
+%%%
+%%% Fixed header fields = 14 bytes (version + flags + msg_type + body_length + forward_cnt + ret_cnt)
+%%% With AF_INET orig_addr = 14 + 8 = 22 bytes total
+%%%
+%%% NOTE: SLURM 21.08+ has msg_index field, but empirical testing shows
+%%% SLURM 24.x clients still use the OLD format without msg_index for
+%%% client-to-server communication. We must match this format.
 %%%
 %%% If forward_cnt > 0, additional fields follow (nodelist, timeout, tree_width, etc.)
 %%% If ret_cnt > 0, ret_list messages follow.
@@ -57,12 +64,13 @@ header_size() ->
 %%
 %% The header format is:
 %%   <<Version:16/big, Flags:16/big, MsgType:16/big, BodyLength:32/big,
-%%     ForwardCnt:16/big, RetCnt:16/big, OrigAddrFamily:16/big, [OrigAddr, OrigPort based on family]>>
+%%     ForwardCnt:16/big, RetCnt:16/big, OrigAddrFamily:16/big, [OrigAddr based on family]>>
 %%
+%% Fixed fields = 14 bytes (version + flags + msg_type + body_length + forward_cnt + ret_cnt)
 %% orig_addr length varies by family:
 %%   - AF_UNSPEC (0): just family (2 bytes) - total header 16 bytes
-%%   - AF_INET (2): family(2) + addr(4) + port(2) = 8 bytes - total header 22 bytes
-%%   - AF_INET6 (10): family(2) + addr(16) + port(2) = 20 bytes - total header 34 bytes
+%%   - AF_INET (2): family(2) + port(2) + addr(4) = 8 bytes - total header 22 bytes
+%%   - AF_INET6 (10): family(2) + port(2) + addr(16) = 20 bytes - total header 34 bytes
 %%
 %% Returns {ok, Header, Rest} on success where Rest is any remaining data,
 %% or {error, Reason} on failure.
@@ -75,8 +83,8 @@ parse_header(<<Version:16/big,
                ForwardCnt:16/big,
                RetCnt:16/big,
                2:16/big,  %% AF_INET
-               _OrigAddr:32/big,
                _OrigPort:16/big,
+               _OrigAddr:32/big,
                Rest/binary>>) ->
     Header = #slurm_header{
         version = Version,
@@ -96,8 +104,8 @@ parse_header(<<Version:16/big,
                ForwardCnt:16/big,
                RetCnt:16/big,
                10:16/big,  %% AF_INET6
-               _OrigAddr:128/big,  %% 16 bytes for IPv6
                _OrigPort:16/big,
+               _OrigAddr:128/big,  %% 16 bytes for IPv6
                Rest/binary>>) ->
     Header = #slurm_header{
         version = Version,
@@ -133,11 +141,14 @@ parse_header(Binary) when is_binary(Binary), byte_size(Binary) < ?SLURM_HEADER_S
 parse_header(_) ->
     {error, invalid_header_data}.
 
-%% @doc Encode a slurm_header record into a 22-byte binary
+%% @doc Encode a slurm_header record into a 16-byte binary
 %%
 %% Takes a #slurm_header{} record and produces a big-endian binary.
-%% Wire format: version(2) + flags(2) + msg_type(2) + body_length(4) + forward_cnt(2) + ret_cnt(2) + orig_addr(8)
-%% orig_addr format for IPv4: family(2) + addr(4) + port(2) = 8 bytes
+%% Wire format: version(2) + flags(2) + msg_type(2) + body_length(4) + forward_cnt(2) + ret_cnt(2) + orig_addr(2)
+%% Total: 14 + 2 = 16 bytes
+%%
+%% orig_addr format: AF_UNSPEC (family=0) - minimal 2-byte format
+%% Matches what the client sends in requests
 -spec encode_header(#slurm_header{}) -> {ok, binary()} | {error, term()}.
 encode_header(#slurm_header{
     version = Version,
@@ -152,9 +163,8 @@ encode_header(#slurm_header{
         is_integer(BodyLength), BodyLength >= 0, BodyLength =< 4294967295,
         is_integer(ForwardCnt), ForwardCnt >= 0, ForwardCnt =< 65535,
         is_integer(RetCnt), RetCnt >= 0, RetCnt =< 65535 ->
-    %% orig_addr: IPv4 format - family(2) + addr(4) + port(2)
-    %% AF_INET = 2, address = 0.0.0.0, port = 0
-    OrigAddr = <<2:16/big, 0:32/big, 0:16/big>>,
+    %% orig_addr: Use AF_UNSPEC (family=0) - just 2 bytes
+    OrigAddr = <<0:16/big>>,  % AF_UNSPEC = 0
     Binary = <<Version:16/big,
                Flags:16/big,
                MsgType:16/big,

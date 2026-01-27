@@ -16,6 +16,19 @@
 
 -behaviour(ranch_protocol).
 
+%% Temporarily suppress warnings for callback functions during debugging
+-compile([{nowarn_unused_function, [{format_ip, 1},
+                                    {try_callback_connection, 3},
+                                    {try_callback_connection, 4},
+                                    {try_callback_silent, 3},
+                                    {try_callback_silent_sync, 3},
+                                    {callback_socket_loop, 2},
+                                    {callback_handler_loop, 2},
+                                    {spawn_callback_handler, 2},
+                                    {parse_callback_response, 2},
+                                    {send_srun_ping_message, 2},
+                                    {get_peer_host, 1}]}]).
+
 -export([start_link/3]).
 -export([init/3]).
 
@@ -197,33 +210,29 @@ handle_message(MessageBin, #{socket := Socket, transport := Transport,
                     {ok, State#{request_count => Count + 1}};
                 {ok, ResponseType, ResponseBody, CallbackInfo} ->
                     %% Handler returned callback info for srun allocation
-                    %% IMPORTANT: Connect to callback BEFORE sending response
-                    %% srun may close its listener after receiving the allocation response
                     JobId = maps:get(job_id, CallbackInfo, 0),
                     Port = maps:get(port, CallbackInfo, 0),
                     lager:info("srun allocation for job ~p, callback port ~p", [JobId, Port]),
 
-                    %% Try callback connection FIRST (before response)
-                    CallbackResult = case Port of
-                        P when P > 0 ->
-                            %% Get client IP from socket
-                            case inet:peername(Socket) of
-                                {ok, {IpAddr, _}} ->
-                                    Host = format_ip(IpAddr),
-                                    lager:info("Attempting callback connection to ~s:~p BEFORE response", [Host, P]),
-                                    try_callback_connection(Host, P, JobId);
-                                _ ->
-                                    lager:warning("Could not get peer address for callback"),
-                                    {error, no_peer_address}
-                            end;
-                        _ ->
-                            lager:warning("No callback port specified for job ~p", [JobId]),
-                            {error, no_port}
-                    end,
-                    lager:info("Callback result: ~p, now sending allocation response", [CallbackResult]),
-
-                    %% Send the allocation response after callback attempt
+                    %% Send the allocation response FIRST before callback
                     send_response(Socket, Transport, ResponseType, ResponseBody),
+
+                    %% Establish callback connection to srun and send SRUN_PING
+                    %% This notifies srun that controller is ready for notifications
+                    case Port > 0 of
+                        true ->
+                            ClientHost = case inet:peername(Socket) of
+                                {ok, {IP, _}} -> inet:ntoa(IP);
+                                _ -> "127.0.0.1"
+                            end,
+                            lager:info("Initiating callback to ~s:~p for job ~p", [ClientHost, Port, JobId]),
+                            %% Spawn callback in separate process to not block main handler
+                            spawn(fun() ->
+                                try_callback_silent_sync(ClientHost, Port, JobId)
+                            end);
+                        false ->
+                            lager:info("No callback port specified, skipping callback")
+                    end,
                     {ok, State#{request_count => Count + 1}};
                 {error, Reason} ->
                     %% Send error response
@@ -244,8 +253,7 @@ handle_message(MessageBin, #{socket := Socket, transport := Transport,
     end.
 
 %% @doc Send a response message back to the client.
-%% Responses include proper MUNGE auth section.
-%% SLURM clients expect auth section in all messages.
+%% Responses include proper MUNGE auth section (required by srun).
 -spec send_response(inet:socket(), module(), non_neg_integer(), term()) -> ok | {error, term()}.
 send_response(Socket, Transport, MsgType, Body) ->
     case flurm_protocol_codec:encode_response(MsgType, Body) of
@@ -262,17 +270,21 @@ send_response(Socket, Transport, MsgType, Body) ->
                        [MsgType, flurm_protocol_codec:message_type_name(MsgType),
                         byte_size(ResponseBin), HexPrefix]),
             %% Log individual byte breakdown for debugging
+            %% Header is 16 bytes (with AF_UNSPEC orig_addr), so auth starts at byte 20 (4 + 16)
             <<OuterLen:32/big, Version:16/big, Flags:16/big, MsgT:16/big,
-              BodyLen:32/big, FwdCnt:16/big, RetCnt:16/big, AuthStart:12/binary, _/binary>> = ResponseBin,
-            lager:info("Response breakdown: outer=~p ver=~.16B flags=~p msgtype=~p bodylen=~p fwd=~p ret=~p",
+              BodyLen:32/big, FwdCnt:16/big, RetCnt:16/big,
+              OrigFamily:16/big,  %% AF_UNSPEC = just 2 bytes
+              PluginId:32/big, CredLen:32/big, _Rest/binary>> = ResponseBin,
+            lager:info("Response: outer=~p ver=~.16B flags=~p msgtype=~p bodylen=~p fwd=~p ret=~p",
                        [OuterLen, Version, Flags, MsgT, BodyLen, FwdCnt, RetCnt]),
-            %% Show auth section bytes 0-11 (plugin_id, magic, errno)
-            <<PluginId:32/big, Magic:32/big, Errno:32/big>> = AuthStart,
-            lager:info("Auth section: plugin_id=~p (0x~.16B) magic=0x~.16B (~s) errno=~p",
-                       [PluginId, PluginId, Magic, <<Magic:32>>, Errno]),
-            %% Show bytes 16-25 relative to message start (where client might be reading)
-            <<_:16/binary, Bytes16_25:10/binary, _/binary>> = ResponseBin,
-            lager:info("Bytes 16-25: ~w", [binary_to_list(Bytes16_25)]),
+            lager:info("orig_addr: family=~p (AF_UNSPEC)", [OrigFamily]),
+            lager:info("Auth: plugin_id=~p cred_len=~p", [PluginId, CredLen]),
+            %% Show full hex of first 60 bytes
+            HexFirst60 = case byte_size(ResponseBin) >= 60 of
+                true -> <<First60:60/binary, _/binary>> = ResponseBin, binary_to_hex(First60);
+                false -> binary_to_hex(ResponseBin)
+            end,
+            lager:info("Full hex60: ~s", [HexFirst60]),
             case Transport:send(Socket, ResponseBin) of
                 ok ->
                     lager:info("Response sent successfully"),
@@ -289,6 +301,21 @@ send_response(Socket, Transport, MsgType, Body) ->
 %% Helper to convert binary to hex string
 binary_to_hex(Bin) ->
     list_to_binary([[io_lib:format("~2.16.0B", [B]) || B <- binary_to_list(Bin)]]).
+
+%% @doc Get the peer host from a socket (for callback connections)
+-spec get_peer_host(inet:socket()) -> {ok, string()} | {error, term()}.
+get_peer_host(Socket) ->
+    case inet:peername(Socket) of
+        {ok, {IP, _Port}} ->
+            case IP of
+                {A, B, C, D} ->
+                    {ok, inet:ntoa({A, B, C, D})};
+                _ ->
+                    {ok, inet:ntoa(IP)}
+            end;
+        {error, Reason} ->
+            {error, Reason}
+    end.
 
 -ifdef(TEST).
 %%====================================================================
@@ -355,9 +382,130 @@ format_ip({A, B, C, D, E, F, G, H}) ->
     lists:flatten(io_lib:format("~.16B:~.16B:~.16B:~.16B:~.16B:~.16B:~.16B:~.16B",
                                 [A, B, C, D, E, F, G, H])).
 
-%% @doc Try to connect to srun's callback port and send job ready message.
-%% This is attempted after sending the allocation response.
-%% Uses retry logic since srun may take time to be ready for callback.
+%% @doc Try callback connection with SRUN_PING message.
+%% Connects, sends SRUN_PING, waits for response, then keeps socket open.
+%% Returns {ok, Pid} where Pid is the process maintaining the callback socket.
+-spec try_callback_silent_sync(string(), non_neg_integer(), non_neg_integer()) -> ok | {error, term()}.
+try_callback_silent_sync(Host, Port, JobId) ->
+    lager:info("Callback sync to ~s:~p for job ~p", [Host, Port, JobId]),
+    Options = [binary, {packet, raw}, {active, false}, {nodelay, true}],
+    case gen_tcp:connect(Host, Port, Options, 1000) of
+        {ok, Socket} ->
+            lager:info("Callback connected to ~s:~p for job ~p", [Host, Port, JobId]),
+            %% Send SRUN_PING - srun expects a valid SLURM message after accepting
+            %% This prevents the "Socket timed out on send/recv" error
+            case send_srun_ping_message(Socket, JobId) of
+                ok ->
+                    lager:info("SRUN_PING sent to callback for job ~p", [JobId]),
+                    %% Wait for srun's response
+                    case gen_tcp:recv(Socket, 0, 5000) of
+                        {ok, ResponseData} ->
+                            lager:info("Callback ping response: ~p bytes", [byte_size(ResponseData)]),
+                            parse_callback_response(ResponseData, JobId);
+                        {error, timeout} ->
+                            lager:warning("Callback ping response timeout for job ~p", [JobId]);
+                        {error, RecvErr} ->
+                            lager:warning("Callback ping recv error: ~p", [RecvErr])
+                    end,
+                    %% Keep socket alive
+                    spawn_callback_handler(Socket, JobId),
+                    ok;
+                {error, PingErr} ->
+                    lager:warning("Failed to send SRUN_PING: ~p", [PingErr]),
+                    gen_tcp:close(Socket),
+                    {error, PingErr}
+            end;
+        {error, econnrefused} ->
+            lager:debug("Callback connection refused to ~s:~p", [Host, Port]),
+            {error, econnrefused};
+        {error, Reason} ->
+            lager:warning("Callback connection failed to ~s:~p: ~p", [Host, Port, Reason]),
+            {error, Reason}
+    end.
+
+%% Spawn a dedicated handler process for the callback socket
+spawn_callback_handler(Socket, JobId) ->
+    %% Spawn a linked process to handle the socket
+    Pid = spawn(fun() ->
+        %% This process now owns the socket (after controlling_process)
+        receive
+            {take_socket, S} ->
+                lager:info("Callback handler ~p received socket for job ~p", [self(), JobId]),
+                inet:setopts(S, [{active, true}]),
+                callback_handler_loop(S, JobId)
+        after 5000 ->
+            lager:warning("Callback handler timeout waiting for socket for job ~p", [JobId])
+        end
+    end),
+    %% Transfer socket ownership
+    case gen_tcp:controlling_process(Socket, Pid) of
+        ok ->
+            lager:info("Transferred socket ownership to ~p for job ~p", [Pid, JobId]),
+            Pid ! {take_socket, Socket};
+        {error, Reason} ->
+            lager:warning("Failed to transfer socket ownership: ~p", [Reason]),
+            exit(Pid, socket_transfer_failed),
+            gen_tcp:close(Socket)
+    end.
+
+%% Long-running handler loop for callback socket
+callback_handler_loop(Socket, JobId) ->
+    receive
+        {tcp, Socket, Data} ->
+            Hex = binary_to_hex(Data),
+            lager:info("Callback handler received from job ~p: ~p bytes, hex=~s",
+                       [JobId, byte_size(Data), Hex]),
+            callback_handler_loop(Socket, JobId);
+        {tcp_closed, Socket} ->
+            lager:info("Callback handler: socket closed for job ~p", [JobId]);
+        {tcp_error, Socket, Reason} ->
+            lager:warning("Callback handler: socket error for job ~p: ~p", [JobId, Reason])
+    after 300000 ->  %% 5 minute timeout
+        lager:debug("Callback handler timeout for job ~p", [JobId]),
+        gen_tcp:close(Socket)
+    end.
+
+%% Parse and log the callback response from srun
+parse_callback_response(Data, JobId) when byte_size(Data) >= 14 ->
+    <<OL:32/big, V:16/big, F:16/big, MT:16/big, BL:32/big, Rest/binary>> = Data,
+    lager:info("Callback response for job ~p: outer_len=~p ver=~.16B flags=~p msg_type=~p body_len=~p",
+               [JobId, OL, V, F, MT, BL]),
+    %% Try to extract the return code if this is RESPONSE_SLURM_RC (8001)
+    case {MT, BL, Rest} of
+        {8001, _, _} when byte_size(Rest) >= BL ->
+            %% Skip auth section to get body
+            lager:info("Callback response is RESPONSE_SLURM_RC (~p)", [MT]);
+        _ ->
+            ok
+    end;
+parse_callback_response(Data, JobId) ->
+    lager:info("Callback response for job ~p: ~p bytes (too small to parse)",
+               [JobId, byte_size(Data)]).
+
+%% @doc Try callback connection silently - just connect, don't send anything.
+%% This establishes the message socket that srun's message thread expects.
+-spec try_callback_silent(string(), non_neg_integer(), non_neg_integer()) -> ok | {error, term()}.
+try_callback_silent(Host, Port, JobId) ->
+    lager:info("Silent callback attempt to ~s:~p for job ~p", [Host, Port, JobId]),
+    Options = [binary, {packet, raw}, {active, true}, {nodelay, true}],
+    case gen_tcp:connect(Host, Port, Options, 2000) of
+        {ok, Socket} ->
+            lager:info("Silent callback connected to ~s:~p for job ~p", [Host, Port, JobId]),
+            %% Just keep the socket open - don't send anything
+            %% The message thread expects the connection to stay open
+            callback_handler_loop(Socket, JobId);
+        {error, econnrefused} ->
+            lager:debug("Callback connection refused to ~s:~p", [Host, Port]),
+            {error, econnrefused};
+        {error, Reason} ->
+            lager:warning("Callback connection failed to ~s:~p: ~p", [Host, Port, Reason]),
+            {error, Reason}
+    end.
+
+%% @doc Try to connect to srun's callback port for out-of-band notifications.
+%% This is attempted BEFORE sending the allocation response.
+%% The callback socket is used for SRUN_PING, SRUN_JOB_COMPLETE, etc.
+%% srun will connect DIRECTLY to slurmd (node daemon) for task execution.
 -spec try_callback_connection(string(), non_neg_integer(), non_neg_integer()) -> ok | {error, term()}.
 try_callback_connection(Host, Port, JobId) ->
     try_callback_connection(Host, Port, JobId, 5).  %% 5 retries
@@ -375,14 +523,23 @@ try_callback_connection(Host, Port, JobId, Retries) ->
             try_callback_connection(Host, Port, JobId, Retries - 1);
         {ok, Socket} ->
             lager:info("Connected to srun callback at ~s:~p", [Host, Port]),
-            %% Don't send anything on callback socket yet - just keep it open
-            %% srun expects the callback socket to be available for job event notifications
-            %% Spawn handler to keep socket alive and handle incoming messages
-            spawn(fun() ->
-                lager:info("Callback handler started for job ~p (no initial message)", [JobId]),
-                inet:setopts(Socket, [{active, true}]),
+            %% Send SRUN_PING immediately before srun times out the connection
+            %% srun expects a valid SLURM message after accepting connection
+            case send_srun_ping_message(Socket, JobId) of
+                ok ->
+                    lager:info("SRUN_PING sent successfully, setting up handler");
+                {error, PingErr} ->
+                    lager:warning("Failed to send SRUN_PING: ~p", [PingErr])
+            end,
+            %% Set active mode so we can receive messages from srun
+            inet:setopts(Socket, [{active, true}]),
+            %% Spawn handler to keep connection open and handle messages
+            HandlerPid = spawn(fun() ->
+                lager:info("Callback handler started for job ~p (after PING)", [JobId]),
                 callback_socket_loop(Socket, JobId)
             end),
+            %% Transfer socket ownership to handler process
+            gen_tcp:controlling_process(Socket, HandlerPid),
             ok;
         {error, ConnectErr} ->
             lager:warning("Failed to connect to srun callback at ~s:~p: ~p",
@@ -394,7 +551,16 @@ try_callback_connection(Host, Port, JobId, Retries) ->
 callback_socket_loop(Socket, JobId) ->
     receive
         {tcp, Socket, Data} ->
-            lager:info("Callback data from srun for job ~p: ~p bytes", [JobId, byte_size(Data)]),
+            Hex = binary_to_hex(Data),
+            lager:info("Callback data from srun for job ~p: ~p bytes, hex=~s", [JobId, byte_size(Data), Hex]),
+            %% Try to parse as SLURM message
+            case byte_size(Data) >= 14 of
+                true ->
+                    <<OL:32/big, V:16/big, F:16/big, MT:16/big, BL:32/big, _/binary>> = Data,
+                    lager:info("Callback msg: outer_len=~p ver=~.16B flags=~.16B msg_type=~p body_len=~p",
+                               [OL, V, F, MT, BL]);
+                false -> ok
+            end,
             callback_socket_loop(Socket, JobId);
         {tcp_closed, Socket} ->
             lager:info("Callback socket closed for job ~p", [JobId]),
@@ -419,6 +585,21 @@ callback_socket_loop(Socket, JobId) ->
         lager:debug("Callback socket timeout for job ~p", [JobId]),
         gen_tcp:close(Socket),
         ok
+    end.
+
+%% @doc Send SRUN_PING to callback to notify srun that callback is active.
+-spec send_srun_ping_message(inet:socket(), non_neg_integer()) -> ok | {error, term()}.
+send_srun_ping_message(Socket, JobId) ->
+    lager:info("Sending SRUN_PING to callback for job ~p", [JobId]),
+    Ping = #srun_ping{job_id = JobId, step_id = 0},
+    case flurm_protocol_codec:encode_response(?SRUN_PING, Ping) of
+        {ok, MessageBin} ->
+            Result = gen_tcp:send(Socket, MessageBin),
+            lager:info("Sent SRUN_PING to callback, result: ~p, size: ~p", [Result, byte_size(MessageBin)]),
+            Result;
+        {error, Reason} ->
+            lager:warning("Failed to encode SRUN_PING: ~p", [Reason]),
+            {error, Reason}
     end.
 
 %% @doc Close the connection gracefully.

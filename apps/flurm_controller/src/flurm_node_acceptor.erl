@@ -219,6 +219,40 @@ handle_message(_Socket, _Transport, #{type := job_failed, payload := Payload}) -
     end,
     ok;
 
+handle_message(_Socket, _Transport, #{type := step_complete, payload := Payload}) ->
+    JobId = maps:get(<<"job_id">>, Payload),
+    StepId = maps:get(<<"step_id">>, Payload),
+    ExitCode = maps:get(<<"exit_code">>, Payload, 0),
+    Output = maps:get(<<"output">>, Payload, <<>>),
+
+    log(info, "Step ~p.~p completed with exit code ~p, output: ~p bytes",
+        [JobId, StepId, ExitCode, byte_size(Output)]),
+
+    %% Forward output to srun callback
+    case flurm_srun_callback:send_task_output(JobId, Output, ExitCode) of
+        ok ->
+            log(info, "Sent step output to srun callback for job ~p", [JobId]);
+        {error, Reason} ->
+            log(warning, "Failed to send step output to srun callback: ~p", [Reason])
+    end,
+
+    %% Mark step as completed
+    flurm_step_manager:complete_step(JobId, StepId, ExitCode),
+
+    %% Also notify job complete if this is an srun job
+    flurm_srun_callback:notify_job_complete(JobId, ExitCode, Output),
+
+    %% Update job state
+    flurm_job_manager:update_job(JobId, #{
+        state => completed,
+        exit_code => ExitCode,
+        end_time => erlang:system_time(second)
+    }),
+
+    %% Notify scheduler to release resources
+    flurm_scheduler:job_completed(JobId),
+    ok;
+
 handle_message(_Socket, _Transport, #{type := Type, payload := _Payload}) ->
     log(debug, "Received unhandled message type: ~p", [Type]),
     ok.

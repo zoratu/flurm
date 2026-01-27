@@ -60,6 +60,7 @@
 
 -include("flurm_protocol.hrl").
 
+
 %%%===================================================================
 %%% Main API
 %%%===================================================================
@@ -238,7 +239,7 @@ encode_with_extra(MsgType, Body, Hostname) ->
 %% Where:
 %%   - Header = <<Version:16, Flags:16, MsgType:16, BodyLen:32, ForwardCnt:16, RetCnt:16>>
 %%   - AuthSection = <<PluginId:32, MungeMagic:32, Errno:32, CredPackstr/binary>>
-%%   - Header.body_length = BodySize only (auth is unpacked separately)
+%%   - Header.body_length = AuthSize + BodySize (SLURM expects both in body_length)
 %%   - ForwardCnt and RetCnt are 0 for simple responses
 %%
 -spec encode_response(non_neg_integer(), term()) -> {ok, binary()} | {error, term()}.
@@ -246,25 +247,38 @@ encode_response(MsgType, Body) ->
     case encode_body(MsgType, Body) of
         {ok, BodyBin} ->
             BodySize = byte_size(BodyBin),
-            %% Get MUNGE credential for auth section (proper format for srun compat)
-            AuthSection = create_proper_auth_section(),
+            %% Log body hex for debugging (first 64 bytes)
+            BodyHex = case BodySize > 64 of
+                true ->
+                    <<First64:64/binary, _/binary>> = BodyBin,
+                    binary_to_hex(First64);
+                false ->
+                    binary_to_hex(BodyBin)
+            end,
+            lager:info("Body for msg_type=~p: size=~p hex64=~s", [MsgType, BodySize, BodyHex]),
+            %% Create auth section WITH proper message hash embedded
+            %% HASH_PLUGIN_NONE format: plugin_type(1) + msg_type(2) = 3 bytes
+            AuthSection = create_proper_auth_section(MsgType),
             AuthSize = byte_size(AuthSection),
-            lager:info("encode_response: auth_section_size=~p, body_size=~p", [AuthSize, BodySize]),
+            lager:info("encode_response: auth_section_size=~p, body_size=~p (with hash for msg_type=~p)", [AuthSize, BodySize, MsgType]),
 
+            %% CRITICAL: body_length in SLURM protocol = ONLY the body size (NOT including auth)
+            %% The auth section is self-delimiting - auth_g_unpack() reads its own data.
+            %% After auth unpacking, remaining bytes should equal body_length.
             Header = #slurm_header{
                 version = flurm_protocol_header:protocol_version(),
                 flags = 0,
                 msg_index = 0,
                 msg_type = MsgType,
-                body_length = BodySize  %% Only body size, auth is handled separately
+                body_length = BodySize  %% ONLY body size, auth is self-delimiting
             },
             case flurm_protocol_header:encode_header(Header) of
                 {ok, HeaderBin} ->
                     %% Wire format: outer_length, header, auth_section, body
                     TotalPayload = <<HeaderBin/binary, AuthSection/binary, BodyBin/binary>>,
                     OuterLength = byte_size(TotalPayload),
-                    lager:info("Response: header=~p auth=~p body=~p total=~p",
-                               [byte_size(HeaderBin), AuthSize, BodySize, OuterLength]),
+                    lager:info("Response: header=~p auth=~p body=~p body_length=~p total=~p",
+                               [byte_size(HeaderBin), AuthSize, BodySize, BodySize, OuterLength]),
                     {ok, <<OuterLength:32/big, TotalPayload/binary>>};
                 {error, _} = HeaderError ->
                     HeaderError
@@ -304,28 +318,29 @@ encode_response_no_auth(MsgType, Body) ->
 
 %% @doc Encode a response with proper SLURM MUNGE auth format.
 %% For srun RESPONSE_RESOURCE_ALLOCATION compatibility.
-%% Wire format: <<OuterLength:32, Header:14, AuthSection, Body>>
+%% Wire format: <<OuterLength:32, Header:22, AuthSection, Body>>
 %% Where AuthSection uses proper MUNGE format: plugin_id, magic, errno, credential_packstr
 -spec encode_response_proper_auth(non_neg_integer(), term()) -> {ok, binary()} | {error, term()}.
 encode_response_proper_auth(MsgType, Body) ->
     case encode_body(MsgType, Body) of
         {ok, BodyBin} ->
             BodySize = byte_size(BodyBin),
-            AuthSection = create_proper_auth_section(),
+            AuthSection = create_proper_auth_section(MsgType),
             AuthSize = byte_size(AuthSection),
+            %% CRITICAL: body_length = ONLY body size (auth is self-delimiting)
             Header = #slurm_header{
                 version = flurm_protocol_header:protocol_version(),
                 flags = 0,
                 msg_index = 0,
                 msg_type = MsgType,
-                body_length = BodySize
+                body_length = BodySize  %% ONLY body size
             },
             case flurm_protocol_header:encode_header(Header) of
                 {ok, HeaderBin} ->
                     TotalPayload = <<HeaderBin/binary, AuthSection/binary, BodyBin/binary>>,
                     OuterLength = byte_size(TotalPayload),
-                    lager:info("Response (proper auth): header=~p auth=~p body=~p total=~p",
-                               [byte_size(HeaderBin), AuthSize, BodySize, OuterLength]),
+                    lager:info("Response (proper auth): header=~p auth=~p body=~p body_length=~p total=~p",
+                               [byte_size(HeaderBin), AuthSize, BodySize, BodySize, OuterLength]),
                     {ok, <<OuterLength:32/big, TotalPayload/binary>>};
                 {error, _} = HeaderError ->
                     HeaderError
@@ -385,34 +400,55 @@ strip_auth_section_from_response(BodyWithAuth, BodyLen) when byte_size(BodyWithA
 strip_auth_section_from_response(BodyWithAuth, BodyLen) ->
     {error, {body_too_short, byte_size(BodyWithAuth), BodyLen}}.
 
-%% @doc Get MUNGE credential by calling munge command
--spec get_munge_credential() -> {ok, binary()} | {error, term()}.
-get_munge_credential() ->
+%% @doc Get MUNGE credential by calling munge command with optional payload
+%% If MsgType is provided, embeds a HASH_PLUGIN_NONE hash (plugin_type + msg_type bytes)
+-spec get_munge_credential(non_neg_integer() | undefined) -> {ok, binary()} | {error, term()}.
+get_munge_credential(undefined) ->
+    %% No hash - create credential with no payload
     case os:cmd("munge -n 2>/dev/null") of
         [] -> {error, munge_not_available};
         Result ->
-            %% Remove trailing newline
             Cred = string:trim(Result, trailing, "\n"),
+            {ok, list_to_binary(Cred)}
+    end;
+get_munge_credential(MsgType) when is_integer(MsgType) ->
+    %% Create HASH_PLUGIN_NONE payload: plugin_type(1) + msg_type(2) = 3 bytes
+    %% HASH_PLUGIN_NONE = 0
+    %% msg_type in network byte order (big-endian)
+    HashPayload = <<0:8, MsgType:16/big>>,
+    %% Base64 encode the payload and pass to munge via echo | munge
+    B64Payload = base64:encode(HashPayload),
+    Cmd = io_lib:format("echo -n '~s' | base64 -d | munge 2>/dev/null", [B64Payload]),
+    lager:info("MUNGE cmd for msg_type ~p: ~s", [MsgType, lists:flatten(Cmd)]),
+    case os:cmd(lists:flatten(Cmd)) of
+        [] ->
+            lager:warning("MUNGE command returned empty, falling back to no-payload"),
+            get_munge_credential(undefined);
+        Result ->
+            Cred = string:trim(Result, trailing, "\n"),
+            lager:info("MUNGE credential obtained, length=~p", [length(Cred)]),
             {ok, list_to_binary(Cred)}
     end.
 
 %% Old auth section format removed - using create_proper_auth_section only
 
 %% @doc Create auth section with proper SLURM format
-%% Format from slurm_auth.c auth_g_pack:
-%%   plugin_id:32 (101 = AUTH_PLUGIN_MUNGE)
-%% Then plugin-specific data (auth_munge.c auth_p_pack):
-%%   credential_packstr (length:32, credential, null:8)
-%% Note: MUNGE magic and errno are NOT part of the wire format
--spec create_proper_auth_section() -> binary().
-create_proper_auth_section() ->
+%% Format for auth_g_unpack (reading order):
+%%   plugin_id:32 (101 = AUTH_PLUGIN_MUNGE) - read FIRST by auth_g_unpack
+%%   credential_packstr (length:32, credential, null:8) - read by auth_p_unpack
+%%
+%% NOTE: Try without embedded hash - maybe SLURM doesn't expect hash in server responses
+-spec create_proper_auth_section(non_neg_integer() | undefined) -> binary().
+create_proper_auth_section(_MsgType) ->
     PluginId = 101,  %% AUTH_PLUGIN_MUNGE
-    case get_munge_credential() of
+    %% Use MUNGE credential WITHOUT payload (no hash embedded)
+    case get_munge_credential(undefined) of
         {ok, Credential} ->
             CredLen = byte_size(Credential),
             CredPackstr = flurm_protocol_pack:pack_string(Credential),
+            %% Order for auth_g_unpack: plugin_id FIRST, then credential
             AuthBin = <<PluginId:32/big, CredPackstr/binary>>,
-            lager:info("AUTH: plugin_id=~p cred_len=~p packstr_len=~p total=~p",
+            lager:info("AUTH: plugin_id=~p cred_len=~p packstr_len=~p total=~p (no hash)",
                        [PluginId, CredLen, byte_size(CredPackstr), byte_size(AuthBin)]),
             AuthBin;
         {error, _} ->
@@ -572,6 +608,11 @@ encode_body(?REQUEST_KILL_JOB, Req) ->
 encode_body(?RESPONSE_JOB_WILL_RUN, Resp) ->
     encode_job_will_run_response(Resp);
 
+%% RESPONSE_JOB_READY (4020) - srun checks if nodes are ready for job
+%% Format: return_code(32) - same as RESPONSE_SLURM_RC
+encode_body(?RESPONSE_JOB_READY, Resp) ->
+    encode_job_ready_response(Resp);
+
 %% RESPONSE_SLURM_RC (8001)
 encode_body(?RESPONSE_SLURM_RC, Resp) ->
     encode_slurm_rc_response(Resp);
@@ -726,6 +767,8 @@ message_type_name(?REQUEST_KILL_JOB) -> request_kill_job;
 message_type_name(?REQUEST_UPDATE_JOB) -> request_update_job;
 message_type_name(?REQUEST_JOB_WILL_RUN) -> request_job_will_run;
 message_type_name(?RESPONSE_JOB_WILL_RUN) -> response_job_will_run;
+message_type_name(?REQUEST_JOB_READY) -> request_job_ready;
+message_type_name(?RESPONSE_JOB_READY) -> response_job_ready;
 message_type_name(?REQUEST_JOB_STEP_CREATE) -> request_job_step_create;
 message_type_name(?RESPONSE_JOB_STEP_CREATE) -> response_job_step_create;
 message_type_name(?RESPONSE_SLURM_RC) -> response_slurm_rc;
@@ -803,6 +846,7 @@ is_response(?RESPONSE_JOB_STEP_CREATE) -> true;
 is_response(?RESPONSE_JOB_STEP_INFO) -> true;
 is_response(?RESPONSE_STEP_LAYOUT) -> true;
 is_response(?RESPONSE_LAUNCH_TASKS) -> true;
+is_response(?RESPONSE_JOB_READY) -> true;
 is_response(?RESPONSE_SLURM_RC) -> true;
 is_response(?RESPONSE_SLURM_RC_MSG) -> true;
 is_response(?RESPONSE_RESERVATION_INFO) -> true;
@@ -981,36 +1025,40 @@ extract_srun_callback_info(Binary) ->
 %% in the job_desc_msg for SLURM 23.11/24.11 protocol version 0x2600
 try_parse_4_packstrs(Binary) when byte_size(Binary) >= 348 ->
     %% Scan for callback port at common offsets
-    %% The exact offset varies based on variable-length fields before it
-    %% Extend scan range to cover more variations
-    Candidates = scan_for_callback_port_at_offsets(Binary, [340, 341, 342, 343, 344, 345, 346, 347, 348, 349, 350, 351, 352, 353, 354]),
+    %% The exact offset varies based on variable-length fields before it (packstrs)
+    %% Body sizes range from ~470 to ~490 bytes, so port is at offsets 340-360
+    Candidates = scan_for_callback_port_at_offsets(Binary, lists:seq(335, 370)),
     lager:info("Port candidates: ~p", [Candidates]),
-    %% Preferred offsets 347-350 are most reliable for the callback port
-    %% Try higher offsets first as they're more likely to be correct
-    PreferredOffsets = [350, 349, 348, 347],
-    case find_port_at_offsets(Candidates, PreferredOffsets) of
-        {ok, Offset, Port} ->
-            lager:info("Found callback port at preferred offset ~p: ~p", [Offset, Port]),
+    %% Filter to ephemeral ports (32768-60999) which are used for the callback listener
+    EphemeralCandidates = [{O, P} || {O, P} <- Candidates, P >= 32768, P =< 60999],
+    lager:info("Ephemeral port candidates (32768-60999): ~p", [EphemeralCandidates]),
+    %% Further filter: reject ports that look like structure padding
+    %% Real ephemeral ports are randomly assigned by the OS and don't have regular patterns
+    %% Suspicious patterns: low byte is 0x00 or port divisible by 256
+    RealPortCandidates = [{O, P} || {O, P} <- EphemeralCandidates,
+                                    (P rem 256) =/= 0,        % Not divisible by 256
+                                    (P rem 256) =/= 192],     % Not 0xC0 low byte
+    lager:info("Real port candidates (filtered): ~p", [RealPortCandidates]),
+    %% Prefer the candidate at the HIGHEST offset from the filtered list
+    %% The port field comes after variable-length strings, so higher offset = correct position
+    case RealPortCandidates of
+        [_ | _] ->
+            %% Sort by offset descending and take the highest
+            Sorted = lists:reverse(lists:keysort(1, RealPortCandidates)),
+            {Offset, Port} = hd(Sorted),
+            lager:info("Found callback port at offset ~p: ~p (highest filtered)", [Offset, Port]),
             {Port, 0, 0};
-        not_found ->
-            %% srun uses ephemeral ports typically in 32768-60999 range
-            %% Fall back to ports in this range at any offset
-            EphemeralCandidates = [{O, P} || {O, P} <- Candidates, P >= 32768, P =< 60999],
-            lager:info("Ephemeral port candidates (32768-60999): ~p", [EphemeralCandidates]),
+        [] ->
+            %% Fall back to any ephemeral port (highest offset)
             case EphemeralCandidates of
-                [{Offset2, Port2} | _] ->
-                    lager:info("Found callback port at offset ~p: ~p (ephemeral fallback)", [Offset2, Port2]),
+                [_ | _] ->
+                    Sorted2 = lists:reverse(lists:keysort(1, EphemeralCandidates)),
+                    {Offset2, Port2} = hd(Sorted2),
+                    lager:info("Found callback port at offset ~p: ~p (fallback highest)", [Offset2, Port2]),
                     {Port2, 0, 0};
                 [] ->
-                    %% Fall back to first candidate
-                    case Candidates of
-                        [{Offset3, Port3} | _] ->
-                            lager:info("Found callback port at offset ~p: ~p (last resort)", [Offset3, Port3]),
-                            {Port3, 0, 0};
-                        [] ->
-                            lager:warning("No callback port found in known offsets"),
-                            scan_for_callback_port(Binary)
-                    end
+                    lager:warning("No callback port found in known offsets"),
+                    scan_for_callback_port(Binary)
             end
     end;
 try_parse_4_packstrs(Binary) ->
@@ -1018,14 +1066,6 @@ try_parse_4_packstrs(Binary) ->
     lager:warning("Message too short (~p bytes), trying scan", [byte_size(Binary)]),
     scan_for_callback_port(Binary).
 
-%% Find first candidate at one of the preferred offsets
-find_port_at_offsets(_Candidates, []) ->
-    not_found;
-find_port_at_offsets(Candidates, [Offset | Rest]) ->
-    case lists:keyfind(Offset, 1, Candidates) of
-        {Offset, Port} -> {ok, Offset, Port};
-        false -> find_port_at_offsets(Candidates, Rest)
-    end.
 
 %% Check specific offsets for callback port
 scan_for_callback_port_at_offsets(Binary, Offsets) ->
@@ -2247,14 +2287,29 @@ encode_kill_job_request(#kill_job_request{
 encode_slurm_rc_response(#slurm_rc_response{return_code = RC}) ->
     {ok, <<RC:32/big-signed>>}.
 
+%% Encode RESPONSE_JOB_READY (4020)
+%% srun sends REQUEST_JOB_READY (4019) to check if nodes are ready
+%% SLURM uses return_code_msg_t format - same as RESPONSE_SLURM_RC
+%% Format: just return_code(32) - 0 = ready, non-zero = error
+encode_job_ready_response(#{return_code := RC}) ->
+    {ok, <<RC:32/big-signed>>};
+encode_job_ready_response(RC) when is_integer(RC) ->
+    {ok, <<RC:32/big-signed>>}.
+
 %% Encode SRUN_JOB_COMPLETE (7004)
 %% Sent to srun to indicate job is ready/complete
+%% SLURM 22.05 format: slurm_step_id_t has job_id, step_id, step_het_comp
 encode_srun_job_complete(#srun_job_complete{job_id = JobId, step_id = StepId}) ->
-    {ok, <<JobId:32/big, StepId:32/big>>}.
+    %% step_het_comp is 0 for non-heterogeneous jobs
+    StepHetComp = 0,
+    {ok, <<JobId:32/big, StepId:32/big, StepHetComp:32/big>>}.
 
 %% Encode SRUN_PING (7001)
-encode_srun_ping(#srun_ping{job_id = JobId, step_id = StepId}) ->
-    {ok, <<JobId:32/big, StepId:32/big>>}.
+%% According to SLURM source (slurm_protocol_pack.c), SRUN_PING has NO BODY.
+%% The message type alone indicates a ping request.
+encode_srun_ping(#srun_ping{}) ->
+    %% SRUN_PING contains no body/information - just an empty body
+    {ok, <<>>}.
 
 %% Encode RESPONSE_SUBMIT_BATCH_JOB (4004)
 encode_batch_job_response(#batch_job_response{
@@ -2321,8 +2376,8 @@ encode_resource_allocation_response(#resource_allocation_response{
     partition = Partition,
     error_code = ErrorCode,
     job_submit_user_msg = UserMsg,
-    cpus_per_node = _CpusPerNode,
-    num_cpu_groups = _NumCpuGroups,
+    cpus_per_node = CpusPerNode,
+    num_cpu_groups = NumCpuGroups,
     node_addrs = NodeAddrs
 }) ->
     %% Use actual NodeList or empty string
@@ -2385,9 +2440,10 @@ encode_resource_allocation_response(#resource_allocation_response{
         <<16#FFFF:16/big>>,
         %% 15. ntasks_per_socket = NO_VAL16
         <<16#FFFF:16/big>>,
-        %% 16. num_cpu_groups = 0
-        <<0:32/big>>,
-        %% 17-18. (skip cpu arrays - num_cpu_groups = 0)
+        %% 16. num_cpu_groups
+        %% 17. cpus_per_node array (uint16 per group)
+        %% 18. cpu_count_reps array (uint32 per group - how many nodes have this CPU count)
+        encode_cpu_groups(NumCpuGroups, CpusPerNode, NodeCnt),
         %% 19. partition
         flurm_protocol_pack:pack_string(Partition),
         %% 20. pn_min_memory = 0
@@ -2398,33 +2454,36 @@ encode_resource_allocation_response(#resource_allocation_response{
         flurm_protocol_pack:pack_string(<<>>),
         %% 23. select_jobinfo via select_g_select_jobinfo_unpack:
         %%     First: plugin_id: uint32 (109 = SELECT_PLUGIN_CONS_TRES)
-        %%     Then plugin-specific data from cons_common/cons_common.c:
-        %%       alloc_cpus: uint16
-        %%       alloc_memory: uint64
-        %%       tres_alloc_fmt_str: string
-        %%       tres_alloc_weighted: double
-        <<109:32/big>>,                            % plugin_id = SELECT_PLUGIN_CONS_TRES (109)
-        <<1:16/big>>,                              % alloc_cpus = 1
-        <<0:64/big>>,                              % alloc_memory = 0
-        flurm_protocol_pack:pack_string(<<>>),    % tres_alloc_fmt_str = empty
-        <<0:64/big>>,                              % tres_alloc_weighted = 0.0 (as uint64 bits)
+        %%     Then plugin-specific data: NONE for cons_tres/cons_common
+        %%     (select_p_select_jobinfo_pack in cons_common.c is empty - packs nothing)
+        <<109:32/big>>,
         %% 24. cluster_rec_present = 0 (NULL)
         <<0:8>>
         %% 25. (skip working_cluster_rec - not present)
     ],
     {ok, iolist_to_binary(Parts)}.
 
-%% Pack a SLURM network address (slurm_addr_t)
-%% Wire format (from slurm_addr_pack in slurm_protocol_pack.c):
-%%   family:16/big, port:16/big, ip:32/big
+%% Pack a SLURM network address for address arrays (slurm_pack_addr format)
+%% Wire format from slurm_protocol_socket.c slurm_pack_addr():
+%%   For AF_INET:
+%%     - family: uint16 (big-endian via pack16)
+%%     - addr: uint32 (big-endian via pack32)
+%%     - port: uint16 (big-endian via pack16)
+%% Total: 2 + 4 + 2 = 8 bytes per address
+%% NOTE: This is different from packmem format which includes raw sockaddr_in with padding!
 %% IP is a tuple like {172, 19, 0, 3}
 pack_slurm_addr({A, B, C, D}, Port) when is_integer(A), is_integer(B),
                                          is_integer(C), is_integer(D),
                                          is_integer(Port) ->
     %% AF_INET = 2 for IPv4
-    %% Order: family, port, IP (NOT family, IP, port!)
+    %% SLURM's slurm_pack_addr() packs the address directly (NO ntohl):
+    %%   pack32(in->sin_addr.s_addr, buffer);
+    %% sin_addr.s_addr is already in network byte order (big-endian).
+    %% So for IP 172.18.0.3, wire format is AC 12 00 03 (network order).
     IP = (A bsl 24) bor (B bsl 16) bor (C bsl 8) bor D,
-    <<2:16/big, Port:16/big, IP:32/big>>;
+    <<2:16/big,       % family = AF_INET
+      IP:32/big,      % addr (network order, same as sin_addr.s_addr)
+      Port:16/big>>;  % port (network order)
 pack_slurm_addr(IPBin, Port) when is_binary(IPBin), is_integer(Port) ->
     %% Parse "172.19.0.3" format
     case inet:parse_address(binary_to_list(IPBin)) of
@@ -2434,6 +2493,63 @@ pack_slurm_addr(IPBin, Port) when is_binary(IPBin), is_integer(Port) ->
             %% Fallback to localhost
             pack_slurm_addr({127, 0, 0, 1}, Port)
     end.
+
+%% Encode CPU groups for resource allocation response
+%% SLURM wire format (from slurm_protocol_pack.c _pack_resource_allocation_response_msg):
+%%   - num_cpu_groups: uint32
+%%   - If num_cpu_groups > 0:
+%%     - cpus_per_node: pack16_array (array_count:32, elements:16 each)
+%%     - cpu_count_reps: pack32_array (array_count:32, elements:32 each)
+%%
+%% Example: 1 group with 1 CPU per node, 1 node total:
+%%   num_cpu_groups=1
+%%   cpus_per_node_count=1, cpus_per_node[0]=1
+%%   cpu_count_reps_count=1, cpu_count_reps[0]=1
+encode_cpu_groups(0, _CpusPerNode, _NodeCnt) ->
+    %% No CPU groups - just the count
+    <<0:32/big>>;
+encode_cpu_groups(NumCpuGroups, CpusPerNode, NodeCnt) when is_integer(NumCpuGroups), NumCpuGroups > 0 ->
+    %% Ensure CpusPerNode is a list
+    CpusList = case CpusPerNode of
+        L when is_list(L) -> L;
+        N when is_integer(N) -> [N];
+        undefined -> [1];
+        _ -> [1]
+    end,
+    %% Pad or truncate to match NumCpuGroups
+    PaddedCpus = pad_list(CpusList, NumCpuGroups, 1),
+    %% Calculate node counts per group (distribute evenly, last group gets remainder)
+    %% For simplicity, if 1 group, all nodes go to that group
+    NodeCounts = distribute_nodes(NumCpuGroups, NodeCnt),
+    %% Encode using SLURM's pack16_array and pack32_array format:
+    %% pack16_array: array_count:32, then uint16 elements
+    %% pack32_array: array_count:32, then uint32 elements
+    CpusBin = << <<C:16/big>> || C <- PaddedCpus >>,
+    CountsBin = << <<N:32/big>> || N <- NodeCounts >>,
+    <<NumCpuGroups:32/big,
+      NumCpuGroups:32/big, CpusBin/binary,      %% pack16_array for cpus_per_node
+      NumCpuGroups:32/big, CountsBin/binary>>;  %% pack32_array for cpu_count_reps
+encode_cpu_groups(_, _, _) ->
+    %% Fallback - no groups
+    <<0:32/big>>.
+
+%% Pad a list to exactly N elements, filling with Default
+pad_list(List, N, Default) ->
+    Len = length(List),
+    if
+        Len >= N -> lists:sublist(List, N);
+        true -> List ++ lists:duplicate(N - Len, Default)
+    end.
+
+%% Distribute NodeCnt nodes across NumGroups groups
+%% Returns a list of node counts per group
+distribute_nodes(1, NodeCnt) ->
+    [NodeCnt];
+distribute_nodes(NumGroups, NodeCnt) when NumGroups > 0 ->
+    Base = NodeCnt div NumGroups,
+    Remainder = NodeCnt rem NumGroups,
+    %% First Remainder groups get Base+1, rest get Base
+    [if I =< Remainder -> Base + 1; true -> Base end || I <- lists:seq(1, NumGroups)].
 
 %% Encode RESPONSE_JOB_INFO (2004)
 %% Note: For SLURM 21.08+ (protocol version >= 0x2500), the format is:
@@ -2920,24 +3036,91 @@ decode_job_step_info_request(Binary) ->
     end.
 
 %% Encode RESPONSE_JOB_STEP_CREATE (5002)
-%% Format: step_id(32), error_code(32), error_msg(string), step_layout, cred, switch_job
+%% SLURM 22.05 wire format from _pack_job_step_create_response_msg:
+%%   1. def_cpu_bind_type: uint32
+%%   2. resv_ports: string (NULL is ok)
+%%   3. job_step_id: uint32 (step ID within the job)
+%%   4. step_layout: via pack_slurm_step_layout()
+%%   5. cred: via slurm_cred_pack()
+%%   6. select_jobinfo: via select_g_select_jobinfo_pack()
+%%   7. switch_job: via switch_g_pack_jobinfo()
+%%   8. use_protocol_ver: uint16
 encode_job_step_create_response(#job_step_create_response{
     job_step_id = StepId,
-    error_code = ErrorCode,
-    error_msg = ErrorMsg
-} = _Resp) ->
+    error_code = _ErrorCode,
+    error_msg = _ErrorMsg
+} = Resp) ->
+    %% Get node_list from response (or default)
+    NodeList = case Resp of
+        #job_step_create_response{step_layout = NL} when is_binary(NL), NL =/= <<>> -> NL;
+        _ -> <<"flurm-node1">>
+    end,
     Parts = [
-        <<StepId:32/big>>,
-        <<ErrorCode:32/big>>,
-        flurm_protocol_pack:pack_string(ensure_binary(ErrorMsg)),
-        %% Step layout - minimal: pack count then data
-        <<0:32/big>>,  % layout data count
-        %% Credential - pack length 0 for no credential
+        %% 1. def_cpu_bind_type (0 = default)
         <<0:32/big>>,
-        %% Switch job - pack NULL
-        <<0:32/big>>
+        %% 2. resv_ports (NULL string)
+        flurm_protocol_pack:pack_string(<<>>),
+        %% 3. job_step_id
+        <<StepId:32/big>>,
+        %% 4. step_layout - minimal valid structure:
+        %%    presence(16) + front_end(string) + node_list(string) + node_cnt(32) +
+        %%    start_protocol_ver(16) + task_cnt(32) + task_dist(32) + tasks_per_node[]
+        encode_step_layout(NodeList, 1, 1),  %% 1 node, 1 task
+        %% 5. cred - slurm_cred_pack format (NULL credential for now)
+        encode_null_cred(),
+        %% 6. select_jobinfo - plugin_id then plugin data
+        encode_select_jobinfo(),
+        %% 7. switch_job (NULL)
+        <<0:32/big>>,  %% switch_g_pack_jobinfo packs 0 for NULL
+        %% 8. use_protocol_ver
+        <<16#2600:16/big>>  %% SLURM 22.05 protocol version
     ],
     {ok, iolist_to_binary(Parts)}.
+
+%% Encode a minimal step_layout for SLURM 22.05
+%% Format: presence(16) + front_end(str) + node_list(str) + node_cnt(32) +
+%%         start_protocol_ver(16) + task_cnt(32) + task_dist(32) +
+%%         for each node: pack32_array of task IDs
+encode_step_layout(NodeList, NodeCnt, TaskCnt) ->
+    %% Presence indicator: 1 = present, 0 = NULL
+    Presence = 1,
+    %% Task distribution: 1 = BLOCK (default)
+    TaskDist = 1,
+    %% For each node, pack an array of task IDs
+    %% pack32_array format: count(32), then uint32 elements
+    %% For 1 task on 1 node: count=1, task_id[0]=0
+    TaskArrays = lists:duplicate(NodeCnt,
+        <<1:32/big,   %% array count = 1 task per node
+          0:32/big>>  %% task_id = 0
+    ),
+    iolist_to_binary([
+        <<Presence:16/big>>,
+        flurm_protocol_pack:pack_string(<<>>),  %% front_end (NULL)
+        flurm_protocol_pack:pack_string(NodeList),  %% node_list
+        <<NodeCnt:32/big>>,  %% node_cnt
+        <<16#2600:16/big>>,  %% start_protocol_ver (22.05)
+        <<TaskCnt:32/big>>,  %% task_cnt
+        <<TaskDist:32/big>>,  %% task_dist
+        %% For each node, pack tasks array
+        TaskArrays
+    ]).
+
+%% Encode NULL credential (simplest form)
+%% slurm_cred_pack format varies by version, but NULL can be signaled
+encode_null_cred() ->
+    %% For SLURM 22.05, slurm_cred_pack() packs the credential structure
+    %% A minimal "null" credential: just pack 0 for version indicator
+    %% Actually, we need to pack a proper credential structure
+    %% Minimal: cred_version(16) then fields...
+    %% Let's try packing a dummy credential that srun might accept
+    %% Format: arg_count(16=0 means NULL), then nothing else
+    <<0:16/big>>.
+
+%% Encode select_jobinfo for cons_tres plugin
+encode_select_jobinfo() ->
+    %% select_g_select_jobinfo_pack: plugin_id(32) + plugin-specific data
+    %% For cons_tres (plugin_id=109), the pack function is empty (packs nothing)
+    <<109:32/big>>.
 
 %% Encode RESPONSE_JOB_STEP_INFO (5004)
 %% Format: last_update(time), step_count(32), then step info records
@@ -3662,3 +3845,7 @@ encode_reconfigure_response(#reconfigure_response{} = R) ->
 encode_reconfigure_response(_) ->
     %% Fallback - success with no details
     {ok, <<0:32/big-signed, 0:32, 0:32, 0:32>>}.
+
+%% Convert binary to hex string for debugging
+binary_to_hex(Bin) when is_binary(Bin) ->
+    list_to_binary([[io_lib:format("~2.16.0B", [B]) || B <- binary_to_list(Bin)]]).

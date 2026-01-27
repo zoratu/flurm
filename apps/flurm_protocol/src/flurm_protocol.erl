@@ -87,6 +87,8 @@ encode_type(node_resume) -> 16;
 encode_type(partition_create) -> 20;
 encode_type(partition_update) -> 21;
 encode_type(partition_delete) -> 22;
+encode_type(step_launch) -> 30;
+encode_type(step_complete) -> 31;
 encode_type(ack) -> 100;
 encode_type(error) -> 101;
 encode_type(_) -> 0.
@@ -107,6 +109,8 @@ decode_type(16) -> node_resume;
 decode_type(20) -> partition_create;
 decode_type(21) -> partition_update;
 decode_type(22) -> partition_delete;
+decode_type(30) -> step_launch;
+decode_type(31) -> step_complete;
 decode_type(100) -> ack;
 decode_type(101) -> error;
 decode_type(_) -> unknown.

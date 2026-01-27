@@ -21,8 +21,10 @@
 -define(SLURM_HEADER_SIZE_MIN, 16).    % Minimum 16-byte message header (with AF_UNSPEC orig_addr)
                                         % (version:16, flags:16, msg_type:16, body_length:32,
                                         %  forward_cnt:16, ret_cnt:16, orig_addr_family:16)
--define(SLURM_HEADER_SIZE, 22).        % 22-byte header for responses (with AF_INET orig_addr)
-                                        % orig_addr: family(16) + ipv4_addr(32) + port(16) = 64 bits
+-define(SLURM_HEADER_SIZE, 16).        % 16-byte header for responses (with AF_UNSPEC orig_addr)
+                                        % Fixed fields: 14 bytes
+                                        % orig_addr: family(2) = 2 bytes (AF_UNSPEC format)
+                                        % Total: 14 + 2 = 16 bytes
 
 %% Maximum message size (64 MB)
 -define(SLURM_MAX_MESSAGE_SIZE, 67108864).
@@ -106,6 +108,12 @@
 -define(REQUEST_POWERCAP_INFO, 2030).
 -define(RESPONSE_POWERCAP_INFO, 2031).
 
+%%% Job Update Operations (3001-3005)
+-define(REQUEST_UPDATE_JOB, 3001).
+-define(REQUEST_UPDATE_JOB_STEP, 3002).
+-define(REQUEST_COMPLETE_JOB_ALLOCATION, 3003).
+-define(REQUEST_COMPLETE_BATCH_SCRIPT, 3004).
+
 %%% Job Operations (4001-4029)
 -define(REQUEST_RESOURCE_ALLOCATION, 4001).
 -define(RESPONSE_RESOURCE_ALLOCATION, 4002).
@@ -120,22 +128,20 @@
 -define(RESPONSE_JOB_ATTACH, 4011).
 -define(REQUEST_JOB_WILL_RUN, 4012).
 -define(RESPONSE_JOB_WILL_RUN, 4013).
--define(REQUEST_UPDATE_JOB, 4014).
--define(REQUEST_UPDATE_JOB_TIME, 4015).
--define(REQUEST_JOB_READY, 4016).
--define(RESPONSE_JOB_READY, 4017).
--define(REQUEST_JOB_END_TIME, 4018).
--define(REQUEST_JOB_ALLOCATION_INFO, 4019).
--define(RESPONSE_JOB_ALLOCATION_INFO, 4020).
--define(REQUEST_JOB_ALLOCATION_INFO_LITE, 4021).
--define(RESPONSE_JOB_ALLOCATION_INFO_LITE, 4022).
--define(REQUEST_UPDATE_FRONT_END, 4023).
--define(REQUEST_COMPLETE_JOB_ALLOCATION, 4024).
--define(REQUEST_COMPLETE_BATCH_SCRIPT, 4025).
--define(REQUEST_JOB_STEP_PIDS, 4026).
--define(RESPONSE_JOB_STEP_PIDS, 4027).
--define(REQUEST_JOB_SBCAST_CRED, 4028).
--define(RESPONSE_JOB_SBCAST_CRED, 4029).
+%% SLURM 22.05 message type numbers (verified against slurm-22-05-9-1)
+-define(REQUEST_JOB_ALLOCATION_INFO, 4014).  %% srun asks for allocation details
+-define(RESPONSE_JOB_ALLOCATION_INFO, 4015). %% Controller returns allocation info
+%% 4016-4018 are DEFUNCT_RPC in SLURM 22.05
+-define(REQUEST_JOB_READY, 4019).            %% srun asks if nodes are ready
+-define(RESPONSE_JOB_READY, 4020).           %% Controller says if job is ready
+-define(REQUEST_JOB_END_TIME, 4021).
+-define(REQUEST_JOB_NOTIFY, 4022).
+-define(REQUEST_JOB_SBCAST_CRED, 4023).
+-define(RESPONSE_JOB_SBCAST_CRED, 4024).
+-define(REQUEST_HET_JOB_ALLOCATION, 4025).
+-define(RESPONSE_HET_JOB_ALLOCATION, 4026).
+-define(REQUEST_HET_JOB_ALLOC_INFO, 4027).
+-define(REQUEST_SUBMIT_BATCH_HET_JOB, 4028).
 
 %%% Step Operations (5001-5041)
 -define(REQUEST_JOB_STEP_CREATE, 5001).
@@ -243,7 +249,7 @@
 -record(slurm_header, {
     version = ?SLURM_PROTOCOL_VERSION :: non_neg_integer(),
     flags = 0 :: non_neg_integer(),
-    msg_index = 0 :: non_neg_integer(),  % Not on wire, kept for internal use
+    msg_index = 0 :: non_neg_integer(),  % Internal use only, NOT on wire for client-server comms
     msg_type = 0 :: non_neg_integer(),
     body_length = 0 :: non_neg_integer(),  % 32-bit, not 16-bit
     forward_cnt = 0 :: non_neg_integer(),  % Number of forward targets (usually 0)

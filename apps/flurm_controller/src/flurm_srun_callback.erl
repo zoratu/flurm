@@ -21,7 +21,8 @@
 -behaviour(gen_server).
 
 -export([start_link/0]).
--export([register_callback/4, notify_job_ready/2, notify_job_complete/3]).
+-export([register_callback/4, register_existing_socket/2, notify_job_ready/2, notify_job_complete/3]).
+-export([get_callback/1, send_task_output/3]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
 -include_lib("flurm_protocol/include/flurm_protocol.hrl").
@@ -58,6 +59,11 @@ start_link() ->
 register_callback(JobId, Host, Port, SrunPid) ->
     gen_server:call(?SERVER, {register_callback, JobId, Host, Port, SrunPid}, 10000).
 
+%% @doc Register an existing socket for a job (used when connection made externally).
+-spec register_existing_socket(job_id(), inet:socket()) -> ok.
+register_existing_socket(JobId, Socket) ->
+    gen_server:call(?SERVER, {register_existing_socket, JobId, Socket}, 5000).
+
 %% @doc Notify srun that the job is ready to run.
 %% This triggers srun to proceed with step creation.
 -spec notify_job_ready(job_id(), binary()) -> ok | {error, term()}.
@@ -68,6 +74,16 @@ notify_job_ready(JobId, NodeList) ->
 -spec notify_job_complete(job_id(), integer(), binary()) -> ok | {error, term()}.
 notify_job_complete(JobId, ExitCode, Output) ->
     gen_server:call(?SERVER, {notify_job_complete, JobId, ExitCode, Output}, 10000).
+
+%% @doc Get callback info for a job (host, port, socket).
+-spec get_callback(job_id()) -> {ok, callback_info()} | {error, not_found}.
+get_callback(JobId) ->
+    gen_server:call(?SERVER, {get_callback, JobId}, 5000).
+
+%% @doc Send task output to srun callback.
+-spec send_task_output(job_id(), binary(), integer()) -> ok | {error, term()}.
+send_task_output(JobId, Output, ExitCode) ->
+    gen_server:call(?SERVER, {send_task_output, JobId, Output, ExitCode}, 10000).
 
 %%====================================================================
 %% gen_server callbacks
@@ -87,14 +103,37 @@ handle_call({notify_job_complete, JobId, ExitCode, Output}, _From, State) ->
     NewCallbacks = maps:remove(JobId, State#state.callbacks),
     {reply, Result, State#state{callbacks = NewCallbacks}};
 
+handle_call({get_callback, JobId}, _From, #state{callbacks = Callbacks} = State) ->
+    case maps:get(JobId, Callbacks, undefined) of
+        undefined ->
+            {reply, {error, not_found}, State};
+        CallbackInfo ->
+            {reply, {ok, CallbackInfo}, State}
+    end;
+
+handle_call({send_task_output, JobId, Output, ExitCode}, _From, #state{callbacks = Callbacks} = State) ->
+    case maps:get(JobId, Callbacks, undefined) of
+        undefined ->
+            {reply, {error, no_callback}, State};
+        #{socket := Socket} ->
+            %% Send output to srun via the callback socket
+            Result = send_task_output_message(Socket, JobId, Output, ExitCode),
+            {reply, Result, State}
+    end;
+
 handle_call({register_callback, JobId, Host, Port, SrunPid}, _From, State) ->
     lager:info("Registering srun callback for job ~p: ~s:~p (pid=~p)",
                [JobId, Host, Port, SrunPid]),
 
     %% Connect to srun's callback port (synchronously before sending allocation response)
+    %% NOTE: We do NOT send any message immediately. The callback socket is for:
+    %% - SRUN_PING: Controller pings srun to check it's alive (srun responds with RC)
+    %% - SRUN_JOB_COMPLETE: Controller notifies srun when job finishes
+    %% - SRUN_TIMEOUT: Controller notifies srun of time limit
+    %% - SRUN_NODE_FAIL: Controller notifies srun of node failure
     case connect_to_srun(Host, Port) of
         {ok, Socket} ->
-            lager:info("Connected to srun callback for job ~p", [JobId]),
+            lager:info("Connected to srun callback for job ~p (socket established, no message sent)", [JobId]),
             CallbackInfo = #{
                 host => Host,
                 port => Port,
@@ -102,18 +141,24 @@ handle_call({register_callback, JobId, Host, Port, SrunPid}, _From, State) ->
                 srun_pid => SrunPid
             },
             NewCallbacks = maps:put(JobId, CallbackInfo, State#state.callbacks),
-
-            %% Send job ready notification immediately (on connected callback socket)
-            NodeList = <<"flurm-node1">>,
-            ReadyResult = send_job_ready_message(Socket, JobId, NodeList),
-            lager:info("Sent job ready for job ~p, result: ~p", [JobId, ReadyResult]),
-
             {reply, ok, State#state{callbacks = NewCallbacks}};
         {error, Reason} ->
             lager:warning("Failed to connect to srun callback for job ~p: ~p",
                           [JobId, Reason]),
             {reply, {error, Reason}, State}
     end;
+
+handle_call({register_existing_socket, JobId, Socket}, _From, State) ->
+    %% Register an already-connected socket for a job
+    lager:info("Registering existing socket for job ~p", [JobId]),
+    CallbackInfo = #{
+        host => <<"unknown">>,
+        port => 0,
+        socket => Socket,
+        srun_pid => 0
+    },
+    NewCallbacks = maps:put(JobId, CallbackInfo, State#state.callbacks),
+    {reply, ok, State#state{callbacks = NewCallbacks}};
 
 handle_call(_Request, _From, State) ->
     {reply, {error, unknown_request}, State}.
@@ -241,3 +286,26 @@ send_job_complete_message(Socket, JobId, ExitCode) ->
         {error, Reason} ->
             {error, Reason}
     end.
+
+%% @doc Send task output message to srun.
+%% Sends SRUN_JOB_COMPLETE to indicate job finished.
+%% Uses regular encode_response with auth section as srun expects proper SLURM format.
+-spec send_task_output_message(inet:socket(), job_id(), binary(), integer()) -> ok | {error, term()}.
+send_task_output_message(Socket, JobId, _Output, _ExitCode) ->
+    lager:info("Sending SRUN_JOB_COMPLETE to srun for job ~p", [JobId]),
+    %% Use encode_response with auth section
+    Complete = #srun_job_complete{job_id = JobId, step_id = 0},
+    case flurm_protocol_codec:encode_response(?SRUN_JOB_COMPLETE, Complete) of
+        {ok, MessageBin} ->
+            lager:info("SRUN_JOB_COMPLETE encoded: ~p bytes, hex=~s",
+                       [byte_size(MessageBin), binary_to_hex(MessageBin)]),
+            Result = gen_tcp:send(Socket, MessageBin),
+            lager:info("Sent SRUN_JOB_COMPLETE to srun callback, result: ~p", [Result]),
+            Result;
+        {error, Reason} ->
+            lager:warning("Failed to encode SRUN_JOB_COMPLETE: ~p", [Reason]),
+            {error, Reason}
+    end.
+
+binary_to_hex(Bin) ->
+    list_to_binary([[io_lib:format("~2.16.0B", [B]) || B <- binary_to_list(Bin)]]).

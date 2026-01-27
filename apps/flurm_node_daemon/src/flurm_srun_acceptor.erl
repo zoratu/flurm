@@ -90,7 +90,8 @@ loop(#{socket := Socket, transport := Transport, buffer := Buffer} = State) ->
     ok = Transport:setopts(Socket, [{active, once}]),
     receive
         {tcp, Socket, Data} ->
-            lager:debug("srun acceptor received ~p bytes", [byte_size(Data)]),
+            lager:info("srun acceptor received ~p bytes: hex=~s",
+                       [byte_size(Data), binary_to_hex(Data)]),
             NewBuffer = <<Buffer/binary, Data/binary>>,
             case process_buffer(NewBuffer, State) of
                 {continue, UpdatedState} ->
@@ -205,14 +206,21 @@ process_buffer(Buffer, State) ->
 -spec handle_message(binary(), map()) -> {ok, map()} | {error, term()}.
 handle_message(MessageBin, #{socket := Socket, transport := Transport,
                              request_count := Count} = State) ->
+    lager:info("Handling srun message, size=~p bytes", [byte_size(MessageBin)]),
     DecodeResult = case flurm_protocol_codec:decode_with_extra(MessageBin) of
         {ok, Msg, ExtraInfo, Rest} ->
+            lager:info("Decoded message with auth: msg_type=~p",
+                       [Msg#slurm_msg.header#slurm_header.msg_type]),
             {ok, Msg, ExtraInfo, Rest};
-        {error, _AuthErr} ->
+        {error, AuthErr} ->
+            lager:info("Auth decode failed (~p), trying plain decode", [AuthErr]),
             case flurm_protocol_codec:decode(MessageBin) of
                 {ok, Msg, Rest} ->
+                    lager:info("Plain decode succeeded: msg_type=~p",
+                               [Msg#slurm_msg.header#slurm_header.msg_type]),
                     {ok, Msg, #{}, Rest};
                 PlainErr ->
+                    lager:warning("Plain decode also failed: ~p", [PlainErr]),
                     PlainErr
             end
     end,
@@ -307,6 +315,21 @@ handle_srun_request(?REQUEST_REATTACH_TASKS, Body, State) ->
             Response = #slurm_rc_response{return_code = -1},
             {ok, ?RESPONSE_SLURM_RC, Response, State}
     end;
+
+%% REQUEST_JOB_READY (4016) - srun checks if node is ready for job
+handle_srun_request(?REQUEST_JOB_READY, Body, State) ->
+    lager:info("REQUEST_JOB_READY received: ~p", [Body]),
+    %% Extract job_id from body (typically: job_id:32, step_id:32)
+    JobId = case Body of
+        <<JId:32/big, _/binary>> -> JId;
+        #{job_id := JId} -> JId;
+        _ -> 0
+    end,
+    lager:info("Job ready check for job_id=~p - reporting READY", [JobId]),
+    %% RESPONSE_JOB_READY format: return_code(32) where 0=ready, non-zero=not ready
+    %% SLURM_SUCCESS (0) = ready
+    Response = #{return_code => 0, prolog_running => 0},
+    {ok, ?RESPONSE_JOB_READY, Response, State};
 
 %% Unknown message type
 handle_srun_request(MsgType, Body, _State) ->
@@ -517,7 +540,17 @@ get_hostname() ->
 close_connection(#{socket := Socket, transport := Transport,
                    request_count := Count, start_time := StartTime}) ->
     Duration = erlang:system_time(millisecond) - StartTime,
-    lager:debug("Closing srun connection after ~p requests, duration: ~p ms",
+    lager:info("Closing srun connection after ~p requests, duration: ~p ms",
                 [Count, Duration]),
     Transport:close(Socket),
     ok.
+
+%% @doc Convert binary to hex string for debugging
+-spec binary_to_hex(binary()) -> binary().
+binary_to_hex(Bin) when is_binary(Bin) ->
+    %% Limit to first 64 bytes for readability
+    TruncatedBin = case byte_size(Bin) > 64 of
+        true -> binary:part(Bin, 0, 64);
+        false -> Bin
+    end,
+    list_to_binary([[io_lib:format("~2.16.0B", [B]) || B <- binary_to_list(TruncatedBin)]]).
