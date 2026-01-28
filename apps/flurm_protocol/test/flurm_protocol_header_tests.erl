@@ -23,9 +23,9 @@ constants_test_() ->
             ?assertEqual(?SLURM_PROTOCOL_VERSION, Version)
         end},
 
-        {"header_size returns 22 bytes", fun() ->
+        {"header_size returns 16 bytes (AF_UNSPEC)", fun() ->
             Size = flurm_protocol_header:header_size(),
-            ?assertEqual(22, Size),
+            ?assertEqual(16, Size),
             ?assertEqual(?SLURM_HEADER_SIZE, Size)
         end}
     ].
@@ -172,14 +172,14 @@ encode_header_success_test_() ->
         {"encode default header", fun() ->
             Header = #slurm_header{},
             {ok, Binary} = flurm_protocol_header:encode_header(Header),
-            ?assertEqual(22, byte_size(Binary))
+            ?assertEqual(16, byte_size(Binary))
         end},
 
         {"encode header with protocol version", fun() ->
             Header = #slurm_header{version = ?SLURM_PROTOCOL_VERSION},
             {ok, Binary} = flurm_protocol_header:encode_header(Header),
             <<?SLURM_PROTOCOL_VERSION:16/big, _Rest/binary>> = Binary,
-            ?assertEqual(22, byte_size(Binary))
+            ?assertEqual(16, byte_size(Binary))
         end},
 
         {"encode header preserves all fields", fun() ->
@@ -192,9 +192,9 @@ encode_header_success_test_() ->
                 ret_cnt = 0
             },
             {ok, Binary} = flurm_protocol_header:encode_header(Header),
-            %% 22-byte format: version:16 + flags:16 + msg_type:16 + body_length:32 + forward_cnt:16 + ret_cnt:16 + orig_addr:64
+            %% 16-byte format: version:16 + flags:16 + msg_type:16 + body_length:32 + forward_cnt:16 + ret_cnt:16 + orig_addr:16 (AF_UNSPEC)
             <<Ver:16/big, Flags:16/big, MsgType:16/big, BodyLen:32/big,
-              _FwdCnt:16/big, _RetCnt:16/big, _OrigAddr:64/big>> = Binary,
+              _FwdCnt:16/big, _RetCnt:16/big, _OrigAddr:16/big>> = Binary,
             ?assertEqual(16#1234, Ver),
             ?assertEqual(16#5678, Flags),
             ?assertEqual(?REQUEST_PING, MsgType),
@@ -209,9 +209,9 @@ encode_header_success_test_() ->
                 body_length = 0
             },
             {ok, Binary} = flurm_protocol_header:encode_header(Header),
-            %% 22 bytes with AF_INET orig_addr (family=2)
-            ?assertEqual(22, byte_size(Binary)),
-            <<0:16, 0:16, 0:16, 0:32, 0:16, 0:16, 2:16/big, 0:32, 0:16>> = Binary
+            %% 16 bytes with AF_UNSPEC orig_addr (family=0)
+            ?assertEqual(16, byte_size(Binary)),
+            <<0:16, 0:16, 0:16, 0:32, 0:16, 0:16, 0:16>> = Binary
         end},
 
         {"encode header with max uint16 values", fun() ->
@@ -222,8 +222,8 @@ encode_header_success_test_() ->
                 body_length = 0
             },
             {ok, Binary} = flurm_protocol_header:encode_header(Header),
-            <<65535:16/big, 65535:16/big, 65535:16/big, 0:32/big, _Rest:96/big>> = Binary,
-            ?assertEqual(22, byte_size(Binary))
+            <<65535:16/big, 65535:16/big, 65535:16/big, 0:32/big, _Rest:48/big>> = Binary,
+            ?assertEqual(16, byte_size(Binary))
         end},
 
         {"encode header with max uint32 body_length", fun() ->
@@ -234,11 +234,11 @@ encode_header_success_test_() ->
                 body_length = 4294967295
             },
             {ok, Binary} = flurm_protocol_header:encode_header(Header),
-            <<0:48, 16#FFFFFFFF:32/big, _Rest:96/big>> = Binary,
-            ?assertEqual(22, byte_size(Binary))
+            <<0:48, 16#FFFFFFFF:32/big, _Rest:48/big>> = Binary,
+            ?assertEqual(16, byte_size(Binary))
         end},
 
-        {"encoded header is always 22 bytes", fun() ->
+        {"encoded header is always 16 bytes", fun() ->
             Headers = [
                 #slurm_header{},
                 #slurm_header{version = 65535},
@@ -247,7 +247,7 @@ encode_header_success_test_() ->
             ],
             lists:foreach(fun(H) ->
                 {ok, Binary} = flurm_protocol_header:encode_header(H),
-                ?assertEqual(22, byte_size(Binary))
+                ?assertEqual(16, byte_size(Binary))
             end, Headers)
         end}
     ].
@@ -446,11 +446,11 @@ wire_format_test_() ->
                 ret_cnt = 0
             },
             {ok, Binary} = flurm_protocol_header:encode_header(Header),
-            %% 22-byte header: version(2) + flags(2) + msg_type(2) + body_len(4) + fwd_cnt(2) + ret_cnt(2) + orig_addr(8)
-            %% orig_addr for AF_INET: family(2)=0x0002 + addr(4)=0 + port(2)=0
+            %% 16-byte header: version(2) + flags(2) + msg_type(2) + body_len(4) + fwd_cnt(2) + ret_cnt(2) + orig_addr(2)
+            %% orig_addr for AF_UNSPEC: family(2)=0x0000
             Expected = <<16#11, 16#22, 16#33, 16#44, 16#55, 16#66, 16#77, 16#88, 16#99, 16#AA,
                          0, 0, 0, 0,  %% fwd_cnt=0, ret_cnt=0
-                         0, 2, 0, 0, 0, 0, 0, 0>>,  %% orig_addr: family=2, addr=0, port=0
+                         0, 0>>,      %% orig_addr: family=0 (AF_UNSPEC)
             ?assertEqual(Expected, Binary)
         end}
     ].

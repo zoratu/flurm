@@ -207,7 +207,7 @@ FLURM is currently in **active development** (January 2026). The following compo
 - [x] Raft consensus integration (Ra library)
 - [x] Controller failover
 - [x] Hot code reloading (slurm.conf live reload)
-- [x] srun support (interactive jobs) - *partial, see Known Limitations*
+- [x] srun support (interactive jobs) - I/O forwarding, task exit handling
 - [x] Job steps management
 - [x] sacctmgr (accounting management)
 - [x] slurmdbd (accounting daemon)
@@ -240,17 +240,16 @@ FLURM is currently in **active development** (January 2026). The following compo
 
 ### srun Interactive Job Protocol
 
-The `srun` command for interactive jobs has a known execution flow limitation with SLURM 22.05 clients. While the RESPONSE_RESOURCE_ALLOCATION protocol encoding is now correct (job allocations are received successfully), srun reports "Job allocation has been revoked" because:
+The `srun` command for interactive jobs is **now working** with FLURM. The implementation includes:
 
-1. FLURM's job scheduler auto-dispatches jobs to compute nodes
-2. srun expects to create job steps and connect directly to slurmd
-3. The job completes on the node before srun can set up I/O channels
+- Full I/O forwarding from node daemon back to srun client
+- Task exit code reporting with proper waitpid format conversion
+- Job step creation and launch task protocol
+- RESPONSE_LAUNCH_TASKS and MESSAGE_TASK_EXIT message handling
 
-**Workaround**: Use `sbatch` for batch job submission, which works correctly.
+**Status**: srun is fully functional for basic interactive jobs. Commands like `srun hostname`, `srun echo "Hello World"`, and `srun <script>` work correctly.
 
-**Status**: Protocol encoding fixed. Remaining work involves implementing the full srun execution flow: job step creation, direct srun-to-slurmd connection, and I/O streaming.
-
-**Working CLI commands**: sbatch, squeue, scancel, sinfo, scontrol show job/partition/node
+**Working CLI commands**: sbatch, squeue, scancel, sinfo, scontrol show job/partition/node, **srun**
 
 ## Contributing
 

@@ -26,18 +26,19 @@ FLURM implements this protocol for full compatibility with SLURM clients and dae
 
 ### Message Header
 
-Every SLURM message begins with a fixed-size header (24 bytes):
+Every SLURM message begins with a fixed-size header. FLURM uses a 16-byte header with `AF_UNSPEC` addressing (no forwarding address):
 
 | Offset | Size | Field | Encoding |
 |--------|------|-------|----------|
 | 0 | 2 bytes | Protocol Version | uint16, big-endian |
 | 2 | 2 bytes | Flags | uint16, big-endian |
 | 4 | 2 bytes | Message Type | uint16, big-endian |
-| 6 | 2 bytes | Reserved | - |
-| 8 | 4 bytes | Body Length | uint32, big-endian |
-| 12 | 4 bytes | Forward Count | uint32, big-endian |
-| 16 | 4 bytes | Return Code | uint32, big-endian |
-| 20 | 4 bytes | Message ID | uint32, big-endian |
+| 6 | 4 bytes | Body Length | uint32, big-endian |
+| 10 | 2 bytes | Forward Count | uint16, big-endian |
+| 12 | 2 bytes | Return Count | uint16, big-endian |
+| 14 | 2 bytes | Address Family | uint16, big-endian (AF_UNSPEC=0) |
+
+**Note**: The original SLURM protocol can include additional forwarding address bytes when `AF_INET` or `AF_INET6` is used. FLURM uses `AF_UNSPEC` (family=0) which omits the address, resulting in a compact 16-byte header.
 
 ### Message Body
 
@@ -202,25 +203,23 @@ Arrays are count-prefixed: `[Count: u32][Elements: Count * element_size]`
 
 -include("flurm_protocol.hrl").
 
--define(HEADER_SIZE, 24).
+-define(HEADER_SIZE, 16).
 
-%% Decode message header
+%% Decode message header (16-byte format with AF_UNSPEC)
 decode_header(<<Version:16/big,
                 Flags:16/big,
                 MsgType:16/big,
-                _Reserved:16,
                 BodyLen:32/big,
-                ForwardCount:32/big,
-                ReturnCode:32/big,
-                MsgId:32/big>>) ->
+                ForwardCount:16/big,
+                ReturnCount:16/big,
+                AddrFamily:16/big>>) when AddrFamily =:= 0 ->
     {ok, #msg_header{
         version = Version,
         flags = Flags,
         msg_type = MsgType,
         body_length = BodyLen,
         forward_count = ForwardCount,
-        return_code = ReturnCode,
-        msg_id = MsgId
+        return_count = ReturnCount
     }};
 decode_header(Data) when byte_size(Data) < ?HEADER_SIZE ->
     {error, incomplete_header};
@@ -333,24 +332,22 @@ decode_submit_batch_job(Data, Job) ->
 ### Message Encoding
 
 ```erlang
-%% Encode message header
+%% Encode message header (16-byte format with AF_UNSPEC)
 encode_header(#msg_header{
     version = Version,
     flags = Flags,
     msg_type = MsgType,
     body_length = BodyLen,
     forward_count = ForwardCount,
-    return_code = ReturnCode,
-    msg_id = MsgId
+    return_count = ReturnCount
 }) ->
     <<Version:16/big,
       Flags:16/big,
       MsgType:16/big,
-      0:16,  % Reserved
       BodyLen:32/big,
-      ForwardCount:32/big,
-      ReturnCode:32/big,
-      MsgId:32/big>>.
+      ForwardCount:16/big,
+      ReturnCount:16/big,
+      0:16/big>>.  % AF_UNSPEC (no forwarding address)
 
 %% Encode string
 encode_string(undefined) ->
@@ -414,15 +411,15 @@ process_buffer(#state{buffer = Buffer} = State) ->
     process_buffer(State, []).
 
 process_buffer(#state{buffer = Buffer} = State, Acc)
-  when byte_size(Buffer) < 24 ->
+  when byte_size(Buffer) < 16 ->
     {State, lists:reverse(Acc)};
 process_buffer(#state{buffer = Buffer} = State, Acc) ->
     case flurm_protocol:decode_header(Buffer) of
         {ok, Header} ->
             BodyLen = Header#msg_header.body_length,
-            TotalLen = 24 + BodyLen,
+            TotalLen = 16 + BodyLen,
             case Buffer of
-                <<_:24/binary, Body:BodyLen/binary, Rest/binary>> ->
+                <<_:16/binary, Body:BodyLen/binary, Rest/binary>> ->
                     Msg = {Header, Body},
                     process_buffer(State#state{buffer = Rest}, [Msg | Acc]);
                 _ ->
@@ -529,6 +526,79 @@ send_error(Socket, MsgId, ErrorCode) ->
     }),
     gen_tcp:send(Socket, <<Header/binary, Body/binary>>).
 ```
+
+## I/O Protocol (srun)
+
+### Overview
+
+When srun launches interactive tasks, a separate I/O connection is established from the node daemon back to srun. This connection carries stdout/stderr data from the task to srun for display.
+
+### I/O Connection Flow
+
+```mermaid
+sequenceDiagram
+    participant srun
+    participant Controller
+    participant NodeDaemon
+
+    srun->>Controller: REQUEST_RESOURCE_ALLOCATION
+    Controller-->>srun: RESPONSE_RESOURCE_ALLOCATION
+    srun->>NodeDaemon: REQUEST_LAUNCH_TASKS (includes io_port)
+    NodeDaemon->>srun: TCP connect to io_port
+    NodeDaemon->>srun: io_init_msg (handshake)
+    NodeDaemon-->>srun: RESPONSE_LAUNCH_TASKS
+    Note over NodeDaemon: Task runs, produces output
+    NodeDaemon->>srun: io_hdr (STDOUT) + data
+    NodeDaemon->>srun: io_hdr (STDOUT) + data
+    Note over NodeDaemon: Task exits
+    NodeDaemon->>srun: io_hdr (length=0, EOF)
+    NodeDaemon->>srun: MESSAGE_TASK_EXIT
+```
+
+### I/O Header Format
+
+The I/O header is 10 bytes:
+
+| Offset | Size | Field | Description |
+|--------|------|-------|-------------|
+| 0 | 2 bytes | Type | Message type (STDIN=0, STDOUT=1, STDERR=2) |
+| 2 | 2 bytes | Gtaskid | Global task ID |
+| 4 | 2 bytes | Ltaskid | Local task ID |
+| 6 | 4 bytes | Length | Payload length (0 = EOF) |
+
+```erlang
+%% I/O header encoding
+encode_io_hdr(Type, Gtaskid, Ltaskid, Length) ->
+    <<Type:16/big, Gtaskid:16/big, Ltaskid:16/big, Length:32/big>>.
+```
+
+### I/O Init Message
+
+Sent immediately after connecting to srun's I/O port:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| Version | uint16 | Protocol version |
+| NodeId | uint32 | Node identifier |
+| StdoutObjs | uint32 | Number of stdout streams |
+| StderrObjs | uint32 | Number of stderr streams |
+| IoKeyLen | uint32 | Length of authentication key |
+| IoKey | bytes | Authentication key from credential |
+
+### Task Exit Message (MESSAGE_TASK_EXIT = 6003)
+
+Sent after task completes:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| JobId | uint32 | Job ID |
+| StepId | uint32 | Step ID |
+| StepHetComp | uint32 | Heterogeneous component (0) |
+| TaskCount | uint32 | Number of tasks |
+| TaskIds[] | uint32[] | Array of task IDs |
+| ReturnCodes[] | uint32[] | Array of waitpid-format exit codes |
+
+**Exit Code Format**: Return codes use raw waitpid format where normal exit = `(exit_code << 8)` and signal termination = signal number.
 
 ---
 

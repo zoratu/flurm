@@ -81,6 +81,13 @@ scancel 1
 
 # Test node info
 sinfo
+
+# Test interactive jobs (srun)
+srun hostname              # Display node hostname
+srun echo "Hello World"    # Run command and get output
+srun /path/to/script.sh    # Run a script interactively
+srun true                  # Command that exits successfully
+srun false                 # Command that exits with code 1
 ```
 
 ## Protocol Analysis Tool
@@ -123,9 +130,11 @@ Body: 12 bytes
 
 1. **Authentication**: Real SLURM clients expect Munge authentication by default. Use `AuthType=auth/none` for testing.
 
-2. **Protocol Version**: FLURM implements SLURM protocol version 22.05. Clients using newer versions may send additional fields.
+2. **Protocol Version**: FLURM implements SLURM protocol version 22.05 (0x2600). Clients using newer versions may send additional fields.
 
-3. **Message Fields**: Some advanced fields in batch job requests are not fully parsed. Basic job submission works, but advanced features (GPU allocation, burst buffers, etc.) may not.
+3. **Message Fields**: Some advanced fields in batch job requests are not fully parsed. Basic job submission works, but advanced features may have limited support.
+
+4. **srun I/O Forwarding**: srun now works with I/O forwarding. The node daemon connects back to srun's I/O port to forward stdout/stderr. Task exit codes are properly converted from Erlang format to SLURM's expected waitpid format.
 
 ## Running Integration Tests
 
