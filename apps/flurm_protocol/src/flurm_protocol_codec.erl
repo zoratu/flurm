@@ -239,7 +239,7 @@ encode_with_extra(MsgType, Body, Hostname) ->
 %% Where:
 %%   - Header = <<Version:16, Flags:16, MsgType:16, BodyLen:32, ForwardCnt:16, RetCnt:16>>
 %%   - AuthSection = <<PluginId:32, MungeMagic:32, Errno:32, CredPackstr/binary>>
-%%   - Header.body_length = AuthSize + BodySize (SLURM expects both in body_length)
+%%   - Header.body_length = BodySize ONLY (auth is NOT counted in body_length)
 %%   - ForwardCnt and RetCnt are 0 for simple responses
 %%
 -spec encode_response(non_neg_integer(), term()) -> {ok, binary()} | {error, term()}.
@@ -256,30 +256,41 @@ encode_response(MsgType, Body) ->
                     binary_to_hex(BodyBin)
             end,
             lager:info("Body for msg_type=~p: size=~p hex64=~s", [MsgType, BodySize, BodyHex]),
-            %% Create auth section WITH proper message hash embedded
-            %% HASH_PLUGIN_NONE format: plugin_type(1) + msg_type(2) = 3 bytes
+
+            %% Create auth section WITH proper message hash embedded in MUNGE credential
             AuthSection = create_proper_auth_section(MsgType),
             AuthSize = byte_size(AuthSection),
-            lager:info("encode_response: auth_section_size=~p, body_size=~p (with hash for msg_type=~p)", [AuthSize, BodySize, MsgType]),
 
-            %% CRITICAL: body_length in SLURM protocol = ONLY the body size (NOT including auth)
-            %% The auth section is self-delimiting - auth_g_unpack() reads its own data.
-            %% After auth unpacking, remaining bytes should equal body_length.
+            lager:info("encode_response: auth=~p, body=~p (msg_type=~p)",
+                       [AuthSize, BodySize, MsgType]),
+
+            %% body_length = just the message body
+            %% The hash is embedded in MUNGE credential, no separate hash section needed
+            TotalBodyLen = BodySize,
             Header = #slurm_header{
                 version = flurm_protocol_header:protocol_version(),
                 flags = 0,
                 msg_index = 0,
                 msg_type = MsgType,
-                body_length = BodySize  %% ONLY body size, auth is self-delimiting
+                body_length = TotalBodyLen  %% hash + body
             },
             case flurm_protocol_header:encode_header(Header) of
                 {ok, HeaderBin} ->
+                    %% Debug: show each section in detail
+                    HeaderHex = binary_to_hex(HeaderBin),
+                    AuthHex = binary_to_hex(AuthSection),
+                    FullBodyHex = binary_to_hex(BodyBin),
+                    lager:info("DEBUG header(~p): ~s", [byte_size(HeaderBin), HeaderHex]),
+                    lager:info("DEBUG auth(~p): ~s", [AuthSize, AuthHex]),
+                    lager:info("DEBUG body(~p): ~s", [BodySize, FullBodyHex]),
                     %% Wire format: outer_length, header, auth_section, body
+                    %% Hash is embedded in MUNGE credential, no separate hash section
                     TotalPayload = <<HeaderBin/binary, AuthSection/binary, BodyBin/binary>>,
                     OuterLength = byte_size(TotalPayload),
-                    lager:info("Response: header=~p auth=~p body=~p body_length=~p total=~p",
-                               [byte_size(HeaderBin), AuthSize, BodySize, BodySize, OuterLength]),
-                    {ok, <<OuterLength:32/big, TotalPayload/binary>>};
+                    FullMessage = <<OuterLength:32/big, TotalPayload/binary>>,
+                    lager:info("FULL MESSAGE (~p bytes): ~s",
+                               [byte_size(FullMessage), binary_to_hex(FullMessage)]),
+                    {ok, FullMessage};
                 {error, _} = HeaderError ->
                     HeaderError
             end;
@@ -327,13 +338,13 @@ encode_response_proper_auth(MsgType, Body) ->
             BodySize = byte_size(BodyBin),
             AuthSection = create_proper_auth_section(MsgType),
             AuthSize = byte_size(AuthSection),
-            %% CRITICAL: body_length = ONLY body size (auth is self-delimiting)
+            %% body_length = BODY ONLY (auth size determined separately)
             Header = #slurm_header{
                 version = flurm_protocol_header:protocol_version(),
                 flags = 0,
                 msg_index = 0,
                 msg_type = MsgType,
-                body_length = BodySize  %% ONLY body size
+                body_length = BodySize  %% Body ONLY
             },
             case flurm_protocol_header:encode_header(Header) of
                 {ok, HeaderBin} ->
@@ -402,6 +413,8 @@ strip_auth_section_from_response(BodyWithAuth, BodyLen) ->
 
 %% @doc Get MUNGE credential by calling munge command with optional payload
 %% If MsgType is provided, embeds a HASH_PLUGIN_NONE hash (plugin_type + msg_type bytes)
+-dialyzer({nowarn_function, get_munge_credential/1}).
+-compile({nowarn_unused_function, get_munge_credential/1}).
 -spec get_munge_credential(non_neg_integer() | undefined) -> {ok, binary()} | {error, term()}.
 get_munge_credential(undefined) ->
     %% No hash - create credential with no payload
@@ -412,21 +425,38 @@ get_munge_credential(undefined) ->
             {ok, list_to_binary(Cred)}
     end;
 get_munge_credential(MsgType) when is_integer(MsgType) ->
-    %% Create HASH_PLUGIN_NONE payload: plugin_type(1) + msg_type(2) = 3 bytes
-    %% HASH_PLUGIN_NONE = 0
-    %% msg_type in network byte order (big-endian)
-    HashPayload = <<0:8, MsgType:16/big>>,
-    %% Base64 encode the payload and pass to munge via echo | munge
-    B64Payload = base64:encode(HashPayload),
-    Cmd = io_lib:format("echo -n '~s' | base64 -d | munge 2>/dev/null", [B64Payload]),
-    lager:info("MUNGE cmd for msg_type ~p: ~s", [MsgType, lists:flatten(Cmd)]),
-    case os:cmd(lists:flatten(Cmd)) of
+    %% Create MUNGE credential WITH hash payload embedded
+    %% SLURM's _check_hash() expects EXACTLY 3 bytes for HASH_PLUGIN_NONE:
+    %%   byte 0: 0x01 (HASH_PLUGIN_NONE - NOTE: SLURM enum starts at DEFAULT=0, NONE=1)
+    %%   byte 1: msg_type high byte (network byte order)
+    %%   byte 2: msg_type low byte (network byte order)
+    %% The msg_type is checked: (cred_hash[1] == type[0]) && (cred_hash[2] == type[1])
+    %% SLURM hash_plugin_type enum: DEFAULT=0, NONE=1, K12=2, SHA256=3
+    MsgTypeHigh = (MsgType bsr 8) band 16#FF,
+    MsgTypeLow = MsgType band 16#FF,
+    %% Use printf with OCTAL escapes for binary payload
+    %% Format: \NNN where NNN is 3 octal digits
+    %% Build the command string directly with single quotes to avoid shell escaping issues
+    %% Single quotes prevent the shell from interpreting escapes, but printf interprets them
+    Cmd = lists:flatten(io_lib:format(
+        "printf '\\~3.8.0B\\~3.8.0B\\~3.8.0B' | munge 2>/dev/null",
+        [1, MsgTypeHigh, MsgTypeLow])),  %% 1 = HASH_PLUGIN_NONE
+    lager:info("Creating MUNGE credential with 3-byte hash (type=NONE=1, msg_type=0x~4.16.0B)", [MsgType]),
+    lager:debug("MUNGE command: ~s", [Cmd]),
+    case os:cmd(Cmd) of
         [] ->
-            lager:warning("MUNGE command returned empty, falling back to no-payload"),
-            get_munge_credential(undefined);
+            lager:warning("MUNGE command returned empty, trying without payload"),
+            %% Fallback to no payload
+            case os:cmd("munge -n 2>/dev/null") of
+                [] -> {error, munge_not_available};
+                FallbackResult ->
+                    Cred = string:trim(FallbackResult, trailing, "\n"),
+                    lager:info("MUNGE credential obtained (no hash fallback), length=~p", [length(Cred)]),
+                    {ok, list_to_binary(Cred)}
+            end;
         Result ->
             Cred = string:trim(Result, trailing, "\n"),
-            lager:info("MUNGE credential obtained, length=~p", [length(Cred)]),
+            lager:info("MUNGE credential obtained (hash=NONE), length=~p", [length(Cred)]),
             {ok, list_to_binary(Cred)}
     end.
 
@@ -437,22 +467,31 @@ get_munge_credential(MsgType) when is_integer(MsgType) ->
 %%   plugin_id:32 (101 = AUTH_PLUGIN_MUNGE) - read FIRST by auth_g_unpack
 %%   credential_packstr (length:32, credential, null:8) - read by auth_p_unpack
 %%
-%% NOTE: Try without embedded hash - maybe SLURM doesn't expect hash in server responses
+%% The MUNGE credential contains a 3-byte hash payload:
+%%   [HASH_PLUGIN_NONE=1, msg_type_hi, msg_type_lo]
+%% SLURM hash_plugin_type enum: DEFAULT=0, NONE=1, K12=2, SHA256=3
+%% This is verified by SLURM's _check_hash() function.
+%%
+%% Auth section with MUNGE credential including embedded msg_type hash
 -spec create_proper_auth_section(non_neg_integer() | undefined) -> binary().
-create_proper_auth_section(_MsgType) ->
+create_proper_auth_section(MsgType) ->
     PluginId = 101,  %% AUTH_PLUGIN_MUNGE
-    %% Use MUNGE credential WITHOUT payload (no hash embedded)
-    case get_munge_credential(undefined) of
+    %% Create MUNGE credential WITH 3-byte hash payload
+    %% SLURM's _check_hash() expects: [HASH_PLUGIN_NONE=1, msg_type_hi, msg_type_lo]
+    %%
+    %% SLURM's auth_munge.c uses packstr (length includes null, data ends with null).
+    %% See _pack_cred() which calls packstr(cred->signature, buffer).
+    case get_munge_credential(MsgType) of
         {ok, Credential} ->
             CredLen = byte_size(Credential),
+            %% SLURM auth uses packstr format (includes null terminator)
             CredPackstr = flurm_protocol_pack:pack_string(Credential),
-            %% Order for auth_g_unpack: plugin_id FIRST, then credential
             AuthBin = <<PluginId:32/big, CredPackstr/binary>>,
-            lager:info("AUTH: plugin_id=~p cred_len=~p packstr_len=~p total=~p (no hash)",
-                       [PluginId, CredLen, byte_size(CredPackstr), byte_size(AuthBin)]),
+            lager:info("AUTH: plugin_id=~p cred_len=~p packstr_len=~p total=~p msg_type=~p",
+                       [PluginId, CredLen, byte_size(CredPackstr), byte_size(AuthBin), MsgType]),
             AuthBin;
         {error, _} ->
-            %% No MUNGE - use empty credential
+            %% No MUNGE - use empty credential (will likely fail verification)
             EmptyPackstr = flurm_protocol_pack:pack_string(<<>>),
             AuthBin = <<PluginId:32/big, EmptyPackstr/binary>>,
             lager:info("AUTH (no munge): plugin_id=~p total=~p", [PluginId, byte_size(AuthBin)]),
@@ -572,6 +611,10 @@ decode_body(?RESPONSE_JOB_INFO, Binary) ->
 %% RESPONSE_PARTITION_INFO (2010)
 decode_body(?RESPONSE_PARTITION_INFO, Binary) ->
     decode_partition_info_response(Binary);
+
+%% REQUEST_LAUNCH_TASKS (6001) - srun launching tasks on node
+decode_body(?REQUEST_LAUNCH_TASKS, Binary) ->
+    decode_launch_tasks_request(Binary);
 
 %% Unknown message type - return raw body
 decode_body(_MsgType, Binary) ->
@@ -728,6 +771,10 @@ encode_body(?RESPONSE_LAUNCH_TASKS, Resp) ->
 %% RESPONSE_REATTACH_TASKS (5013)
 encode_body(?RESPONSE_REATTACH_TASKS, Resp) ->
     encode_reattach_tasks_response(Resp);
+
+%% MESSAGE_TASK_EXIT (6003) - Task exit notification
+encode_body(?MESSAGE_TASK_EXIT, Resp) ->
+    encode_task_exit_msg(Resp);
 
 %% Raw binary passthrough
 encode_body(_MsgType, Binary) when is_binary(Binary) ->
@@ -3035,6 +3082,519 @@ decode_job_step_info_request(Binary) ->
             {error, invalid_job_step_info_request}
     end.
 
+%% Decode REQUEST_LAUNCH_TASKS (6001) - srun launching tasks on node
+%% SLURM 22.05 wire format from _pack_launch_tasks_request_msg:
+%%   1. step_id (pack_step_id): job_id(32), step_id(32), step_het_comp(32)
+%%   2. uid: uint32
+%%   3. gid: uint32
+%%   4. user_name: string
+%%   5. gids: uint32 array with count
+%%   6. het_job_* fields (various)
+%%   7. mpi_plugin_id: uint32
+%%   8. ntasks, nnodes, etc.
+%%   9. cred_version: uint16
+%%  10. cred: slurm_cred
+%%  11. task arrays and ports
+%%  12. env, argv, cwd, etc.
+decode_launch_tasks_request(Binary) ->
+    try
+        %% Parse step_id structure
+        <<JobId:32/big, StepId:32/big, StepHetComp:32/big, Rest0/binary>> = Binary,
+        lager:info("Decoded step_id: job=~p step=~p het_comp=~p", [JobId, StepId, StepHetComp]),
+
+        %% Parse uid, gid
+        <<Uid:32/big, Gid:32/big, Rest1/binary>> = Rest0,
+        lager:info("Decoded uid=~p gid=~p", [Uid, Gid]),
+
+        %% Parse user_name string
+        {UserName, Rest2} = unpack_string_safe(Rest1),
+        lager:info("Decoded user_name=~p", [UserName]),
+
+        %% Parse gids array (count + array)
+        <<NgIds:32/big, Rest3/binary>> = Rest2,
+        {GIds, Rest4} = unpack_uint32_array(NgIds, Rest3),
+        lager:info("Decoded ~p gids, Rest4 size=~p", [NgIds, byte_size(Rest4)]),
+
+        %% Parse het_job fields
+        lager:info("About to parse het_job, Rest4 first 20 bytes: ~p", [binary:part(Rest4, 0, min(20, byte_size(Rest4)))]),
+        <<HetJobNodeOffset:32/big, HetJobId:32/big, HetJobNnodes:32/big, Rest5/binary>> = Rest4,
+        lager:info("het_job: node_offset=~p id=~p nnodes=~p, Rest5 size=~p", [HetJobNodeOffset, HetJobId, HetJobNnodes, byte_size(Rest5)]),
+
+        %% Skip het_job_tids arrays if HetJobNnodes > 0
+        Rest6 = skip_het_job_tids(HetJobNnodes, Rest5),
+        lager:info("After skip_het_job_tids, Rest6 size=~p", [byte_size(Rest6)]),
+
+        %% Parse more het_job fields
+        <<_HetJobNtasks:32/big, Rest7/binary>> = Rest6,
+
+        %% Skip het_job_tid_offsets if HetJobNnodes > 0
+        Rest8 = skip_het_job_tid_offsets(HetJobNnodes, Rest7),
+
+        %% Continue with remaining het_job fields
+        <<_HetJobOffset:32/big, _HetJobStepCnt:32/big, _HetJobTaskOffset:32/big, Rest9/binary>> = Rest8,
+
+        %% Parse het_job_node_list string
+        {_HetJobNodeList, Rest10} = unpack_string_safe(Rest9),
+
+        %% Parse mpi_plugin_id
+        <<_MpiPluginId:32/big, Rest11/binary>> = Rest10,
+
+        %% Parse task/node counts
+        <<Ntasks:32/big, _NtasksPerBoard:16/big, _NtasksPerCore:16/big,
+          _NtasksPerTres:16/big, _NtasksPerSocket:16/big, Rest12/binary>> = Rest11,
+        lager:info("Decoded ntasks=~p", [Ntasks]),
+
+        %% Parse memory limits
+        <<JobMemLim:64/big, StepMemLim:64/big, Rest13/binary>> = Rest12,
+        lager:debug("mem_lim: job=~p step=~p", [JobMemLim, StepMemLim]),
+
+        %% Parse nnodes
+        <<Nnodes:32/big, Rest14/binary>> = Rest13,
+        lager:info("Decoded nnodes=~p", [Nnodes]),
+
+        %% Parse cpus_per_task
+        <<CpusPerTask:16/big, Rest15/binary>> = Rest14,
+        lager:info("cpus_per_task=~p, Rest15 first 20 bytes: ~p", [CpusPerTask, binary:part(Rest15, 0, min(20, byte_size(Rest15)))]),
+
+        %% Parse tres_per_task string
+        {TresPerTask, Rest16} = unpack_string_safe(Rest15),
+        lager:info("tres_per_task=~p, Rest16 first 20 bytes: ~p", [TresPerTask, binary:part(Rest16, 0, min(20, byte_size(Rest16)))]),
+
+        %% Parse threads_per_core, task_dist, node_cpus, job_core_spec, accel_bind_type
+        <<ThreadsPerCore:16/big, TaskDist:32/big, NodeCpus:16/big,
+          JobCoreSpec:16/big, AccelBindType:16/big, Rest17/binary>> = Rest16,
+        lager:info("threads_per_core=~p task_dist=~p node_cpus=~p job_core_spec=~p accel_bind_type=~p",
+                   [ThreadsPerCore, TaskDist, NodeCpus, JobCoreSpec, AccelBindType]),
+        lager:info("Rest17 first 20 bytes: ~p", [binary:part(Rest17, 0, min(20, byte_size(Rest17)))]),
+
+        %% The SLURM REQUEST_LAUNCH_TASKS format is complex. Instead of parsing every field,
+        %% let's find the env vars and argv by pattern matching, then extract what we need.
+        %%
+        %% Strategy: Search for the env array, which starts with a reasonable count (20-60)
+        %% followed by packstr entries starting with "HOME=" or "SLURM_"
+
+        lager:info("Rest17 first 40 bytes hex: ~s", [binary_to_hex(binary:part(Rest17, 0, min(40, byte_size(Rest17))))]),
+
+        %% Find env vars position in the ENTIRE binary, not just Rest17
+        %% The REQUEST_LAUNCH_TASKS format is complex and our field-by-field parsing
+        %% may get misaligned. Search the original body for env vars.
+        case find_env_vars_position(Binary) of
+            {ok, EnvOffset} ->
+                lager:info("Found env at offset ~p in full binary", [EnvOffset]),
+                <<_Skip:EnvOffset/binary, RestFromEnv/binary>> = Binary,
+
+                %% Parse env array
+                <<Envc:32/big, RestEnvStrings/binary>> = RestFromEnv,
+                {Env, RestAfterEnv} = unpack_string_array(Envc, RestEnvStrings),
+                lager:info("Decoded ~p env vars", [Envc]),
+
+                %% Parse spank_job_env array
+                <<SpankEnvCount:32/big, RestSpank/binary>> = RestAfterEnv,
+                {_SpankEnv, RestAfterSpank} = unpack_string_array(SpankEnvCount, RestSpank),
+
+                %% Parse container string
+                {_Container, RestAfterContainer} = unpack_string_safe(RestAfterSpank),
+
+                %% Parse cwd
+                {Cwd, RestAfterCwd} = unpack_string_safe(RestAfterContainer),
+                lager:info("Decoded cwd=~p", [Cwd]),
+
+                %% Parse cpu_bind_type and cpu_bind
+                <<CpuBindType:16/big, RestCpuBind/binary>> = RestAfterCwd,
+                {CpuBind, RestAfterCpuBind} = unpack_string_safe(RestCpuBind),
+
+                %% Parse mem_bind_type and mem_bind
+                <<_MemBindType:16/big, RestMemBind/binary>> = RestAfterCpuBind,
+                {_MemBind, RestAfterMemBind} = unpack_string_safe(RestMemBind),
+
+                %% Parse argv array
+                <<Argc:32/big, RestArgvStrings/binary>> = RestAfterMemBind,
+                {Argv, RestAfterArgv} = unpack_string_array(Argc, RestArgvStrings),
+                lager:info("Decoded argv (~p): ~p", [Argc, Argv]),
+
+                %% Calculate offset for RestAfterArgv in the full binary
+                %% This is where io_port should be located (AFTER env, AFTER argv)
+                EnvEndOffset = byte_size(Binary) - byte_size(RestAfterArgv),
+                lager:info("RestAfterArgv offset: ~p, first 30 bytes hex: ~s",
+                          [EnvEndOffset, binary_to_hex_local(binary:part(RestAfterArgv, 0, min(30, byte_size(RestAfterArgv))))]),
+
+                %% We've got the essential fields we need (env, cwd, argv)
+                %% SLURM wire format: resp_port comes BEFORE env, io_port comes AFTER argv
+                RespPort = extract_resp_port_before_env(Binary, EnvOffset),
+                lager:info("Extracted resp_port (before env): ~p", [RespPort]),
+
+                %% io_port comes AFTER env/argv section - search in RestAfterArgv
+                IoPort = extract_io_port_after_argv(RestAfterArgv),
+                lager:info("Extracted io_port (after argv): ~p", [IoPort]),
+
+                %% Use defaults for the rest
+                Flags = 0,
+                Ofname = <<>>,
+                Efname = <<>>,
+                Ifname = <<>>,
+                TasksToLaunch = [Ntasks],
+                GlobalTaskIds = [[0]],
+                CompleteNodelist = <<>>;
+
+            not_found ->
+                lager:warning("Could not find env vars in message, using defaults"),
+                Env = [],
+                Cwd = <<"/tmp">>,
+                CpuBindType = 0,
+                CpuBind = <<>>,
+                Argv = [<<"/bin/hostname">>],
+                Flags = 0,
+                Ofname = <<>>,
+                Efname = <<>>,
+                Ifname = <<>>,
+                IoPort = [],
+                TasksToLaunch = [Ntasks],
+                GlobalTaskIds = [[0]],
+                RespPort = [],
+                CompleteNodelist = <<>>
+        end,
+
+        %% Extract partition from env if available
+        Partition = extract_partition_from_env(Env),
+
+        %% Extract io_key (credential signature) for I/O authentication
+        IoKey = extract_io_key(Binary),
+
+        %% Build the record
+        Result = #launch_tasks_request{
+            job_id = JobId,
+            step_id = normalize_step_id(StepId),
+            step_het_comp = StepHetComp,
+            uid = Uid,
+            gid = Gid,
+            user_name = UserName,
+            gids = GIds,
+            ntasks = Ntasks,
+            nnodes = Nnodes,
+            argc = length(Argv),
+            argv = Argv,
+            envc = length(Env),
+            env = Env,
+            cwd = Cwd,
+            cpu_bind_type = CpuBindType,
+            cpu_bind = CpuBind,
+            task_dist = TaskDist,
+            flags = Flags,
+            tasks_to_launch = TasksToLaunch,
+            global_task_ids = GlobalTaskIds,
+            resp_port = RespPort,
+            io_port = IoPort,
+            ofname = Ofname,
+            efname = Efname,
+            ifname = Ifname,
+            complete_nodelist = CompleteNodelist,
+            partition = Partition,
+            job_mem_lim = JobMemLim,
+            step_mem_lim = StepMemLim,
+            io_key = IoKey
+        },
+        {ok, Result}
+    catch
+        error:{badmatch, _} = E ->
+            lager:warning("launch_tasks_request decode badmatch: ~p", [E]),
+            {error, {launch_tasks_request_decode_failed, E}};
+        Class:Reason:Stack ->
+            lager:warning("launch_tasks_request decode error: ~p:~p~n~p", [Class, Reason, Stack]),
+            {error, {launch_tasks_request_decode_failed, {Class, Reason}}}
+    end.
+
+%% Helper: unpack a string safely (returns empty binary on failure)
+unpack_string_safe(<<Len:32/big, Rest/binary>>) when Len =< byte_size(Rest), Len < 16#FFFFFFFE ->
+    <<Str:Len/binary, Rest2/binary>> = Rest,
+    {Str, Rest2};
+unpack_string_safe(<<16#FFFFFFFF:32, Rest/binary>>) ->
+    %% NULL string (0xFFFFFFFF = NO_VAL)
+    {<<>>, Rest};
+unpack_string_safe(<<Len:32/big, _/binary>> = Full) ->
+    lager:warning("unpack_string_safe: len=~p too large for buffer (~p bytes)", [Len, byte_size(Full) - 4]),
+    {<<>>, <<>>};
+unpack_string_safe(Binary) ->
+    lager:warning("unpack_string_safe: insufficient data (~p bytes)", [byte_size(Binary)]),
+    {<<>>, <<>>}.
+
+%% Helper: unpack uint32 array
+unpack_uint32_array(0, Rest) ->
+    {[], Rest};
+unpack_uint32_array(Count, Binary) ->
+    unpack_uint32_array(Count, Binary, []).
+
+unpack_uint32_array(0, Rest, Acc) ->
+    {lists:reverse(Acc), Rest};
+unpack_uint32_array(N, <<Val:32/big, Rest/binary>>, Acc) ->
+    unpack_uint32_array(N - 1, Rest, [Val | Acc]);
+unpack_uint32_array(_, Rest, Acc) ->
+    {lists:reverse(Acc), Rest}.
+
+%% Helper: unpack string array
+unpack_string_array(0, Rest) ->
+    {[], Rest};
+unpack_string_array(Count, Binary) ->
+    unpack_string_array(Count, Binary, []).
+
+unpack_string_array(0, Rest, Acc) ->
+    {lists:reverse(Acc), Rest};
+unpack_string_array(N, Binary, Acc) ->
+    {Str, Rest} = unpack_string_safe(Binary),
+    unpack_string_array(N - 1, Rest, [Str | Acc]).
+
+%% Helper: skip het_job_tids arrays (conditional on HetJobNnodes > 0 and not SLURM_NO_VAL)
+skip_het_job_tids(0, Rest) ->
+    Rest;
+skip_het_job_tids(HetJobNnodes, Rest) when HetJobNnodes >= 16#FFFFFFFE ->
+    %% SLURM_NO_VAL (0xFFFFFFFE) or SLURM_NO_VAL_UINT32 (0xFFFFFFFF) - skip nothing
+    Rest;
+skip_het_job_tids(HetJobNnodes, Binary) ->
+    %% Each node has: count(32) + array of uint32
+    skip_het_job_tids_loop(HetJobNnodes, Binary).
+
+skip_het_job_tids_loop(0, Rest) ->
+    Rest;
+skip_het_job_tids_loop(N, <<Count:32/big, Rest/binary>>) when Count < 16#FFFFFFFE ->
+    SkipBytes = Count * 4,
+    <<_:SkipBytes/binary, Rest2/binary>> = Rest,
+    skip_het_job_tids_loop(N - 1, Rest2);
+skip_het_job_tids_loop(N, <<_Count:32/big, Rest/binary>>) ->
+    %% Count is NO_VAL, skip nothing for this node
+    skip_het_job_tids_loop(N - 1, Rest);
+skip_het_job_tids_loop(_, Rest) ->
+    Rest.
+
+%% Helper: skip het_job_tid_offsets (conditional on HetJobNnodes > 0 and not SLURM_NO_VAL)
+skip_het_job_tid_offsets(0, Rest) ->
+    Rest;
+skip_het_job_tid_offsets(HetJobNnodes, Rest) when HetJobNnodes >= 16#FFFFFFFE ->
+    %% SLURM_NO_VAL - skip nothing
+    Rest;
+skip_het_job_tid_offsets(HetJobNnodes, Binary) ->
+    SkipBytes = HetJobNnodes * 4,
+    <<_:SkipBytes/binary, Rest/binary>> = Binary,
+    Rest.
+
+%% Helper: find env vars position in binary by scanning for packstr_array pattern
+%% Look for: count (30-60 range) followed by packstr starting with "HOME=" or "SLURM_"
+find_env_vars_position(Binary) ->
+    %% Also try searching for "SLURM_" directly (6 bytes) in the binary
+    case binary:match(Binary, <<"SLURM_">>) of
+        {StrPos, _} when StrPos >= 8 ->
+            %% Found SLURM_ at position StrPos. The count should be a few bytes before.
+            %% Packstr format: <<Len:32, String:Len>> so string starts at Len+4.
+            %% env array format: <<Count:32, Str1Len:32, Str1:Str1Len, Str2Len:32, ...>>
+            %% So count is 8 bytes before the first string content
+            %% But first check if this is part of env vars by checking the prefix
+            PossibleCountPos = StrPos - 8,
+            case PossibleCountPos >= 0 of
+                true ->
+                    <<_:PossibleCountPos/binary, PossibleCount:32/big, PossibleLen:32/big, _/binary>> = Binary,
+                    lager:info("Found SLURM_ at ~p, possible count at ~p: ~p, strlen: ~p",
+                               [StrPos, PossibleCountPos, PossibleCount, PossibleLen]),
+                    if
+                        PossibleCount >= 10 andalso PossibleCount =< 100 andalso
+                        PossibleLen >= 10 andalso PossibleLen < 200 ->
+                            {ok, PossibleCountPos};
+                        true ->
+                            %% Fall back to original search
+                            find_env_vars_position_scan(Binary, 0)
+                    end;
+                false ->
+                    find_env_vars_position_scan(Binary, 0)
+            end;
+        _ ->
+            find_env_vars_position_scan(Binary, 0)
+    end.
+
+find_env_vars_position_scan(Binary, Offset) when Offset + 50 < byte_size(Binary) ->
+    <<_:Offset/binary, MaybeCount:32/big, Rest/binary>> = Binary,
+    %% Check if count is reasonable for env vars (typically 30-60)
+    if
+        MaybeCount >= 20 andalso MaybeCount =< 100 ->
+            %% Check if next packstr starts with "HOME=" or "SLURM_" or "PATH="
+            case Rest of
+                <<StrLen:32/big, _/binary>> when StrLen >= 5, StrLen < 200 ->
+                    %% Extract first few bytes of string
+                    case Rest of
+                        <<_:32, FirstChars:5/binary, _/binary>> ->
+                            case FirstChars of
+                                <<"HOME=">> ->
+                                    lager:info("Found HOME= at offset ~p (count=~p)", [Offset, MaybeCount]),
+                                    {ok, Offset};
+                                <<"PATH=">> ->
+                                    lager:info("Found PATH= at offset ~p (count=~p)", [Offset, MaybeCount]),
+                                    {ok, Offset};
+                                <<"SLURM">> ->
+                                    lager:info("Found SLURM at offset ~p (count=~p)", [Offset, MaybeCount]),
+                                    {ok, Offset};
+                                <<"HOSTN">> ->
+                                    %% HOSTNAME=
+                                    lager:info("Found HOSTNAME at offset ~p (count=~p)", [Offset, MaybeCount]),
+                                    {ok, Offset};
+                                _ ->
+                                    find_env_vars_position_scan(Binary, Offset + 1)
+                            end;
+                        _ ->
+                            find_env_vars_position_scan(Binary, Offset + 1)
+                    end;
+                _ ->
+                    find_env_vars_position_scan(Binary, Offset + 1)
+            end;
+        true ->
+            find_env_vars_position_scan(Binary, Offset + 1)
+    end;
+find_env_vars_position_scan(_Binary, _Offset) ->
+    not_found.
+
+%% Helper: extract partition from environment variables
+extract_partition_from_env(EnvList) when is_list(EnvList) ->
+    case lists:search(fun(EnvVar) ->
+        case EnvVar of
+            <<"SLURM_JOB_PARTITION=", _/binary>> -> true;
+            _ -> false
+        end
+    end, EnvList) of
+        {value, <<"SLURM_JOB_PARTITION=", Partition/binary>>} -> Partition;
+        _ -> <<>>
+    end;
+extract_partition_from_env(_) ->
+    <<>>.
+
+%% Extract resp_port from binary BEFORE env offset
+%% resp_port uses 16-bit count + 16-bit values (SLURM pack16 calls)
+extract_resp_port_before_env(Binary, EnvOffset) when EnvOffset > 50 ->
+    %% Search from start of binary to just before env vars
+    SearchEnd = min(EnvOffset + 50, byte_size(Binary)),
+    SearchBin = binary:part(Binary, 0, SearchEnd),
+
+    %% Find port arrays (using existing heuristic with 32-bit count)
+    AllArrays = find_all_port_arrays(SearchBin, 0, []),
+    case AllArrays of
+        [First | _] -> First;
+        [] -> []
+    end;
+extract_resp_port_before_env(_, _) ->
+    [].
+
+%% Extract io_port from binary AFTER argv section
+%% io_port uses 16-bit count + 16-bit values (SLURM pack16 calls)
+%% Format: num_io_port(16), io_port[](16 each), followed by alloc_tls_cert(packstr)
+extract_io_port_after_argv(Binary) when byte_size(Binary) >= 4 ->
+    %% io_port should be near the start of this section
+    %% Search for 16-bit count format: count(16) + port(16) where port is ephemeral
+    lager:info("Searching for io_port in ~p bytes after argv", [byte_size(Binary)]),
+    find_io_port_16bit(Binary, 0);
+extract_io_port_after_argv(_) ->
+    [].
+
+%% Find io_port using 16-bit count format (SLURM pack16 for count)
+find_io_port_16bit(Binary, Offset) when Offset + 4 =< byte_size(Binary) ->
+    <<_:Offset/binary, NumPorts:16/big, Port1:16/big, _/binary>> = Binary,
+    if
+        NumPorts >= 1 andalso NumPorts =< 4 andalso
+        Port1 >= 30000 andalso Port1 < 60000 ->
+            %% Looks like a valid io_port array with 16-bit count
+            Ports = extract_port_array_16(Binary, Offset + 2, NumPorts),
+            ValidPorts = [P || P <- Ports, P >= 30000, P < 60000],
+            if
+                length(ValidPorts) =:= NumPorts ->
+                    lager:info("Found io_port (16-bit count) at offset ~p: count=~p, ports=~p",
+                               [Offset, NumPorts, Ports]),
+                    Ports;
+                true ->
+                    find_io_port_16bit(Binary, Offset + 1)
+            end;
+        true ->
+            find_io_port_16bit(Binary, Offset + 1)
+    end;
+find_io_port_16bit(_, _) ->
+    [].
+
+%% Extract array of uint16 ports with 16-bit elements starting at Offset
+extract_port_array_16(Binary, Offset, Count) ->
+    extract_port_array_16(Binary, Offset, Count, []).
+
+extract_port_array_16(_, _, 0, Acc) ->
+    lists:reverse(Acc);
+extract_port_array_16(Binary, Offset, Count, Acc) when Offset + 2 =< byte_size(Binary) ->
+    <<_:Offset/binary, Port:16/big, _/binary>> = Binary,
+    extract_port_array_16(Binary, Offset + 2, Count - 1, [Port | Acc]);
+extract_port_array_16(_, _, _, Acc) ->
+    lists:reverse(Acc).
+
+%% Find all port arrays in binary (returns list of port lists)
+%% SLURM pack16_array format: count:32/big + ports:16/big each
+%% Note: count is 32-bit, ports are 16-bit!
+find_all_port_arrays(Binary, Offset, Acc) when Offset + 6 < byte_size(Binary) ->
+    <<_:Offset/binary, NumPorts:32/big, Port1:16/big, _/binary>> = Binary,
+    %% Check if this looks like a port array: small count (1-4) and ephemeral port
+    if
+        NumPorts >= 1 andalso NumPorts =< 4 andalso
+        Port1 >= 30000 andalso Port1 < 60000 ->
+            %% Potential match - verify all ports are valid
+            Ports = extract_port_array(Binary, Offset + 4, NumPorts),
+            ValidPorts = [P || P <- Ports, P >= 30000, P < 60000],
+            if
+                length(ValidPorts) =:= NumPorts ->
+                    lager:info("Found port16 array at offset ~p: count=~p, ports=~p",
+                               [Offset, NumPorts, Ports]),
+                    %% Skip past this array (4 bytes count + 2 bytes per port) and continue searching
+                    NextOffset = Offset + 4 + (NumPorts * 2),
+                    %% DEBUG: Show bytes right after this array to understand what follows
+                    NextBytes = case byte_size(Binary) > NextOffset + 20 of
+                        true -> binary:part(Binary, NextOffset, 20);
+                        false -> binary:part(Binary, NextOffset, max(0, byte_size(Binary) - NextOffset))
+                    end,
+                    lager:info("DEBUG: Next 20 bytes after port array at offset ~p: hex=~s (dec: ~w)",
+                               [NextOffset, binary_to_hex_local(NextBytes), binary_to_list(NextBytes)]),
+                    find_all_port_arrays(Binary, NextOffset, [Ports | Acc]);
+                true ->
+                    %% Some ports invalid, keep scanning
+                    find_all_port_arrays(Binary, Offset + 1, Acc)
+            end;
+        true ->
+            find_all_port_arrays(Binary, Offset + 1, Acc)
+    end;
+find_all_port_arrays(_, _, Acc) ->
+    lists:reverse(Acc).
+
+%% Helper for debug hex output (local to avoid dependency)
+binary_to_hex_local(Bin) ->
+    lists:flatten([io_lib:format("~2.16.0B", [B]) || B <- binary_to_list(Bin)]).
+
+%% Extract array of uint16 ports
+extract_port_array(Binary, Offset, Count) ->
+    extract_port_array(Binary, Offset, Count, []).
+
+extract_port_array(_, _, 0, Acc) ->
+    lists:reverse(Acc);
+extract_port_array(Binary, Offset, Count, Acc) when Offset + 2 =< byte_size(Binary) ->
+    <<_:Offset/binary, Port:16/big, _/binary>> = Binary,
+    extract_port_array(Binary, Offset + 2, Count - 1, [Port | Acc]);
+extract_port_array(_, _, _, Acc) ->
+    lists:reverse(Acc).
+
+%% Extract io_key (credential signature) from REQUEST_LAUNCH_TASKS binary
+%% The credential signature is used for I/O authentication with srun
+%% Format: The signature is packed using packmem (4-byte length + data)
+%%
+%% The credential in REQUEST_LAUNCH_TASKS follows this order:
+%% 1. cred_version: uint16 (2 bytes)
+%% 2. cred: slurm_cred structure with signature at the end
+%%
+%% The signature is binary (not base64), packed with packmem.
+%% MUNGE binary signatures are typically 100-160 bytes.
+%%
+%% Since parsing the full credential is complex, we search for a packmem
+%% pattern that looks like a signature: 4-byte length (80-200) followed by data.
+extract_io_key(_Binary) ->
+    %% TODO: Properly extract credential signature for I/O authentication
+    %% For now, return empty key - this will cause io_init_msg validation to fail
+    %% but we need to fix the header format issue first
+    lager:warning("io_key extraction not implemented, using empty key"),
+    <<>>.
+
 %% Encode RESPONSE_JOB_STEP_CREATE (5002)
 %% SLURM 22.05 wire format from _pack_job_step_create_response_msg:
 %%   1. def_cpu_bind_type: uint32
@@ -3047,31 +3607,41 @@ decode_job_step_info_request(Binary) ->
 %%   8. use_protocol_ver: uint16
 encode_job_step_create_response(#job_step_create_response{
     job_step_id = StepId,
+    job_id = JobId,
+    user_id = Uid,
+    group_id = Gid,
+    user_name = UserName0,
+    node_list = NodeList0,
+    num_tasks = NumTasks0,
     error_code = _ErrorCode,
     error_msg = _ErrorMsg
-} = Resp) ->
-    %% Get node_list from response (or default)
-    NodeList = case Resp of
-        #job_step_create_response{step_layout = NL} when is_binary(NL), NL =/= <<>> -> NL;
-        _ -> <<"flurm-node1">>
+} = _Resp) ->
+    %% Get node_list with fallback
+    NodeList = case NodeList0 of
+        <<>> -> <<"flurm-node1">>;
+        _ -> NodeList0
     end,
+    UserName = case UserName0 of
+        <<>> -> <<"root">>;
+        _ -> UserName0
+    end,
+    NumTasks = max(1, NumTasks0),
+
     Parts = [
         %% 1. def_cpu_bind_type (0 = default)
         <<0:32/big>>,
-        %% 2. resv_ports (NULL string)
-        flurm_protocol_pack:pack_string(<<>>),
-        %% 3. job_step_id
+        %% 2. resv_ports (NULL string - use undefined for NULL, not empty string)
+        flurm_protocol_pack:pack_string(undefined),
+        %% 3. job_step_id - single uint32 (NOT slurm_step_id_t, just step ID)
         <<StepId:32/big>>,
-        %% 4. step_layout - minimal valid structure:
-        %%    presence(16) + front_end(string) + node_list(string) + node_cnt(32) +
-        %%    start_protocol_ver(16) + task_cnt(32) + task_dist(32) + tasks_per_node[]
-        encode_step_layout(NodeList, 1, 1),  %% 1 node, 1 task
-        %% 5. cred - slurm_cred_pack format (NULL credential for now)
-        encode_null_cred(),
+        %% 4. step_layout - minimal valid structure
+        encode_step_layout(NodeList, 1, NumTasks),
+        %% 5. cred - slurm_cred_pack format with job info
+        encode_minimal_cred(JobId, StepId, Uid, Gid, NumTasks, UserName, NodeList),
         %% 6. select_jobinfo - plugin_id then plugin data
         encode_select_jobinfo(),
-        %% 7. switch_job (NULL)
-        <<0:32/big>>,  %% switch_g_pack_jobinfo packs 0 for NULL
+        %% 7. switch_job (NULL) - plugin_id = SWITCH_PLUGIN_NONE = 100
+        <<100:32/big>>,  %% switch_g_pack_jobinfo packs SWITCH_PLUGIN_NONE for NULL
         %% 8. use_protocol_ver
         <<16#2600:16/big>>  %% SLURM 22.05 protocol version
     ],
@@ -3082,39 +3652,140 @@ encode_job_step_create_response(#job_step_create_response{
 %%         start_protocol_ver(16) + task_cnt(32) + task_dist(32) +
 %%         for each node: pack32_array of task IDs
 encode_step_layout(NodeList, NodeCnt, TaskCnt) ->
-    %% Presence indicator: 1 = present, 0 = NULL
-    Presence = 1,
-    %% Task distribution: 1 = BLOCK (default)
+    %% Existence flag: 1 = valid step_layout, 0 = NULL
+    ExistsFlag = 1,
+    %% Task distribution: 1 = SLURM_DIST_BLOCK (default)
     TaskDist = 1,
-    %% For each node, pack an array of task IDs
-    %% pack32_array format: count(32), then uint32 elements
+    %% For each node, pack an array of task IDs using pack32_array format
+    %% pack32_array: count(32) + uint32 elements
     %% For 1 task on 1 node: count=1, task_id[0]=0
     TaskArrays = lists:duplicate(NodeCnt,
         <<1:32/big,   %% array count = 1 task per node
           0:32/big>>  %% task_id = 0
     ),
     iolist_to_binary([
-        <<Presence:16/big>>,
-        flurm_protocol_pack:pack_string(<<>>),  %% front_end (NULL)
+        <<ExistsFlag:16/big>>,  %% pack16 existence flag (1 = valid)
+        flurm_protocol_pack:pack_string(undefined),  %% front_end (NULL)
         flurm_protocol_pack:pack_string(NodeList),  %% node_list
         <<NodeCnt:32/big>>,  %% node_cnt
         <<16#2600:16/big>>,  %% start_protocol_ver (22.05)
         <<TaskCnt:32/big>>,  %% task_cnt
         <<TaskDist:32/big>>,  %% task_dist
-        %% For each node, pack tasks array
+        %% For each node, pack tids array (pack32_array format)
         TaskArrays
     ]).
 
-%% Encode NULL credential (simplest form)
-%% slurm_cred_pack format varies by version, but NULL can be signaled
-encode_null_cred() ->
-    %% For SLURM 22.05, slurm_cred_pack() packs the credential structure
-    %% A minimal "null" credential: just pack 0 for version indicator
-    %% Actually, we need to pack a proper credential structure
-    %% Minimal: cred_version(16) then fields...
-    %% Let's try packing a dummy credential that srun might accept
-    %% Format: arg_count(16=0 means NULL), then nothing else
-    <<0:16/big>>.
+%% Encode a minimal valid credential for SLURM 22.05
+%% slurm_cred_unpack reads credential fields directly WITHOUT a packbuf size prefix!
+%% Wire format: credential_fields + packmem(signature, siglen)
+%% Note: This is counter-intuitive since slurm_cred_pack uses packbuf, but
+%% slurm_cred_unpack reads fields directly. Testing shows no size prefix needed.
+%%
+%% Encode a credential with specific job/step/user info
+encode_minimal_cred(JobId, StepId, Uid, Gid, NumTasks, UserName, NodeList) ->
+    %% _pack_cred format for SLURM_22_05_PROTOCOL_VERSION:
+    CredBuffer = encode_cred_buffer(JobId, StepId, Uid, Gid, NumTasks, UserName, NodeList),
+
+    BufferSize = byte_size(CredBuffer),
+    lager:info("Credential buffer: size=~p user=~s nodes=~s",
+               [BufferSize, UserName, NodeList]),
+
+    %% For signature, we use an empty signature (flurmnd will skip verification)
+    %% packmem format: size(32) + data
+    Signature = <<>>,
+    SigLen = 0,
+
+    %% NO BufferSize prefix - slurm_cred_unpack reads fields directly
+    <<CredBuffer/binary, SigLen:32/big, Signature/binary>>.
+
+%% Encode the credential buffer (output of _pack_cred)
+%% This follows SLURM 22.05 _pack_cred format exactly
+encode_cred_buffer(JobId, StepId, Uid, Gid, NumTasks, UserName, NodeList) ->
+    Now = erlang:system_time(second),
+
+    iolist_to_binary([
+        %% 1. step_id: job_id(32), step_id(32), step_het_comp(32)
+        <<JobId:32/big, StepId:32/big, 0:32/big>>,
+
+        %% 2. uid(32), gid(32)
+        <<Uid:32/big, Gid:32/big>>,
+
+        %% 3. pw_name, pw_gecos, pw_dir, pw_shell (all packstr - NULL uses length=0)
+        flurm_protocol_pack:pack_string(UserName),
+        flurm_protocol_pack:pack_string(undefined),  %% pw_gecos (NULL)
+        flurm_protocol_pack:pack_string(<<"/root">>),  %% pw_dir
+        flurm_protocol_pack:pack_string(<<"/bin/bash">>),  %% pw_shell
+
+        %% 4. gid_array: pack32_array format = count(32) + elements
+        <<1:32/big, Gid:32/big>>,  %% 1 group
+
+        %% 5. gr_names: packstr_array format = count(32) + packstr elements
+        <<1:32/big>>,
+        flurm_protocol_pack:pack_string(<<"root">>),
+
+        %% 6. gres_job_list (empty list = pack16 count = 0)
+        <<0:16/big>>,
+
+        %% 7. gres_step_list (empty list = pack16 count = 0)
+        <<0:16/big>>,
+
+        %% 8. job_core_spec (16-bit)
+        <<16#FFFF:16/big>>,  %% NO_VAL16
+
+        %% 9. job_account, job_alias_list, job_comment, job_constraints, job_partition, job_reservation
+        flurm_protocol_pack:pack_string(undefined),  %% account (NULL)
+        flurm_protocol_pack:pack_string(undefined),  %% alias_list (NULL)
+        flurm_protocol_pack:pack_string(undefined),  %% comment (NULL)
+        flurm_protocol_pack:pack_string(undefined),  %% constraints (NULL)
+        flurm_protocol_pack:pack_string(<<"default">>),  %% partition
+        flurm_protocol_pack:pack_string(undefined),  %% reservation (NULL)
+
+        %% 10. job_restart_cnt (16-bit)
+        <<0:16/big>>,
+
+        %% 11. std_err, std_in, std_out (packstr - NULL)
+        flurm_protocol_pack:pack_string(undefined),
+        flurm_protocol_pack:pack_string(undefined),
+        flurm_protocol_pack:pack_string(undefined),
+
+        %% 12. step_hostlist
+        flurm_protocol_pack:pack_string(NodeList),
+
+        %% 13. x11 (16-bit)
+        <<0:16/big>>,
+
+        %% 14. ctime (pack_time format: 64-bit timestamp)
+        <<Now:64/big>>,
+
+        %% 15. tot_core_cnt (32-bit)
+        <<1:32/big>>,
+
+        %% 16. job_core_bitmap (pack_bit_str_hex: NO_VAL = NULL bitmap)
+        <<16#FFFFFFFE:32/big>>,
+
+        %% 17. step_core_bitmap (pack_bit_str_hex: NO_VAL = NULL bitmap)
+        <<16#FFFFFFFE:32/big>>,
+
+        %% 18. core_array_size (16-bit) - 0 means no core array
+        <<0:16/big>>,
+
+        %% 19. cpu_array_count (32-bit!) - 0 means no cpu array
+        <<0:32/big>>,
+
+        %% 20. job_nhosts (32), job_ntasks (32), job_hostlist (packstr)
+        <<1:32/big>>,  %% nhosts
+        <<NumTasks:32/big>>,  %% ntasks
+        flurm_protocol_pack:pack_string(NodeList),
+
+        %% 21. job_mem_alloc_size (32-bit) - 0 means no mem info
+        <<0:32/big>>,
+
+        %% 22. step_mem_alloc_size (32-bit)
+        <<0:32/big>>,
+
+        %% 23. selinux_context (packstr - NULL)
+        flurm_protocol_pack:pack_string(undefined)
+    ]).
 
 %% Encode select_jobinfo for cons_tres plugin
 encode_select_jobinfo() ->
@@ -3165,13 +3836,28 @@ encode_single_job_step_info(#job_step_info{} = S) ->
         <<(S#job_step_info.exit_code):32/big>>
     ].
 
-%% Encode RESPONSE_LAUNCH_TASKS (5009)
-%% Format: return_code(32), node_name(string), srun_node_id(32),
-%%         count_of_pids(32), local_pids(32 each), gtids(32 each)
+%% Encode RESPONSE_LAUNCH_TASKS (6002)
+%% SLURM wire format from _unpack_launch_tasks_response_msg:
+%%   step_id: slurm_step_id_t via unpack_step_id_members:
+%%     - sluid: 64-bit (database ID, can be 0)
+%%     - job_id: 32-bit
+%%     - step_id: 32-bit
+%%     - step_het_comp: 32-bit
+%%   return_code: 32
+%%   node_name: packstr
+%%   count_of_pids: 32 (first read, then overwritten by safe_unpack32_array)
+%%   local_pids array: count(32) + data(32 each) via safe_unpack32_array
+%%   task_ids array: count(32) + data(32 each) via safe_unpack32_array
+%%
+%% NOTE: safe_unpack32_array reads its own count from the buffer, so each
+%% array has its own count prefix. The first count_of_pids is read but
+%% immediately overwritten by the array unpacking.
 encode_launch_tasks_response(#launch_tasks_response{
+    job_id = JobId,
+    step_id = StepId,
+    step_het_comp = StepHetComp,
     return_code = ReturnCode,
     node_name = NodeName,
-    srun_node_id = SrunNodeId,
     count_of_pids = CountOfPids,
     local_pids = LocalPids,
     gtids = Gtids
@@ -3179,25 +3865,35 @@ encode_launch_tasks_response(#launch_tasks_response{
     PidsBin = [<<P:32/big>> || P <- LocalPids],
     GtidsBin = [<<G:32/big>> || G <- Gtids],
     Parts = [
+        %% step_id: job_id(32) + step_id(32) + step_het_comp(32) - NO sluid for SLURM 22.05
+        <<JobId:32/big, StepId:32/big, StepHetComp:32/big>>,
         <<ReturnCode:32/signed-big>>,
         flurm_protocol_pack:pack_string(ensure_binary(NodeName)),
-        <<SrunNodeId:32/big>>,
+        %% count_of_pids (read first, then overwritten by safe_unpack32_array)
+        <<CountOfPids:32/big>>,
+        %% local_pids array: count prefix (read by safe_unpack32_array)
         <<CountOfPids:32/big>>,
         PidsBin,
+        %% task_ids/gtids array: count prefix (read by safe_unpack32_array)
+        <<CountOfPids:32/big>>,
         GtidsBin
     ],
     {ok, iolist_to_binary(Parts)};
 encode_launch_tasks_response(#{return_code := ReturnCode} = Map) ->
     %% Support map format as well as record
+    JobId = maps:get(job_id, Map, 0),
+    StepId = maps:get(step_id, Map, 0),
+    StepHetComp = maps:get(step_het_comp, Map, 0),
     NodeName = maps:get(node_name, Map, <<>>),
-    SrunNodeId = maps:get(srun_node_id, Map, 0),
     LocalPids = maps:get(local_pids, Map, []),
     Gtids = maps:get(gtids, Map, []),
     CountOfPids = length(LocalPids),
     encode_launch_tasks_response(#launch_tasks_response{
+        job_id = JobId,
+        step_id = StepId,
+        step_het_comp = StepHetComp,
         return_code = ReturnCode,
         node_name = NodeName,
-        srun_node_id = SrunNodeId,
         count_of_pids = CountOfPids,
         local_pids = LocalPids,
         gtids = Gtids
@@ -3205,6 +3901,47 @@ encode_launch_tasks_response(#{return_code := ReturnCode} = Map) ->
 encode_launch_tasks_response(_) ->
     %% Default empty response
     encode_launch_tasks_response(#launch_tasks_response{}).
+
+%% Encode MESSAGE_TASK_EXIT (6003)
+%% SLURM wire format from _pack_task_exit_msg / _unpack_task_exit_msg:
+%%   return_code: uint32 (single value, NOT array)
+%%   num_tasks: uint32 (count of task_id_list)
+%%   task_id_list: pack32_array format = count:32 + elements:32 each
+%%   step_id: slurm_step_id_t via pack_step_id (SLURM 22.05 - NO sluid):
+%%     - job_id: 32-bit
+%%     - step_id: 32-bit
+%%     - step_het_comp: 32-bit
+%%
+%% IMPORTANT: pack32_array packs count AGAIN before array elements!
+%% The packing order is: return_code, num_tasks, array_count, task_ids[], step_id
+encode_task_exit_msg(#{job_id := JobId, step_id := StepId} = Map) ->
+    StepHetComp = maps:get(step_het_comp, Map, 16#FFFFFFFE),
+    TaskIds = maps:get(task_ids, Map, [0]),
+    ReturnCodes = maps:get(return_codes, Map, [0]),
+    %% Use first return code (SLURM uses single return_code, not array)
+    ReturnCode = case ReturnCodes of
+        [RC | _] -> RC;
+        _ -> 0
+    end,
+    NumTasks = length(TaskIds),
+    TaskIdsBin = [<<T:32/big>> || T <- TaskIds],
+    %% Correct SLURM order: return_code, num_tasks, pack32_array(task_ids), step_id
+    %% pack32_array format: count:32 followed by elements
+    Parts = [
+        %% return_code: single uint32
+        <<ReturnCode:32/signed-big>>,
+        %% num_tasks: count of task_ids
+        <<NumTasks:32/big>>,
+        %% task_id_list as pack32_array: count + elements
+        <<NumTasks:32/big>>,  %% pack32_array count (same as num_tasks)
+        TaskIdsBin,           %% array elements
+        %% step_id: job_id(32) + step_id(32) + step_het_comp(32) - NO sluid for SLURM 22.05
+        <<JobId:32/big, StepId:32/big, StepHetComp:32/big>>
+    ],
+    {ok, iolist_to_binary(Parts)};
+encode_task_exit_msg(_) ->
+    %% Default empty response
+    encode_task_exit_msg(#{job_id => 0, step_id => 0}).
 
 %% Encode RESPONSE_REATTACH_TASKS (5013)
 %% Format: return_code(32), node_name(string), count_of_pids(32),

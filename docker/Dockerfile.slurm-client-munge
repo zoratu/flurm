@@ -26,11 +26,14 @@ RUN mkdir -p /etc/slurm && \
     echo 'SelectTypeParameters=CR_Core' >> /etc/slurm/slurm.conf && \
     echo 'SlurmdDebug=info' >> /etc/slurm/slurm.conf && \
     echo 'SlurmctldDebug=info' >> /etc/slurm/slurm.conf && \
+    echo 'SlurmdPort=6818' >> /etc/slurm/slurm.conf && \
+    echo 'NodeName=flurm-node1 CPUs=4 State=UNKNOWN' >> /etc/slurm/slurm.conf && \
     echo 'PartitionName=default Nodes=ALL Default=YES MaxTime=INFINITE State=UP' >> /etc/slurm/slurm.conf
 
 # Create munge directories (key will be mounted)
-RUN mkdir -p /var/run/munge /var/log/munge && \
-    chown -R munge:munge /var/run/munge /var/log/munge
+RUN mkdir -p /var/run/munge /var/log/munge /munge-local && \
+    chown -R munge:munge /var/run/munge /var/log/munge /munge-local && \
+    chmod 700 /munge-local
 
 # Create test job script
 RUN mkdir -p /jobs && \
@@ -47,13 +50,34 @@ RUN mkdir -p /jobs && \
     echo 'date' >> /jobs/test_job.sh && \
     chmod +x /jobs/test_job.sh
 
-# Create entrypoint that starts munge then runs command
+# Create entrypoint that fixes munge permissions and starts munge
+# The munge key is on a shared volume with potentially different UID
+# We copy it to a local directory with correct permissions
 RUN echo '#!/bin/bash' > /entrypoint.sh && \
-    echo 'chown -R munge:munge /etc/munge 2>/dev/null || true' >> /entrypoint.sh && \
-    echo 'chmod 700 /etc/munge 2>/dev/null || true' >> /entrypoint.sh && \
-    echo 'chmod 400 /etc/munge/munge.key 2>/dev/null || true' >> /entrypoint.sh && \
-    echo 'runuser -u munge -- /usr/sbin/munged' >> /entrypoint.sh && \
+    echo '# Wait for munge key to be available (created by another container)' >> /entrypoint.sh && \
+    echo 'echo "Waiting for munge key..."' >> /entrypoint.sh && \
+    echo 'for i in $(seq 1 30); do' >> /entrypoint.sh && \
+    echo '  if [ -f /etc/munge/munge.key ]; then break; fi' >> /entrypoint.sh && \
+    echo '  sleep 1' >> /entrypoint.sh && \
+    echo 'done' >> /entrypoint.sh && \
+    echo 'if [ ! -f /etc/munge/munge.key ]; then' >> /entrypoint.sh && \
+    echo '  echo "ERROR: munge key not found after 30 seconds"' >> /entrypoint.sh && \
+    echo '  exit 1' >> /entrypoint.sh && \
+    echo 'fi' >> /entrypoint.sh && \
+    echo '# Copy munge key to local directory with correct permissions' >> /entrypoint.sh && \
+    echo 'echo "Copying munge key to local directory..."' >> /entrypoint.sh && \
+    echo 'cp /etc/munge/munge.key /munge-local/munge.key' >> /entrypoint.sh && \
+    echo 'chown munge:munge /munge-local/munge.key' >> /entrypoint.sh && \
+    echo 'chmod 400 /munge-local/munge.key' >> /entrypoint.sh && \
+    echo 'chown -R munge:munge /var/run/munge /var/log/munge 2>/dev/null || true' >> /entrypoint.sh && \
+    echo 'echo "Starting MUNGE daemon..."' >> /entrypoint.sh && \
+    echo 'runuser -u munge -- /usr/sbin/munged --key-file=/munge-local/munge.key' >> /entrypoint.sh && \
     echo 'sleep 1' >> /entrypoint.sh && \
+    echo 'if munge -n </dev/null >/dev/null 2>&1; then' >> /entrypoint.sh && \
+    echo '  echo "MUNGE is working"' >> /entrypoint.sh && \
+    echo 'else' >> /entrypoint.sh && \
+    echo '  echo "WARNING: MUNGE test failed"' >> /entrypoint.sh && \
+    echo 'fi' >> /entrypoint.sh && \
     echo 'exec "$@"' >> /entrypoint.sh && \
     chmod +x /entrypoint.sh
 

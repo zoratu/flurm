@@ -253,38 +253,24 @@ handle_message(MessageBin, #{socket := Socket, transport := Transport,
     end.
 
 %% @doc Send a response message back to the client.
-%% Responses include proper MUNGE auth section (required by srun).
+%% All responses include MUNGE auth section (required by SLURM clients).
 -spec send_response(inet:socket(), module(), non_neg_integer(), term()) -> ok | {error, term()}.
 send_response(Socket, Transport, MsgType, Body) ->
-    case flurm_protocol_codec:encode_response(MsgType, Body) of
+    EncodeResult = flurm_protocol_codec:encode_response(MsgType, Body),
+    case EncodeResult of
         {ok, ResponseBin} ->
-            %% Log hex of first 40 bytes for debugging (to see auth section start)
-            HexPrefix = case byte_size(ResponseBin) of
-                N when N >= 40 ->
-                    <<First40:40/binary, _/binary>> = ResponseBin,
-                    binary_to_hex(First40);
-                _ ->
-                    binary_to_hex(ResponseBin)
-            end,
-            lager:info("Sending response type=~p (~s) size=~p hex40=~s",
+            lager:info("Sending response type=~p (~s) size=~p hex=~s",
                        [MsgType, flurm_protocol_codec:message_type_name(MsgType),
-                        byte_size(ResponseBin), HexPrefix]),
-            %% Log individual byte breakdown for debugging
-            %% Header is 16 bytes (with AF_UNSPEC orig_addr), so auth starts at byte 20 (4 + 16)
-            <<OuterLen:32/big, Version:16/big, Flags:16/big, MsgT:16/big,
-              BodyLen:32/big, FwdCnt:16/big, RetCnt:16/big,
-              OrigFamily:16/big,  %% AF_UNSPEC = just 2 bytes
-              PluginId:32/big, CredLen:32/big, _Rest/binary>> = ResponseBin,
-            lager:info("Response: outer=~p ver=~.16B flags=~p msgtype=~p bodylen=~p fwd=~p ret=~p",
-                       [OuterLen, Version, Flags, MsgT, BodyLen, FwdCnt, RetCnt]),
-            lager:info("orig_addr: family=~p (AF_UNSPEC)", [OrigFamily]),
-            lager:info("Auth: plugin_id=~p cred_len=~p", [PluginId, CredLen]),
-            %% Show full hex of first 60 bytes
-            HexFirst60 = case byte_size(ResponseBin) >= 60 of
-                true -> <<First60:60/binary, _/binary>> = ResponseBin, binary_to_hex(First60);
-                false -> binary_to_hex(ResponseBin)
-            end,
-            lager:info("Full hex60: ~s", [HexFirst60]),
+                        byte_size(ResponseBin), binary_to_hex(ResponseBin)]),
+            %% DEBUG: Parse our own message to verify format
+            <<OuterLen:32/big, Ver:16/big, Flags:16/big, MT:16/big, BodyLen:32/big, _Rest/binary>> = ResponseBin,
+            lager:info("DEBUG VERIFY: outer_len=~p ver=~.16B flags=~p msg_type=~p body_len=~p",
+                       [OuterLen, Ver, Flags, MT, BodyLen]),
+            lager:info("DEBUG VERIFY: header_size=16, check: ~p + 16 = ~p <= ~p ? ~p",
+                       [BodyLen, BodyLen + 16, OuterLen, (BodyLen + 16) =< OuterLen]),
+            %% DEBUG: Log exactly what's being sent
+            lager:info("SOCKET SEND: ~p bytes starting with ~s",
+                       [byte_size(ResponseBin), binary_to_hex(binary:part(ResponseBin, 0, min(byte_size(ResponseBin), 40)))]),
             case Transport:send(Socket, ResponseBin) of
                 ok ->
                     lager:info("Response sent successfully"),

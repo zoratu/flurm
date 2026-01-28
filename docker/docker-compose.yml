@@ -24,6 +24,8 @@ services:
     environment:
       - FLURM_CONTROLLER_HOST=flurm-server
       - FLURM_CONTROLLER_PORT=6818
+    volumes:
+      - munge-key:/etc/munge
     networks:
       flurm-net:
         aliases:

@@ -13,17 +13,21 @@
 %%% Protocol Version Constants
 %%%===================================================================
 
-%% SLURM protocol version (0xMMmm format where MM=major, mm=minor)
--define(SLURM_PROTOCOL_VERSION, 16#2600).  % SLURM 22.05.x = 0x2600
+%% SLURM protocol version - SLURM 22.05.x uses 0x2600
+%% NOTE: This is different from theoretical (major << 8) | minor = 0x1605
+%% Real SLURM 22.05.9 srun uses 0x2600, so we must match it
+%% Despite being >= 0x1702, SLURM 22.05 does NOT include msg_index in header
+-define(SLURM_PROTOCOL_VERSION, 16#2600).  % SLURM 22.05.x actual = 0x2600
 
 %% Protocol header size (length prefix + header)
+%% NOTE: Empirical testing shows SLURM 22.05 does NOT include msg_index despite source code
 -define(SLURM_LENGTH_PREFIX_SIZE, 4).  % 4-byte length prefix
--define(SLURM_HEADER_SIZE_MIN, 16).    % Minimum 16-byte message header (with AF_UNSPEC orig_addr)
-                                        % (version:16, flags:16, msg_type:16, body_length:32,
-                                        %  forward_cnt:16, ret_cnt:16, orig_addr_family:16)
--define(SLURM_HEADER_SIZE, 16).        % 16-byte header for responses (with AF_UNSPEC orig_addr)
-                                        % Fixed fields: 14 bytes
-                                        % orig_addr: family(2) = 2 bytes (AF_UNSPEC format)
+-define(SLURM_HEADER_SIZE_MIN, 16).    % Minimum header with AF_UNSPEC (16 bytes, no msg_index)
+-define(SLURM_HEADER_SIZE, 16).        % 16-byte header WITHOUT msg_index, with AF_UNSPEC
+                                        % Fixed fields: 14 bytes (version:16, flags:16,
+                                        %  msg_type:16, body_length:32,
+                                        %  forward_cnt:16, ret_cnt:16)
+                                        % orig_addr: 2 bytes (AF_UNSPEC)
                                         % Total: 14 + 2 = 16 bytes
 
 %% Maximum message size (64 MB)
@@ -37,6 +41,27 @@
 
 %% Header flags
 -define(SLURM_NO_AUTH_CRED, 16#0001).   % No auth credential present in message
+
+%%%===================================================================
+%%% SLURM I/O Protocol Constants
+%%%===================================================================
+
+%% I/O message types (for io_hdr_t.type field)
+-define(SLURM_IO_STDIN, 0).
+-define(SLURM_IO_STDOUT, 1).
+-define(SLURM_IO_STDERR, 2).
+-define(SLURM_IO_ALLSTDIN, 3).
+-define(SLURM_IO_CONNECTION_TEST, 4).
+
+%% I/O protocol version (0xb001 for SLURM I/O protocol)
+%% This is different from SLURM_PROTOCOL_VERSION (0x2600)
+-define(IO_PROTOCOL_VERSION, 16#b001).
+
+%% I/O header size (10 bytes: type:16 + gtaskid:16 + ltaskid:16 + length:32)
+-define(SLURM_IO_HDR_SIZE, 10).
+
+%% I/O key size for authentication (64 bytes in SLURM)
+-define(SLURM_IO_KEY_SIZE, 64).
 
 %%%===================================================================
 %%% SLURM Message Types
@@ -151,29 +176,28 @@
 -define(REQUEST_STEP_COMPLETE, 5005).
 -define(REQUEST_STEP_LAYOUT, 5006).
 -define(RESPONSE_STEP_LAYOUT, 5007).
--define(REQUEST_LAUNCH_TASKS, 5008).
--define(RESPONSE_LAUNCH_TASKS, 5009).
--define(REQUEST_SIGNAL_TASKS, 5010).
--define(REQUEST_TERMINATE_TASKS, 5011).
--define(REQUEST_REATTACH_TASKS, 5012).
--define(RESPONSE_REATTACH_TASKS, 5013).
+%% SLURM 22.05 message types for slurmd task management (6000 range)
+%% These are sent from srun to slurmd for task execution
+-define(REQUEST_LAUNCH_TASKS, 6001).
+-define(RESPONSE_LAUNCH_TASKS, 6002).
+-define(MESSAGE_TASK_EXIT, 6003).
+-define(REQUEST_SIGNAL_TASKS, 6004).
+-define(REQUEST_TERMINATE_TASKS, 6006).
+-define(REQUEST_REATTACH_TASKS, 6007).
+-define(RESPONSE_REATTACH_TASKS, 6008).
+-define(REQUEST_KILL_TIMELIMIT, 6009).
+-define(REQUEST_TERMINATE_JOB, 6011).
+-define(MESSAGE_EPILOG_COMPLETE, 6012).
+-define(REQUEST_ABORT_JOB, 6013).
+
+%% Additional slurmctld-specific message types (5000 range)
 -define(REQUEST_SUSPEND, 5014).
--define(REQUEST_ABORT_JOB, 5015).
--define(REQUEST_KILL_PREEMPTED, 5016).
--define(REQUEST_KILL_TIMELIMIT, 5017).
 -define(REQUEST_SIGNAL_JOB, 5018).
 -define(REQUEST_COMPLETE_PROLOG, 5019).
 
 %% Additional signal/kill message types (SLURM version specific)
 %% scancel in SLURM 19.05+ uses 5032 for job signal requests
 -define(REQUEST_KILL_JOB, 5032).
-
-%%% Authentication and Credentials (6001-6020)
--define(REQUEST_JOB_CRED, 6001).
--define(RESPONSE_JOB_CRED, 6002).
--define(CRED_SIGNATURE, 6003).
--define(REQUEST_GET_CREDENTIAL, 6004).
--define(RESPONSE_GET_CREDENTIAL, 6005).
 
 %%% Generic Return Codes (8001-8002)
 -define(RESPONSE_SLURM_RC, 8001).
@@ -241,15 +265,16 @@
 %%% Record Definitions
 %%%===================================================================
 
-%% SLURM message header (14 bytes on wire)
-%% Wire format: version(2) + flags(2) + msg_type(2) + body_length(4) + forward_cnt(2) + ret_cnt(2)
+%% SLURM message header (16 bytes on wire with AF_UNSPEC)
+%% Wire format: version(2) + flags(2) + msg_type(2) + body_length(4) + forward_cnt(2) + ret_cnt(2) + orig_addr(2)
 %% Note: body_length in header is 32-bit to support large messages (up to 64MB)
+%% Note: msg_index is NOT used on wire (internal use only) - empirical testing confirms this
 %% If forward_cnt > 0: followed by forward nodelist, timeout, tree_width, [net_cred], tree_depth
 %% If ret_cnt > 0: followed by ret_list packed messages
 -record(slurm_header, {
     version = ?SLURM_PROTOCOL_VERSION :: non_neg_integer(),
     flags = 0 :: non_neg_integer(),
-    msg_index = 0 :: non_neg_integer(),  % Internal use only, NOT on wire for client-server comms
+    msg_index = 0 :: non_neg_integer(),  % Internal use only, NOT on wire
     msg_type = 0 :: non_neg_integer(),
     body_length = 0 :: non_neg_integer(),  % 32-bit, not 16-bit
     forward_cnt = 0 :: non_neg_integer(),  % Number of forward targets (usually 0)
@@ -867,7 +892,15 @@
     cred = <<>> :: binary(),               % Job credential
     switch_job = <<>> :: binary(),         % Switch plugin info
     error_code = 0 :: non_neg_integer(),
-    error_msg = <<>> :: binary()
+    error_msg = <<>> :: binary(),
+    %% Additional fields for credential generation
+    job_id = 0 :: non_neg_integer(),
+    user_id = 0 :: non_neg_integer(),
+    group_id = 0 :: non_neg_integer(),
+    user_name = <<>> :: binary(),
+    node_list = <<>> :: binary(),
+    num_tasks = 1 :: non_neg_integer(),
+    partition = <<>> :: binary()
 }).
 
 %% Job step info request (REQUEST_JOB_STEP_INFO - 5003)
@@ -904,12 +937,53 @@
     steps = [] :: [#job_step_info{}]
 }).
 
-%% Launch tasks response (RESPONSE_LAUNCH_TASKS - 5009)
+%% Launch tasks request (REQUEST_LAUNCH_TASKS - 6001)
+%% Sent by srun to slurmd to launch tasks on allocated nodes
+-record(launch_tasks_request, {
+    job_id = 0 :: non_neg_integer(),
+    step_id = 0 :: non_neg_integer(),
+    step_het_comp = 0 :: non_neg_integer(),
+    uid = 0 :: non_neg_integer(),
+    gid = 0 :: non_neg_integer(),
+    user_name = <<>> :: binary(),
+    gids = [] :: [non_neg_integer()],
+    ntasks = 0 :: non_neg_integer(),
+    nnodes = 0 :: non_neg_integer(),
+    argc = 0 :: non_neg_integer(),
+    argv = [] :: [binary()],
+    envc = 0 :: non_neg_integer(),
+    env = [] :: [binary()],
+    cwd = <<>> :: binary(),
+    cpu_bind_type = 0 :: non_neg_integer(),
+    cpu_bind = <<>> :: binary(),
+    task_dist = 0 :: non_neg_integer(),
+    flags = 0 :: non_neg_integer(),
+    tasks_to_launch = [] :: [non_neg_integer()],
+    global_task_ids = [] :: [[non_neg_integer()]],
+    resp_port = [] :: [non_neg_integer()],
+    io_port = [] :: [non_neg_integer()],
+    ofname = <<>> :: binary(),
+    efname = <<>> :: binary(),
+    ifname = <<>> :: binary(),
+    complete_nodelist = <<>> :: binary(),
+    partition = <<>> :: binary(),
+    job_mem_lim = 0 :: non_neg_integer(),
+    step_mem_lim = 0 :: non_neg_integer(),
+    cred = undefined :: term(),
+    io_key = <<>> :: binary()  % Credential signature for I/O authentication
+}).
+
+%% Launch tasks response (RESPONSE_LAUNCH_TASKS - 6002)
 %% Sent by slurmd to srun after launching tasks
+%% Format: step_id(job_id:32 + step_id:32 + step_het_comp:32), return_code(32),
+%%         node_name(packstr), count_of_pids(32),
+%%         local_pids(32 * count), task_ids/gtids(32 * count)
 -record(launch_tasks_response, {
+    job_id = 0 :: non_neg_integer(),
+    step_id = 0 :: non_neg_integer(),
+    step_het_comp = 0 :: non_neg_integer(),
     return_code = 0 :: integer(),
     node_name = <<>> :: binary(),
-    srun_node_id = 0 :: non_neg_integer(),
     count_of_pids = 0 :: non_neg_integer(),
     local_pids = [] :: [non_neg_integer()],
     gtids = [] :: [non_neg_integer()]

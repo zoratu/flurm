@@ -17,6 +17,10 @@
     pack_string/1,
     unpack_string/1,
 
+    %% Memory/binary packing (no null terminator - for auth credentials)
+    pack_mem/1,
+    unpack_mem/1,
+
     %% List packing
     pack_list/2,
     unpack_list/2,
@@ -100,6 +104,37 @@ unpack_string(Binary) when byte_size(Binary) < 4 ->
     {error, {incomplete_string_length, byte_size(Binary)}};
 unpack_string(_) ->
     {error, invalid_string_data}.
+
+%%%===================================================================
+%%% Memory/Binary Packing (packmem - no null terminator)
+%%%===================================================================
+
+%% @doc Pack raw memory/binary data (SLURM packmem format).
+%%
+%% Format: <<Length:32/big, Data/binary>>
+%% Unlike packstr, this does NOT include a null terminator.
+%% Used for auth credentials and other raw binary data.
+-spec pack_mem(binary()) -> binary().
+pack_mem(undefined) ->
+    <<0:32/big>>;
+pack_mem(<<>>) ->
+    <<0:32/big>>;
+pack_mem(Binary) when is_binary(Binary) ->
+    Length = byte_size(Binary),
+    <<Length:32/big, Binary/binary>>.
+
+%% @doc Unpack raw memory/binary data (SLURM packmem format).
+-spec unpack_mem(binary()) -> {ok, binary(), binary()} | {error, term()}.
+unpack_mem(<<0:32/big, Rest/binary>>) ->
+    {ok, <<>>, Rest};
+unpack_mem(<<Length:32/big, Data:Length/binary, Rest/binary>>) when Length > 0 ->
+    {ok, Data, Rest};
+unpack_mem(<<Length:32/big, _/binary>>) ->
+    {error, {insufficient_mem_data, Length}};
+unpack_mem(Binary) when byte_size(Binary) < 4 ->
+    {error, {incomplete_mem_length, byte_size(Binary)}};
+unpack_mem(_) ->
+    {error, invalid_mem_data}.
 
 %%%===================================================================
 %%% List Packing

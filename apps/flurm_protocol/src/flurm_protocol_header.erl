@@ -6,7 +6,7 @@
 %%%   - version:     2 bytes (uint16)
 %%%   - flags:       2 bytes (uint16)
 %%%   - msg_type:    2 bytes (uint16)
-%%%   - body_length: 4 bytes (uint32) - supports messages up to 4GB
+%%%   - body_length: 4 bytes (uint32) - body size ONLY (auth size determined separately)
 %%%   - forward_cnt: 2 bytes (uint16) - number of forward targets (usually 0)
 %%%   - ret_cnt:     2 bytes (uint16) - number of return messages (usually 0)
 %%%   - orig_addr:   variable length based on address family:
@@ -14,12 +14,13 @@
 %%%                  - AF_INET (2): family(2) + port(2) + addr(4) = 8 bytes
 %%%                  - AF_INET6 (10): family(2) + port(2) + addr(16) = 20 bytes
 %%%
-%%% Fixed header fields = 14 bytes (version + flags + msg_type + body_length + forward_cnt + ret_cnt)
-%%% With AF_INET orig_addr = 14 + 8 = 22 bytes total
+%%% Fixed fields = 14 bytes (version + flags + msg_type + body_length + forward_cnt + ret_cnt)
+%%% With AF_UNSPEC orig_addr = 14 + 2 = 16 bytes total
 %%%
-%%% NOTE: SLURM 21.08+ has msg_index field, but empirical testing shows
-%%% SLURM 24.x clients still use the OLD format without msg_index for
-%%% client-to-server communication. We must match this format.
+%%% NOTE: Empirical testing with SLURM 22.05.9 srun shows that messages do NOT
+%%% include msg_index in the header, despite what the SLURM source code suggests
+%%% for version >= 0x2500. Both requests from srun and responses to srun use
+%%% the 16-byte format WITHOUT msg_index.
 %%%
 %%% If forward_cnt > 0, additional fields follow (nodelist, timeout, tree_width, etc.)
 %%% If ret_cnt > 0, ret_list messages follow.
@@ -55,16 +56,20 @@
 protocol_version() ->
     ?DEFAULT_PROTOCOL_VERSION.
 
-%% @doc Return the header size in bytes
+%% @doc Return the header size in bytes (16 bytes with AF_UNSPEC, no msg_index)
 -spec header_size() -> non_neg_integer().
 header_size() ->
-    ?SLURM_HEADER_SIZE.
+    16.  %% version(2) + flags(2) + msg_type(2) + body_length(4) + forward_cnt(2) + ret_cnt(2) + orig_addr(2)
 
 %% @doc Parse a variable-length SLURM header binary into a slurm_header record
 %%
+%% NOTE: Empirical testing with SLURM 22.05.9 shows that messages do NOT
+%% include msg_index in the header, despite SLURM source code suggesting
+%% msg_index for version >= 0x2500. We use 16-byte format WITHOUT msg_index.
+%%
 %% The header format is:
-%%   <<Version:16/big, Flags:16/big, MsgType:16/big, BodyLength:32/big,
-%%     ForwardCnt:16/big, RetCnt:16/big, OrigAddrFamily:16/big, [OrigAddr based on family]>>
+%%   <<Version:16, Flags:16, MsgType:16, BodyLength:32,
+%%     ForwardCnt:16, RetCnt:16, OrigAddrFamily:16, [OrigAddr based on family]>>
 %%
 %% Fixed fields = 14 bytes (version + flags + msg_type + body_length + forward_cnt + ret_cnt)
 %% orig_addr length varies by family:
@@ -75,7 +80,7 @@ header_size() ->
 %% Returns {ok, Header, Rest} on success where Rest is any remaining data,
 %% or {error, Reason} on failure.
 -spec parse_header(binary()) -> {ok, #slurm_header{}, binary()} | {error, term()}.
-%% AF_INET (family=2): 8 bytes for orig_addr
+%% AF_INET (family=2): 8 bytes for orig_addr - 22 byte total header
 parse_header(<<Version:16/big,
                Flags:16/big,
                MsgType:16/big,
@@ -96,7 +101,7 @@ parse_header(<<Version:16/big,
         ret_cnt = RetCnt
     },
     {ok, Header, Rest};
-%% AF_INET6 (family=10): 20 bytes for orig_addr
+%% AF_INET6 (family=10): 20 bytes for orig_addr - 34 byte total header
 parse_header(<<Version:16/big,
                Flags:16/big,
                MsgType:16/big,
@@ -117,7 +122,7 @@ parse_header(<<Version:16/big,
         ret_cnt = RetCnt
     },
     {ok, Header, Rest};
-%% AF_UNSPEC (family=0) or other: just 2 bytes for family
+%% AF_UNSPEC (family=0) or other: just 2 bytes for family - 16 byte total header
 parse_header(<<Version:16/big,
                Flags:16/big,
                MsgType:16/big,
@@ -141,18 +146,23 @@ parse_header(Binary) when is_binary(Binary), byte_size(Binary) < ?SLURM_HEADER_S
 parse_header(_) ->
     {error, invalid_header_data}.
 
-%% @doc Encode a slurm_header record into a 16-byte binary
+%% @doc Encode a slurm_header record into 16-byte binary (with AF_UNSPEC)
 %%
 %% Takes a #slurm_header{} record and produces a big-endian binary.
-%% Wire format: version(2) + flags(2) + msg_type(2) + body_length(4) + forward_cnt(2) + ret_cnt(2) + orig_addr(2)
-%% Total: 14 + 2 = 16 bytes
+%%
+%% IMPORTANT: Empirical testing with SLURM 22.05.9 confirms that srun
+%% uses 16-byte headers WITHOUT msg_index, even though version is 0x2600.
+%%
+%% Wire format (16 bytes with AF_UNSPEC, no msg_index):
+%%   version(2) + flags(2) + msg_type(2) + body_length(4) +
+%%   forward_cnt(2) + ret_cnt(2) + orig_addr(2) = 16 bytes
 %%
 %% orig_addr format: AF_UNSPEC (family=0) - minimal 2-byte format
-%% Matches what the client sends in requests
 -spec encode_header(#slurm_header{}) -> {ok, binary()} | {error, term()}.
 encode_header(#slurm_header{
     version = Version,
     flags = Flags,
+    msg_index = _MsgIndex,
     msg_type = MsgType,
     body_length = BodyLength,
     forward_cnt = ForwardCnt,
@@ -163,8 +173,8 @@ encode_header(#slurm_header{
         is_integer(BodyLength), BodyLength >= 0, BodyLength =< 4294967295,
         is_integer(ForwardCnt), ForwardCnt >= 0, ForwardCnt =< 65535,
         is_integer(RetCnt), RetCnt >= 0, RetCnt =< 65535 ->
-    %% orig_addr: Use AF_UNSPEC (family=0) - just 2 bytes
-    OrigAddr = <<0:16/big>>,  % AF_UNSPEC = 0
+    %% Use 16-byte header WITHOUT msg_index (confirmed with SLURM 22.05.9)
+    OrigAddr = <<0:16/big>>,    % AF_UNSPEC = 0
     Binary = <<Version:16/big,
                Flags:16/big,
                MsgType:16/big,

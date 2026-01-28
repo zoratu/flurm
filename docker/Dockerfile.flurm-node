@@ -1,9 +1,13 @@
 FROM rockylinux:9
 
-# Install Erlang/OTP and build tools
+# Install Erlang/OTP, MUNGE, and build tools
 RUN dnf install -y epel-release && \
-    dnf install -y erlang git make procps-ng && \
+    dnf install -y erlang git make procps-ng munge && \
     dnf clean all
+
+# Create munge directories (key will be mounted)
+RUN mkdir -p /var/run/munge /var/log/munge && \
+    chown -R munge:munge /var/run/munge /var/log/munge
 
 # Install rebar3 manually (not in EPEL)
 RUN curl -o /usr/local/bin/rebar3 https://s3.amazonaws.com/rebar3/rebar3 && \
@@ -16,9 +20,38 @@ COPY . /flurm/
 # Build FLURM
 RUN rebar3 compile
 
-# Create entrypoint for node daemon
+# Create local munge directory (not a volume mount)
+RUN mkdir -p /munge-local && chown munge:munge /munge-local && chmod 700 /munge-local
+
+# Create entrypoint for node daemon with MUNGE
 RUN echo '#!/bin/bash' > /entrypoint.sh && \
-    echo 'set -e' >> /entrypoint.sh && \
+    echo '# Wait for munge key to be available (created by another container)' >> /entrypoint.sh && \
+    echo 'echo "Waiting for munge key..."' >> /entrypoint.sh && \
+    echo 'for i in $(seq 1 30); do' >> /entrypoint.sh && \
+    echo '  if [ -f /etc/munge/munge.key ]; then break; fi' >> /entrypoint.sh && \
+    echo '  sleep 1' >> /entrypoint.sh && \
+    echo 'done' >> /entrypoint.sh && \
+    echo 'if [ ! -f /etc/munge/munge.key ]; then' >> /entrypoint.sh && \
+    echo '  echo "ERROR: munge key not found after 30 seconds"' >> /entrypoint.sh && \
+    echo '  exit 1' >> /entrypoint.sh && \
+    echo 'fi' >> /entrypoint.sh && \
+    echo '# Copy munge key to local directory with correct permissions' >> /entrypoint.sh && \
+    echo 'echo "Copying munge key to local directory..."' >> /entrypoint.sh && \
+    echo 'cp /etc/munge/munge.key /munge-local/munge.key' >> /entrypoint.sh && \
+    echo 'chown munge:munge /munge-local/munge.key' >> /entrypoint.sh && \
+    echo 'chmod 400 /munge-local/munge.key' >> /entrypoint.sh && \
+    echo 'chown -R munge:munge /var/run/munge /var/log/munge 2>/dev/null || true' >> /entrypoint.sh && \
+    echo '# Start MUNGE daemon with local key' >> /entrypoint.sh && \
+    echo 'echo "Starting MUNGE daemon..."' >> /entrypoint.sh && \
+    echo 'runuser -u munge -- /usr/sbin/munged --key-file=/munge-local/munge.key' >> /entrypoint.sh && \
+    echo 'sleep 1' >> /entrypoint.sh && \
+    echo 'if munge -n </dev/null >/dev/null 2>&1; then' >> /entrypoint.sh && \
+    echo '  echo "MUNGE is working"' >> /entrypoint.sh && \
+    echo 'else' >> /entrypoint.sh && \
+    echo '  echo "ERROR: MUNGE test failed!"' >> /entrypoint.sh && \
+    echo '  exit 1' >> /entrypoint.sh && \
+    echo 'fi' >> /entrypoint.sh && \
+    echo '# Start FLURM node daemon' >> /entrypoint.sh && \
     echo 'CONTROLLER_HOST=${FLURM_CONTROLLER_HOST:-flurm-server}' >> /entrypoint.sh && \
     echo 'CONTROLLER_PORT=${FLURM_CONTROLLER_PORT:-6818}' >> /entrypoint.sh && \
     echo 'echo "Starting FLURM node daemon..."' >> /entrypoint.sh && \

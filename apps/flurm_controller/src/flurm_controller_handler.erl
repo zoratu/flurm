@@ -193,19 +193,19 @@ handle(#slurm_header{msg_type = ?REQUEST_RESOURCE_ALLOCATION},
             NumCpus = 1,  %% Default to 1 CPU per node (srun can override with -c)
             lager:info("Returning allocation for job_id=~p, node=~s, node_addrs=~p, cpus=~p, error_code=0",
                        [JobId, NodeName, NodeAddrs, NumCpus]),
+            %% Return proper allocation response
             Response = #resource_allocation_response{
                 job_id = JobId,
                 node_list = NodeName,
                 num_nodes = 1,
                 partition = <<"default">>,
-                error_code = 0,  %% Success
+                error_code = 0,
                 job_submit_user_msg = <<>>,
-                cpus_per_node = [NumCpus],  %% 1 CPU per node in group 0
-                num_cpu_groups = 1,         %% 1 CPU group
-                node_addrs = NodeAddrs      %% Include node addresses for srun to connect to slurmd
+                cpus_per_node = [1],        %% 1 CPU
+                num_cpu_groups = 1,         %% 1 group
+                node_addrs = NodeAddrs
             },
-            lager:info("Allocation response: node=~s, num_cpu_groups=1, cpus_per_node=[~p], node_addrs=~p", [NodeName, NumCpus, NodeAddrs]),
-            %% Include callback info for the acceptor to register
+            lager:info("Allocation response: job=~p node=~s cpus=[1] addrs=~p", [JobId, NodeName, NodeAddrs]),
             CallbackInfo = #{
                 job_id => JobId,
                 port => CallbackPort,
@@ -328,30 +328,7 @@ handle(#slurm_header{msg_type = ?REQUEST_KILL_TIMELIMIT}, Body) ->
     Response = #slurm_rc_response{return_code = 0},
     {ok, ?RESPONSE_SLURM_RC, Response};
 
-%% REQUEST_JOB_STEP_CREATE (5001) -> RESPONSE_SLURM_RC (temporary)
-%% srun sends this to create a job step for running the command
-%% NOTE: Full RESPONSE_JOB_STEP_CREATE requires complex credential encoding.
-%% For now, return RESPONSE_SLURM_RC with error until credential support is added.
-handle(#slurm_header{msg_type = ?REQUEST_JOB_STEP_CREATE},
-       #job_step_create_request{job_id = JobId, name = StepName} = _Request) ->
-    lager:info("Handling job step create for job_id=~p, step_name=~p", [JobId, StepName]),
-    lager:warning("Job step create not yet fully implemented - credential packing needed"),
-    %% Return error for now - ESLURM_NOT_SUPPORTED = 2001
-    Response = #slurm_rc_response{return_code = 2001},
-    {ok, ?RESPONSE_SLURM_RC, Response};
-
-%% Fallback for raw binary body for job step create
-handle(#slurm_header{msg_type = ?REQUEST_JOB_STEP_CREATE}, Body) when is_binary(Body) ->
-    lager:info("Handling job step create (raw binary)"),
-    %% Try to extract job_id from binary
-    JobId = case Body of
-        <<JId:32/big, _/binary>> -> JId;
-        _ -> 0
-    end,
-    lager:warning("Job step create for job ~p not yet fully implemented", [JobId]),
-    %% Return error for now - ESLURM_NOT_SUPPORTED = 2001
-    Response = #slurm_rc_response{return_code = 2001},
-    {ok, ?RESPONSE_SLURM_RC, Response};
+%% REQUEST_JOB_STEP_CREATE (5001) - handled later in file at the step operations section
 
 %% REQUEST_JOB_INFO (2003) -> RESPONSE_JOB_INFO
 handle(#slurm_header{msg_type = ?REQUEST_JOB_INFO},
@@ -717,10 +694,21 @@ handle(#slurm_header{msg_type = ?REQUEST_JOB_STEP_CREATE},
     case Result of
         {ok, StepId} ->
             lager:info("Step ~p.~p created successfully", [JobId, StepId]),
+            %% Get job info for credential generation
+            {Uid, Gid, UserName, NodeList, Partition} = get_job_cred_info(JobId),
+            NumTasks = max(1, Request#job_step_create_request.num_tasks),
+
             %% Dispatch the step to the node daemon for execution
             dispatch_step_to_nodes(JobId, StepId, Request),
             Response = #job_step_create_response{
                 job_step_id = StepId,
+                job_id = JobId,
+                user_id = Uid,
+                group_id = Gid,
+                user_name = UserName,
+                node_list = NodeList,
+                num_tasks = NumTasks,
+                partition = Partition,
                 error_code = 0,
                 error_msg = <<"Step created successfully">>
             },
@@ -1549,6 +1537,49 @@ ensure_binary(Bin) when is_binary(Bin) -> Bin;
 ensure_binary(List) when is_list(List) -> list_to_binary(List);
 ensure_binary(Atom) when is_atom(Atom) -> atom_to_binary(Atom, utf8);
 ensure_binary(_) -> <<>>.
+
+%% @doc Get job credential info for step creation
+%% Returns {Uid, Gid, UserName, NodeList, Partition}
+-spec get_job_cred_info(non_neg_integer()) -> {non_neg_integer(), non_neg_integer(), binary(), binary(), binary()}.
+get_job_cred_info(JobId) ->
+    case flurm_job_manager:get_job(JobId) of
+        {ok, Job} when is_record(Job, job) ->
+            %% Job is a #job{} record from flurm_core.hrl
+            UserName = Job#job.user,
+            Partition = Job#job.partition,
+            %% Get allocated nodes or use default
+            NodeList = case Job#job.allocated_nodes of
+                [] -> <<"flurm-node1">>;
+                undefined -> <<"flurm-node1">>;
+                [Node | _] when is_binary(Node) -> Node;
+                Nodes when is_list(Nodes) ->
+                    NodeBins = [ensure_binary(N) || N <- Nodes],
+                    iolist_to_binary(lists:join(<<",">>, NodeBins))
+            end,
+            %% The job record doesn't store uid/gid, use defaults
+            %% In a real system, we'd look up the user's UID/GID
+            Uid = 0,
+            Gid = 0,
+            {Uid, Gid, ensure_binary(UserName), ensure_binary(NodeList), ensure_binary(Partition)};
+        {ok, Job} when is_map(Job) ->
+            %% Handle map format for backwards compatibility
+            Uid = maps:get(user_id, Job, 0),
+            Gid = maps:get(group_id, Job, 0),
+            UserName = maps:get(user_name, Job, maps:get(user, Job, <<"root">>)),
+            NodeList = case maps:get(allocated_nodes, Job, []) of
+                [] -> <<"flurm-node1">>;
+                [Node | _] when is_binary(Node) -> Node;
+                Nodes when is_list(Nodes) ->
+                    NodeBins = [ensure_binary(N) || N <- Nodes],
+                    iolist_to_binary(lists:join(<<",">>, NodeBins))
+            end,
+            Partition = maps:get(partition, Job, <<"default">>),
+            {Uid, Gid, ensure_binary(UserName), ensure_binary(NodeList), ensure_binary(Partition)};
+        {error, _} ->
+            %% Job not found, use defaults
+            lager:warning("Job ~p not found for credential info, using defaults", [JobId]),
+            {0, 0, <<"root">>, <<"flurm-node1">>, <<"default">>}
+    end.
 
 %% @doc Convert error reason to binary
 -spec error_to_binary(term()) -> binary().
