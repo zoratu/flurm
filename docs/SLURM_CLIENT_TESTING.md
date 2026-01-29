@@ -136,6 +136,8 @@ Body: 12 bytes
 
 4. **srun I/O Forwarding**: srun now works with I/O forwarding. The node daemon connects back to srun's I/O port to forward stdout/stderr. Task exit codes are properly converted from Erlang format to SLURM's expected waitpid format.
 
+5. **srun "don't know rc for type 6002" Warning**: SLURM 22.05 clients display this benign warning when receiving RESPONSE_LAUNCH_TASKS. This is a limitation in SLURM 22.05's `slurm_get_return_code()` function which doesn't handle this message type. The warning is harmless - srun defaults to success (0) and the actual return code is properly checked in the launch plugin. Newer SLURM versions may not show this warning.
+
 ## Running Integration Tests
 
 The automated integration tests simulate SLURM client behavior:
