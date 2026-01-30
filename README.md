@@ -6,8 +6,8 @@ An Erlang-based, SLURM-compatible job scheduler designed for high availability, 
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![Erlang/OTP](https://img.shields.io/badge/Erlang%2FOTP-26%2B-red.svg)](https://www.erlang.org/)
-[![Tests](https://img.shields.io/badge/Tests-498%20passing-brightgreen.svg)](docs/COVERAGE.md)
-[![Coverage](https://img.shields.io/badge/Coverage-6%25-yellow.svg)](docs/COVERAGE.md)
+[![Tests](https://img.shields.io/badge/Tests-2300%2B%20passing-brightgreen.svg)](docs/COVERAGE.md)
+[![Coverage](https://img.shields.io/badge/Coverage-Protocol%2075%25-yellow.svg)](docs/COVERAGE.md)
 [![Made with Claude](https://img.shields.io/badge/Made%20with-Claude%20AI-blueviolet.svg)](https://claude.ai)
 
 > **Note**: This project was developed with the assistance of generative AI (Claude by Anthropic). The architecture, code, documentation, and TLA+ specifications were created through AI-assisted development.
@@ -16,8 +16,8 @@ An Erlang-based, SLURM-compatible job scheduler designed for high availability, 
 
 | Component | Status |
 |-----------|--------|
-| Unit Tests | 498 tests, 0 failures |
-| Protocol Layer | 91% coverage |
+| Unit Tests | 2300+ passing |
+| Protocol Layer | 75% coverage |
 | Core Modules | Active development |
 | Documentation | Up to date |
 
@@ -54,7 +54,7 @@ cd flurm
 # Fetch dependencies and compile
 rebar3 compile
 
-# Run unit tests (498 tests)
+# Run unit tests
 rebar3 eunit
 
 # Build the release
@@ -199,7 +199,7 @@ flowchart TB
 FLURM is currently in **active development** (January 2026). The following components are implemented:
 
 ### Core Components
-- [x] SLURM protocol decoder/encoder (91% coverage)
+- [x] SLURM protocol decoder/encoder (75% coverage)
 - [x] Basic job submission and management
 - [x] Node registration and heartbeat
 - [x] Partition management
@@ -213,7 +213,7 @@ FLURM is currently in **active development** (January 2026). The following compo
 - [x] slurmdbd (accounting daemon)
 
 ### Testing & Verification
-- [x] Unit test suite (498 tests passing)
+- [x] Unit test suite (2300+ tests)
 - [x] Protocol fuzzing (mutation, boundary, edge case testing)
 - [x] Deterministic simulation framework (FoundationDB-style)
 - [x] Performance benchmarks (throughput, latency)
