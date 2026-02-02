@@ -5,6 +5,7 @@ This document provides guidelines for contributing to FLURM, including environme
 ## Table of Contents
 
 1. [Development Environment](#development-environment)
+   - [Git Hooks](#git-hooks)
 2. [Project Structure](#project-structure)
 3. [Code Style Guide](#code-style-guide)
 4. [Adding New Message Types](#adding-new-message-types)
@@ -44,6 +45,44 @@ rebar3 ct
 
 # Start development shell
 rebar3 shell
+```
+
+### Git Hooks
+
+FLURM includes pre-commit hooks that run automatically before each commit to ensure code quality.
+
+#### Pre-commit Hook
+
+The pre-commit hook (`.git/hooks/pre-commit`) performs:
+
+1. **Erlang Compilation** - Ensures code compiles without errors
+2. **Unit Tests** - Runs critical protocol tests (`flurm_protocol_header`, `flurm_protocol_pack`)
+3. **CLI Tests** - If Docker containers are running, tests sbatch/squeue/srun compatibility
+
+```bash
+# The hook runs automatically on git commit
+git commit -m "Your message"
+
+# To skip hooks (use sparingly)
+git commit --no-verify -m "Emergency fix"
+
+# To run checks manually
+rebar3 compile && rebar3 eunit
+```
+
+#### Test Coverage
+
+Pre-commit runs a subset of tests for speed. Full test suite:
+
+```bash
+# All unit tests (~150 tests)
+rebar3 eunit
+
+# Integration tests (requires Docker)
+./test/run_integration_tests.sh
+
+# Full CI-equivalent test suite
+rebar3 eunit && rebar3 ct
 ```
 
 ### IDE Configuration
