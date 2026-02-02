@@ -616,6 +616,38 @@ decode_body(?RESPONSE_PARTITION_INFO, Binary) ->
 decode_body(?REQUEST_LAUNCH_TASKS, Binary) ->
     decode_launch_tasks_request(Binary);
 
+%% REQUEST_FED_INFO (2024) - Federation info request
+decode_body(?REQUEST_FED_INFO, Binary) ->
+    decode_fed_info_request(Binary);
+
+%% REQUEST_FEDERATION_SUBMIT (2032) - Cross-cluster job submission
+decode_body(?REQUEST_FEDERATION_SUBMIT, Binary) ->
+    decode_federation_submit_request(Binary);
+
+%% REQUEST_FEDERATION_JOB_STATUS (2034) - Query job on remote cluster
+decode_body(?REQUEST_FEDERATION_JOB_STATUS, Binary) ->
+    decode_federation_job_status_request(Binary);
+
+%% REQUEST_FEDERATION_JOB_CANCEL (2036) - Cancel job on remote cluster
+decode_body(?REQUEST_FEDERATION_JOB_CANCEL, Binary) ->
+    decode_federation_job_cancel_request(Binary);
+
+%% RESPONSE_FED_INFO (2025) - Federation info response
+decode_body(?RESPONSE_FED_INFO, Binary) ->
+    decode_fed_info_response(Binary);
+
+%% RESPONSE_FEDERATION_SUBMIT (2033) - Cross-cluster job response
+decode_body(?RESPONSE_FEDERATION_SUBMIT, Binary) ->
+    decode_federation_submit_response(Binary);
+
+%% RESPONSE_FEDERATION_JOB_STATUS (2035) - Remote job status
+decode_body(?RESPONSE_FEDERATION_JOB_STATUS, Binary) ->
+    decode_federation_job_status_response(Binary);
+
+%% RESPONSE_FEDERATION_JOB_CANCEL (2037) - Remote cancel response
+decode_body(?RESPONSE_FEDERATION_JOB_CANCEL, Binary) ->
+    decode_federation_job_cancel_response(Binary);
+
 %% Unknown message type - return raw body
 decode_body(_MsgType, Binary) ->
     {ok, Binary}.
@@ -776,6 +808,38 @@ encode_body(?RESPONSE_REATTACH_TASKS, Resp) ->
 encode_body(?MESSAGE_TASK_EXIT, Resp) ->
     encode_task_exit_msg(Resp);
 
+%% REQUEST_FED_INFO (2024) - Federation info request
+encode_body(?REQUEST_FED_INFO, Req) ->
+    encode_fed_info_request(Req);
+
+%% REQUEST_FEDERATION_SUBMIT (2032) - Cross-cluster job submission
+encode_body(?REQUEST_FEDERATION_SUBMIT, Req) ->
+    encode_federation_submit_request(Req);
+
+%% REQUEST_FEDERATION_JOB_STATUS (2034) - Query job on remote cluster
+encode_body(?REQUEST_FEDERATION_JOB_STATUS, Req) ->
+    encode_federation_job_status_request(Req);
+
+%% REQUEST_FEDERATION_JOB_CANCEL (2036) - Cancel job on remote cluster
+encode_body(?REQUEST_FEDERATION_JOB_CANCEL, Req) ->
+    encode_federation_job_cancel_request(Req);
+
+%% RESPONSE_FED_INFO (2025) - Federation info response
+encode_body(?RESPONSE_FED_INFO, Resp) ->
+    encode_fed_info_response(Resp);
+
+%% RESPONSE_FEDERATION_SUBMIT (2033) - Cross-cluster job response
+encode_body(?RESPONSE_FEDERATION_SUBMIT, Resp) ->
+    encode_federation_submit_response(Resp);
+
+%% RESPONSE_FEDERATION_JOB_STATUS (2035) - Remote job status
+encode_body(?RESPONSE_FEDERATION_JOB_STATUS, Resp) ->
+    encode_federation_job_status_response(Resp);
+
+%% RESPONSE_FEDERATION_JOB_CANCEL (2037) - Remote cancel response
+encode_body(?RESPONSE_FEDERATION_JOB_CANCEL, Resp) ->
+    encode_federation_job_cancel_response(Resp);
+
 %% Raw binary passthrough
 encode_body(_MsgType, Binary) when is_binary(Binary) ->
     {ok, Binary};
@@ -834,6 +898,14 @@ message_type_name(?REQUEST_CONFIG_INFO) -> request_config_info;
 message_type_name(?RESPONSE_CONFIG_INFO) -> response_config_info;
 message_type_name(?REQUEST_STATS_INFO) -> request_stats_info;
 message_type_name(?RESPONSE_STATS_INFO) -> response_stats_info;
+message_type_name(?REQUEST_FED_INFO) -> request_fed_info;
+message_type_name(?RESPONSE_FED_INFO) -> response_fed_info;
+message_type_name(?REQUEST_FEDERATION_SUBMIT) -> request_federation_submit;
+message_type_name(?RESPONSE_FEDERATION_SUBMIT) -> response_federation_submit;
+message_type_name(?REQUEST_FEDERATION_JOB_STATUS) -> request_federation_job_status;
+message_type_name(?RESPONSE_FEDERATION_JOB_STATUS) -> response_federation_job_status;
+message_type_name(?REQUEST_FEDERATION_JOB_CANCEL) -> request_federation_job_cancel;
+message_type_name(?RESPONSE_FEDERATION_JOB_CANCEL) -> response_federation_job_cancel;
 message_type_name(Type) -> {unknown, Type}.
 
 %% @doc Check if message type is a request.
@@ -871,6 +943,10 @@ is_request(?REQUEST_FRONT_END_INFO) -> true;
 is_request(?REQUEST_BURST_BUFFER_INFO) -> true;
 is_request(?REQUEST_CONFIG_INFO) -> true;
 is_request(?REQUEST_STATS_INFO) -> true;
+is_request(?REQUEST_FED_INFO) -> true;
+is_request(?REQUEST_FEDERATION_SUBMIT) -> true;
+is_request(?REQUEST_FEDERATION_JOB_STATUS) -> true;
+is_request(?REQUEST_FEDERATION_JOB_CANCEL) -> true;
 %% Fallback: check if it starts with REQUEST_ pattern (1xxx, 2xxx odd, 4xxx, 5xxx)
 is_request(Type) when Type >= 1001, Type =< 1029 -> true;
 is_request(_) -> false.
@@ -903,6 +979,10 @@ is_response(?RESPONSE_FRONT_END_INFO) -> true;
 is_response(?RESPONSE_BURST_BUFFER_INFO) -> true;
 is_response(?RESPONSE_CONFIG_INFO) -> true;
 is_response(?RESPONSE_STATS_INFO) -> true;
+is_response(?RESPONSE_FED_INFO) -> true;
+is_response(?RESPONSE_FEDERATION_SUBMIT) -> true;
+is_response(?RESPONSE_FEDERATION_JOB_STATUS) -> true;
+is_response(?RESPONSE_FEDERATION_JOB_CANCEL) -> true;
 is_response(_) -> false.
 
 %%%===================================================================
@@ -4586,3 +4666,329 @@ encode_reconfigure_response(_) ->
 %% Convert binary to hex string for debugging
 binary_to_hex(Bin) when is_binary(Bin) ->
     list_to_binary([[io_lib:format("~2.16.0B", [B]) || B <- binary_to_list(Bin)]]).
+
+%%%===================================================================
+%%% Federation Message Encoding/Decoding
+%%%===================================================================
+
+%% Decode REQUEST_FED_INFO (2024)
+decode_fed_info_request(<<>>) ->
+    {ok, #fed_info_request{}};
+decode_fed_info_request(<<ShowFlags:32/big, _Rest/binary>>) ->
+    {ok, #fed_info_request{show_flags = ShowFlags}};
+decode_fed_info_request(_) ->
+    {ok, #fed_info_request{}}.
+
+%% Encode REQUEST_FED_INFO (2024)
+encode_fed_info_request(#fed_info_request{show_flags = ShowFlags}) ->
+    {ok, <<ShowFlags:32/big>>};
+encode_fed_info_request(_) ->
+    {ok, <<0:32/big>>}.
+
+%% Decode RESPONSE_FED_INFO (2025)
+decode_fed_info_response(Binary) ->
+    try
+        {FedName, Rest1} = flurm_protocol_pack:unpack_string(Binary),
+        {LocalCluster, Rest2} = flurm_protocol_pack:unpack_string(Rest1),
+        <<ClusterCount:32/big, Rest3/binary>> = Rest2,
+        {Clusters, _} = decode_fed_clusters(ClusterCount, Rest3, []),
+        {ok, #fed_info_response{
+            federation_name = FedName,
+            local_cluster = LocalCluster,
+            cluster_count = ClusterCount,
+            clusters = Clusters
+        }}
+    catch
+        _:_ ->
+            {ok, #fed_info_response{}}
+    end.
+
+%% Encode RESPONSE_FED_INFO (2025)
+encode_fed_info_response(#fed_info_response{} = R) ->
+    ClustersBin = encode_fed_clusters(R#fed_info_response.clusters),
+    Parts = [
+        flurm_protocol_pack:pack_string(R#fed_info_response.federation_name),
+        flurm_protocol_pack:pack_string(R#fed_info_response.local_cluster),
+        <<(R#fed_info_response.cluster_count):32/big>>,
+        ClustersBin
+    ],
+    {ok, iolist_to_binary(Parts)};
+encode_fed_info_response(_) ->
+    {ok, <<0:32, 0:32, 0:32>>}.
+
+%% Decode federation cluster list
+decode_fed_clusters(0, Rest, Acc) ->
+    {lists:reverse(Acc), Rest};
+decode_fed_clusters(Count, Binary, Acc) ->
+    try
+        {Name, Rest1} = flurm_protocol_pack:unpack_string(Binary),
+        {Host, Rest2} = flurm_protocol_pack:unpack_string(Rest1),
+        <<Port:32/big, Rest3/binary>> = Rest2,
+        {State, Rest4} = flurm_protocol_pack:unpack_string(Rest3),
+        <<Weight:32/big, FeatureCount:32/big, Rest5/binary>> = Rest4,
+        {Features, Rest6} = decode_string_list(FeatureCount, Rest5, []),
+        <<PartitionCount:32/big, Rest7/binary>> = Rest6,
+        {Partitions, Rest8} = decode_string_list(PartitionCount, Rest7, []),
+        Cluster = #fed_cluster_info{
+            name = Name,
+            host = Host,
+            port = Port,
+            state = State,
+            weight = Weight,
+            features = Features,
+            partitions = Partitions
+        },
+        decode_fed_clusters(Count - 1, Rest8, [Cluster | Acc])
+    catch
+        _:_ ->
+            {lists:reverse(Acc), <<>>}
+    end.
+
+%% Encode federation cluster list
+encode_fed_clusters(Clusters) ->
+    lists:map(fun(#fed_cluster_info{} = C) ->
+        FeaturesBin = encode_string_list(C#fed_cluster_info.features),
+        PartitionsBin = encode_string_list(C#fed_cluster_info.partitions),
+        [
+            flurm_protocol_pack:pack_string(C#fed_cluster_info.name),
+            flurm_protocol_pack:pack_string(C#fed_cluster_info.host),
+            <<(C#fed_cluster_info.port):32/big>>,
+            flurm_protocol_pack:pack_string(C#fed_cluster_info.state),
+            <<(C#fed_cluster_info.weight):32/big>>,
+            <<(length(C#fed_cluster_info.features)):32/big>>,
+            FeaturesBin,
+            <<(length(C#fed_cluster_info.partitions)):32/big>>,
+            PartitionsBin
+        ]
+    end, Clusters).
+
+%% Decode REQUEST_FEDERATION_SUBMIT (2032)
+decode_federation_submit_request(Binary) ->
+    try
+        {SourceCluster, Rest1} = flurm_protocol_pack:unpack_string(Binary),
+        {TargetCluster, Rest2} = flurm_protocol_pack:unpack_string(Rest1),
+        <<JobId:32/big, Rest3/binary>> = Rest2,
+        {Name, Rest4} = flurm_protocol_pack:unpack_string(Rest3),
+        {Script, Rest5} = flurm_protocol_pack:unpack_string(Rest4),
+        {Partition, Rest6} = flurm_protocol_pack:unpack_string(Rest5),
+        <<NumCpus:32/big, NumNodes:32/big, MemoryMb:32/big,
+          TimeLimit:32/big, UserId:32/big, GroupId:32/big,
+          Priority:32/big, Rest7/binary>> = Rest6,
+        {WorkDir, Rest8} = flurm_protocol_pack:unpack_string(Rest7),
+        {StdOut, Rest9} = flurm_protocol_pack:unpack_string(Rest8),
+        {StdErr, Rest10} = flurm_protocol_pack:unpack_string(Rest9),
+        <<EnvCount:32/big, Rest11/binary>> = Rest10,
+        {Environment, Rest12} = decode_string_list(EnvCount, Rest11, []),
+        {Features, _} = flurm_protocol_pack:unpack_string(Rest12),
+        {ok, #federation_submit_request{
+            source_cluster = SourceCluster,
+            target_cluster = TargetCluster,
+            job_id = JobId,
+            name = Name,
+            script = Script,
+            partition = Partition,
+            num_cpus = NumCpus,
+            num_nodes = NumNodes,
+            memory_mb = MemoryMb,
+            time_limit = TimeLimit,
+            user_id = UserId,
+            group_id = GroupId,
+            priority = Priority,
+            work_dir = WorkDir,
+            std_out = StdOut,
+            std_err = StdErr,
+            environment = Environment,
+            features = Features
+        }}
+    catch
+        _:_ ->
+            {ok, #federation_submit_request{}}
+    end.
+
+%% Encode REQUEST_FEDERATION_SUBMIT (2032)
+encode_federation_submit_request(#federation_submit_request{} = R) ->
+    EnvBin = encode_string_list(R#federation_submit_request.environment),
+    Parts = [
+        flurm_protocol_pack:pack_string(R#federation_submit_request.source_cluster),
+        flurm_protocol_pack:pack_string(R#federation_submit_request.target_cluster),
+        <<(R#federation_submit_request.job_id):32/big>>,
+        flurm_protocol_pack:pack_string(R#federation_submit_request.name),
+        flurm_protocol_pack:pack_string(R#federation_submit_request.script),
+        flurm_protocol_pack:pack_string(R#federation_submit_request.partition),
+        <<(R#federation_submit_request.num_cpus):32/big,
+          (R#federation_submit_request.num_nodes):32/big,
+          (R#federation_submit_request.memory_mb):32/big,
+          (R#federation_submit_request.time_limit):32/big,
+          (R#federation_submit_request.user_id):32/big,
+          (R#federation_submit_request.group_id):32/big,
+          (R#federation_submit_request.priority):32/big>>,
+        flurm_protocol_pack:pack_string(R#federation_submit_request.work_dir),
+        flurm_protocol_pack:pack_string(R#federation_submit_request.std_out),
+        flurm_protocol_pack:pack_string(R#federation_submit_request.std_err),
+        <<(length(R#federation_submit_request.environment)):32/big>>,
+        EnvBin,
+        flurm_protocol_pack:pack_string(R#federation_submit_request.features)
+    ],
+    {ok, iolist_to_binary(Parts)};
+encode_federation_submit_request(_) ->
+    {ok, <<>>}.
+
+%% Decode RESPONSE_FEDERATION_SUBMIT (2033)
+decode_federation_submit_response(Binary) ->
+    try
+        {SourceCluster, Rest1} = flurm_protocol_pack:unpack_string(Binary),
+        <<JobId:32/big, ErrorCode:32/big, Rest2/binary>> = Rest1,
+        {ErrorMsg, _} = flurm_protocol_pack:unpack_string(Rest2),
+        {ok, #federation_submit_response{
+            source_cluster = SourceCluster,
+            job_id = JobId,
+            error_code = ErrorCode,
+            error_msg = ErrorMsg
+        }}
+    catch
+        _:_ ->
+            {ok, #federation_submit_response{}}
+    end.
+
+%% Encode RESPONSE_FEDERATION_SUBMIT (2033)
+encode_federation_submit_response(#federation_submit_response{} = R) ->
+    Parts = [
+        flurm_protocol_pack:pack_string(R#federation_submit_response.source_cluster),
+        <<(R#federation_submit_response.job_id):32/big,
+          (R#federation_submit_response.error_code):32/big>>,
+        flurm_protocol_pack:pack_string(R#federation_submit_response.error_msg)
+    ],
+    {ok, iolist_to_binary(Parts)};
+encode_federation_submit_response(_) ->
+    {ok, <<0:32, 0:32, 0:32, 0:32>>}.
+
+%% Decode REQUEST_FEDERATION_JOB_STATUS (2034)
+decode_federation_job_status_request(Binary) ->
+    try
+        {SourceCluster, Rest1} = flurm_protocol_pack:unpack_string(Binary),
+        <<JobId:32/big, Rest2/binary>> = Rest1,
+        {JobIdStr, _} = flurm_protocol_pack:unpack_string(Rest2),
+        {ok, #federation_job_status_request{
+            source_cluster = SourceCluster,
+            job_id = JobId,
+            job_id_str = JobIdStr
+        }}
+    catch
+        _:_ ->
+            {ok, #federation_job_status_request{}}
+    end.
+
+%% Encode REQUEST_FEDERATION_JOB_STATUS (2034)
+encode_federation_job_status_request(#federation_job_status_request{} = R) ->
+    Parts = [
+        flurm_protocol_pack:pack_string(R#federation_job_status_request.source_cluster),
+        <<(R#federation_job_status_request.job_id):32/big>>,
+        flurm_protocol_pack:pack_string(R#federation_job_status_request.job_id_str)
+    ],
+    {ok, iolist_to_binary(Parts)};
+encode_federation_job_status_request(_) ->
+    {ok, <<>>}.
+
+%% Decode RESPONSE_FEDERATION_JOB_STATUS (2035)
+decode_federation_job_status_response(Binary) ->
+    try
+        <<JobId:32/big, JobState:32/big, StateReason:32/big,
+          ExitCode:32/big, StartTime:64/big, EndTime:64/big, Rest/binary>> = Binary,
+        {Nodes, _} = flurm_protocol_pack:unpack_string(Rest),
+        {ok, #federation_job_status_response{
+            job_id = JobId,
+            job_state = JobState,
+            state_reason = StateReason,
+            exit_code = ExitCode,
+            start_time = StartTime,
+            end_time = EndTime,
+            nodes = Nodes
+        }}
+    catch
+        _:_ ->
+            {ok, #federation_job_status_response{}}
+    end.
+
+%% Encode RESPONSE_FEDERATION_JOB_STATUS (2035)
+encode_federation_job_status_response(#federation_job_status_response{} = R) ->
+    Parts = [
+        <<(R#federation_job_status_response.job_id):32/big,
+          (R#federation_job_status_response.job_state):32/big,
+          (R#federation_job_status_response.state_reason):32/big,
+          (R#federation_job_status_response.exit_code):32/big,
+          (R#federation_job_status_response.start_time):64/big,
+          (R#federation_job_status_response.end_time):64/big>>,
+        flurm_protocol_pack:pack_string(R#federation_job_status_response.nodes)
+    ],
+    {ok, iolist_to_binary(Parts)};
+encode_federation_job_status_response(_) ->
+    {ok, <<0:32, 0:32, 0:32, 0:32, 0:64, 0:64, 0:32>>}.
+
+%% Decode REQUEST_FEDERATION_JOB_CANCEL (2036)
+decode_federation_job_cancel_request(Binary) ->
+    try
+        {SourceCluster, Rest1} = flurm_protocol_pack:unpack_string(Binary),
+        <<JobId:32/big, Rest2/binary>> = Rest1,
+        {JobIdStr, Rest3} = flurm_protocol_pack:unpack_string(Rest2),
+        <<Signal:32/big, _/binary>> = Rest3,
+        {ok, #federation_job_cancel_request{
+            source_cluster = SourceCluster,
+            job_id = JobId,
+            job_id_str = JobIdStr,
+            signal = Signal
+        }}
+    catch
+        _:_ ->
+            {ok, #federation_job_cancel_request{}}
+    end.
+
+%% Encode REQUEST_FEDERATION_JOB_CANCEL (2036)
+encode_federation_job_cancel_request(#federation_job_cancel_request{} = R) ->
+    Parts = [
+        flurm_protocol_pack:pack_string(R#federation_job_cancel_request.source_cluster),
+        <<(R#federation_job_cancel_request.job_id):32/big>>,
+        flurm_protocol_pack:pack_string(R#federation_job_cancel_request.job_id_str),
+        <<(R#federation_job_cancel_request.signal):32/big>>
+    ],
+    {ok, iolist_to_binary(Parts)};
+encode_federation_job_cancel_request(_) ->
+    {ok, <<>>}.
+
+%% Decode RESPONSE_FEDERATION_JOB_CANCEL (2037)
+decode_federation_job_cancel_response(Binary) ->
+    try
+        <<JobId:32/big, ErrorCode:32/big, Rest/binary>> = Binary,
+        {ErrorMsg, _} = flurm_protocol_pack:unpack_string(Rest),
+        {ok, #federation_job_cancel_response{
+            job_id = JobId,
+            error_code = ErrorCode,
+            error_msg = ErrorMsg
+        }}
+    catch
+        _:_ ->
+            {ok, #federation_job_cancel_response{}}
+    end.
+
+%% Encode RESPONSE_FEDERATION_JOB_CANCEL (2037)
+encode_federation_job_cancel_response(#federation_job_cancel_response{} = R) ->
+    Parts = [
+        <<(R#federation_job_cancel_response.job_id):32/big,
+          (R#federation_job_cancel_response.error_code):32/big>>,
+        flurm_protocol_pack:pack_string(R#federation_job_cancel_response.error_msg)
+    ],
+    {ok, iolist_to_binary(Parts)};
+encode_federation_job_cancel_response(_) ->
+    {ok, <<0:32, 0:32, 0:32>>}.
+
+%% Helper: Decode a list of strings for federation messages
+decode_string_list(0, Rest, Acc) ->
+    {lists:reverse(Acc), Rest};
+decode_string_list(Count, Binary, Acc) ->
+    try
+        {Str, Rest} = flurm_protocol_pack:unpack_string(Binary),
+        decode_string_list(Count - 1, Rest, [Str | Acc])
+    catch
+        _:_ ->
+            {lists:reverse(Acc), <<>>}
+    end.
+

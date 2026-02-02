@@ -126,6 +126,13 @@
 -define(RESPONSE_ASSOC_MGR_INFO, 2023).
 -define(REQUEST_FED_INFO, 2024).
 -define(RESPONSE_FED_INFO, 2025).
+%% Federation job submission (FLURM extensions - 2032-2039 range)
+-define(REQUEST_FEDERATION_SUBMIT, 2032).      % Cross-cluster job submission
+-define(RESPONSE_FEDERATION_SUBMIT, 2033).     % Cross-cluster job response
+-define(REQUEST_FEDERATION_JOB_STATUS, 2034).  % Query job on remote cluster
+-define(RESPONSE_FEDERATION_JOB_STATUS, 2035). % Remote job status
+-define(REQUEST_FEDERATION_JOB_CANCEL, 2036).  % Cancel job on remote cluster
+-define(RESPONSE_FEDERATION_JOB_CANCEL, 2037). % Remote cancel response
 -define(REQUEST_STATS_INFO, 2026).
 -define(RESPONSE_STATS_INFO, 2027).
 -define(REQUEST_FRONT_END_INFO, 2028).
@@ -1305,6 +1312,99 @@
     message = <<>> :: binary(),               %% Human-readable status message
     changed_keys = [] :: [atom()],            %% List of keys that were changed
     version = 0 :: non_neg_integer()          %% New config version number
+}).
+
+%%%===================================================================
+%%% Federation Message Records
+%%%===================================================================
+
+%% Federation info request (REQUEST_FED_INFO - 2024)
+-record(fed_info_request, {
+    show_flags = 0 :: non_neg_integer()
+}).
+
+%% Federation cluster info (part of RESPONSE_FED_INFO)
+-record(fed_cluster_info, {
+    name = <<>> :: binary(),
+    host = <<>> :: binary(),
+    port = 6817 :: non_neg_integer(),
+    state = <<>> :: binary(),           %% "up", "down", "drain"
+    weight = 1 :: non_neg_integer(),
+    features = [] :: [binary()],
+    partitions = [] :: [binary()]
+}).
+
+%% Federation info response (RESPONSE_FED_INFO - 2025)
+-record(fed_info_response, {
+    federation_name = <<>> :: binary(),
+    local_cluster = <<>> :: binary(),
+    cluster_count = 0 :: non_neg_integer(),
+    clusters = [] :: [#fed_cluster_info{}]
+}).
+
+%% Federation job submit request (REQUEST_FEDERATION_SUBMIT - 2032)
+%% Used for cross-cluster job submission
+-record(federation_submit_request, {
+    source_cluster = <<>> :: binary(),     %% Originating cluster name
+    target_cluster = <<>> :: binary(),     %% Target cluster name
+    job_id = 0 :: non_neg_integer(),       %% Source cluster's tracking ID (0 = new)
+    name = <<>> :: binary(),
+    script = <<>> :: binary(),
+    partition = <<>> :: binary(),
+    num_cpus = 1 :: non_neg_integer(),
+    num_nodes = 1 :: non_neg_integer(),
+    memory_mb = 0 :: non_neg_integer(),
+    time_limit = 0 :: non_neg_integer(),
+    user_id = 0 :: non_neg_integer(),
+    group_id = 0 :: non_neg_integer(),
+    priority = 0 :: non_neg_integer(),
+    work_dir = <<>> :: binary(),
+    std_out = <<>> :: binary(),
+    std_err = <<>> :: binary(),
+    environment = [] :: [binary()],
+    features = <<>> :: binary()
+}).
+
+%% Federation job submit response (RESPONSE_FEDERATION_SUBMIT - 2033)
+-record(federation_submit_response, {
+    source_cluster = <<>> :: binary(),     %% Original source cluster
+    job_id = 0 :: non_neg_integer(),       %% Assigned job ID on target cluster
+    error_code = 0 :: non_neg_integer(),
+    error_msg = <<>> :: binary()
+}).
+
+%% Federation job status request (REQUEST_FEDERATION_JOB_STATUS - 2034)
+-record(federation_job_status_request, {
+    source_cluster = <<>> :: binary(),     %% Requesting cluster
+    job_id = 0 :: non_neg_integer(),       %% Job ID on target cluster
+    job_id_str = <<>> :: binary()
+}).
+
+%% Federation job status response (RESPONSE_FEDERATION_JOB_STATUS - 2035)
+-record(federation_job_status_response, {
+    job_id = 0 :: non_neg_integer(),
+    job_state = 0 :: non_neg_integer(),
+    state_reason = 0 :: non_neg_integer(),
+    exit_code = 0 :: non_neg_integer(),
+    start_time = 0 :: non_neg_integer(),
+    end_time = 0 :: non_neg_integer(),
+    nodes = <<>> :: binary(),
+    error_code = 0 :: non_neg_integer()
+}).
+
+%% Federation job cancel request (REQUEST_FEDERATION_JOB_CANCEL - 2036)
+-record(federation_job_cancel_request, {
+    source_cluster = <<>> :: binary(),
+    job_id = 0 :: non_neg_integer(),
+    job_id_str = <<>> :: binary(),
+    signal = 9 :: non_neg_integer()        %% Default SIGKILL
+}).
+
+%% Federation job cancel response (RESPONSE_FEDERATION_JOB_CANCEL - 2037)
+-record(federation_job_cancel_response, {
+    job_id = 0 :: non_neg_integer(),
+    error_code = 0 :: non_neg_integer(),
+    error_msg = <<>> :: binary()
 }).
 
 %%%===================================================================

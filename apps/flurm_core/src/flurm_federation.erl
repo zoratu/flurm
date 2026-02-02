@@ -51,7 +51,8 @@
 %% API - Resource Aggregation
 -export([
     get_federation_resources/0,
-    get_federation_jobs/0
+    get_federation_jobs/0,
+    get_federation_stats/0
 ]).
 
 %% API - Legacy/Compatibility
@@ -294,6 +295,32 @@ get_federation_resources() ->
 -spec get_federation_jobs() -> [map()].
 get_federation_jobs() ->
     gen_server:call(?SERVER, get_federation_jobs, ?CLUSTER_TIMEOUT * 3).
+
+%% @doc Get federation statistics for metrics collection.
+%% Returns cluster counts for Prometheus metrics.
+-spec get_federation_stats() -> map().
+get_federation_stats() ->
+    try
+        Clusters = ets:tab2list(?FED_CLUSTERS_TABLE),
+        {Healthy, Unhealthy} = lists:foldl(
+            fun(#fed_cluster{state = State}, {H, U}) ->
+                case State of
+                    up -> {H + 1, U};
+                    _ -> {H, U + 1}
+                end
+            end,
+            {0, 0},
+            Clusters
+        ),
+        #{
+            clusters_total => length(Clusters),
+            clusters_healthy => Healthy,
+            clusters_unhealthy => Unhealthy
+        }
+    catch
+        _:_ ->
+            #{clusters_total => 0, clusters_healthy => 0, clusters_unhealthy => 0}
+    end.
 
 %%====================================================================
 %% API - Legacy/Compatibility
@@ -732,6 +759,9 @@ do_add_cluster(Name, #cluster_config{} = Config, State) ->
 %%====================================================================
 
 do_submit_job(Job, Options, State) ->
+    %% Track routing decision timing
+    StartTime = erlang:monotonic_time(millisecond),
+
     %% Determine target cluster
     TargetCluster = case maps:get(cluster, Options, undefined) of
         undefined ->
@@ -744,12 +774,19 @@ do_submit_job(Job, Options, State) ->
             Cluster
     end,
 
+    %% Record routing decision metrics
+    RoutingDuration = erlang:monotonic_time(millisecond) - StartTime,
+    catch flurm_metrics:histogram(flurm_federation_routing_duration_ms, RoutingDuration),
+    catch flurm_metrics:increment(flurm_federation_routing_decisions_total),
+
     case TargetCluster =:= State#state.local_cluster of
         true ->
             %% Submit locally
+            catch flurm_metrics:increment(flurm_federation_routing_local_total),
             submit_local_job(Job);
         false ->
             %% Submit to remote cluster
+            catch flurm_metrics:increment(flurm_federation_routing_remote_total),
             submit_remote_job(TargetCluster, Job, Options)
     end.
 
@@ -864,8 +901,14 @@ submit_local_job(JobSpec) when is_map(JobSpec) ->
 submit_remote_job(ClusterName, Job, _Options) ->
     case ets:lookup(?FED_CLUSTERS_TABLE, ClusterName) of
         [#fed_cluster{host = Host, port = Port, auth = Auth, state = up}] ->
+            StartTime = erlang:monotonic_time(millisecond),
             case remote_submit_job(Host, Port, Auth, Job) of
                 {ok, RemoteJobId} ->
+                    %% Record successful remote submission metrics
+                    Duration = erlang:monotonic_time(millisecond) - StartTime,
+                    catch flurm_metrics:histogram(flurm_federation_remote_submit_duration_ms, Duration),
+                    catch flurm_metrics:increment(flurm_federation_jobs_submitted_total),
+
                     %% Track the remote job
                     LocalRef = generate_local_ref(),
                     RemoteJob = #remote_job{
@@ -880,6 +923,9 @@ submit_remote_job(ClusterName, Job, _Options) ->
                     ets:insert(?FED_REMOTE_JOBS, RemoteJob),
                     {ok, {ClusterName, RemoteJobId}};
                 Error ->
+                    %% Record failed submission duration
+                    Duration = erlang:monotonic_time(millisecond) - StartTime,
+                    catch flurm_metrics:histogram(flurm_federation_remote_submit_duration_ms, Duration),
                     Error
             end;
         [#fed_cluster{state = State}] ->
@@ -970,9 +1016,12 @@ do_health_check(State) ->
 check_cluster_health(Host, Port) ->
     %% Try to connect to the cluster's health endpoint
     Url = build_url(Host, Port, <<"/api/v1/health">>),
+    catch flurm_metrics:increment(flurm_federation_health_checks_total),
     case http_get(Url, ?CLUSTER_TIMEOUT) of
         {ok, _Response} -> up;
-        {error, _} -> down
+        {error, _} ->
+            catch flurm_metrics:increment(flurm_federation_health_check_failures_total),
+            down
     end.
 
 sync_all_clusters(State) ->

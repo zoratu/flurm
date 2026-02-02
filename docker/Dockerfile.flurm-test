@@ -1,0 +1,52 @@
+# Test Runner Image for FLURM Integration Tests
+# Contains Erlang/OTP and rebar3 for running Common Test suites
+
+FROM erlang:26-slim
+
+LABEL maintainer="FLURM Project"
+LABEL description="Integration test runner for FLURM"
+
+# Avoid interactive prompts
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    make \
+    gcc \
+    libssl-dev \
+    curl \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install rebar3
+RUN curl -Lo /usr/local/bin/rebar3 https://s3.amazonaws.com/rebar3/rebar3 \
+    && chmod +x /usr/local/bin/rebar3
+
+# Create working directory
+WORKDIR /app
+
+# Copy only rebar files first for layer caching
+COPY rebar.config rebar.lock ./
+COPY apps/flurm_core/rebar.config apps/flurm_core/
+COPY apps/flurm_controller/rebar.config apps/flurm_controller/
+COPY apps/flurm_node_daemon/rebar.config apps/flurm_node_daemon/
+COPY apps/flurm_protocol/rebar.config apps/flurm_protocol/
+COPY apps/flurm_config/rebar.config apps/flurm_config/
+COPY apps/flurm_db/rebar.config apps/flurm_db/
+COPY apps/flurm_dbd/rebar.config apps/flurm_dbd/
+
+# Fetch dependencies (cached layer)
+RUN rebar3 deps
+
+# Copy full source
+COPY . .
+
+# Compile
+RUN rebar3 compile
+
+# Set test environment
+ENV ERL_FLAGS="-sname flurm_test@localhost"
+
+# Default command runs Common Tests
+CMD ["rebar3", "ct", "--readable=true"]

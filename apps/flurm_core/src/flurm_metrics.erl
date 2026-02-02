@@ -31,7 +31,11 @@
     get_metric/1,
     get_all_metrics/0,
     format_prometheus/0,
-    reset/0
+    reset/0,
+    %% Labeled metrics API (for TRES)
+    labeled_gauge/3,
+    labeled_counter/3,
+    get_labeled_metric/2
 ]).
 
 %% gen_server callbacks
@@ -47,6 +51,7 @@
 -define(SERVER, ?MODULE).
 -define(METRICS_TABLE, flurm_metrics).
 -define(HISTOGRAM_TABLE, flurm_histograms).
+-define(LABELED_TABLE, flurm_labeled_metrics).
 
 %% Collection interval for gauge metrics
 -define(COLLECT_INTERVAL, 15000).  % 15 seconds
@@ -148,6 +153,26 @@ format_prometheus() ->
 reset() ->
     gen_server:call(?SERVER, reset).
 
+%% @doc Set a labeled gauge metric (e.g., for TRES metrics).
+%% Labels is a map of label name -> value, e.g., #{type => <<"cpu">>}
+-spec labeled_gauge(atom(), map(), number()) -> ok.
+labeled_gauge(Name, Labels, Value) ->
+    gen_server:cast(?SERVER, {labeled_gauge, Name, Labels, Value}).
+
+%% @doc Increment a labeled counter metric.
+-spec labeled_counter(atom(), map(), number()) -> ok.
+labeled_counter(Name, Labels, N) ->
+    gen_server:cast(?SERVER, {labeled_counter, Name, Labels, N}).
+
+%% @doc Get a labeled metric value.
+-spec get_labeled_metric(atom(), map()) -> {ok, number()} | {error, not_found}.
+get_labeled_metric(Name, Labels) ->
+    Key = {Name, Labels},
+    case ets:lookup(?LABELED_TABLE, Key) of
+        [{Key, _Type, Value}] -> {ok, Value};
+        [] -> {error, not_found}
+    end.
+
 %%====================================================================
 %% gen_server callbacks
 %%====================================================================
@@ -156,6 +181,7 @@ init([]) ->
     %% Create ETS tables
     ets:new(?METRICS_TABLE, [named_table, public, set]),
     ets:new(?HISTOGRAM_TABLE, [named_table, public, set]),
+    ets:new(?LABELED_TABLE, [named_table, public, set]),
 
     %% Initialize standard metrics
     init_standard_metrics(),
@@ -172,6 +198,7 @@ handle_call(format_prometheus, _From, State) ->
 handle_call(reset, _From, State) ->
     ets:delete_all_objects(?METRICS_TABLE),
     ets:delete_all_objects(?HISTOGRAM_TABLE),
+    ets:delete_all_objects(?LABELED_TABLE),
     init_standard_metrics(),
     {reply, ok, State};
 
@@ -204,6 +231,21 @@ handle_cast({gauge, Name, Value}, State) ->
 
 handle_cast({histogram, Name, Value}, State) ->
     update_histogram(Name, Value),
+    {noreply, State};
+
+handle_cast({labeled_gauge, Name, Labels, Value}, State) ->
+    Key = {Name, Labels},
+    ets:insert(?LABELED_TABLE, {Key, gauge, Value}),
+    {noreply, State};
+
+handle_cast({labeled_counter, Name, Labels, N}, State) ->
+    Key = {Name, Labels},
+    case ets:lookup(?LABELED_TABLE, Key) of
+        [{Key, counter, Value}] ->
+            ets:insert(?LABELED_TABLE, {Key, counter, Value + N});
+        [] ->
+            ets:insert(?LABELED_TABLE, {Key, counter, N})
+    end,
     {noreply, State};
 
 handle_cast(_Msg, State) ->
@@ -267,11 +309,27 @@ init_standard_metrics() ->
     ets:insert(?METRICS_TABLE, {flurm_requests_rejected_total, counter, 0}),
     ets:insert(?METRICS_TABLE, {flurm_backpressure_events_total, counter, 0}),
 
+    %% Federation gauges
+    ets:insert(?METRICS_TABLE, {flurm_federation_clusters_total, gauge, 0}),
+    ets:insert(?METRICS_TABLE, {flurm_federation_clusters_healthy, gauge, 0}),
+    ets:insert(?METRICS_TABLE, {flurm_federation_clusters_unhealthy, gauge, 0}),
+
+    %% Federation counters
+    ets:insert(?METRICS_TABLE, {flurm_federation_jobs_submitted_total, counter, 0}),
+    ets:insert(?METRICS_TABLE, {flurm_federation_jobs_received_total, counter, 0}),
+    ets:insert(?METRICS_TABLE, {flurm_federation_routing_decisions_total, counter, 0}),
+    ets:insert(?METRICS_TABLE, {flurm_federation_routing_local_total, counter, 0}),
+    ets:insert(?METRICS_TABLE, {flurm_federation_routing_remote_total, counter, 0}),
+    ets:insert(?METRICS_TABLE, {flurm_federation_health_checks_total, counter, 0}),
+    ets:insert(?METRICS_TABLE, {flurm_federation_health_check_failures_total, counter, 0}),
+
     %% Initialize histograms
     init_histogram(flurm_scheduler_duration_ms),
     init_histogram(flurm_job_wait_time_seconds),
     init_histogram(flurm_job_run_time_seconds),
-    init_histogram(flurm_request_duration_ms).
+    init_histogram(flurm_request_duration_ms),
+    init_histogram(flurm_federation_routing_duration_ms),
+    init_histogram(flurm_federation_remote_submit_duration_ms).
 
 %% @private Initialize a histogram
 init_histogram(Name) ->
@@ -308,7 +366,11 @@ collect_system_metrics() ->
     %% Collect node metrics
     collect_node_metrics(),
     %% Collect rate limiter metrics
-    collect_rate_limiter_metrics().
+    collect_rate_limiter_metrics(),
+    %% Collect federation metrics
+    collect_federation_metrics(),
+    %% Collect TRES metrics
+    collect_tres_metrics().
 
 %% @private Collect job-related metrics
 collect_job_metrics() ->
@@ -378,6 +440,100 @@ collect_rate_limiter_metrics() ->
             ok
     end.
 
+%% @private Collect federation metrics
+collect_federation_metrics() ->
+    case catch flurm_federation:get_federation_stats() of
+        Stats when is_map(Stats) ->
+            gauge(flurm_federation_clusters_total, maps:get(clusters_total, Stats, 0)),
+            gauge(flurm_federation_clusters_healthy, maps:get(clusters_healthy, Stats, 0)),
+            gauge(flurm_federation_clusters_unhealthy, maps:get(clusters_unhealthy, Stats, 0));
+        _ ->
+            %% Federation module may not be running
+            ok
+    end.
+
+%% @private Collect TRES (Trackable Resources) metrics
+%% Emits labeled metrics for each TRES type (cpu, mem, gpu, node, energy, etc.)
+collect_tres_metrics() ->
+    %% Collect TRES totals and allocated from node registry
+    try
+        Nodes = case catch flurm_node_registry:list_nodes() of
+            L when is_list(L) -> L;
+            _ -> []
+        end,
+
+        %% Aggregate TRES data from all nodes
+        TresData = lists:foldl(
+            fun({NodeName, _Pid}, Acc) ->
+                case catch flurm_node_registry:get_node_entry(NodeName) of
+                    {ok, #node_entry{
+                        cpus_total = CT, cpus_avail = CA,
+                        memory_total = MT, memory_avail = MA,
+                        gpus_total = GT, gpus_avail = GA}} ->
+                        %% Accumulate TRES totals and allocated
+                        #{
+                            cpu_total => maps:get(cpu_total, Acc, 0) + CT,
+                            cpu_alloc => maps:get(cpu_alloc, Acc, 0) + (CT - CA),
+                            mem_total => maps:get(mem_total, Acc, 0) + MT,
+                            mem_alloc => maps:get(mem_alloc, Acc, 0) + (MT - MA),
+                            gpu_total => maps:get(gpu_total, Acc, 0) + GT,
+                            gpu_alloc => maps:get(gpu_alloc, Acc, 0) + (GT - GA),
+                            node_total => maps:get(node_total, Acc, 0) + 1,
+                            node_alloc => maps:get(node_alloc, Acc, 0)  % Updated below
+                        };
+                    _ ->
+                        Acc
+                end
+            end,
+            #{cpu_total => 0, cpu_alloc => 0, mem_total => 0, mem_alloc => 0,
+              gpu_total => 0, gpu_alloc => 0, node_total => 0, node_alloc => 0},
+            Nodes
+        ),
+
+        %% Emit labeled metrics for standard TRES types
+        %% flurm_tres_total{type="cpu"} 100
+        %% flurm_tres_allocated{type="cpu"} 50
+        emit_tres_metric(<<"cpu">>, maps:get(cpu_total, TresData, 0), maps:get(cpu_alloc, TresData, 0)),
+        emit_tres_metric(<<"mem">>, maps:get(mem_total, TresData, 0), maps:get(mem_alloc, TresData, 0)),
+        emit_tres_metric(<<"gpu">>, maps:get(gpu_total, TresData, 0), maps:get(gpu_alloc, TresData, 0)),
+        emit_tres_metric(<<"node">>, maps:get(node_total, TresData, 0), maps:get(node_alloc, TresData, 0)),
+
+        %% Get configured TRES from account manager and emit for each
+        collect_configured_tres_metrics()
+    catch
+        _:_ ->
+            %% Node registry may not be running
+            ok
+    end.
+
+%% @private Emit TRES metrics for a specific type
+emit_tres_metric(TresType, Total, Allocated) ->
+    Labels = #{type => TresType},
+    labeled_gauge(flurm_tres_total, Labels, Total),
+    labeled_gauge(flurm_tres_allocated, Labels, Allocated),
+    labeled_gauge(flurm_tres_idle, Labels, max(0, Total - Allocated)).
+
+%% @private Collect metrics for configured TRES types from account manager
+collect_configured_tres_metrics() ->
+    case catch flurm_account_manager:list_tres() of
+        TresList when is_list(TresList) ->
+            %% Emit a metric showing each configured TRES type
+            lists:foreach(
+                fun(#tres{type = Type, name = Name}) ->
+                    %% For GRES types, include the name in the label
+                    Labels = case Name of
+                        <<>> -> #{type => Type};
+                        _ -> #{type => Type, name => Name}
+                    end,
+                    %% Emit configured TRES indicator (1 = configured)
+                    labeled_gauge(flurm_tres_configured, Labels, 1)
+                end,
+                TresList
+            );
+        _ ->
+            ok
+    end.
+
 %% @private Format metrics in Prometheus text format
 do_format_prometheus() ->
     MetricLines = ets:foldl(
@@ -398,7 +554,8 @@ do_format_prometheus() ->
         [],
         ?HISTOGRAM_TABLE
     ),
-    lists:flatten(MetricLines ++ HistogramLines).
+    LabeledLines = format_labeled_metrics(),
+    lists:flatten(MetricLines ++ HistogramLines ++ LabeledLines).
 
 %% @private Format a single metric
 format_metric(Name, Type, Value) ->
@@ -436,6 +593,77 @@ format_value(Value) when is_integer(Value) ->
 format_value(Value) when is_float(Value) ->
     io_lib:format("~.6f", [Value]).
 
+%% @private Format labeled metrics (TRES, etc.)
+%% Groups metrics by name, outputs HELP/TYPE once, then all labeled values
+format_labeled_metrics() ->
+    %% Collect all labeled metrics and group by name
+    AllLabeled = ets:tab2list(?LABELED_TABLE),
+
+    %% Group by metric name
+    Grouped = lists:foldl(
+        fun({{Name, Labels}, Type, Value}, Acc) ->
+            Existing = maps:get(Name, Acc, {Type, []}),
+            {ExistingType, ExistingValues} = Existing,
+            maps:put(Name, {ExistingType, [{Labels, Value} | ExistingValues]}, Acc)
+        end,
+        #{},
+        AllLabeled
+    ),
+
+    %% Format each group
+    maps:fold(
+        fun(Name, {Type, LabeledValues}, Acc) ->
+            [format_labeled_metric_group(Name, Type, LabeledValues) | Acc]
+        end,
+        [],
+        Grouped
+    ).
+
+%% @private Format a group of labeled metrics with the same name
+format_labeled_metric_group(Name, Type, LabeledValues) ->
+    NameStr = atom_to_list(Name),
+    TypeStr = case Type of
+        counter -> "counter";
+        gauge -> "gauge"
+    end,
+    ValueLines = lists:map(
+        fun({Labels, Value}) ->
+            LabelStr = format_labels(Labels),
+            [NameStr, LabelStr, " ", format_value(Value), "\n"]
+        end,
+        LabeledValues
+    ),
+    [
+        "# HELP ", NameStr, " ", get_metric_help(Name), "\n",
+        "# TYPE ", NameStr, " ", TypeStr, "\n",
+        ValueLines
+    ].
+
+%% @private Format labels map to Prometheus label string
+%% #{type => <<"cpu">>, node => <<"node1">>} -> {type="cpu",node="node1"}
+format_labels(Labels) when map_size(Labels) =:= 0 ->
+    "";
+format_labels(Labels) ->
+    LabelList = maps:fold(
+        fun(K, V, Acc) ->
+            KeyStr = format_label_key(K),
+            ValStr = format_label_value(V),
+            [[KeyStr, "=\"", ValStr, "\""] | Acc]
+        end,
+        [],
+        Labels
+    ),
+    ["{", lists:join(",", lists:reverse(LabelList)), "}"].
+
+format_label_key(K) when is_atom(K) -> atom_to_list(K);
+format_label_key(K) when is_binary(K) -> binary_to_list(K);
+format_label_key(K) when is_list(K) -> K.
+
+format_label_value(V) when is_binary(V) -> binary_to_list(V);
+format_label_value(V) when is_atom(V) -> atom_to_list(V);
+format_label_value(V) when is_integer(V) -> integer_to_list(V);
+format_label_value(V) when is_list(V) -> V.
+
 %% @private Get help text for a metric
 get_metric_help(flurm_jobs_submitted_total) -> "Total number of jobs submitted";
 get_metric_help(flurm_jobs_completed_total) -> "Total number of jobs completed successfully";
@@ -465,4 +693,22 @@ get_metric_help(flurm_requests_rejected_total) -> "Requests rejected by rate lim
 get_metric_help(flurm_backpressure_events_total) -> "Backpressure activation events";
 get_metric_help(flurm_rate_limiter_load) -> "Current rate limiter load (0-1)";
 get_metric_help(flurm_backpressure_active) -> "Whether backpressure is active (0/1)";
+%% Federation metrics
+get_metric_help(flurm_federation_clusters_total) -> "Total number of federated clusters";
+get_metric_help(flurm_federation_clusters_healthy) -> "Number of healthy federated clusters";
+get_metric_help(flurm_federation_clusters_unhealthy) -> "Number of unhealthy federated clusters";
+get_metric_help(flurm_federation_jobs_submitted_total) -> "Total jobs submitted to remote clusters";
+get_metric_help(flurm_federation_jobs_received_total) -> "Total jobs received from remote clusters";
+get_metric_help(flurm_federation_routing_decisions_total) -> "Total federation routing decisions made";
+get_metric_help(flurm_federation_routing_local_total) -> "Jobs routed to local cluster";
+get_metric_help(flurm_federation_routing_remote_total) -> "Jobs routed to remote clusters";
+get_metric_help(flurm_federation_health_checks_total) -> "Total federation health checks performed";
+get_metric_help(flurm_federation_health_check_failures_total) -> "Federation health check failures";
+get_metric_help(flurm_federation_routing_duration_ms) -> "Federation routing decision duration";
+get_metric_help(flurm_federation_remote_submit_duration_ms) -> "Remote job submission duration";
+%% TRES metrics
+get_metric_help(flurm_tres_total) -> "Total TRES (Trackable Resources) in cluster by type";
+get_metric_help(flurm_tres_allocated) -> "TRES allocated to jobs by type";
+get_metric_help(flurm_tres_idle) -> "TRES available (total - allocated) by type";
+get_metric_help(flurm_tres_configured) -> "Configured TRES types (1 = configured)";
 get_metric_help(_) -> "FLURM metric".

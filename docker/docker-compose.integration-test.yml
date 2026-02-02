@@ -1,0 +1,145 @@
+# Docker Compose for FLURM Integration Tests
+#
+# This creates a minimal FLURM cluster for running Common Test suites:
+# - Single controller
+# - Two compute nodes
+# - SLURM client for protocol testing
+#
+# Usage:
+#   ./test/run_integration_tests.sh
+#
+# Or manually:
+#   docker compose -f docker-compose.integration-test.yml up -d
+#   docker compose -f docker-compose.integration-test.yml exec flurm-test rebar3 ct
+#   docker compose -f docker-compose.integration-test.yml down
+
+services:
+  # FLURM Controller for integration tests
+  flurm-controller:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.flurm-server
+    image: flurm-server:latest
+    hostname: flurm-controller
+    environment:
+      - FLURM_CLUSTER_NAME=integration-test
+      - FLURM_CONTROLLER_HOST=flurm-controller
+      - FLURM_INTEGRATION_TEST=true
+    ports:
+      - "6817:6817"
+      - "6818:6818"
+      - "6820:6820"
+    volumes:
+      - munge-key:/etc/munge
+      - flurm-data:/var/lib/flurm
+    networks:
+      test-net:
+        aliases:
+          - flurm-controller
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6820/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  # Compute node 1
+  flurm-node-1:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.flurm-node
+    hostname: flurm-node-1
+    depends_on:
+      flurm-controller:
+        condition: service_healthy
+    environment:
+      - FLURM_CONTROLLER_HOST=flurm-controller
+      - FLURM_CONTROLLER_PORT=6818
+      - FLURM_NODE_NAME=flurm-node-1
+      - FLURM_NODE_CPUS=4
+      - FLURM_NODE_MEMORY=8192
+    volumes:
+      - munge-key:/etc/munge
+    networks:
+      test-net:
+        aliases:
+          - flurm-node-1
+
+  # Compute node 2
+  flurm-node-2:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.flurm-node
+    hostname: flurm-node-2
+    depends_on:
+      flurm-controller:
+        condition: service_healthy
+    environment:
+      - FLURM_CONTROLLER_HOST=flurm-controller
+      - FLURM_CONTROLLER_PORT=6818
+      - FLURM_NODE_NAME=flurm-node-2
+      - FLURM_NODE_CPUS=4
+      - FLURM_NODE_MEMORY=8192
+    volumes:
+      - munge-key:/etc/munge
+    networks:
+      test-net:
+        aliases:
+          - flurm-node-2
+
+  # SLURM client for protocol testing
+  slurm-client:
+    build:
+      context: .
+      dockerfile: Dockerfile.slurm-client-munge
+    hostname: slurm-client
+    depends_on:
+      flurm-controller:
+        condition: service_healthy
+    environment:
+      - SLURM_CONF=/etc/slurm/slurm.conf
+      - SLURMCTLD_HOST=flurm-controller
+    volumes:
+      - munge-key:/etc/munge
+      - ./slurm-integration-test.conf:/etc/slurm/slurm.conf:ro
+    networks:
+      test-net:
+        aliases:
+          - slurm-client
+    stdin_open: true
+    tty: true
+
+  # Test runner container (runs rebar3 ct)
+  flurm-test:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.flurm-test
+    hostname: flurm-test
+    depends_on:
+      flurm-controller:
+        condition: service_healthy
+      flurm-node-1:
+        condition: service_started
+      flurm-node-2:
+        condition: service_started
+    environment:
+      - FLURM_CONTROLLER_HOST=flurm-controller
+      - FLURM_CONTROLLER_PORT=6817
+      - FLURM_NODE_PORT=6818
+      - CT_HOOKS=
+    volumes:
+      - ..:/app:rw
+      - test-logs:/app/_build/test/logs
+    working_dir: /app
+    networks:
+      - test-net
+    command: ["rebar3", "ct", "--readable=true"]
+
+volumes:
+  munge-key:
+  flurm-data:
+  test-logs:
+
+networks:
+  test-net:
+    driver: bridge

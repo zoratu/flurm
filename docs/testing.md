@@ -17,11 +17,20 @@ This comprehensive guide covers all aspects of testing FLURM, from running basic
 
 | Metric | Value |
 |--------|-------|
-| **Total Tests** | 498 |
-| **Tests Passing** | 488 |
-| **Tests Cancelled** | 10 (environment-specific) |
+| **EUnit Tests** | 2300+ |
+| **Integration Tests (CT)** | 52 (50 pass, 2 expected skips) |
 | **Test Pass Rate** | 100% (of runnable tests) |
 | **Coverage** | 6% overall (see [COVERAGE.md](COVERAGE.md) for details) |
+
+### Integration Test Suites
+
+| Suite | Tests | Status |
+|-------|-------|--------|
+| Scheduler SUITE | 10 | All pass |
+| Job Manager SUITE | 11 | 9 pass, 2 skip (array jobs) |
+| Node Manager SUITE | 12 | All pass |
+| Protocol SUITE | 10 | All pass |
+| HA/Failover SUITE | 9 | All pass |
 
 ---
 
@@ -56,13 +65,74 @@ Run unit tests with:
 rebar3 eunit
 ```
 
-## Common Tests
+## Common Tests (Integration Tests)
 
-Run integration tests:
+FLURM includes comprehensive Common Test (CT) suites for integration testing:
+
+### Running Integration Tests
 
 ```bash
+# Run all integration tests
 rebar3 ct
+
+# Run a specific test suite
+rebar3 ct --dir=apps/flurm_core/integration_test --suite=flurm_scheduler_SUITE
+rebar3 ct --dir=apps/flurm_controller/integration_test --suite=flurm_job_manager_SUITE
+rebar3 ct --dir=apps/flurm_node_daemon/integration_test --suite=flurm_node_manager_SUITE
+rebar3 ct --dir=apps/flurm_protocol/integration_test --suite=flurm_protocol_SUITE
+rebar3 ct --dir=apps/flurm_controller/integration_test --suite=flurm_ha_SUITE
 ```
+
+### Available Test Suites
+
+| Suite | Location | Tests | Description |
+|-------|----------|-------|-------------|
+| `flurm_scheduler_SUITE` | `apps/flurm_core/integration_test/` | 10 | Job scheduling, backfill, preemption |
+| `flurm_job_manager_SUITE` | `apps/flurm_controller/integration_test/` | 11 | Job lifecycle, cancellation, dependencies |
+| `flurm_node_manager_SUITE` | `apps/flurm_node_daemon/integration_test/` | 12 | Node registration, heartbeat, allocation |
+| `flurm_protocol_SUITE` | `apps/flurm_protocol/integration_test/` | 10 | Protocol encoding, handler integration |
+| `flurm_ha_SUITE` | `apps/flurm_controller/integration_test/` | 9 | HA failover, state recovery |
+
+### Test Suite Details
+
+#### Scheduler SUITE (`flurm_scheduler_SUITE`)
+- Basic job submission and scheduling
+- Backfill scheduling algorithm
+- Preemption workflow (high-priority preempts low-priority)
+- Resource allocation (CPU/memory)
+- Partition constraints
+- Fair-share enforcement
+
+#### Job Manager SUITE (`flurm_job_manager_SUITE`)
+- Job lifecycle: PENDING → RUNNING → COMPLETED
+- Job cancellation at various states
+- Job dependencies (afterok, afterany)
+- Array job expansion (when flurm_job_array is running)
+- Job requeue on failure
+
+#### Node Manager SUITE (`flurm_node_manager_SUITE`)
+- Node registration with controller
+- Heartbeat updates timestamp
+- Resource allocation/release
+- Drain/undrain operations
+- Dynamic node add/remove
+
+#### Protocol SUITE (`flurm_protocol_SUITE`)
+- Header encode/decode
+- Ping request/response
+- Job info request/response
+- Node/partition info
+- Build info
+- Full batch job submission cycle
+- Job cancellation protocol
+
+#### HA/Failover SUITE (`flurm_ha_SUITE`)
+- Controller startup verification
+- Failover handler initialization
+- Leadership status queries
+- Job persistence across simulated failover
+- State recovery verification
+- Multiple failover transitions (robustness)
 
 ## Property-Based Testing
 
@@ -199,6 +269,37 @@ flurm_cluster_tests:test_controller_failover().
 flurm_cluster_tests:test_job_distribution().
 flurm_cluster_tests:test_node_failure_recovery().
 ```
+
+## Docker-Based Integration Tests
+
+Run Common Test suites against a Docker-based FLURM cluster:
+
+```bash
+# Run all CT suites with Docker
+./test/run_integration_tests.sh
+
+# Run a specific test suite
+./test/run_integration_tests.sh --suite=flurm_ha_SUITE
+
+# Keep cluster running after tests (for debugging)
+./test/run_integration_tests.sh --keep
+
+# Force rebuild of Docker images
+./test/run_integration_tests.sh --rebuild
+```
+
+The Docker test environment includes:
+- FLURM controller with health checks
+- Two compute nodes for job execution
+- SLURM client for protocol testing
+
+### Docker Compose Files
+
+| File | Purpose |
+|------|---------|
+| `docker-compose.yml` | Basic single-cluster setup |
+| `docker-compose.integration-test.yml` | CT suite execution |
+| `docker-compose.federation.yml` | Multi-cluster federation testing |
 
 ## SLURM Protocol Compatibility
 

@@ -99,6 +99,21 @@ The body follows immediately after the header and is `Body Length` bytes. Conten
 | 8002 | `MESSAGE_PING` | Node heartbeat |
 | 8003 | `MESSAGE_EPILOG_COMPLETE` | Job epilog finished |
 
+### Federation Messages (FLURM Extension)
+
+These message types are FLURM-specific extensions for cross-cluster federation. They are **not compatible with native SLURM**.
+
+| Type ID | Name | Description |
+|---------|------|-------------|
+| 2024 | `REQUEST_FED_INFO` | Get federation information |
+| 2025 | `RESPONSE_FED_INFO` | Federation info response |
+| 2032 | `REQUEST_FEDERATION_SUBMIT` | Submit job to remote cluster |
+| 2033 | `RESPONSE_FEDERATION_SUBMIT` | Remote submission response |
+| 2034 | `REQUEST_FEDERATION_JOB_STATUS` | Query job status on remote cluster |
+| 2035 | `RESPONSE_FEDERATION_JOB_STATUS` | Remote job status response |
+| 2036 | `REQUEST_FEDERATION_JOB_CANCEL` | Cancel job on remote cluster |
+| 2037 | `RESPONSE_FEDERATION_JOB_CANCEL` | Remote cancel response |
+
 ## Data Types
 
 ### Primitive Types
@@ -525,6 +540,138 @@ send_error(Socket, MsgId, ErrorCode) ->
         msg_id = MsgId
     }),
     gen_tcp:send(Socket, <<Header/binary, Body/binary>>).
+```
+
+## Federation Protocol (FLURM Extension)
+
+> **Note**: These protocol messages are FLURM-specific extensions and are **not compatible with native SLURM**. Federation only works between FLURM clusters.
+
+### Federation Info Request (2024)
+
+Empty body or optional show_flags:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| show_flags | uint32 | Optional flags |
+
+### Federation Info Response (2025)
+
+| Field | Type | Description |
+|-------|------|-------------|
+| federation_name | string | Name of the federation |
+| local_cluster | string | Name of local cluster |
+| cluster_count | uint32 | Number of federated clusters |
+| clusters[] | cluster_info[] | Array of cluster information |
+
+**cluster_info structure:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| name | string | Cluster name |
+| host | string | Controller hostname |
+| port | uint32 | Controller port |
+| state | string | "up", "down", or "drain" |
+| weight | uint32 | Routing weight |
+| features[] | string[] | Cluster features |
+| partitions[] | string[] | Available partitions |
+
+### Federation Submit Request (2032)
+
+| Field | Type | Description |
+|-------|------|-------------|
+| source_cluster | string | Originating cluster name |
+| target_cluster | string | Target cluster name |
+| job_id | uint32 | Source cluster tracking ID (0 = new) |
+| name | string | Job name |
+| script | string | Job script content |
+| partition | string | Target partition |
+| num_cpus | uint32 | Number of CPUs |
+| num_nodes | uint32 | Number of nodes |
+| memory_mb | uint32 | Memory requirement (MB) |
+| time_limit | uint32 | Time limit (seconds) |
+| user_id | uint32 | Submitting user ID |
+| group_id | uint32 | Submitting group ID |
+| priority | uint32 | Job priority |
+| work_dir | string | Working directory |
+| std_out | string | Stdout path |
+| std_err | string | Stderr path |
+| environment[] | string[] | Environment variables |
+| features | string | Required features |
+
+### Federation Submit Response (2033)
+
+| Field | Type | Description |
+|-------|------|-------------|
+| source_cluster | string | Original source cluster |
+| job_id | uint32 | Assigned job ID on target |
+| error_code | uint32 | 0 = success |
+| error_msg | string | Error description if failed |
+
+### Federation Job Status Request (2034)
+
+| Field | Type | Description |
+|-------|------|-------------|
+| source_cluster | string | Requesting cluster |
+| job_id | uint32 | Job ID on target cluster |
+| job_id_str | string | Job ID as string |
+
+### Federation Job Status Response (2035)
+
+| Field | Type | Description |
+|-------|------|-------------|
+| job_id | uint32 | Job ID |
+| job_state | uint32 | Job state code |
+| state_reason | uint32 | State reason code |
+| exit_code | uint32 | Exit code (if completed) |
+| start_time | uint64 | Start timestamp |
+| end_time | uint64 | End timestamp |
+| nodes | string | Allocated nodes |
+| error_code | uint32 | 0 = success |
+
+### Federation Job Cancel Request (2036)
+
+| Field | Type | Description |
+|-------|------|-------------|
+| source_cluster | string | Requesting cluster |
+| job_id | uint32 | Job ID to cancel |
+| job_id_str | string | Job ID as string |
+| signal | uint32 | Signal to send (default 9 = SIGKILL) |
+
+### Federation Job Cancel Response (2037)
+
+| Field | Type | Description |
+|-------|------|-------------|
+| job_id | uint32 | Job ID |
+| error_code | uint32 | 0 = success |
+| error_msg | string | Error description if failed |
+
+### Erlang Federation Encoding Example
+
+```erlang
+%% Encode federation submit request
+encode_federation_submit(#federation_submit_request{} = R) ->
+    Parts = [
+        pack_string(R#federation_submit_request.source_cluster),
+        pack_string(R#federation_submit_request.target_cluster),
+        <<(R#federation_submit_request.job_id):32/big>>,
+        pack_string(R#federation_submit_request.name),
+        pack_string(R#federation_submit_request.script),
+        pack_string(R#federation_submit_request.partition),
+        <<(R#federation_submit_request.num_cpus):32/big,
+          (R#federation_submit_request.num_nodes):32/big,
+          (R#federation_submit_request.memory_mb):32/big,
+          (R#federation_submit_request.time_limit):32/big,
+          (R#federation_submit_request.user_id):32/big,
+          (R#federation_submit_request.group_id):32/big,
+          (R#federation_submit_request.priority):32/big>>,
+        pack_string(R#federation_submit_request.work_dir),
+        pack_string(R#federation_submit_request.std_out),
+        pack_string(R#federation_submit_request.std_err),
+        <<(length(R#federation_submit_request.environment)):32/big>>,
+        [pack_string(E) || E <- R#federation_submit_request.environment],
+        pack_string(R#federation_submit_request.features)
+    ],
+    {ok, iolist_to_binary(Parts)}.
 ```
 
 ## I/O Protocol (srun)
