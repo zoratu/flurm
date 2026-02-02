@@ -16,7 +16,7 @@
 %%% - REQUEST_CANCEL_JOB (4006) -> cancels job
 %%% - REQUEST_NODE_INFO (2007) -> queries node registry
 %%% - REQUEST_PARTITION_INFO (2009) -> queries partition config
-%%% - REQUEST_FED_INFO (2024) -> queries federation status
+%%% - REQUEST_FED_INFO (2049) -> queries federation status
 %%% @end
 %%%-------------------------------------------------------------------
 -module(flurm_controller_handler).
@@ -360,12 +360,8 @@ handle(#slurm_header{msg_type = ?REQUEST_JOB_USER_INFO}, Body) ->
     },
     {ok, ?RESPONSE_JOB_INFO, Response};
 
-%% REQUEST_SCONTROL_INFO (2049) - Used by scontrol in newer SLURM
-handle(#slurm_header{msg_type = ?REQUEST_SCONTROL_INFO}, _Body) ->
-    lager:info("Handling scontrol info request (2049)"),
-    %% Return success - this is often a status check
-    Response = #slurm_rc_response{return_code = 0},
-    {ok, ?RESPONSE_SLURM_RC, Response};
+%% NOTE: Message type 2049 is REQUEST_FED_INFO (federation info request)
+%% Handler is defined later in this file with the other federation handlers
 
 %% REQUEST_KILL_JOB (5032) -> RESPONSE_SLURM_RC
 %% Used by scancel in SLURM 19.05+
@@ -1089,8 +1085,8 @@ handle(#slurm_header{msg_type = ?REQUEST_STATS_INFO}, _Body) ->
     },
     {ok, ?RESPONSE_STATS_INFO, Response};
 
-%% REQUEST_FED_INFO (2024) -> RESPONSE_FED_INFO
-%% Federation info request - returns info about federated clusters
+%% REQUEST_FED_INFO (2049) -> RESPONSE_FED_INFO (2050)
+%% Federation info request - returns info about federated clusters (SLURM-compatible)
 handle(#slurm_header{msg_type = ?REQUEST_FED_INFO}, _Body) ->
     lager:info("Handling federation info request"),
     case catch flurm_federation:get_federation_info() of
