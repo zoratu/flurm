@@ -35,7 +35,8 @@
     %% Labeled metrics API (for TRES)
     labeled_gauge/3,
     labeled_counter/3,
-    get_labeled_metric/2
+    get_labeled_metric/2,
+    collect_tres_metrics/0
 ]).
 
 %% gen_server callbacks

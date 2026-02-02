@@ -81,7 +81,10 @@ federation_test_() ->
       {"is_federated returns true with multiple clusters", fun test_is_federated/0},
       {"get_local_cluster returns local name", fun test_get_local_cluster/0},
       {"partition mapping works correctly", fun test_partition_mapping/0},
-      {"track_remote_job creates tracking record", fun test_track_remote_job/0}
+      {"track_remote_job creates tracking record", fun test_track_remote_job/0},
+      {"get_federation_stats returns correct structure", fun test_get_federation_stats/0},
+      {"get_federation_stats counts healthy/unhealthy clusters", fun test_get_federation_stats_health/0},
+      {"get_federation_stats handles empty federation", fun test_get_federation_stats_empty/0}
      ]}.
 
 %%====================================================================
@@ -511,6 +514,69 @@ test_track_remote_job() ->
     ?assert(byte_size(LocalRef) > 0),
     %% Reference should start with "ref-"
     ?assertEqual(<<"ref-">>, binary:part(LocalRef, 0, 4)).
+
+%%====================================================================
+%% Federation Stats Tests
+%%====================================================================
+
+test_get_federation_stats() ->
+    %% Add a couple of clusters
+    ok = flurm_federation:add_cluster(<<"stats1">>, #{host => <<"stats1.example.com">>}),
+    ok = flurm_federation:add_cluster(<<"stats2">>, #{host => <<"stats2.example.com">>}),
+
+    Stats = flurm_federation:get_federation_stats(),
+
+    %% Should return a map with expected keys
+    ?assert(is_map(Stats)),
+    ?assert(maps:is_key(clusters_total, Stats)),
+    ?assert(maps:is_key(clusters_healthy, Stats)),
+    ?assert(maps:is_key(clusters_unhealthy, Stats)),
+
+    %% Values should be non-negative integers
+    ?assert(maps:get(clusters_total, Stats) >= 0),
+    ?assert(maps:get(clusters_healthy, Stats) >= 0),
+    ?assert(maps:get(clusters_unhealthy, Stats) >= 0),
+
+    %% Total should be >= 3 (local + 2 added)
+    ?assert(maps:get(clusters_total, Stats) >= 3).
+
+test_get_federation_stats_health() ->
+    %% Add an up cluster
+    ok = flurm_federation:add_cluster(<<"healthy_stat">>, #{host => <<"healthy.example.com">>}),
+    update_cluster_resources(<<"healthy_stat">>, #{state => up}),
+
+    %% Add a down cluster
+    ok = flurm_federation:add_cluster(<<"unhealthy_stat">>, #{host => <<"unhealthy.example.com">>}),
+    update_cluster_resources(<<"unhealthy_stat">>, #{state => down}),
+
+    Stats = flurm_federation:get_federation_stats(),
+
+    %% Should have at least 1 healthy (our up cluster)
+    ?assert(maps:get(clusters_healthy, Stats) >= 1),
+
+    %% Should have at least 1 unhealthy (our down cluster)
+    ?assert(maps:get(clusters_unhealthy, Stats) >= 1),
+
+    %% healthy + unhealthy should equal total
+    Total = maps:get(clusters_total, Stats),
+    Healthy = maps:get(clusters_healthy, Stats),
+    Unhealthy = maps:get(clusters_unhealthy, Stats),
+    ?assertEqual(Total, Healthy + Unhealthy).
+
+test_get_federation_stats_empty() ->
+    %% With just the local cluster (or maybe none depending on setup)
+    %% get_federation_stats should still return valid structure
+    Stats = flurm_federation:get_federation_stats(),
+
+    ?assert(is_map(Stats)),
+    ?assert(maps:is_key(clusters_total, Stats)),
+    ?assert(maps:is_key(clusters_healthy, Stats)),
+    ?assert(maps:is_key(clusters_unhealthy, Stats)),
+
+    %% Values should be non-negative
+    ?assert(maps:get(clusters_total, Stats) >= 0),
+    ?assert(maps:get(clusters_healthy, Stats) >= 0),
+    ?assert(maps:get(clusters_unhealthy, Stats) >= 0).
 
 %%====================================================================
 %% Helper Functions
