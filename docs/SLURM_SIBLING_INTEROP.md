@@ -252,6 +252,324 @@ curl -X POST http://controller:6820/api/v1/federation/clusters \
 
 ---
 
+---
+
+# Zero-Downtime Migration Playbook
+
+This section provides a step-by-step guide for migrating from SLURM to FLURM with zero downtime.
+
+## Migration Overview
+
+The migration uses a **SLURM Bridge** module (`flurm_slurm_bridge.erl`) that enables:
+- Observation of existing SLURM clusters
+- Job forwarding to SLURM during transition
+- Gradual workload migration
+- Clean SLURM decommissioning
+
+### Migration Modes
+
+| Mode | Description | Job Handling |
+|------|-------------|--------------|
+| `shadow` | Observation only | All jobs go to SLURM |
+| `active` | Parallel operation | FLURM handles new jobs, can forward to SLURM |
+| `primary` | FLURM leads | SLURM draining, minimal forwarding |
+| `standalone` | FLURM only | No SLURM integration |
+
+---
+
+## Scenario 1: SLURM Exists
+
+**Goal**: Deploy FLURM alongside SLURM without disrupting existing workloads.
+
+### Prerequisites
+- Existing SLURM cluster operational
+- FLURM controller installed
+- Network connectivity between FLURM and SLURM
+
+### Steps
+
+1. **Deploy FLURM in shadow mode**
+   ```erlang
+   %% FLURM starts in shadow mode by default
+   {ok, _} = flurm_slurm_bridge:start_link().
+   shadow = flurm_slurm_bridge:get_mode().
+   ```
+
+2. **Register the SLURM cluster**
+   ```erlang
+   ok = flurm_slurm_bridge:add_slurm_cluster(<<"prod-slurm">>, #{
+       host => <<"slurmctld.your-cluster.internal">>,
+       port => 6817
+   }).
+   ```
+
+3. **Verify observation**
+   ```erlang
+   %% Check cluster tracking
+   Clusters = flurm_slurm_bridge:list_slurm_clusters().
+   %% Should show your SLURM cluster
+
+   %% Check bridge status
+   Status = flurm_slurm_bridge:get_bridge_status().
+   %% mode => shadow, clusters_total => 1
+   ```
+
+4. **Monitor SLURM health**
+   - FLURM automatically performs health checks every 10 seconds
+   - View cluster state in `list_slurm_clusters()` output
+
+### What Happens
+- FLURM tracks SLURM cluster state
+- All jobs continue to be submitted directly to SLURM
+- FLURM does not intercept or handle any jobs
+- No changes to user workflows
+
+---
+
+## Scenario 2: Add FLURM (Active Mode)
+
+**Goal**: Enable FLURM to handle jobs while SLURM remains operational.
+
+### Prerequisites
+- Scenario 1 completed
+- FLURM services fully operational
+- Test jobs verified working with FLURM
+
+### Steps
+
+1. **Transition to active mode**
+   ```erlang
+   ok = flurm_slurm_bridge:set_mode(active).
+   active = flurm_slurm_bridge:get_mode().
+   ```
+
+2. **Configure job routing**
+   ```erlang
+   %% Jobs can now be:
+   %% 1. Handled locally by FLURM
+   %% 2. Forwarded to SLURM if needed
+   ```
+
+3. **Test job forwarding** (optional)
+   ```erlang
+   JobSpec = #{
+       name => <<"test-forward">>,
+       script => <<"#!/bin/bash\necho 'forwarded'">>,
+       partition => <<"default">>,
+       num_cpus => 1
+   },
+   %% Forward to specific cluster
+   {ok, FlurmJobId} = flurm_slurm_bridge:forward_job(JobSpec, <<"prod-slurm">>),
+
+   %% Or auto-select cluster
+   {ok, FlurmJobId} = flurm_slurm_bridge:forward_job(JobSpec, auto).
+   ```
+
+4. **Monitor forwarded jobs**
+   ```erlang
+   %% Check forwarded job status
+   {ok, Status} = flurm_slurm_bridge:get_forwarded_job_status(FlurmJobId).
+   %% Returns: #{state => pending|running|completed|failed, ...}
+   ```
+
+5. **Gradual workload migration**
+   - Route a percentage of jobs to FLURM
+   - Monitor performance and correctness
+   - Increase FLURM's share over time
+
+### What Happens
+- FLURM can accept and run jobs
+- Critical/legacy jobs can be forwarded to SLURM
+- Both schedulers operate in parallel
+- Users can submit to either system
+
+### Rollback
+If issues arise:
+```erlang
+%% Return to shadow mode
+ok = flurm_slurm_bridge:set_mode(shadow).
+%% All new jobs will go to SLURM again
+```
+
+---
+
+## Scenario 3: FLURM Primary (Ditch SLURM)
+
+**Goal**: Make FLURM the primary scheduler and decommission SLURM.
+
+### Phase A: FLURM Becomes Primary
+
+1. **Transition to primary mode**
+   ```erlang
+   ok = flurm_slurm_bridge:set_mode(primary).
+   primary = flurm_slurm_bridge:get_mode().
+   ```
+
+2. **Stop new submissions to SLURM**
+   - Update user documentation
+   - Redirect all job submission to FLURM
+   - Block direct SLURM access if needed
+
+3. **Monitor SLURM drain**
+   ```erlang
+   %% Check for remaining forwarded jobs
+   Status = flurm_slurm_bridge:get_bridge_status().
+   %% jobs_running shows remaining forwarded jobs
+   ```
+
+### Phase B: Wait for SLURM Jobs to Complete
+
+4. **Track remaining jobs**
+   ```erlang
+   %% SLURM jobs will complete naturally
+   %% Check periodically:
+   Clusters = flurm_slurm_bridge:list_slurm_clusters().
+   %% job_count should decrease over time
+   ```
+
+5. **Cancel non-critical forwarded jobs** (optional)
+   ```erlang
+   ok = flurm_slurm_bridge:cancel_forwarded_job(FlurmJobId).
+   ```
+
+### Phase C: Decommission SLURM
+
+6. **Remove SLURM cluster**
+   ```erlang
+   ok = flurm_slurm_bridge:remove_slurm_cluster(<<"prod-slurm">>).
+   %% Fails if active jobs remain: {error, {active_jobs, N}}
+   ```
+
+7. **Transition to standalone mode**
+   ```erlang
+   ok = flurm_slurm_bridge:set_mode(standalone).
+   standalone = flurm_slurm_bridge:get_mode().
+   ```
+
+8. **Verify standalone operation**
+   ```erlang
+   false = flurm_slurm_bridge:is_slurm_available().
+
+   %% Job forwarding blocked
+   {error, standalone_mode} = flurm_slurm_bridge:forward_job(#{}, auto).
+   ```
+
+### What Happens
+- FLURM handles all new jobs
+- SLURM finishes existing jobs (draining)
+- Once SLURM is empty, it's removed
+- FLURM operates independently
+
+---
+
+## Migration Timeline Example
+
+```
+Week 1-2: Shadow Mode (Scenario 1)
+├── Deploy FLURM
+├── Configure SLURM cluster tracking
+├── Monitor and verify health checks
+└── Run internal FLURM tests
+
+Week 3-4: Active Mode (Scenario 2)
+├── Enable active mode
+├── Route 10% of jobs to FLURM
+├── Monitor for issues
+├── Increase to 50% of jobs
+└── Verify job completion rates
+
+Week 5-6: Primary Mode (Scenario 3A)
+├── Enable primary mode
+├── Route 100% of new jobs to FLURM
+├── Stop direct SLURM access
+└── Monitor SLURM drain
+
+Week 7+: Standalone Mode (Scenario 3C)
+├── Remove SLURM clusters
+├── Enable standalone mode
+└── Decommission SLURM infrastructure
+```
+
+---
+
+## Troubleshooting
+
+### Job forwarding fails
+```erlang
+{error, {connect_failed, Reason}} = flurm_slurm_bridge:forward_job(Job, Cluster).
+%% Check: SLURM cluster reachable? Port open?
+```
+
+### Cluster shows as down
+```erlang
+[#{state := down, consecutive_failures := N}] = flurm_slurm_bridge:list_slurm_clusters().
+%% Check: Network connectivity, SLURM controller running?
+```
+
+### Cannot remove cluster (active jobs)
+```erlang
+{error, {active_jobs, 5}} = flurm_slurm_bridge:remove_slurm_cluster(Name).
+%% Wait for jobs to complete or cancel them
+```
+
+### Rollback needed
+```erlang
+%% From any mode, can return to previous mode:
+ok = flurm_slurm_bridge:set_mode(active).   % or
+ok = flurm_slurm_bridge:set_mode(shadow).
+```
+
+---
+
+## REST API (Future)
+
+The following REST endpoints will be available:
+
+```
+GET  /api/v1/slurm-bridge/status           - Get bridge status
+GET  /api/v1/slurm-bridge/mode             - Get current mode
+PUT  /api/v1/slurm-bridge/mode             - Set mode
+GET  /api/v1/slurm-bridge/clusters         - List SLURM clusters
+POST /api/v1/slurm-bridge/clusters         - Add cluster
+DELETE /api/v1/slurm-bridge/clusters/:name - Remove cluster
+POST /api/v1/slurm-bridge/forward          - Forward job
+GET  /api/v1/slurm-bridge/jobs/:id         - Get forwarded job status
+DELETE /api/v1/slurm-bridge/jobs/:id       - Cancel forwarded job
+```
+
+---
+
+## Configuration Reference
+
+### Application Environment
+
+```erlang
+%% sys.config
+{flurm_core, [
+    {slurm_bridge, [
+        {mode, shadow},                    % Initial mode
+        {primary_slurm, <<"prod-slurm">>}, % Primary cluster for forwarding
+        {slurm_clusters, [
+            {<<"prod-slurm">>, #{
+                host => <<"slurmctld.internal">>,
+                port => 6817
+            }}
+        ]}
+    ]}
+]}
+```
+
+### Supervisor Setup
+
+```erlang
+%% Add to flurm_core_sup.erl
+{flurm_slurm_bridge,
+    {flurm_slurm_bridge, start_link, [BridgeOpts]},
+    permanent, 5000, worker, [flurm_slurm_bridge]}
+```
+
+---
+
 ## Open Questions
 
 1. **SLURM version compatibility**: Which SLURM versions should we target? (22.05+?)
