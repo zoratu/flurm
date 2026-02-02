@@ -16,6 +16,7 @@
 %%% - REQUEST_CANCEL_JOB (4006) -> cancels job
 %%% - REQUEST_NODE_INFO (2007) -> queries node registry
 %%% - REQUEST_PARTITION_INFO (2009) -> queries partition config
+%%% - REQUEST_FED_INFO (2024) -> queries federation status
 %%% @end
 %%%-------------------------------------------------------------------
 -module(flurm_controller_handler).
@@ -1118,6 +1119,48 @@ handle(#slurm_header{msg_type = ?REQUEST_STATS_INFO}, _Body) ->
     },
     {ok, ?RESPONSE_STATS_INFO, Response};
 
+%% REQUEST_FED_INFO (2024) -> RESPONSE_FED_INFO
+%% Federation info request - returns info about federated clusters
+handle(#slurm_header{msg_type = ?REQUEST_FED_INFO}, _Body) ->
+    lager:info("Handling federation info request"),
+    case catch flurm_federation:get_federation_info() of
+        {ok, FedInfo} ->
+            %% Build federation info response
+            Clusters = maps:get(clusters, FedInfo, []),
+            LocalCluster = maps:get(local_cluster, FedInfo, <<"local">>),
+            FedName = maps:get(name, FedInfo, <<"default">>),
+            Response = #{
+                federation_name => FedName,
+                local_cluster => LocalCluster,
+                clusters => format_fed_clusters(Clusters),
+                cluster_count => length(Clusters)
+            },
+            lager:info("Federation info: ~p clusters in ~s", [length(Clusters), FedName]),
+            {ok, ?RESPONSE_FED_INFO, Response};
+        {error, not_federated} ->
+            lager:info("Not in a federation"),
+            Response = #{
+                federation_name => <<>>,
+                local_cluster => <<"local">>,
+                clusters => [],
+                cluster_count => 0
+            },
+            {ok, ?RESPONSE_FED_INFO, Response};
+        {'EXIT', {noproc, _}} ->
+            %% Federation module not running
+            lager:info("Federation module not running"),
+            Response = #{
+                federation_name => <<>>,
+                local_cluster => <<"local">>,
+                clusters => [],
+                cluster_count => 0
+            },
+            {ok, ?RESPONSE_FED_INFO, Response};
+        Error ->
+            lager:warning("Error getting federation info: ~p", [Error]),
+            {error, Error}
+    end;
+
 %% Unknown/unsupported message types
 handle(#slurm_header{msg_type = MsgType}, _Body) ->
     TypeName = flurm_protocol_codec:message_type_name(MsgType),
@@ -1626,6 +1669,34 @@ format_licenses(Licenses) ->
         iolist_to_binary([Name, <<":">>, integer_to_binary(Count)])
     end, Licenses),
     iolist_to_binary(lists:join(<<",">>, Formatted)).
+
+%% @doc Format federation clusters list to maps for response
+-spec format_fed_clusters([tuple()] | [map()]) -> [map()].
+format_fed_clusters([]) -> [];
+format_fed_clusters(Clusters) ->
+    lists:map(fun(Cluster) ->
+        case Cluster of
+            #{name := Name} ->
+                %% Already a map
+                #{
+                    name => ensure_binary(Name),
+                    host => ensure_binary(maps:get(host, Cluster, <<>>)),
+                    port => maps:get(port, Cluster, 6817),
+                    state => maps:get(state, Cluster, <<"up">>)
+                };
+            {fed_cluster, Name, Host, Port, _Weight, _Auth, State, _Features, _Partitions, _LastCheck, _Failures} ->
+                %% Record format
+                #{
+                    name => ensure_binary(Name),
+                    host => ensure_binary(Host),
+                    port => Port,
+                    state => ensure_binary(atom_to_list(State))
+                };
+            _ ->
+                %% Unknown format, return as-is wrapped in map
+                #{cluster => Cluster}
+        end
+    end, Clusters).
 
 %%====================================================================
 %% Internal Functions - Job Control Helpers
