@@ -83,30 +83,12 @@ handle(#slurm_header{msg_type = ?REQUEST_PING}, _Body) ->
 
 %% REQUEST_SUBMIT_BATCH_JOB (4003) -> RESPONSE_SUBMIT_BATCH_JOB
 %% Write operation - requires leader or forwarding to leader
+%% Supports federation routing when federation is enabled
 handle(#slurm_header{msg_type = ?REQUEST_SUBMIT_BATCH_JOB},
        #batch_job_request{} = Request) ->
     lager:info("Handling batch job submission: ~s", [Request#batch_job_request.name]),
     JobSpec = batch_request_to_job_spec(Request),
-    Result = case is_cluster_enabled() of
-        true ->
-            %% Cluster mode - check leadership
-            case flurm_controller_cluster:is_leader() of
-                true ->
-                    %% We are leader, process locally
-                    flurm_job_manager:submit_job(JobSpec);
-                false ->
-                    %% Forward to leader
-                    case flurm_controller_cluster:forward_to_leader(submit_job, JobSpec) of
-                        {ok, JobResult} -> JobResult;
-                        {error, no_leader} -> {error, controller_not_found};
-                        {error, cluster_not_ready} -> {error, cluster_not_ready};
-                        {error, Reason} -> {error, Reason}
-                    end
-            end;
-        false ->
-            %% Single node mode
-            flurm_job_manager:submit_job(JobSpec)
-    end,
+    Result = submit_job_with_federation(JobSpec),
     case Result of
         {ok, JobId} ->
             lager:info("Job ~p submitted successfully", [JobId]),
@@ -142,20 +124,8 @@ handle(#slurm_header{msg_type = ?REQUEST_RESOURCE_ALLOCATION},
     lager:info("srun callback port=~p, pid=~p", [CallbackPort, SrunPid]),
 
     JobSpec = resource_request_to_job_spec(Request),
-    Result = case is_cluster_enabled() of
-        true ->
-            case flurm_controller_cluster:is_leader() of
-                true -> flurm_job_manager:submit_job(JobSpec);
-                false ->
-                    case flurm_controller_cluster:forward_to_leader(submit_job, JobSpec) of
-                        {ok, JobResult} -> JobResult;
-                        {error, no_leader} -> {error, controller_not_found};
-                        {error, Reason} -> {error, Reason}
-                    end
-            end;
-        false ->
-            flurm_job_manager:submit_job(JobSpec)
-    end,
+    %% srun is interactive - always submit locally (can't route to remote clusters)
+    Result = submit_job_locally(JobSpec),
     case Result of
         {ok, JobId} ->
             lager:info("srun job ~p allocated", [JobId]),
@@ -1263,6 +1233,101 @@ batch_request_to_job_spec(#batch_job_request{} = Req) ->
         licenses => Req#batch_job_request.licenses,
         dependency => Req#batch_job_request.dependency
     }.
+
+%% @doc Submit job with federation routing support.
+%% If federation is enabled and a remote cluster is selected, submits to that cluster.
+%% Otherwise, submits locally via job manager.
+-spec submit_job_with_federation(map()) -> {ok, pos_integer()} | {error, term()}.
+submit_job_with_federation(JobSpec) ->
+    %% Check if federation routing is enabled
+    case is_federation_routing_enabled() of
+        true ->
+            %% Get local cluster name for comparison
+            LocalClusterName = get_local_cluster_name(),
+            %% Try to route via federation
+            case catch flurm_federation:route_job(JobSpec) of
+                {ok, RoutedCluster} when RoutedCluster =:= LocalClusterName ->
+                    %% Routed to local cluster - submit locally
+                    lager:info("Federation routed job to local cluster"),
+                    submit_job_locally(JobSpec);
+                {ok, RemoteCluster} ->
+                    %% Routed to remote cluster
+                    lager:info("Federation routing job to cluster: ~s", [RemoteCluster]),
+                    case flurm_federation:submit_job(RemoteCluster, JobSpec) of
+                        {ok, RemoteJobId} ->
+                            %% Track the remote job locally
+                            flurm_federation:track_remote_job(RemoteCluster, RemoteJobId, JobSpec),
+                            {ok, RemoteJobId};
+                        {error, Reason} ->
+                            lager:warning("Remote job submission failed: ~p, falling back to local", [Reason]),
+                            submit_job_locally(JobSpec)
+                    end;
+                {error, no_eligible_clusters} ->
+                    %% No remote clusters available, submit locally
+                    lager:info("No eligible remote clusters, submitting locally"),
+                    submit_job_locally(JobSpec);
+                {'EXIT', {noproc, _}} ->
+                    %% Federation server not running
+                    submit_job_locally(JobSpec);
+                _ ->
+                    submit_job_locally(JobSpec)
+            end;
+        false ->
+            submit_job_locally(JobSpec)
+    end.
+
+%% @doc Submit job locally via job manager, handling cluster mode.
+-spec submit_job_locally(map()) -> {ok, pos_integer()} | {error, term()}.
+submit_job_locally(JobSpec) ->
+    case is_cluster_enabled() of
+        true ->
+            %% Cluster mode - check leadership
+            case flurm_controller_cluster:is_leader() of
+                true ->
+                    %% We are leader, process locally
+                    flurm_job_manager:submit_job(JobSpec);
+                false ->
+                    %% Forward to leader
+                    case flurm_controller_cluster:forward_to_leader(submit_job, JobSpec) of
+                        {ok, JobResult} -> JobResult;
+                        {error, no_leader} -> {error, controller_not_found};
+                        {error, cluster_not_ready} -> {error, cluster_not_ready};
+                        {error, Reason} -> {error, Reason}
+                    end
+            end;
+        false ->
+            %% Single node mode
+            flurm_job_manager:submit_job(JobSpec)
+    end.
+
+%% @doc Check if federation routing is enabled for job submission.
+-spec is_federation_routing_enabled() -> boolean().
+is_federation_routing_enabled() ->
+    %% Check config setting and whether federation server is available
+    case application:get_env(flurm_controller, federation_routing, false) of
+        true ->
+            %% Config enabled, check if federation is actually active
+            case catch flurm_federation:is_federated() of
+                true -> true;
+                _ -> false
+            end;
+        _ ->
+            false
+    end.
+
+%% @doc Get local cluster name from federation or config.
+-spec get_local_cluster_name() -> binary().
+get_local_cluster_name() ->
+    case catch flurm_federation:get_local_cluster() of
+        Name when is_binary(Name) -> Name;
+        _ ->
+            %% Fallback to config or default
+            case application:get_env(flurm_controller, cluster_name) of
+                {ok, Name} when is_binary(Name) -> Name;
+                {ok, Name} when is_list(Name) -> list_to_binary(Name);
+                _ -> <<"local">>
+            end
+    end.
 
 %% @doc Convert resource allocation request (srun) to job spec map
 -spec resource_request_to_job_spec(#resource_allocation_request{}) -> map().
