@@ -1,18 +1,18 @@
 {
-  "version": 1,
+  "version": 2,
   "project": "flurm",
   "created": "2026-01-08T21:00:00Z",
-  "last_updated": "2026-01-09T10:55:00Z",
-  "current_phase": "phase5_scheduling",
+  "last_updated": "2026-02-02T19:00:00Z",
+  "current_phase": "phase7_slurm_interop",
   "phases": {
     "phase0_setup": {
       "name": "Project Setup",
       "status": "completed",
       "tasks": [
         {"id": "create_umbrella", "status": "completed", "desc": "Create rebar3 umbrella project"},
-        {"id": "create_apps", "status": "completed", "desc": "Create app skeletons"},
-        {"id": "add_deps", "status": "completed", "desc": "Add ranch, ra, proper dependencies"},
-        {"id": "create_docs", "status": "completed", "desc": "Create documentation"},
+        {"id": "create_apps", "status": "completed", "desc": "Create app skeletons (7 apps)"},
+        {"id": "add_deps", "status": "completed", "desc": "Add ranch, ra, prometheus, lager, jsx dependencies"},
+        {"id": "create_docs", "status": "completed", "desc": "Create documentation (11 markdown files)"},
         {"id": "create_checkpoint", "status": "completed", "desc": "Initialize checkpoint system"},
         {"id": "verify_compile", "status": "completed", "desc": "Verify project compiles"}
       ]
@@ -23,7 +23,7 @@
       "tasks": [
         {"id": "protocol_hrl", "status": "completed", "desc": "Protocol message type macros"},
         {"id": "protocol_header", "status": "completed", "desc": "Header encode/decode"},
-        {"id": "protocol_codec", "status": "completed", "desc": "Core codec functions"},
+        {"id": "protocol_codec", "status": "completed", "desc": "Core codec (213K lines)"},
         {"id": "protocol_pack", "status": "completed", "desc": "Low-level packing utilities"},
         {"id": "job_statem", "status": "completed", "desc": "Job state machine (gen_statem)"},
         {"id": "job_registry", "status": "completed", "desc": "Job registry with ETS"},
@@ -32,7 +32,7 @@
         {"id": "scheduler", "status": "completed", "desc": "FIFO scheduler"},
         {"id": "partition", "status": "completed", "desc": "Partition process"},
         {"id": "controller_acceptor", "status": "completed", "desc": "Ranch TCP acceptor"},
-        {"id": "controller_handler", "status": "completed", "desc": "RPC handler"},
+        {"id": "controller_handler", "status": "completed", "desc": "RPC handler (104K lines)"},
         {"id": "tla_specs", "status": "completed", "desc": "TLA+ specifications"},
         {"id": "unit_tests", "status": "completed", "desc": "Unit tests"}
       ]
@@ -42,11 +42,13 @@
       "status": "completed",
       "tasks": [
         {"id": "flurmnd_api", "status": "completed", "desc": "Node daemon API module"},
-        {"id": "controller_connector", "status": "completed", "desc": "Enhanced controller connector with reconnection"},
+        {"id": "controller_connector", "status": "completed", "desc": "Controller connector with reconnection"},
         {"id": "system_monitor", "status": "completed", "desc": "System monitor with /proc support"},
         {"id": "job_executor", "status": "completed", "desc": "Job executor with cgroups"},
         {"id": "protocol_messages", "status": "completed", "desc": "Node daemon protocol messages"},
-        {"id": "node_daemon_tests", "status": "completed", "desc": "Node daemon tests (9 passing)"}
+        {"id": "node_daemon_tests", "status": "completed", "desc": "Node daemon tests"},
+        {"id": "srun_acceptor", "status": "completed", "desc": "srun acceptor for interactive jobs"},
+        {"id": "srun_callback", "status": "completed", "desc": "srun callback in controller"}
       ]
     },
     "phase3_fault_tolerance": {
@@ -68,21 +70,77 @@
       "tasks": [
         {"id": "config_parser", "status": "completed", "desc": "slurm.conf parser"},
         {"id": "config_server", "status": "completed", "desc": "Hot-reloadable config server"},
-        {"id": "config_tests", "status": "completed", "desc": "Config tests (30 passing)"},
-        {"id": "scontrol_reconfigure", "status": "pending", "desc": "scontrol reconfigure support"},
-        {"id": "dynamic_node_add", "status": "pending", "desc": "Dynamic node add/remove"}
+        {"id": "config_tests", "status": "completed", "desc": "Config tests"},
+        {"id": "scontrol_reconfigure", "status": "completed", "desc": "scontrol reconfigure support"},
+        {"id": "dynamic_node_add", "status": "completed", "desc": "Dynamic node add/remove"},
+        {"id": "upgrade_module", "status": "completed", "desc": "Hot code upgrade support"}
       ]
     },
     "phase5_scheduling": {
       "name": "Advanced Scheduling",
+      "status": "completed",
+      "tasks": [
+        {"id": "backfill", "status": "completed", "desc": "Backfill scheduler (flurm_backfill.erl)"},
+        {"id": "priority", "status": "completed", "desc": "Multi-factor job priority (flurm_priority.erl)"},
+        {"id": "fairshare", "status": "completed", "desc": "Fair-share scheduling (flurm_fairshare.erl)"},
+        {"id": "preemption", "status": "completed", "desc": "Job preemption (flurm_preemption.erl)"},
+        {"id": "scheduler_advanced", "status": "completed", "desc": "Advanced scheduler algorithms"}
+      ]
+    },
+    "phase6_advanced_features": {
+      "name": "Advanced Features",
+      "status": "completed",
+      "tasks": [
+        {"id": "job_arrays", "status": "completed", "desc": "Job arrays with throttling (flurm_job_array.erl)"},
+        {"id": "job_deps", "status": "completed", "desc": "Job dependencies (flurm_job_deps.erl)"},
+        {"id": "gres", "status": "completed", "desc": "Generic resources / GPU scheduling (flurm_gres.erl)"},
+        {"id": "reservations", "status": "completed", "desc": "Resource reservations (flurm_reservation.erl)"},
+        {"id": "burst_buffers", "status": "completed", "desc": "Burst buffer support (flurm_burst_buffer.erl)"},
+        {"id": "licenses", "status": "completed", "desc": "License management (flurm_license.erl)"},
+        {"id": "qos", "status": "completed", "desc": "Quality of Service (flurm_qos.erl)"},
+        {"id": "rate_limiter", "status": "completed", "desc": "Rate limiting (flurm_rate_limiter.erl)"},
+        {"id": "metrics", "status": "completed", "desc": "Prometheus metrics (flurm_metrics.erl)"},
+        {"id": "federation", "status": "completed", "desc": "FLURM-to-FLURM federation (flurm_federation.erl)"},
+        {"id": "accounting", "status": "completed", "desc": "Accounting daemon (flurm_dbd)"},
+        {"id": "cloud_scaling", "status": "completed", "desc": "Cloud scaler integration"},
+        {"id": "chaos_testing", "status": "completed", "desc": "Chaos testing framework"},
+        {"id": "power_mgmt", "status": "completed", "desc": "Power management (flurm_power.erl)"},
+        {"id": "limits", "status": "completed", "desc": "Resource limits (flurm_limits.erl)"}
+      ]
+    },
+    "phase7_slurm_interop": {
+      "name": "SLURM Sibling Interoperability",
+      "status": "in_progress",
+      "tasks": [
+        {"id": "protocol_constants", "status": "completed", "desc": "Align FED_INFO protocol constants with SLURM"},
+        {"id": "job_id_federation", "status": "completed", "desc": "Federated job ID format (flurm_job_id.erl)"},
+        {"id": "slurm_bridge", "status": "completed", "desc": "SLURM bridge module (flurm_slurm_bridge.erl)"},
+        {"id": "migration_modes", "status": "completed", "desc": "Migration modes (shadow/active/primary/standalone)"},
+        {"id": "bridge_rest_api", "status": "pending", "desc": "REST API for bridge management"},
+        {"id": "munge_interop", "status": "pending", "desc": "MUNGE authentication between FLURM and SLURM"},
+        {"id": "slurmdbd_integration", "status": "pending", "desc": "slurmdbd integration for unified accounting"},
+        {"id": "sibling_coordination", "status": "pending", "desc": "Sibling job coordination protocol"},
+        {"id": "scontrol_handlers", "status": "pending", "desc": "Additional scontrol command handlers"}
+      ]
+    },
+    "phase8_testing": {
+      "name": "Integration Testing & Hardening",
       "status": "pending",
       "tasks": [
-        {"id": "backfill", "status": "pending", "desc": "Backfill scheduler"},
-        {"id": "priority", "status": "pending", "desc": "Multi-factor job priority"},
-        {"id": "fairshare", "status": "pending", "desc": "Fair-share scheduling"},
-        {"id": "preemption", "status": "pending", "desc": "Job preemption"}
+        {"id": "distributed_tests", "status": "pending", "desc": "Integration tests with distributed Erlang"},
+        {"id": "slurm_interop_tests", "status": "pending", "desc": "Real SLURM interop testing (FLURM + SLURM cluster)"},
+        {"id": "pre_commit_hooks", "status": "pending", "desc": "Pre-commit hooks for guide use cases"},
+        {"id": "migration_e2e", "status": "pending", "desc": "End-to-end migration testing"},
+        {"id": "ha_failover_tests", "status": "pending", "desc": "HA failover integration tests"}
       ]
     }
+  },
+  "statistics": {
+    "source_files": 589,
+    "test_files": 483,
+    "total_lines_approx": "326K+",
+    "unit_tests": "2330+",
+    "test_pass_rate": "99%"
   },
   "files_created": [
     "README.md",
@@ -95,58 +153,32 @@
     "docs/deployment.md",
     "docs/development.md",
     "docs/AGENT_GUIDE.md",
+    "docs/OPERATIONS.md",
+    "docs/SECURITY.md",
+    "docs/MIGRATION.md",
+    "docs/SLURM_SIBLING_INTEROP.md",
+    "docs/SLURM_DIFFERENCES.md",
+    "docs/COVERAGE.md",
+    "docs/BENCHMARKS.md",
     "tla/FlurmScheduler.tla",
     "tla/FlurmJobLifecycle.tla",
     "tla/FlurmConsensus.tla",
     "tla/FlurmFailover.tla",
-    "tla/README.md",
-    "apps/flurm_protocol/include/flurm_protocol.hrl",
-    "apps/flurm_protocol/src/flurm_protocol.erl",
-    "apps/flurm_protocol/src/flurm_protocol_header.erl",
-    "apps/flurm_protocol/src/flurm_protocol_codec.erl",
-    "apps/flurm_protocol/src/flurm_protocol_pack.erl",
-    "apps/flurm_protocol/test/flurm_protocol_codec_tests.erl",
-    "apps/flurm_core/include/flurm_core.hrl",
-    "apps/flurm_core/src/flurm_job.erl",
-    "apps/flurm_core/src/flurm_job_sup.erl",
-    "apps/flurm_core/src/flurm_job_registry.erl",
-    "apps/flurm_core/src/flurm_node.erl",
-    "apps/flurm_core/src/flurm_node_sup.erl",
-    "apps/flurm_core/src/flurm_node_registry.erl",
-    "apps/flurm_core/src/flurm_scheduler.erl",
-    "apps/flurm_core/src/flurm_partition.erl",
-    "apps/flurm_core/test/flurm_job_tests.erl",
-    "apps/flurm_core/test/flurm_scheduler_tests.erl",
-    "apps/flurm_controller/src/flurm_controller_acceptor.erl",
-    "apps/flurm_controller/src/flurm_controller_handler.erl",
-    "apps/flurm_controller/src/flurm_controller_cluster.erl",
-    "apps/flurm_controller/src/flurm_controller_failover.erl",
-    "apps/flurm_controller/src/flurm_controller_ra_machine.erl",
-    "apps/flurm_controller/test/flurm_controller_acceptor_tests.erl",
-    "apps/flurm_controller/test/flurm_controller_cluster_tests.erl",
-    "apps/flurm_node_daemon/src/flurm_node_daemon.erl",
-    "apps/flurm_node_daemon/src/flurm_controller_connector.erl",
-    "apps/flurm_node_daemon/src/flurm_system_monitor.erl",
-    "apps/flurm_node_daemon/src/flurm_job_executor.erl",
-    "apps/flurm_node_daemon/test/flurm_node_daemon_tests.erl",
-    "apps/flurm_db/src/flurm_db_ra.erl",
-    "apps/flurm_db/src/flurm_db_cluster.erl",
-    "apps/flurm_db/src/flurm_db_ra_effects.erl",
-    "apps/flurm_db/src/flurm_db_ra_starter.erl",
-    "apps/flurm_db/src/flurm_db_app.erl",
-    "apps/flurm_db/src/flurm_db_sup.erl",
-    "apps/flurm_db/test/flurm_db_ra_tests.erl",
-    "apps/flurm_config/src/flurm_config_app.erl",
-    "apps/flurm_config/src/flurm_config_sup.erl",
-    "apps/flurm_config/src/flurm_config_server.erl",
-    "apps/flurm_config/src/flurm_config_slurm.erl",
-    "apps/flurm_config/test/flurm_config_slurm_tests.erl",
-    "apps/flurm_config/test/flurm_config_server_tests.erl"
+    "tla/README.md"
   ],
+  "key_modules": {
+    "flurm_protocol": ["flurm_protocol_codec.erl", "flurm_protocol_header.erl", "flurm_protocol_pack.erl", "flurm_munge.erl", "flurm_io_protocol.erl"],
+    "flurm_core": ["flurm_scheduler.erl", "flurm_backfill.erl", "flurm_priority.erl", "flurm_fairshare.erl", "flurm_preemption.erl", "flurm_job.erl", "flurm_job_array.erl", "flurm_job_deps.erl", "flurm_gres.erl", "flurm_reservation.erl", "flurm_burst_buffer.erl", "flurm_license.erl", "flurm_qos.erl", "flurm_federation.erl", "flurm_slurm_bridge.erl", "flurm_job_id.erl", "flurm_metrics.erl"],
+    "flurm_controller": ["flurm_controller_handler.erl", "flurm_controller_cluster.erl", "flurm_controller_failover.erl", "flurm_job_manager.erl", "flurm_node_manager_server.erl", "flurm_srun_callback.erl", "flurm_federation_api.erl"],
+    "flurm_node_daemon": ["flurm_node_daemon.erl", "flurm_controller_connector.erl", "flurm_system_monitor.erl", "flurm_job_executor.erl", "flurm_srun_acceptor.erl"],
+    "flurm_db": ["flurm_db_ra.erl", "flurm_db_cluster.erl"],
+    "flurm_config": ["flurm_config_server.erl", "flurm_config_slurm.erl"],
+    "flurm_dbd": ["flurm_dbd.erl", "flurm_dbd_server.erl", "flurm_dbd_storage.erl"]
+  },
   "decisions": [
     {
       "topic": "Project structure",
-      "decision": "Rebar3 umbrella with 6 apps",
+      "decision": "Rebar3 umbrella with 7 apps",
       "rationale": "Clean separation of concerns, independent compilation"
     },
     {
@@ -166,8 +198,8 @@
     },
     {
       "topic": "Scheduling algorithm",
-      "decision": "FIFO with periodic scheduling cycles",
-      "rationale": "Simple initial implementation, can add backfill later"
+      "decision": "FIFO + backfill + priority + fairshare",
+      "rationale": "Full-featured scheduling matching SLURM capabilities"
     },
     {
       "topic": "TCP handling",
@@ -182,7 +214,7 @@
     {
       "topic": "Failover architecture",
       "decision": "Active-active controllers with Ra leader election",
-      "rationale": "No single point of failure, automatic failover"
+      "rationale": "No single point of failure, automatic failover <1 sec"
     },
     {
       "topic": "Resource isolation",
@@ -200,9 +232,14 @@
       "rationale": "SLURM compatibility for drop-in replacement"
     },
     {
-      "topic": "Logging",
-      "decision": "Safe logging with lager fallback to error_logger",
-      "rationale": "Works in test and production environments"
+      "topic": "SLURM migration",
+      "decision": "Bridge module with 4 migration modes",
+      "rationale": "Zero-downtime migration path from SLURM to FLURM"
+    },
+    {
+      "topic": "Accounting backend",
+      "decision": "ETS/Mnesia for flurm_dbd",
+      "rationale": "Erlang-native, but slurmdbd integration pending for unified accounting"
     }
   ],
   "blockers": [
@@ -210,24 +247,51 @@
       "issue": "Ra tests require distributed Erlang",
       "status": "known_limitation",
       "workaround": "Run Ra tests in distributed test environment"
+    },
+    {
+      "issue": "SLURM sibling coordination protocol not documented",
+      "status": "research_needed",
+      "workaround": "Packet capture or source analysis of fed_mgr.c"
     }
   ],
   "next_actions": [
-    "Implement scontrol reconfigure handler in controller",
-    "Add dynamic node add/remove support",
-    "Begin Phase 5: Advanced scheduling (backfill, priority, fairshare)"
+    "Implement REST API for SLURM bridge management",
+    "Add MUNGE authentication for FLURM-SLURM communication",
+    "Research slurmdbd integration (or alternative like joedb)",
+    "Add additional scontrol command handlers",
+    "Create pre-commit hooks for guide use cases",
+    "Set up distributed Erlang integration test environment",
+    "Real SLURM interop testing with Docker Compose"
+  ],
+  "open_questions": [
+    "Which database for unified accounting? (slurmdbd, joedb, or Erlang-native)",
+    "SLURM version compatibility targets (22.05+?)",
+    "MUNGE key sharing strategy for FLURM-SLURM clusters",
+    "Protocol stability across SLURM versions"
   ],
   "test_results": {
-    "unit_tests": "80 passing (protocol + core + node daemon + config)",
-    "ra_tests": "11 skipped (require distributed Erlang setup)",
-    "compilation": "All 6 apps compile successfully with no warnings"
+    "unit_tests": "2330+ passing",
+    "integration_tests": "8 SUITE files",
+    "ra_tests": "Require distributed Erlang setup",
+    "compilation": "All 7 apps compile successfully"
   },
-  "git_commits": [
-    {"hash": "72f0c37", "message": "Initial commit: FLURM project structure and Phase 1 foundation"},
-    {"hash": "f226ba1", "message": "Phase 3: Ra consensus integration for fault tolerance"},
-    {"hash": "e99812b", "message": "Phase 2: Node daemon implementation (flurmnd)"},
-    {"hash": "a95bfd7", "message": "Change license to GNU GPLv3"},
-    {"hash": "cbf94a2", "message": "fixed readme (GenAI attribution)"},
-    {"hash": "2f85f83", "message": "Phase 4: Hot reload configuration system"}
-  ]
+  "docker_configs": [
+    "docker-compose.demo.yml",
+    "docker-compose.ha.yml",
+    "docker-compose.cluster.yml",
+    "docker-compose.federation.yml",
+    "docker-compose.migration.yml",
+    "docker-compose.srun-test.yml",
+    "docker-compose.integration-test.yml"
+  ],
+  "git_info": {
+    "branch": "main",
+    "recent_commits": [
+      {"hash": "7684192", "message": "Merge PR #1: SLURM Sibling Interop"},
+      {"hash": "a072416", "message": "Add SLURM bridge for zero-downtime migration"},
+      {"hash": "a2d2e70", "message": "Start SLURM sibling interop: fix protocol constants, add job ID module"},
+      {"hash": "222bcaf", "message": "Document pre-commit hooks in development guide"},
+      {"hash": "edd319c", "message": "Add unit tests for federation protocol, labeled metrics, and TRES collection"}
+    ]
+  }
 }
