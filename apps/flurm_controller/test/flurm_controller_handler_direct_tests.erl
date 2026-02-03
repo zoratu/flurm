@@ -34,7 +34,6 @@ handler_test_() ->
       {"handle kill job request", fun test_handle_kill_job/0},
       {"handle kill job with job_id_str", fun test_handle_kill_job_str/0},
       {"handle job user info request", fun test_handle_job_user_info/0},
-      {"handle scontrol info request", fun test_handle_scontrol_info/0},
       {"handle reservation info request", fun test_handle_reservation_info/0},
       {"handle license info request", fun test_handle_license_info/0},
       {"handle topo info request", fun test_handle_topo_info/0},
@@ -214,11 +213,6 @@ test_handle_job_user_info() ->
     Body = <<0:32/big>>,
     Result = flurm_controller_handler:handle(Header, Body),
     ?assertMatch({ok, ?RESPONSE_JOB_INFO, _}, Result).
-
-test_handle_scontrol_info() ->
-    Header = #slurm_header{msg_type = ?REQUEST_SCONTROL_INFO},
-    Result = flurm_controller_handler:handle(Header, <<>>),
-    ?assertMatch({ok, ?RESPONSE_SLURM_RC, #slurm_rc_response{return_code = 0}}, Result).
 
 test_handle_reservation_info() ->
     meck:expect(flurm_reservation, list, fun() -> [] end),

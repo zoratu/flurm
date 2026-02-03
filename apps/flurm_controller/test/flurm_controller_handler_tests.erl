@@ -32,7 +32,6 @@ handler_test_() ->
         {"Handle node info request", fun test_node_info_request/0},
         {"Handle partition info request", fun test_partition_info_request/0},
         {"Handle build info request", fun test_build_info_request/0},
-        {"Handle scontrol info request", fun test_scontrol_info_request/0},
         {"Handle kill job request - with job_id", fun test_kill_job_with_id/0},
         {"Handle kill job request - with job_id_str", fun test_kill_job_with_str/0}
      ]}.
@@ -246,12 +245,6 @@ test_build_info_request() ->
     %% Verify version info is present
     ?assertNotEqual(<<>>, Response#build_info_response.version),
     ?assertEqual(22, Response#build_info_response.version_major).
-
-test_scontrol_info_request() ->
-    Header = make_header(?REQUEST_SCONTROL_INFO),
-    {ok, MsgType, Response} = flurm_controller_handler:handle(Header, <<>>),
-    ?assertEqual(?RESPONSE_SLURM_RC, MsgType),
-    ?assertEqual(0, Response#slurm_rc_response.return_code).
 
 test_kill_job_with_id() ->
     %% Submit a job first

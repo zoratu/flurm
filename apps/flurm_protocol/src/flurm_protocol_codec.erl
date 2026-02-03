@@ -616,7 +616,7 @@ decode_body(?RESPONSE_PARTITION_INFO, Binary) ->
 decode_body(?REQUEST_LAUNCH_TASKS, Binary) ->
     decode_launch_tasks_request(Binary);
 
-%% REQUEST_FED_INFO (2024) - Federation info request
+%% REQUEST_FED_INFO (2049) - Federation info request
 decode_body(?REQUEST_FED_INFO, Binary) ->
     decode_fed_info_request(Binary);
 
@@ -632,7 +632,7 @@ decode_body(?REQUEST_FEDERATION_JOB_STATUS, Binary) ->
 decode_body(?REQUEST_FEDERATION_JOB_CANCEL, Binary) ->
     decode_federation_job_cancel_request(Binary);
 
-%% RESPONSE_FED_INFO (2025) - Federation info response
+%% RESPONSE_FED_INFO (2050) - Federation info response
 decode_body(?RESPONSE_FED_INFO, Binary) ->
     decode_fed_info_response(Binary);
 
@@ -808,7 +808,7 @@ encode_body(?RESPONSE_REATTACH_TASKS, Resp) ->
 encode_body(?MESSAGE_TASK_EXIT, Resp) ->
     encode_task_exit_msg(Resp);
 
-%% REQUEST_FED_INFO (2024) - Federation info request
+%% REQUEST_FED_INFO (2049) - Federation info request
 encode_body(?REQUEST_FED_INFO, Req) ->
     encode_fed_info_request(Req);
 
@@ -824,7 +824,7 @@ encode_body(?REQUEST_FEDERATION_JOB_STATUS, Req) ->
 encode_body(?REQUEST_FEDERATION_JOB_CANCEL, Req) ->
     encode_federation_job_cancel_request(Req);
 
-%% RESPONSE_FED_INFO (2025) - Federation info response
+%% RESPONSE_FED_INFO (2050) - Federation info response
 encode_body(?RESPONSE_FED_INFO, Resp) ->
     encode_fed_info_response(Resp);
 
@@ -4671,7 +4671,7 @@ binary_to_hex(Bin) when is_binary(Bin) ->
 %%% Federation Message Encoding/Decoding
 %%%===================================================================
 
-%% Decode REQUEST_FED_INFO (2024)
+%% Decode REQUEST_FED_INFO (2049)
 decode_fed_info_request(<<>>) ->
     {ok, #fed_info_request{}};
 decode_fed_info_request(<<ShowFlags:32/big, _Rest/binary>>) ->
@@ -4679,13 +4679,13 @@ decode_fed_info_request(<<ShowFlags:32/big, _Rest/binary>>) ->
 decode_fed_info_request(_) ->
     {ok, #fed_info_request{}}.
 
-%% Encode REQUEST_FED_INFO (2024)
+%% Encode REQUEST_FED_INFO (2049)
 encode_fed_info_request(#fed_info_request{show_flags = ShowFlags}) ->
     {ok, <<ShowFlags:32/big>>};
 encode_fed_info_request(_) ->
     {ok, <<0:32/big>>}.
 
-%% Decode RESPONSE_FED_INFO (2025)
+%% Decode RESPONSE_FED_INFO (2050)
 decode_fed_info_response(Binary) ->
     try
         {FedName, Rest1} = flurm_protocol_pack:unpack_string(Binary),
@@ -4703,7 +4703,7 @@ decode_fed_info_response(Binary) ->
             {ok, #fed_info_response{}}
     end.
 
-%% Encode RESPONSE_FED_INFO (2025)
+%% Encode RESPONSE_FED_INFO (2050)
 encode_fed_info_response(#fed_info_response{} = R) ->
     ClustersBin = encode_fed_clusters(R#fed_info_response.clusters),
     Parts = [

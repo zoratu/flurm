@@ -100,7 +100,7 @@
 -define(REQUEST_JOB_INFO_SINGLE, 2005).
 %% Newer SLURM versions (24.x) use different message types for scontrol
 -define(REQUEST_JOB_USER_INFO, 2021).     % scontrol show job uses this
--define(REQUEST_SCONTROL_INFO, 2049).     % scontrol control info
+%% NOTE: 2049 is REQUEST_FED_INFO in SLURM - do not use for scontrol
 -define(REQUEST_SHARE_INFO, 2006).
 -define(REQUEST_NODE_INFO, 2007).
 -define(RESPONSE_NODE_INFO, 2008).
@@ -109,11 +109,11 @@
 -define(RESPONSE_SHARE_INFO, 2011).
 -define(REQUEST_RESERVATION_INFO, 2012).
 -define(RESPONSE_RESERVATION_INFO, 2013).
-%% Reservation management (FLURM extensions - not standard SLURM)
--define(REQUEST_CREATE_RESERVATION, 2050).
--define(RESPONSE_CREATE_RESERVATION, 2051).
--define(REQUEST_UPDATE_RESERVATION, 2052).
--define(REQUEST_DELETE_RESERVATION, 2053).
+%% Reservation management (FLURM extensions - moved to 2060+ to avoid federation conflict)
+-define(REQUEST_CREATE_RESERVATION, 2060).
+-define(RESPONSE_CREATE_RESERVATION, 2061).
+-define(REQUEST_UPDATE_RESERVATION, 2062).
+-define(REQUEST_DELETE_RESERVATION, 2063).
 -define(REQUEST_JOB_STATE, 2014).
 -define(RESPONSE_JOB_STATE, 2015).
 -define(REQUEST_CONFIG_INFO, 2016).
@@ -124,8 +124,9 @@
 -define(RESPONSE_BURST_BUFFER_INFO, 2021).
 -define(REQUEST_ASSOC_MGR_INFO, 2022).
 -define(RESPONSE_ASSOC_MGR_INFO, 2023).
--define(REQUEST_FED_INFO, 2024).
--define(RESPONSE_FED_INFO, 2025).
+%% Federation info - SLURM-compatible values (changed from 2024/2025 to match SLURM)
+-define(REQUEST_FED_INFO, 2049).
+-define(RESPONSE_FED_INFO, 2050).
 %% Federation job submission (FLURM extensions - 2032-2039 range)
 -define(REQUEST_FEDERATION_SUBMIT, 2032).      % Cross-cluster job submission
 -define(RESPONSE_FEDERATION_SUBMIT, 2033).     % Cross-cluster job response
@@ -1318,7 +1319,7 @@
 %%% Federation Message Records
 %%%===================================================================
 
-%% Federation info request (REQUEST_FED_INFO - 2024)
+%% Federation info request (REQUEST_FED_INFO - 2049, SLURM-compatible)
 -record(fed_info_request, {
     show_flags = 0 :: non_neg_integer()
 }).
@@ -1331,10 +1332,12 @@
     state = <<>> :: binary(),           %% "up", "down", "drain"
     weight = 1 :: non_neg_integer(),
     features = [] :: [binary()],
-    partitions = [] :: [binary()]
+    partitions = [] :: [binary()],
+    fed_id = 0 :: 0..63,                %% Cluster's federation ID (for job ID encoding)
+    fed_state = 0 :: non_neg_integer()  %% Federation state flags
 }).
 
-%% Federation info response (RESPONSE_FED_INFO - 2025)
+%% Federation info response (RESPONSE_FED_INFO - 2050, SLURM-compatible)
 -record(fed_info_response, {
     federation_name = <<>> :: binary(),
     local_cluster = <<>> :: binary(),
