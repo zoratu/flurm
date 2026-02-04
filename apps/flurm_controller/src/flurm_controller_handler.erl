@@ -21,6 +21,9 @@
 %%%-------------------------------------------------------------------
 -module(flurm_controller_handler).
 
+%% Suppress warning for helper function reserved for future use
+-compile([{nowarn_unused_function, [{format_fed_clusters, 1}]}]).
+
 -export([handle/2]).
 
 %% Exports for unit testing pure helper functions
@@ -1087,21 +1090,34 @@ handle(#slurm_header{msg_type = ?REQUEST_STATS_INFO}, _Body) ->
 
 %% REQUEST_FED_INFO (2049) -> RESPONSE_FED_INFO (2050)
 %% Federation info request - returns info about federated clusters (SLURM-compatible)
+%% Phase 7E: Enhanced to include sibling job counts and detailed cluster info
 handle(#slurm_header{msg_type = ?REQUEST_FED_INFO}, _Body) ->
     lager:info("Handling federation info request"),
     case catch flurm_federation:get_federation_info() of
         {ok, FedInfo} ->
-            %% Build federation info response
+            %% Build federation info response with sibling job counts
             Clusters = maps:get(clusters, FedInfo, []),
             LocalCluster = maps:get(local_cluster, FedInfo, <<"local">>),
             FedName = maps:get(name, FedInfo, <<"default">>),
+            %% Get sibling job counts per cluster
+            SiblingJobCounts = get_sibling_job_counts_per_cluster(),
+            %% Enhance cluster info with sibling job counts
+            EnhancedClusters = format_fed_clusters_with_sibling_counts(Clusters, SiblingJobCounts),
+            %% Get federation-wide stats
+            FedStats = get_federation_stats(),
             Response = #{
                 federation_name => FedName,
                 local_cluster => LocalCluster,
-                clusters => format_fed_clusters(Clusters),
-                cluster_count => length(Clusters)
+                clusters => EnhancedClusters,
+                cluster_count => length(Clusters),
+                %% Phase 7E: Additional federation status fields
+                total_sibling_jobs => maps:get(total_sibling_jobs, FedStats, 0),
+                total_pending_jobs => maps:get(total_pending_jobs, FedStats, 0),
+                total_running_jobs => maps:get(total_running_jobs, FedStats, 0),
+                federation_state => maps:get(state, FedStats, <<"active">>)
             },
-            lager:info("Federation info: ~p clusters in ~s", [length(Clusters), FedName]),
+            lager:info("Federation info: ~p clusters in ~s, ~p sibling jobs",
+                       [length(Clusters), FedName, maps:get(total_sibling_jobs, FedStats, 0)]),
             {ok, ?RESPONSE_FED_INFO, Response};
         {error, not_federated} ->
             lager:info("Not in a federation"),
@@ -1109,7 +1125,11 @@ handle(#slurm_header{msg_type = ?REQUEST_FED_INFO}, _Body) ->
                 federation_name => <<>>,
                 local_cluster => <<"local">>,
                 clusters => [],
-                cluster_count => 0
+                cluster_count => 0,
+                total_sibling_jobs => 0,
+                total_pending_jobs => 0,
+                total_running_jobs => 0,
+                federation_state => <<"inactive">>
             },
             {ok, ?RESPONSE_FED_INFO, Response};
         {'EXIT', {noproc, _}} ->
@@ -1119,13 +1139,79 @@ handle(#slurm_header{msg_type = ?REQUEST_FED_INFO}, _Body) ->
                 federation_name => <<>>,
                 local_cluster => <<"local">>,
                 clusters => [],
-                cluster_count => 0
+                cluster_count => 0,
+                total_sibling_jobs => 0,
+                total_pending_jobs => 0,
+                total_running_jobs => 0,
+                federation_state => <<"inactive">>
             },
             {ok, ?RESPONSE_FED_INFO, Response};
         Error ->
             lager:warning("Error getting federation info: ~p", [Error]),
             {error, Error}
     end;
+
+%% REQUEST_UPDATE_FEDERATION (2064) -> RESPONSE_UPDATE_FEDERATION (2065)
+%% Federation update request - add/remove clusters or update federation settings
+handle(#slurm_header{msg_type = ?REQUEST_UPDATE_FEDERATION},
+       #update_federation_request{action = Action, cluster_name = ClusterName,
+                                  host = Host, port = Port, settings = Settings}) ->
+    lager:info("Handling federation update request: action=~p, cluster=~s", [Action, ClusterName]),
+    Result = case Action of
+        add_cluster ->
+            Config = #{host => Host, port => Port},
+            case catch flurm_federation:add_cluster(ClusterName, Config) of
+                ok ->
+                    lager:info("Added cluster ~s to federation", [ClusterName]),
+                    {ok, #update_federation_response{error_code = 0, error_msg = <<>>}};
+                {error, Reason} ->
+                    ErrMsg = error_to_binary(Reason),
+                    lager:warning("Failed to add cluster ~s: ~p", [ClusterName, Reason]),
+                    {ok, #update_federation_response{error_code = 1, error_msg = ErrMsg}};
+                {'EXIT', {noproc, _}} ->
+                    lager:warning("Federation module not running"),
+                    {ok, #update_federation_response{error_code = 1, error_msg = <<"federation not running">>}}
+            end;
+        remove_cluster ->
+            case catch flurm_federation:remove_cluster(ClusterName) of
+                ok ->
+                    lager:info("Removed cluster ~s from federation", [ClusterName]),
+                    {ok, #update_federation_response{error_code = 0, error_msg = <<>>}};
+                {error, Reason} ->
+                    ErrMsg = error_to_binary(Reason),
+                    lager:warning("Failed to remove cluster ~s: ~p", [ClusterName, Reason]),
+                    {ok, #update_federation_response{error_code = 1, error_msg = ErrMsg}};
+                {'EXIT', {noproc, _}} ->
+                    lager:warning("Federation module not running"),
+                    {ok, #update_federation_response{error_code = 1, error_msg = <<"federation not running">>}}
+            end;
+        update_settings ->
+            case catch flurm_federation:update_settings(Settings) of
+                ok ->
+                    lager:info("Updated federation settings"),
+                    {ok, #update_federation_response{error_code = 0, error_msg = <<>>}};
+                {error, Reason} ->
+                    ErrMsg = error_to_binary(Reason),
+                    lager:warning("Failed to update federation settings: ~p", [Reason]),
+                    {ok, #update_federation_response{error_code = 1, error_msg = ErrMsg}};
+                {'EXIT', {noproc, _}} ->
+                    lager:warning("Federation module not running"),
+                    {ok, #update_federation_response{error_code = 1, error_msg = <<"federation not running">>}}
+            end;
+        _ ->
+            lager:warning("Unknown federation update action: ~p", [Action]),
+            {ok, #update_federation_response{error_code = 1, error_msg = <<"unknown action">>}}
+    end,
+    case Result of
+        {ok, Response} -> {ok, ?RESPONSE_UPDATE_FEDERATION, Response};
+        {error, E} -> {error, E}
+    end;
+
+%% Fallback for raw binary body in federation update
+handle(#slurm_header{msg_type = ?REQUEST_UPDATE_FEDERATION}, _Body) ->
+    lager:warning("Could not decode federation update request"),
+    Response = #update_federation_response{error_code = 1, error_msg = <<"invalid request format">>},
+    {ok, ?RESPONSE_UPDATE_FEDERATION, Response};
 
 %% Unknown/unsupported message types
 handle(#slurm_header{msg_type = MsgType}, _Body) ->
@@ -1758,6 +1844,104 @@ format_fed_clusters(Clusters) ->
                 #{cluster => Cluster}
         end
     end, Clusters).
+
+%% @doc Format federation clusters with sibling job counts (Phase 7E)
+%% Enhances cluster info with sibling job count for each cluster
+-spec format_fed_clusters_with_sibling_counts([tuple()] | [map()], map()) -> [map()].
+format_fed_clusters_with_sibling_counts([], _Counts) -> [];
+format_fed_clusters_with_sibling_counts(Clusters, SiblingCounts) ->
+    lists:map(fun(Cluster) ->
+        BaseInfo = case Cluster of
+            #{name := Name} ->
+                #{
+                    name => ensure_binary(Name),
+                    host => ensure_binary(maps:get(host, Cluster, <<>>)),
+                    port => maps:get(port, Cluster, 6817),
+                    state => maps:get(state, Cluster, <<"up">>),
+                    weight => maps:get(weight, Cluster, 1),
+                    features => maps:get(features, Cluster, []),
+                    partitions => maps:get(partitions, Cluster, []),
+                    pending_jobs => maps:get(pending_jobs, Cluster, 0),
+                    running_jobs => maps:get(running_jobs, Cluster, 0)
+                };
+            {fed_cluster, Name, Host, Port, Weight, _Auth, State, Features, Partitions, _LastCheck, _Failures} ->
+                #{
+                    name => ensure_binary(Name),
+                    host => ensure_binary(Host),
+                    port => Port,
+                    state => ensure_binary(atom_to_list(State)),
+                    weight => Weight,
+                    features => Features,
+                    partitions => Partitions,
+                    pending_jobs => 0,
+                    running_jobs => 0
+                };
+            _ ->
+                #{cluster => Cluster}
+        end,
+        %% Add sibling job count
+        ClusterName = maps:get(name, BaseInfo, <<>>),
+        SiblingCount = maps:get(ClusterName, SiblingCounts, 0),
+        BaseInfo#{sibling_job_count => SiblingCount}
+    end, Clusters).
+
+%% @doc Get sibling job counts grouped by cluster (Phase 7E)
+%% Returns a map of cluster_name => sibling_job_count
+-spec get_sibling_job_counts_per_cluster() -> map().
+get_sibling_job_counts_per_cluster() ->
+    try
+        case catch flurm_federation:get_federation_jobs() of
+            Jobs when is_list(Jobs) ->
+                %% Count jobs per origin cluster
+                lists:foldl(fun(Job, Acc) ->
+                    Cluster = case Job of
+                        #{origin_cluster := C} -> C;
+                        #{cluster := C} -> C;
+                        _ -> <<"unknown">>
+                    end,
+                    Count = maps:get(Cluster, Acc, 0),
+                    maps:put(Cluster, Count + 1, Acc)
+                end, #{}, Jobs);
+            _ ->
+                #{}
+        end
+    catch
+        _:_ -> #{}
+    end.
+
+%% @doc Get federation-wide statistics (Phase 7E)
+%% Returns aggregate stats across all federated clusters
+-spec get_federation_stats() -> map().
+get_federation_stats() ->
+    try
+        case catch flurm_federation:get_federation_stats() of
+            Stats when is_map(Stats) ->
+                Stats;
+            _ ->
+                %% Calculate basic stats from available data
+                Jobs = try flurm_federation:get_federation_jobs() catch _:_ -> [] end,
+                Clusters = try flurm_federation:list_clusters() catch _:_ -> [] end,
+                #{
+                    total_sibling_jobs => length(Jobs),
+                    total_pending_jobs => count_jobs_by_state(Jobs, pending),
+                    total_running_jobs => count_jobs_by_state(Jobs, running),
+                    state => case length(Clusters) > 0 of true -> <<"active">>; false -> <<"inactive">> end
+                }
+        end
+    catch
+        _:_ ->
+            #{
+                total_sibling_jobs => 0,
+                total_pending_jobs => 0,
+                total_running_jobs => 0,
+                state => <<"inactive">>
+            }
+    end.
+
+%% @doc Count jobs by state
+-spec count_jobs_by_state([map()], atom()) -> non_neg_integer().
+count_jobs_by_state(Jobs, State) ->
+    length([J || J <- Jobs, maps:get(state, J, undefined) =:= State]).
 
 %%====================================================================
 %% Internal Functions - Job Control Helpers

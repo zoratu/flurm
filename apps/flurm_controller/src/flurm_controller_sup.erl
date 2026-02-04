@@ -20,10 +20,12 @@
 %% API for managing listeners
 -export([start_listener/0, stop_listener/0, listener_info/0]).
 -export([start_node_listener/0, stop_node_listener/0, node_listener_info/0]).
+-export([start_http_api/0, stop_http_api/0, http_api_info/0]).
 
 -ifdef(TEST).
 -export([get_listener_config/0,
          get_node_listener_config/0,
+         get_http_api_config/0,
          parse_address/1,
          is_cluster_enabled/0]).
 -endif.
@@ -31,10 +33,12 @@
 -define(SERVER, ?MODULE).
 -define(LISTENER_NAME, flurm_controller_listener).
 -define(NODE_LISTENER_NAME, flurm_node_listener).
+-define(HTTP_API_LISTENER, flurm_bridge_http_listener).
 
 %% Default configuration
 -define(DEFAULT_PORT, 6817).
 -define(DEFAULT_NODE_PORT, 6818).
+-define(DEFAULT_HTTP_API_PORT, 6820).
 -define(DEFAULT_ADDRESS, "0.0.0.0").
 -define(DEFAULT_NUM_ACCEPTORS, 10).
 -define(DEFAULT_MAX_CONNECTIONS, 1000).
@@ -169,6 +173,61 @@ node_listener_info() ->
             port => ranch:get_port(?NODE_LISTENER_NAME),
             max_connections => ranch:get_max_connections(?NODE_LISTENER_NAME),
             active_connections => ranch:procs(?NODE_LISTENER_NAME, connections),
+            status => running
+        }
+    catch
+        _:_ ->
+            {error, not_found}
+    end.
+
+%% @doc Start the Cowboy HTTP API listener for the SLURM bridge REST API.
+%% Provides HTTP endpoints for bridge management during migration.
+-spec start_http_api() -> {ok, pid()} | {error, term()}.
+start_http_api() ->
+    {Port, Address, _NumAcceptors} = get_http_api_config(),
+    Dispatch = cowboy_router:compile(flurm_bridge_http:routes()),
+    TransportOpts = #{
+        socket_opts => [
+            {ip, parse_address(Address)},
+            {port, Port}
+        ]
+    },
+    ProtocolOpts = #{
+        env => #{dispatch => Dispatch}
+    },
+    case cowboy:start_clear(
+        ?HTTP_API_LISTENER,
+        TransportOpts,
+        ProtocolOpts
+    ) of
+        {ok, Pid} ->
+            log(info, "FLURM Bridge HTTP API started on ~s:~p", [Address, Port]),
+            {ok, Pid};
+        {error, {already_started, Pid}} ->
+            {ok, Pid};
+        {error, Reason} ->
+            log(error, "Failed to start HTTP API: ~p", [Reason]),
+            {error, Reason}
+    end.
+
+%% @doc Stop the HTTP API listener.
+-spec stop_http_api() -> ok | {error, not_found}.
+stop_http_api() ->
+    case cowboy:stop_listener(?HTTP_API_LISTENER) of
+        ok ->
+            log(info, "FLURM Bridge HTTP API stopped", []),
+            ok;
+        {error, not_found} = Error ->
+            Error
+    end.
+
+%% @doc Get information about the HTTP API listener.
+-spec http_api_info() -> map() | {error, not_found}.
+http_api_info() ->
+    try
+        {Port, _, _} = get_http_api_config(),
+        #{
+            port => Port,
             status => running
         }
     catch
@@ -383,6 +442,16 @@ get_node_listener_config() ->
     NumAcceptors = application:get_env(flurm_controller, num_acceptors, ?DEFAULT_NUM_ACCEPTORS),
     MaxConns = application:get_env(flurm_controller, max_node_connections, 500),
     {Port, Address, NumAcceptors, MaxConns}.
+
+%% @doc Get HTTP API configuration from application environment.
+-spec get_http_api_config() -> {Port :: pos_integer(),
+                                Address :: string(),
+                                NumAcceptors :: pos_integer()}.
+get_http_api_config() ->
+    Port = application:get_env(flurm_controller, http_api_port, ?DEFAULT_HTTP_API_PORT),
+    Address = application:get_env(flurm_controller, listen_address, ?DEFAULT_ADDRESS),
+    NumAcceptors = application:get_env(flurm_controller, num_acceptors, ?DEFAULT_NUM_ACCEPTORS),
+    {Port, Address, NumAcceptors}.
 
 %% @doc Parse IP address string to tuple.
 -spec parse_address(string()) -> inet:ip_address().

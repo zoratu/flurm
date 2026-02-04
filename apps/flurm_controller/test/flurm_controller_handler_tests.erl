@@ -315,3 +315,179 @@ job_info_single_test_() ->
              ?assertEqual(1, Response#job_info_response.job_count)
          end}
      end}.
+
+%%====================================================================
+%% Phase 7E: Additional scontrol Handler Tests
+%%====================================================================
+
+%% Test show federation (REQUEST_FED_INFO - 2049)
+show_federation_test_() ->
+    {setup,
+     fun setup/0,
+     fun cleanup/1,
+     fun(_) ->
+         [
+          {"Handle show federation - not federated", fun test_show_federation_not_federated/0},
+          {"Handle show federation - response structure", fun test_show_federation_response_structure/0}
+         ]
+     end}.
+
+test_show_federation_not_federated() ->
+    Header = make_header(?REQUEST_FED_INFO),
+    {ok, MsgType, Response} = flurm_controller_handler:handle(Header, <<>>),
+    ?assertEqual(?RESPONSE_FED_INFO, MsgType),
+    %% Response should be a map with federation info
+    ?assert(is_map(Response)),
+    ?assertEqual(0, maps:get(cluster_count, Response, -1)),
+    %% Phase 7E: Check new fields
+    ?assertEqual(0, maps:get(total_sibling_jobs, Response, -1)),
+    ?assertEqual(<<"inactive">>, maps:get(federation_state, Response, undefined)).
+
+test_show_federation_response_structure() ->
+    Header = make_header(?REQUEST_FED_INFO),
+    {ok, _MsgType, Response} = flurm_controller_handler:handle(Header, <<>>),
+    %% Verify all expected fields exist
+    ?assert(maps:is_key(federation_name, Response)),
+    ?assert(maps:is_key(local_cluster, Response)),
+    ?assert(maps:is_key(clusters, Response)),
+    ?assert(maps:is_key(cluster_count, Response)),
+    %% Phase 7E: Additional fields
+    ?assert(maps:is_key(total_sibling_jobs, Response)),
+    ?assert(maps:is_key(total_pending_jobs, Response)),
+    ?assert(maps:is_key(total_running_jobs, Response)),
+    ?assert(maps:is_key(federation_state, Response)).
+
+%% Test update federation (REQUEST_UPDATE_FEDERATION - 2064)
+update_federation_test_() ->
+    {setup,
+     fun setup/0,
+     fun cleanup/1,
+     fun(_) ->
+         [
+          {"Handle update federation - add cluster", fun test_update_federation_add_cluster/0},
+          {"Handle update federation - remove cluster", fun test_update_federation_remove_cluster/0},
+          {"Handle update federation - update settings", fun test_update_federation_update_settings/0},
+          {"Handle update federation - unknown action", fun test_update_federation_unknown_action/0},
+          {"Handle update federation - invalid body", fun test_update_federation_invalid_body/0}
+         ]
+     end}.
+
+test_update_federation_add_cluster() ->
+    Header = make_header(?REQUEST_UPDATE_FEDERATION),
+    Request = #update_federation_request{
+        action = add_cluster,
+        cluster_name = <<"test_cluster">>,
+        host = <<"testhost.example.com">>,
+        port = 6817,
+        settings = #{}
+    },
+    {ok, MsgType, Response} = flurm_controller_handler:handle(Header, Request),
+    ?assertEqual(?RESPONSE_UPDATE_FEDERATION, MsgType),
+    %% Federation module may not be running, so we expect either success or error
+    ?assert(is_record(Response, update_federation_response)).
+
+test_update_federation_remove_cluster() ->
+    Header = make_header(?REQUEST_UPDATE_FEDERATION),
+    Request = #update_federation_request{
+        action = remove_cluster,
+        cluster_name = <<"nonexistent_cluster">>,
+        host = <<>>,
+        port = 6817,
+        settings = #{}
+    },
+    {ok, MsgType, Response} = flurm_controller_handler:handle(Header, Request),
+    ?assertEqual(?RESPONSE_UPDATE_FEDERATION, MsgType),
+    ?assert(is_record(Response, update_federation_response)).
+
+test_update_federation_update_settings() ->
+    Header = make_header(?REQUEST_UPDATE_FEDERATION),
+    Request = #update_federation_request{
+        action = update_settings,
+        cluster_name = <<>>,
+        host = <<>>,
+        port = 6817,
+        settings = #{routing_policy => round_robin}
+    },
+    {ok, MsgType, Response} = flurm_controller_handler:handle(Header, Request),
+    ?assertEqual(?RESPONSE_UPDATE_FEDERATION, MsgType),
+    ?assert(is_record(Response, update_federation_response)).
+
+test_update_federation_unknown_action() ->
+    Header = make_header(?REQUEST_UPDATE_FEDERATION),
+    Request = #update_federation_request{
+        action = invalid_action,
+        cluster_name = <<>>,
+        host = <<>>,
+        port = 6817,
+        settings = #{}
+    },
+    {ok, MsgType, Response} = flurm_controller_handler:handle(Header, Request),
+    ?assertEqual(?RESPONSE_UPDATE_FEDERATION, MsgType),
+    ?assertEqual(1, Response#update_federation_response.error_code),
+    ?assertEqual(<<"unknown action">>, Response#update_federation_response.error_msg).
+
+test_update_federation_invalid_body() ->
+    Header = make_header(?REQUEST_UPDATE_FEDERATION),
+    %% Send raw binary instead of proper record
+    {ok, MsgType, Response} = flurm_controller_handler:handle(Header, <<"invalid">>),
+    ?assertEqual(?RESPONSE_UPDATE_FEDERATION, MsgType),
+    ?assertEqual(1, Response#update_federation_response.error_code).
+
+%% Test show burst buffer (REQUEST_BURST_BUFFER_INFO - 2020)
+show_burst_buffer_test_() ->
+    {setup,
+     fun setup/0,
+     fun cleanup/1,
+     fun(_) ->
+         {"Handle show burstbuffer request", fun test_show_burst_buffer/0}
+     end}.
+
+test_show_burst_buffer() ->
+    Header = make_header(?REQUEST_BURST_BUFFER_INFO),
+    {ok, MsgType, Response} = flurm_controller_handler:handle(Header, <<>>),
+    ?assertEqual(?RESPONSE_BURST_BUFFER_INFO, MsgType),
+    ?assert(is_record(Response, burst_buffer_info_response)),
+    %% Response should have burst buffer count (may be 0 if no burst buffers configured)
+    ?assert(Response#burst_buffer_info_response.burst_buffer_count >= 0).
+
+%% Test show reservations (REQUEST_RESERVATION_INFO - 2012)
+show_reservations_test_() ->
+    {setup,
+     fun setup/0,
+     fun cleanup/1,
+     fun(_) ->
+         {"Handle show reservations request", fun test_show_reservations/0}
+     end}.
+
+test_show_reservations() ->
+    Header = make_header(?REQUEST_RESERVATION_INFO),
+    {ok, MsgType, Response} = flurm_controller_handler:handle(Header, <<>>),
+    ?assertEqual(?RESPONSE_RESERVATION_INFO, MsgType),
+    ?assert(is_record(Response, reservation_info_response)),
+    %% Response should have reservation count (may be 0 if no reservations)
+    ?assert(Response#reservation_info_response.reservation_count >= 0),
+    %% Reservations list should be present
+    ?assert(is_list(Response#reservation_info_response.reservations)).
+
+%% Test unknown command handling
+unknown_command_test_() ->
+    {setup,
+     fun setup/0,
+     fun cleanup/1,
+     fun(_) ->
+         {"Handle unknown message type", fun test_unknown_message_type/0}
+     end}.
+
+test_unknown_message_type() ->
+    %% Use an unknown message type (99999)
+    Header = #slurm_header{
+        version = ?SLURM_PROTOCOL_VERSION,
+        flags = 0,
+        msg_index = 0,
+        msg_type = 99999,
+        body_length = 0
+    },
+    {ok, MsgType, Response} = flurm_controller_handler:handle(Header, <<>>),
+    ?assertEqual(?RESPONSE_SLURM_RC, MsgType),
+    %% Unknown commands should return error code -1
+    ?assertEqual(-1, Response#slurm_rc_response.return_code).

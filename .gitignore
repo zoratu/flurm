@@ -43,3 +43,7 @@ debug_*.erl
 test_*.erl
 *.coverdata
 rebar3.crashdump
+
+# TLA+ generated files
+tla/states/
+tla/*.jar
