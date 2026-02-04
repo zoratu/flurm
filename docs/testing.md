@@ -425,6 +425,151 @@ The Docker test environment includes:
 | `docker-compose.yml` | Basic single-cluster setup |
 | `docker-compose.integration-test.yml` | CT suite execution |
 | `docker-compose.federation.yml` | Multi-cluster federation testing |
+| `docker-compose.slurm-interop.yml` | Real SLURM interoperability testing |
+
+## SLURM Interoperability Testing (Phase 8B)
+
+Test FLURM against real SLURM components using Docker containers with shared MUNGE authentication.
+
+### Quick Start
+
+```bash
+# Run all SLURM interop tests
+./scripts/run-slurm-interop-tests.sh
+
+# Run with specific test group
+./scripts/run-slurm-interop-tests.sh --suite=slurm_commands
+
+# Keep containers running for debugging
+./scripts/run-slurm-interop-tests.sh --keep
+
+# Start interactive shell in test container
+./scripts/run-slurm-interop-tests.sh --shell
+
+# Force rebuild of images
+./scripts/run-slurm-interop-tests.sh --rebuild
+```
+
+### Test Environment
+
+The SLURM interop test environment includes:
+
+| Service | Description |
+|---------|-------------|
+| `slurm-controller` | Real SLURM slurmctld daemon |
+| `slurm-node` | Real SLURM slurmd compute daemon |
+| `flurm-controller` | FLURM controller in bridge mode |
+| `slurm-client-flurm` | SLURM client configured for FLURM |
+| `slurm-client-real` | SLURM client configured for real SLURM |
+| `munge-init` | Shared MUNGE key generator |
+| `test-runner` | Common Test suite executor |
+
+### Test Suite Groups
+
+The `flurm_slurm_interop_SUITE` contains three test groups:
+
+#### 1. SLURM Commands (`slurm_commands`)
+
+Tests real SLURM client commands against FLURM:
+
+| Test | Description |
+|------|-------------|
+| `sbatch_to_flurm_test` | Submit batch job via sbatch |
+| `squeue_against_flurm_test` | Query jobs via squeue |
+| `scancel_test` | Cancel job via scancel |
+| `sinfo_test` | Query cluster info via sinfo |
+| `srun_interactive_test` | Run interactive command via srun |
+
+#### 2. Bridge Operations (`bridge_operations`)
+
+Tests FLURM bridge functionality:
+
+| Test | Description |
+|------|-------------|
+| `bridge_forward_to_slurm_test` | Forward job from FLURM to real SLURM |
+| `munge_credential_validation_test` | Verify MUNGE auth between services |
+
+#### 3. Protocol Compatibility (`protocol_compatibility`)
+
+Tests low-level protocol compatibility:
+
+| Test | Description |
+|------|-------------|
+| `protocol_ping_test` | SLURM ping request/response |
+| `protocol_job_info_test` | Job info request/response |
+| `protocol_node_info_test` | Node info request/response |
+| `protocol_partition_info_test` | Partition info request/response |
+
+### Running Individual Tests
+
+```bash
+# Run only SLURM command tests
+./scripts/run-slurm-interop-tests.sh --suite=slurm_commands
+
+# Run only bridge tests
+./scripts/run-slurm-interop-tests.sh --suite=bridge_operations
+
+# Run only protocol tests
+./scripts/run-slurm-interop-tests.sh --suite=protocol_compatibility
+```
+
+### Manual Testing
+
+Start the environment and interact manually:
+
+```bash
+# Start services in background
+cd docker
+docker compose -f docker-compose.slurm-interop.yml up -d
+
+# Submit job to FLURM
+docker compose -f docker-compose.slurm-interop.yml exec slurm-client-flurm \
+    sbatch --wrap="echo hello from flurm"
+
+# Check queue on FLURM
+docker compose -f docker-compose.slurm-interop.yml exec slurm-client-flurm \
+    squeue
+
+# Submit job to real SLURM
+docker compose -f docker-compose.slurm-interop.yml exec slurm-client-real \
+    sbatch --wrap="echo hello from slurm"
+
+# Check queue on real SLURM
+docker compose -f docker-compose.slurm-interop.yml exec slurm-client-real \
+    squeue
+
+# Stop all services
+docker compose -f docker-compose.slurm-interop.yml down -v
+```
+
+### Troubleshooting
+
+**Services not starting:**
+```bash
+# Check container logs
+docker compose -f docker-compose.slurm-interop.yml logs slurm-controller
+docker compose -f docker-compose.slurm-interop.yml logs flurm-controller
+```
+
+**MUNGE errors:**
+```bash
+# Verify MUNGE key exists
+docker compose -f docker-compose.slurm-interop.yml exec slurm-client-flurm \
+    ls -la /etc/munge/
+
+# Test MUNGE
+docker compose -f docker-compose.slurm-interop.yml exec slurm-client-flurm \
+    munge -n | unmunge
+```
+
+**Protocol errors:**
+```bash
+# Enable verbose logging on FLURM
+export FLURM_LOG_LEVEL=debug
+
+# Check FLURM controller logs
+docker compose -f docker-compose.slurm-interop.yml logs -f flurm-controller
+```
 
 ## SLURM Protocol Compatibility
 
