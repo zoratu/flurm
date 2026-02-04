@@ -184,7 +184,119 @@ flurm_latency_bench:measure_query_latency(5000).
 
 ## Protocol Fuzzing
 
-Test protocol robustness:
+Test protocol robustness using both manual fuzzing and property-based testing with PropEr.
+
+### Fuzzing Approach and Goals
+
+FLURM protocol fuzzing is designed to ensure **crash resistance** - the protocol codec should never crash on malformed input, always returning proper error tuples instead.
+
+**Goals:**
+1. **No crashes on arbitrary input** - Any binary input should result in `{ok, Msg, Rest}` or `{error, Reason}`, never an unhandled exception
+2. **Header parsing robustness** - Corrupted headers should be rejected gracefully
+3. **Length field handling** - Manipulated length fields should not cause buffer overflows or crashes
+4. **Message type safety** - Unknown/invalid message types should be handled
+5. **Roundtrip integrity** - Encoded messages should decode correctly
+
+**Fuzzing Strategies:**
+- **Random byte fuzzing** - Test decoder against completely random binary data
+- **Mutation fuzzing** - Start with valid messages and apply various mutations (bit flips, truncation, insertion, etc.)
+- **Boundary testing** - Test edge cases for numeric fields (0, max values, SLURM_NO_VAL)
+- **Header corruption** - Specifically target header parsing with invalid versions, flags, lengths
+- **TRES string parsing** - Fuzz trackable resource specification strings
+
+### Running PropEr Fuzz Tests
+
+```bash
+# Run all fuzzing properties with default iterations (100)
+rebar3 proper -m flurm_protocol_fuzz_tests
+
+# Run with more iterations for thorough testing (recommended: 1000+)
+rebar3 proper -m flurm_protocol_fuzz_tests -n 1000
+
+# Run specific property with high iteration count
+rebar3 proper -m flurm_protocol_fuzz_tests -n 10000 -p prop_random_bytes_no_crash
+
+# Run mutation fuzzing
+rebar3 proper -m flurm_protocol_fuzz_tests -n 5000 -p prop_decode_survives_mutation
+
+# Quick smoke test (for CI)
+rebar3 eunit --module=flurm_protocol_fuzz_tests --test=smoke_test_
+```
+
+### Available PropEr Properties
+
+| Property | Description | Recommended Iterations |
+|----------|-------------|------------------------|
+| `prop_random_bytes_no_crash` | Random binary input never crashes decoder | 10000+ |
+| `prop_decode_survives_mutation` | Mutated valid messages don't crash | 5000+ |
+| `prop_header_corruption_no_crash` | Corrupted headers handled gracefully | 5000+ |
+| `prop_length_field_manipulation` | Length field changes don't crash | 5000+ |
+| `prop_message_type_fuzzing` | Arbitrary message types don't crash | 5000+ |
+| `prop_roundtrip_preserves_data` | Encode/decode roundtrip works | 1000+ |
+| `prop_tres_string_parsing` | TRES string parsing is robust | 2000+ |
+| `prop_job_array_boundaries` | Array size limits are enforced | 2000+ |
+
+### Interpreting Results
+
+**Success output:**
+```
+OK: Passed 10000 test(s).
+```
+
+**Failure output with shrinking:**
+```
+Failed! After 42 test(s).
+{<<0,0,0,5,38,0,0,0,...>>, {bit_flip, 7}}
+Shrinking .....(5 time(s))
+{<<0,0,0,5,38,0,0,0>>, {bit_flip, 0}}
+```
+
+When a property fails:
+1. PropEr will **shrink** the failing input to the minimal reproducing case
+2. Note the **seed** shown in the output for reproducibility
+3. The shrunk input shows the **exact mutation** that caused the failure
+4. Use this to create a regression test
+
+**Reproducing failures:**
+```erlang
+%% In Erlang shell
+proper:check(flurm_protocol_fuzz_tests:prop_random_bytes_no_crash(),
+    [{seed, {1234, 5678, 9012}}]).
+```
+
+### Adding New Fuzz Targets
+
+To add a new fuzzing property:
+
+```erlang
+%% 1. Define the property
+prop_new_feature_no_crash() ->
+    ?FORALL(Input, your_generator(),
+        begin
+            Result = try
+                your_module:function(Input)
+            catch
+                error:badarg -> {crash, badarg};
+                error:function_clause -> {crash, function_clause};
+                _:_ -> ok
+            end,
+            case Result of
+                {crash, _} -> false;  % Bugs we want to find
+                _ -> true
+            end
+        end).
+
+%% 2. Add an EUnit wrapper for CI
+fuzz_new_feature_test_() ->
+    {timeout, 120, fun() ->
+        ?assertEqual(true, proper:quickcheck(prop_new_feature_no_crash(),
+            [{numtests, 5000}, {to_file, user}]))
+    end}.
+```
+
+### Manual Fuzzing
+
+Test protocol robustness manually:
 
 ```erlang
 %% Run comprehensive fuzzing
@@ -193,6 +305,10 @@ fuzz_protocol:run_all().
 %% Run specific fuzz tests
 fuzz_protocol:run(1000).          % Random fuzzing
 fuzz_protocol:run_mutation(500).  % Mutation-based fuzzing
+
+%% Use flurm_protocol_fuzz module
+flurm_protocol_fuzz:run_random_fuzz(1000).
+flurm_protocol_fuzz:run_mutation_fuzz(SeedMessage, 1000).
 ```
 
 ### AFL Integration
@@ -210,6 +326,15 @@ tcpdump -i any port 6817 -w slurm_capture.pcap
 afl-fuzz -i corpus -o findings -- \
     escript fuzz_target.escript @@
 ```
+
+### Fuzzing Best Practices
+
+1. **Run with high iteration counts** - 10000+ iterations for thorough coverage
+2. **Test in CI** - Include smoke tests (100 iterations) in CI pipeline
+3. **Save failing seeds** - When failures occur, save the seed for regression testing
+4. **Focus on crash bugs** - The goal is crash resistance, not semantic correctness
+5. **Add regression tests** - Convert discovered bugs into unit tests
+6. **Monitor memory** - Watch for memory leaks during long fuzzing runs
 
 ## Deterministic Simulation
 
