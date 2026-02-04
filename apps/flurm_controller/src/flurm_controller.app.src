@@ -7,6 +7,7 @@
         kernel,
         stdlib,
         ranch,
+        cowboy,
         lager,
         flurm_protocol,
         flurm_core,

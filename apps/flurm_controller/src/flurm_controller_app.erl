@@ -74,6 +74,18 @@ start(_StartType, _StartArgs) ->
                 {error, NodeReason} ->
                     log(error, "Failed to start node listener: ~p", [NodeReason])
             end,
+            %% Start Cowboy HTTP API for bridge management
+            case application:get_env(flurm_controller, enable_bridge_api, true) of
+                true ->
+                    case flurm_controller_sup:start_http_api() of
+                        {ok, _HttpPid} ->
+                            ok;
+                        {error, HttpReason} ->
+                            log(error, "Failed to start HTTP API: ~p", [HttpReason])
+                    end;
+                false ->
+                    log(info, "Bridge HTTP API disabled by configuration")
+            end,
             log_startup_complete(),
             {ok, Pid};
         {error, Reason} = Error ->
@@ -88,6 +100,7 @@ prep_stop(State) ->
     %% Stop accepting new connections
     _ = flurm_controller_sup:stop_listener(),
     _ = flurm_controller_sup:stop_node_listener(),
+    _ = flurm_controller_sup:stop_http_api(),
     %% Allow time for in-flight requests to complete
     timer:sleep(1000),
     State.
@@ -212,6 +225,7 @@ connect_to_cluster_nodes(ClusterNodes) ->
 log_startup_complete() ->
     Config = config(),
     NodePort = get_config(node_listen_port, 6818),
+    HttpApiPort = get_config(http_api_port, 6820),
     log(info, "----------------------------------------"),
     log(info, "FLURM Controller ready"),
     log(info, "SLURM clients: ~s:~p",
@@ -220,6 +234,14 @@ log_startup_complete() ->
     log(info, "Node daemons: ~s:~p",
                [maps:get(listen_address, Config),
                 NodePort]),
+    case get_config(enable_bridge_api, true) of
+        true ->
+            log(info, "Bridge HTTP API: ~s:~p",
+                       [maps:get(listen_address, Config),
+                        HttpApiPort]);
+        false ->
+            ok
+    end,
     log(info, "----------------------------------------").
 
 %% @doc Get configuration value with default.
