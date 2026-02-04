@@ -668,6 +668,175 @@ erl_call -sname flurm -c your_cookie -a 'flurm_db_cluster status []'
 # lager:set_loglevel(lager_console_backend, debug)
 ```
 
+## End-to-End Migration Testing
+
+Before performing a production migration, it is strongly recommended to run the end-to-end migration test suite. This validates the complete migration path in a controlled Docker environment.
+
+### Prerequisites
+
+- Docker and docker-compose installed
+- At least 8GB RAM available for test containers
+- 20GB disk space for container images
+
+### Quick Start
+
+```bash
+# Run all migration tests
+./scripts/run-migration-e2e-tests.sh
+
+# Run with verbose output
+./scripts/run-migration-e2e-tests.sh --verbose
+
+# Run quick smoke tests only
+./scripts/run-migration-e2e-tests.sh --quick
+
+# Run specific migration stage tests
+./scripts/run-migration-e2e-tests.sh --stage shadow
+./scripts/run-migration-e2e-tests.sh --stage active
+./scripts/run-migration-e2e-tests.sh --stage primary
+./scripts/run-migration-e2e-tests.sh --stage standalone
+
+# Run rollback tests
+./scripts/run-migration-e2e-tests.sh --stage rollback
+
+# Keep containers running after tests (for debugging)
+./scripts/run-migration-e2e-tests.sh --keep-running
+```
+
+### Test Environment
+
+The test environment includes:
+
+| Service | Description | IP Address |
+|---------|-------------|------------|
+| mysql | MySQL for slurmdbd | 172.31.0.5 |
+| slurm-dbd | SLURM accounting daemon | 172.31.0.6 |
+| slurm-controller | SLURM controller (slurmctld) | 172.31.0.10 |
+| slurm-node-1 | SLURM compute node | 172.31.0.11 |
+| slurm-node-2 | SLURM compute node | 172.31.0.12 |
+| flurm-controller | FLURM controller | 172.31.0.20 |
+| flurm-node-1 | FLURM compute node | 172.31.0.21 |
+| test-orchestrator | Test runner | 172.31.0.100 |
+| load-generator | Simulates job workload | 172.31.0.101 |
+
+### Test Categories
+
+#### Shadow Mode Tests
+- `shadow_mode_observation_test`: FLURM observes SLURM without interference
+- `shadow_mode_no_job_interference_test`: FLURM doesn't handle jobs in shadow mode
+- `shadow_mode_state_sync_test`: FLURM syncs state from SLURM
+
+#### Active Mode Tests
+- `active_mode_forwarding_test`: Jobs submitted to FLURM are forwarded to SLURM
+- `active_mode_local_execution_test`: Local jobs execute on FLURM
+- `active_mode_mixed_workload_test`: Mixed local and forwarded workload
+
+#### Primary Mode Tests
+- `primary_mode_drain_test`: SLURM drains while FLURM handles new jobs
+- `primary_mode_new_jobs_local_test`: New jobs execute locally on FLURM
+- `primary_mode_forwarded_jobs_complete_test`: Previously forwarded jobs complete
+
+#### Standalone Mode Tests
+- `standalone_cutover_test`: Full cutover to FLURM-only
+- `standalone_no_slurm_deps_test`: No SLURM dependencies in standalone
+- `standalone_all_local_test`: All jobs execute locally
+
+#### Rollback Tests
+- `rollback_from_active_test`: Rollback from ACTIVE to SHADOW mode
+- `rollback_from_primary_test`: Rollback from PRIMARY to ACTIVE mode
+- `rollback_preserves_state_test`: State is preserved after rollback
+
+#### Job Continuity Tests
+- `job_continuity_test`: Jobs survive mode transitions
+- `job_survives_shadow_to_active_test`: Jobs survive shadow->active
+- `job_survives_active_to_primary_test`: Jobs survive active->primary
+- `job_survives_primary_to_standalone_test`: Jobs survive primary->standalone
+
+#### Accounting Sync Tests
+- `accounting_sync_test`: Accounting data syncs between systems
+- `accounting_no_double_count_test`: No double-counting of jobs
+- `accounting_sync_during_transition_test`: Sync works during transitions
+
+### Running Erlang Common Test Suite Directly
+
+```bash
+# From the project root
+cd apps/flurm_controller/integration_test
+
+# Run all migration e2e tests
+ct_run -dir . -suite flurm_migration_e2e_SUITE
+
+# Run specific group
+ct_run -dir . -suite flurm_migration_e2e_SUITE -group shadow_mode
+
+# Run with verbose logging
+ct_run -dir . -suite flurm_migration_e2e_SUITE -verbosity 100
+```
+
+### Property-Based Testing
+
+The migration state machine is also tested using PropEr for property-based testing:
+
+```bash
+# Run all migration property tests
+rebar3 proper -m flurm_migration_prop_tests -n 100
+
+# Run specific property
+rebar3 proper -m flurm_migration_prop_tests -p prop_valid_mode_transitions -n 500
+rebar3 proper -m flurm_migration_prop_tests -p prop_no_job_loss -n 500
+rebar3 proper -m flurm_migration_prop_tests -p prop_rollback_idempotent -n 500
+```
+
+Properties tested:
+- `prop_valid_mode_transitions`: Only valid transitions succeed
+- `prop_no_job_loss`: Jobs are never lost during transitions
+- `prop_rollback_idempotent`: Multiple rollbacks are safe
+- `prop_rollback_preserves_state`: State is preserved after rollback
+- `prop_cluster_registration_idempotent`: Cluster registration is idempotent
+
+### Interpreting Test Results
+
+Test results are stored in `docker/test-results/`:
+
+- `e2e-results-YYYYMMDD-HHMMSS.log`: Main test output
+- `container-logs.txt`: All container logs
+- `flurm-controller.log`: FLURM controller specific logs
+- `slurm-controller.log`: SLURM controller specific logs
+
+### Troubleshooting Test Failures
+
+```bash
+# Check container health
+docker-compose -f docker/docker-compose.migration-e2e.yml ps
+
+# View FLURM logs
+docker-compose -f docker/docker-compose.migration-e2e.yml logs flurm-controller
+
+# View SLURM logs
+docker-compose -f docker/docker-compose.migration-e2e.yml logs slurm-controller
+
+# Enter test orchestrator for manual testing
+docker-compose -f docker/docker-compose.migration-e2e.yml exec test-orchestrator bash
+
+# Check FLURM bridge status
+curl http://localhost:8080/api/v1/migration/status | jq .
+
+# Manually set mode for debugging
+curl -X PUT http://localhost:8080/api/v1/migration/mode \
+  -H "Content-Type: application/json" \
+  -d '{"mode": "active"}'
+```
+
+### Cleanup
+
+```bash
+# Stop and remove all test containers and volumes
+docker-compose -f docker/docker-compose.migration-e2e.yml down -v
+
+# Remove test images
+docker rmi $(docker images -q "migration-*")
+```
+
 ## Support
 
 - GitHub Issues: https://github.com/your-org/flurm/issues

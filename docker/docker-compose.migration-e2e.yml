@@ -1,0 +1,328 @@
+# FLURM End-to-End Migration Testing Environment
+# Tests complete migration path from SLURM to FLURM with real clusters
+#
+# Usage:
+#   docker-compose -f docker-compose.migration-e2e.yml build
+#   docker-compose -f docker-compose.migration-e2e.yml up -d
+#   docker-compose -f docker-compose.migration-e2e.yml exec test-orchestrator /scripts/run-e2e-tests.sh
+#   docker-compose -f docker-compose.migration-e2e.yml down -v
+#
+# Migration Phases Tested:
+#   1. SHADOW   - FLURM observes SLURM without interference
+#   2. ACTIVE   - FLURM handles jobs, forwards to SLURM when needed
+#   3. PRIMARY  - FLURM primary scheduler, SLURM draining
+#   4. STANDALONE - FLURM only, SLURM decommissioned
+#
+# Rollback Testing:
+#   - ACTIVE -> SHADOW
+#   - PRIMARY -> ACTIVE
+
+services:
+  # ============================================
+  # SLURM CLUSTER (Source System)
+  # ============================================
+
+  # MySQL database for slurmdbd
+  mysql:
+    image: mysql:8.0
+    container_name: migration-mysql
+    hostname: mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: root_password
+      MYSQL_DATABASE: slurm_acct_db
+      MYSQL_USER: slurm
+      MYSQL_PASSWORD: slurm_password
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ./config/mysql-init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    networks:
+      migration-e2e-net:
+        ipv4_address: 172.31.0.5
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-proot_password"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
+  # SLURM Database Daemon (slurmdbd)
+  slurm-dbd:
+    build:
+      context: .
+      dockerfile: Dockerfile.slurm-full
+    container_name: migration-slurm-dbd
+    hostname: slurm-dbd
+    command: /usr/local/bin/start-slurmdbd.sh
+    volumes:
+      - slurmdbd-state:/var/spool/slurmdbd
+      - slurm-logs:/var/log/slurm
+      - munge-key:/etc/munge
+    networks:
+      migration-e2e-net:
+        ipv4_address: 172.31.0.6
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      - MYSQL_HOST=mysql
+      - MYSQL_USER=slurm
+      - MYSQL_PASSWORD=slurm_password
+      - MYSQL_DATABASE=slurm_acct_db
+    healthcheck:
+      test: ["CMD-SHELL", "sacctmgr --immediate show cluster 2>/dev/null | grep -q migration-test || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 45s
+
+  # SLURM Controller (slurmctld)
+  slurm-controller:
+    build:
+      context: .
+      dockerfile: Dockerfile.slurm-full
+    container_name: migration-slurm-controller
+    hostname: slurm-controller
+    command: /usr/local/bin/start-slurm-controller.sh
+    volumes:
+      - slurm-state:/var/spool/slurm/ctld
+      - slurm-logs:/var/log/slurm
+      - munge-key:/etc/munge
+      - shared-jobs:/shared/jobs
+    networks:
+      migration-e2e-net:
+        ipv4_address: 172.31.0.10
+    ports:
+      - "6817:6817"
+    depends_on:
+      slurm-dbd:
+        condition: service_healthy
+    environment:
+      - SLURM_CLUSTER_NAME=migration-test
+      - SLURMDBD_HOST=slurm-dbd
+    healthcheck:
+      test: ["CMD-SHELL", "scontrol ping 2>/dev/null | grep -q 'UP' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 30s
+
+  # SLURM Compute Nodes (slurmd) - Two nodes for realistic testing
+  slurm-node-1:
+    build:
+      context: .
+      dockerfile: Dockerfile.slurm-full
+    container_name: migration-slurm-node-1
+    hostname: compute-node-1
+    command: /usr/local/bin/start-slurm-node.sh
+    privileged: true
+    pid: host
+    volumes:
+      - slurm-logs:/var/log/slurm
+      - munge-key:/etc/munge
+      - shared-jobs:/shared/jobs
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    networks:
+      migration-e2e-net:
+        ipv4_address: 172.31.0.11
+    depends_on:
+      slurm-controller:
+        condition: service_healthy
+    environment:
+      - SLURM_CONTROLLER=slurm-controller
+    healthcheck:
+      test: ["CMD-SHELL", "sinfo -N -n compute-node-1 2>/dev/null | grep -q compute-node-1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 20s
+
+  slurm-node-2:
+    build:
+      context: .
+      dockerfile: Dockerfile.slurm-full
+    container_name: migration-slurm-node-2
+    hostname: compute-node-2
+    command: /usr/local/bin/start-slurm-node.sh
+    privileged: true
+    pid: host
+    volumes:
+      - slurm-logs:/var/log/slurm
+      - munge-key:/etc/munge
+      - shared-jobs:/shared/jobs
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    networks:
+      migration-e2e-net:
+        ipv4_address: 172.31.0.12
+    depends_on:
+      slurm-controller:
+        condition: service_healthy
+    environment:
+      - SLURM_CONTROLLER=slurm-controller
+    healthcheck:
+      test: ["CMD-SHELL", "sinfo -N -n compute-node-2 2>/dev/null | grep -q compute-node-2 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 20s
+
+  # ============================================
+  # FLURM CLUSTER (Target System)
+  # ============================================
+
+  # FLURM Controller - starts in shadow mode for observation
+  flurm-controller:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.flurm-migration
+    container_name: migration-flurm-controller
+    hostname: flurm-controller
+    command: /usr/local/bin/start-flurm-shadow.sh
+    volumes:
+      - flurm-data:/var/lib/flurm
+      - flurm-logs:/var/log/flurm
+      - munge-key:/etc/munge
+      - shared-jobs:/shared/jobs
+    networks:
+      migration-e2e-net:
+        ipv4_address: 172.31.0.20
+    ports:
+      - "6820:6820"
+      - "8080:8080"
+    depends_on:
+      slurm-controller:
+        condition: service_healthy
+      slurm-node-1:
+        condition: service_healthy
+      slurm-node-2:
+        condition: service_healthy
+    environment:
+      - FLURM_MODE=shadow
+      - SLURM_CONTROLLER_HOST=slurm-controller
+      - SLURM_CONTROLLER_PORT=6817
+      - FLURM_CLUSTER_NAME=migration-test
+      - FLURM_NODE_NAME=flurm@flurm-controller
+      - FLURM_COOKIE=flurm_migration_e2e_test
+      - MYSQL_HOST=mysql
+      - MYSQL_USER=slurm
+      - MYSQL_PASSWORD=slurm_password
+      - MYSQL_DATABASE=slurm_acct_db
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 60s
+
+  # FLURM Compute Node (optional - for standalone mode testing)
+  flurm-node-1:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.flurm-migration
+    container_name: migration-flurm-node-1
+    hostname: flurm-compute-1
+    command: /usr/local/bin/start-flurm-node.sh
+    volumes:
+      - flurm-logs:/var/log/flurm
+      - munge-key:/etc/munge
+      - shared-jobs:/shared/jobs
+    networks:
+      migration-e2e-net:
+        ipv4_address: 172.31.0.21
+    depends_on:
+      flurm-controller:
+        condition: service_healthy
+    environment:
+      - FLURM_CONTROLLER_HOST=flurm-controller
+      - FLURM_CONTROLLER_PORT=6820
+      - FLURM_NODE_NAME=flurm@flurm-compute-1
+      - FLURM_COOKIE=flurm_migration_e2e_test
+
+  # ============================================
+  # TEST INFRASTRUCTURE
+  # ============================================
+
+  # Test Orchestrator - coordinates migration test scenarios
+  test-orchestrator:
+    build:
+      context: .
+      dockerfile: Dockerfile.test-runner
+    container_name: migration-test-orchestrator
+    hostname: test-orchestrator
+    volumes:
+      - ./scripts:/scripts:ro
+      - ../apps/flurm_controller/integration_test:/erlang-tests:ro
+      - ./test-results:/test-results
+      - munge-key:/etc/munge
+      - shared-jobs:/shared/jobs
+    networks:
+      migration-e2e-net:
+        ipv4_address: 172.31.0.100
+    depends_on:
+      slurm-controller:
+        condition: service_healthy
+      slurm-node-1:
+        condition: service_healthy
+      slurm-node-2:
+        condition: service_healthy
+      flurm-controller:
+        condition: service_healthy
+    environment:
+      - SLURM_CONTROLLER=slurm-controller
+      - SLURM_CONTROLLER_PORT=6817
+      - FLURM_CONTROLLER=flurm-controller
+      - FLURM_CONTROLLER_PORT=6820
+      - FLURM_HTTP_PORT=8080
+      - MYSQL_HOST=mysql
+      - MYSQL_USER=slurm
+      - MYSQL_PASSWORD=slurm_password
+      - TEST_RESULTS_DIR=/test-results
+    stdin_open: true
+    tty: true
+    command: ["sleep", "infinity"]
+
+  # Load Generator - simulates job workload during migration
+  load-generator:
+    build:
+      context: .
+      dockerfile: Dockerfile.test-runner
+    container_name: migration-load-generator
+    hostname: load-generator
+    volumes:
+      - ./scripts:/scripts:ro
+      - munge-key:/etc/munge
+      - shared-jobs:/shared/jobs
+    networks:
+      migration-e2e-net:
+        ipv4_address: 172.31.0.101
+    depends_on:
+      slurm-controller:
+        condition: service_healthy
+      flurm-controller:
+        condition: service_healthy
+    environment:
+      - SLURM_CONTROLLER=slurm-controller
+      - SLURM_CONTROLLER_PORT=6817
+      - FLURM_CONTROLLER=flurm-controller
+      - FLURM_CONTROLLER_PORT=6820
+      - JOBS_PER_MINUTE=10
+      - JOB_DURATION_SECONDS=30
+    stdin_open: true
+    tty: true
+    command: ["sleep", "infinity"]
+
+networks:
+  migration-e2e-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.31.0.0/16
+
+volumes:
+  mysql-data:
+  slurmdbd-state:
+  slurm-state:
+  slurm-logs:
+  flurm-data:
+  flurm-logs:
+  munge-key:
+  shared-jobs:
