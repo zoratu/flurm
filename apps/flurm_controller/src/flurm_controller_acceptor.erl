@@ -41,7 +41,9 @@
     create_initial_state/3,
     check_buffer_status/1,
     extract_message/1,
-    calculate_duration/2
+    calculate_duration/2,
+    get_munge_auth_mode/0,
+    verify_munge_credential/1
 ]).
 -endif.
 
@@ -199,11 +201,15 @@ handle_message(MessageBin, #{socket := Socket, transport := Transport,
     end,
     case DecodeResult of
         {ok, #slurm_msg{header = Header, body = Body}, ExtraInfo2, _Rest} ->
-            lager:debug("Received message type: ~p (~p), from: ~p",
-                        [Header#slurm_header.msg_type,
-                         flurm_protocol_codec:message_type_name(Header#slurm_header.msg_type),
-                         maps:get(hostname, ExtraInfo2, <<"unknown">>)]),
-            %% Route to handler
+            %% Verify MUNGE credential if present
+            case verify_munge_credential(ExtraInfo2) of
+                {ok, AuthResult} ->
+                    lager:debug("Received message type: ~p (~p), from: ~p, auth: ~p",
+                                [Header#slurm_header.msg_type,
+                                 flurm_protocol_codec:message_type_name(Header#slurm_header.msg_type),
+                                 maps:get(hostname, ExtraInfo2, <<"unknown">>),
+                                 AuthResult]),
+                    %% Route to handler
             case flurm_controller_handler:handle(Header, Body) of
                 {ok, ResponseType, ResponseBody} ->
                     send_response(Socket, Transport, ResponseType, ResponseBody),
@@ -240,6 +246,13 @@ handle_message(MessageBin, #{socket := Socket, transport := Transport,
                     send_response(Socket, Transport, ?RESPONSE_SLURM_RC, ErrorResponse),
                     lager:warning("Handler error: ~p", [Reason]),
                     {ok, State#{request_count => Count + 1}}
+            end;
+                {error, AuthReason} ->
+                    %% MUNGE credential verification failed
+                    lager:warning("MUNGE authentication failed: ~p", [AuthReason]),
+                    ErrorResponse = #slurm_rc_response{return_code = -1},
+                    send_response(Socket, Transport, ?RESPONSE_SLURM_RC, ErrorResponse),
+                    {error, {auth_failed, AuthReason}}
             end;
         {error, {incomplete_message, _, _}} ->
             %% This shouldn't happen here as we check completeness above
@@ -287,6 +300,95 @@ send_response(Socket, Transport, MsgType, Body) ->
 %% Helper to convert binary to hex string
 binary_to_hex(Bin) ->
     list_to_binary([[io_lib:format("~2.16.0B", [B]) || B <- binary_to_list(Bin)]]).
+
+%% @doc Verify MUNGE credential from auth info.
+%% Behavior is controlled by application environment:
+%%   - munge_auth_enabled: true | false | strict
+%%     - false: Skip all MUNGE verification (default for development)
+%%     - true: Verify MUNGE but allow failures (graceful degradation)
+%%     - strict: Require valid MUNGE credentials (production mode)
+%%
+%% Returns {ok, verified} if credential is valid or MUNGE verification is not available,
+%% returns {ok, skipped} if no MUNGE credential present (test clients),
+%% returns {error, Reason} if credential verification fails and strict mode is enabled.
+-spec verify_munge_credential(map()) -> {ok, atom()} | {ok, {atom(), term()}} | {error, term()}.
+verify_munge_credential(AuthInfo) ->
+    MungeMode = get_munge_auth_mode(),
+    case MungeMode of
+        false ->
+            %% MUNGE verification disabled
+            {ok, disabled};
+        _ ->
+            do_verify_munge_credential(AuthInfo, MungeMode)
+    end.
+
+%% @doc Get MUNGE authentication mode from application config.
+%% Returns false (disabled), true (permissive), or strict.
+-spec get_munge_auth_mode() -> false | true | strict.
+get_munge_auth_mode() ->
+    application:get_env(flurm_controller, munge_auth_enabled, true).
+
+%% @doc Internal function to verify MUNGE credential.
+-spec do_verify_munge_credential(map(), true | strict) -> {ok, atom()} | {ok, {atom(), term()}} | {error, term()}.
+do_verify_munge_credential(AuthInfo, Mode) ->
+    case maps:get(auth_type, AuthInfo, unknown) of
+        munge ->
+            %% MUNGE credential present - verify it if MUNGE is available
+            case maps:get(credential, AuthInfo, undefined) of
+                undefined ->
+                    %% No credential in auth info, skip verification
+                    case Mode of
+                        strict -> {error, no_credential};
+                        _ -> {ok, no_credential}
+                    end;
+                Credential when is_binary(Credential), byte_size(Credential) > 0 ->
+                    verify_munge_credential_binary(Credential, Mode);
+                _ ->
+                    case Mode of
+                        strict -> {error, empty_credential};
+                        _ -> {ok, empty_credential}
+                    end
+            end;
+        _ ->
+            %% Non-MUNGE auth or test client without auth
+            case Mode of
+                strict -> {error, no_munge_auth};
+                _ -> {ok, skipped}
+            end
+    end.
+
+%% @doc Verify a binary MUNGE credential.
+-spec verify_munge_credential_binary(binary(), true | strict) -> {ok, atom()} | {ok, {atom(), term()}} | {error, term()}.
+verify_munge_credential_binary(Credential, Mode) ->
+    case flurm_munge:is_available() of
+        true ->
+            %% MUNGE available - verify the credential
+            case flurm_munge:verify(Credential) of
+                ok ->
+                    lager:debug("MUNGE credential verified successfully"),
+                    {ok, verified};
+                {error, Reason} ->
+                    lager:warning("MUNGE credential verification failed: ~p", [Reason]),
+                    case Mode of
+                        strict ->
+                            %% Strict mode - reject invalid credentials
+                            {error, Reason};
+                        _ ->
+                            %% Permissive mode - log but allow connection (graceful degradation)
+                            {ok, {verification_failed, Reason}}
+                    end
+            end;
+        false ->
+            %% MUNGE not available
+            case Mode of
+                strict ->
+                    lager:warning("MUNGE not available but strict mode enabled"),
+                    {error, munge_unavailable};
+                _ ->
+                    lager:debug("MUNGE not available, skipping credential verification"),
+                    {ok, munge_unavailable}
+            end
+    end.
 
 %% @doc Get the peer host from a socket (for callback connections)
 -spec get_peer_host(inet:socket()) -> {ok, string()} | {error, term()}.
