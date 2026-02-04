@@ -1,0 +1,221 @@
+# Docker Compose for FLURM SLURM Interoperability Testing
+#
+# This creates a test environment with:
+# - Real SLURM controller (slurmctld)
+# - Real SLURM compute daemon (slurmd)
+# - FLURM controller (in bridge mode)
+# - Shared MUNGE authentication
+# - Test runner container
+#
+# Usage:
+#   ./scripts/run-slurm-interop-tests.sh
+#
+# Or manually:
+#   docker compose -f docker/docker-compose.slurm-interop.yml up -d
+#   docker compose -f docker/docker-compose.slurm-interop.yml run test-runner
+#   docker compose -f docker/docker-compose.slurm-interop.yml down
+
+services:
+  # MUNGE key generator - creates shared authentication key
+  munge-init:
+    image: rockylinux:9
+    hostname: munge-init
+    command: |
+      bash -c '
+        echo "Generating MUNGE key..."
+        if [ ! -f /etc/munge/munge.key ]; then
+          dd if=/dev/urandom of=/etc/munge/munge.key bs=1024 count=1
+          chmod 400 /etc/munge/munge.key
+          echo "MUNGE key generated."
+        else
+          echo "MUNGE key already exists."
+        fi
+        # Keep container running briefly to ensure key is written
+        sleep 5
+      '
+    volumes:
+      - munge-key:/etc/munge
+    networks:
+      - slurm-interop-net
+
+  # Real SLURM Controller (slurmctld)
+  slurm-controller:
+    build:
+      context: .
+      dockerfile: Dockerfile.slurm-controller
+    hostname: slurm-controller
+    depends_on:
+      munge-init:
+        condition: service_completed_successfully
+    environment:
+      - SLURM_CLUSTER_NAME=slurm-test
+      - SLURMCTLD_PORT=6817
+      - SLURMD_PORT=6818
+    ports:
+      - "6827:6817"  # Use different external port to avoid conflict with FLURM
+    volumes:
+      - munge-key:/etc/munge
+      - slurm-state:/var/spool/slurmctld
+      - ./slurm-interop.conf:/etc/slurm/slurm.conf:ro
+    networks:
+      slurm-interop-net:
+        aliases:
+          - slurm-controller
+          - slurmctld
+    healthcheck:
+      test: ["CMD", "scontrol", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  # Real SLURM Compute Daemon (slurmd)
+  slurm-node:
+    build:
+      context: .
+      dockerfile: Dockerfile.slurm-node
+    hostname: slurm-node-001
+    depends_on:
+      slurm-controller:
+        condition: service_healthy
+    environment:
+      - SLURMD_NODENAME=slurm-node-001
+    volumes:
+      - munge-key:/etc/munge
+      - slurm-spool:/var/spool/slurmd
+      - ./slurm-interop.conf:/etc/slurm/slurm.conf:ro
+    networks:
+      slurm-interop-net:
+        aliases:
+          - slurm-node-001
+    healthcheck:
+      test: ["CMD", "scontrol", "show", "node", "slurm-node-001"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+    privileged: true  # Required for slurmd process tracking
+
+  # FLURM Controller in bridge mode
+  flurm-controller:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.flurm-server
+    hostname: flurm-controller
+    depends_on:
+      munge-init:
+        condition: service_completed_successfully
+    environment:
+      - FLURM_CLUSTER_NAME=flurm-interop
+      - FLURM_CONTROLLER_HOST=flurm-controller
+      - FLURM_INTEGRATION_TEST=true
+      - FLURM_BRIDGE_MODE=active
+      - FLURM_SLURM_CONTROLLER_HOST=slurm-controller
+      - FLURM_SLURM_CONTROLLER_PORT=6817
+    ports:
+      - "6817:6817"
+      - "6818:6818"
+      - "6820:6820"
+    volumes:
+      - munge-key:/etc/munge
+      - flurm-data:/var/lib/flurm
+    networks:
+      slurm-interop-net:
+        aliases:
+          - flurm-controller
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6820/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 15s
+
+  # SLURM client for testing against FLURM
+  slurm-client-flurm:
+    build:
+      context: .
+      dockerfile: Dockerfile.slurm-client-munge
+    hostname: slurm-client-flurm
+    depends_on:
+      flurm-controller:
+        condition: service_healthy
+    environment:
+      - SLURM_CONF=/etc/slurm/slurm.conf
+      - SLURMCTLD_HOST=flurm-controller
+    volumes:
+      - munge-key:/etc/munge
+      - ./slurm-client-flurm.conf:/etc/slurm/slurm.conf:ro
+      - ../test:/test:ro
+    networks:
+      slurm-interop-net:
+        aliases:
+          - slurm-client-flurm
+    stdin_open: true
+    tty: true
+
+  # SLURM client for testing against real SLURM
+  slurm-client-real:
+    build:
+      context: .
+      dockerfile: Dockerfile.slurm-client-munge
+    hostname: slurm-client-real
+    depends_on:
+      slurm-controller:
+        condition: service_healthy
+    environment:
+      - SLURM_CONF=/etc/slurm/slurm.conf
+      - SLURMCTLD_HOST=slurm-controller
+    volumes:
+      - munge-key:/etc/munge
+      - ./slurm-client-real.conf:/etc/slurm/slurm.conf:ro
+    networks:
+      slurm-interop-net:
+        aliases:
+          - slurm-client-real
+    stdin_open: true
+    tty: true
+
+  # Test runner container (runs Common Test suites)
+  test-runner:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.flurm-test
+    hostname: test-runner
+    depends_on:
+      flurm-controller:
+        condition: service_healthy
+      slurm-controller:
+        condition: service_healthy
+      slurm-node:
+        condition: service_healthy
+    environment:
+      - FLURM_CONTROLLER_HOST=flurm-controller
+      - FLURM_CONTROLLER_PORT=6817
+      - SLURM_CONTROLLER_HOST=slurm-controller
+      - SLURM_CONTROLLER_PORT=6817
+      - SLURM_CLIENT_FLURM_HOST=slurm-client-flurm
+      - SLURM_CLIENT_REAL_HOST=slurm-client-real
+      - CT_HOOKS=
+    volumes:
+      - ..:/app:rw
+      - munge-key:/etc/munge:ro
+      - test-logs:/app/_build/test/logs
+    working_dir: /app
+    networks:
+      - slurm-interop-net
+    command: >
+      rebar3 ct
+        --dir=apps/flurm_controller/integration_test
+        --suite=flurm_slurm_interop_SUITE
+        --readable=true
+
+volumes:
+  munge-key:
+  slurm-state:
+  slurm-spool:
+  flurm-data:
+  test-logs:
+
+networks:
+  slurm-interop-net:
+    driver: bridge

@@ -1,0 +1,74 @@
+# SLURM Controller (slurmctld) for Interop Testing
+# This creates a real SLURM controller for testing FLURM compatibility
+
+FROM rockylinux:9
+
+LABEL maintainer="FLURM Project"
+LABEL description="Real SLURM controller for interop testing"
+
+# Install EPEL and SLURM packages
+RUN dnf install -y epel-release && \
+    dnf install -y \
+        slurm-slurmctld \
+        slurm-slurmd \
+        slurm \
+        munge \
+        procps-ng \
+        iproute \
+        && dnf clean all
+
+# Create required directories
+RUN mkdir -p /var/spool/slurmctld /var/spool/slurmd \
+             /var/log/slurm /var/run/slurm \
+             /var/run/munge /var/log/munge /munge-local && \
+    chown -R slurm:slurm /var/spool/slurmctld /var/log/slurm /var/run/slurm && \
+    chown -R munge:munge /var/run/munge /var/log/munge /munge-local && \
+    chmod 700 /munge-local
+
+# Create entrypoint script
+RUN cat > /entrypoint.sh <<'ENTRYPOINT'
+#!/bin/bash
+set -e
+
+echo "Waiting for munge key..."
+for i in $(seq 1 60); do
+  if [ -f /etc/munge/munge.key ]; then break; fi
+  sleep 1
+done
+
+if [ ! -f /etc/munge/munge.key ]; then
+  echo "ERROR: munge key not found after 60 seconds"
+  exit 1
+fi
+
+# Copy munge key to local directory with correct permissions
+echo "Setting up MUNGE..."
+cp /etc/munge/munge.key /munge-local/munge.key
+chown munge:munge /munge-local/munge.key
+chmod 400 /munge-local/munge.key
+
+# Start munge daemon
+echo "Starting MUNGE daemon..."
+runuser -u munge -- /usr/sbin/munged --key-file=/munge-local/munge.key
+
+# Wait for munge to be ready
+sleep 2
+if munge -n </dev/null >/dev/null 2>&1; then
+  echo "MUNGE is working"
+else
+  echo "ERROR: MUNGE test failed"
+  exit 1
+fi
+
+# Ensure slurm directories exist with correct permissions
+chown -R slurm:slurm /var/spool/slurmctld /var/log/slurm /var/run/slurm
+
+echo "Starting slurmctld..."
+exec /usr/sbin/slurmctld -D -vvv
+ENTRYPOINT
+
+RUN chmod +x /entrypoint.sh
+
+EXPOSE 6817
+
+ENTRYPOINT ["/entrypoint.sh"]
