@@ -298,6 +298,7 @@ prop_rollback_preserves_state() ->
         end).
 
 %% @doc Property: Multiple rollbacks from any state are safe.
+%% After N rollbacks, mode should be at most N steps back from start.
 prop_multiple_rollbacks_safe() ->
     ?FORALL({StartMode, NumRollbacks}, {gen_migration_mode(), range(0, 10)},
         begin
@@ -319,11 +320,24 @@ prop_multiple_rollbacks_safe() ->
                 lists:seq(1, NumRollbacks)
             ),
 
-            %% Should end at shadow or same state
+            %% Calculate expected final mode based on rollback count
             FinalMode = FinalState#migration_state.mode,
-            (FinalMode =:= shadow) orelse
-            (NumRollbacks =:= 0 andalso FinalMode =:= StartMode)
+            ModeOrder = [shadow, active, primary, standalone],
+            StartIdx = mode_index(StartMode, ModeOrder),
+            ExpectedIdx = max(0, StartIdx - NumRollbacks),
+            ExpectedMode = lists:nth(ExpectedIdx + 1, ModeOrder),
+
+            %% Final mode should match expected (or be at shadow if rolled back far enough)
+            FinalMode =:= ExpectedMode
         end).
+
+%% Helper to get mode index in order
+mode_index(Mode, Order) ->
+    mode_index(Mode, Order, 0).
+
+mode_index(Mode, [Mode | _], Idx) -> Idx;
+mode_index(Mode, [_ | Rest], Idx) -> mode_index(Mode, Rest, Idx + 1);
+mode_index(_, [], _) -> 0.
 
 %%%===================================================================
 %%% Cluster Registration Properties
