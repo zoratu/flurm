@@ -24,12 +24,14 @@
 -behaviour(gen_server).
 
 -include("flurm_core.hrl").
+-include_lib("flurm_protocol/include/flurm_protocol.hrl").
 
 %% API - Cluster Management
 -export([
     start_link/0,
     add_cluster/2,
     remove_cluster/1,
+    update_settings/1,
     list_clusters/0,
     get_cluster_status/1
 ]).
@@ -53,6 +55,26 @@
     get_federation_resources/0,
     get_federation_jobs/0,
     get_federation_stats/0
+]).
+
+%% API - Sibling Job Coordination (Phase 7D)
+%% TLA+ Safety Invariants:
+%%   - SiblingExclusivity: At most one sibling runs at any time
+%%   - OriginAwareness: Origin cluster tracks which sibling is running
+%%   - NoJobLoss: Jobs must have at least one active sibling or be terminal
+-export([
+    create_sibling_jobs/2,
+    notify_job_started/2,
+    revoke_siblings/2,
+    handle_sibling_revoke/1,
+    get_running_cluster/1,
+    get_sibling_job_state/2
+]).
+
+%% API - Federation Message Handling (Phase 7D)
+%% Called by protocol handler when receiving inter-cluster messages
+-export([
+    handle_federation_message/2
 ]).
 
 %% API - Legacy/Compatibility
@@ -85,6 +107,7 @@
 -define(FED_JOBS_TABLE, flurm_fed_jobs).
 -define(FED_PARTITION_MAP, flurm_fed_partition_map).
 -define(FED_REMOTE_JOBS, flurm_fed_remote_jobs).
+-define(FED_SIBLING_JOBS, flurm_fed_sibling_jobs).  % Phase 7D: Sibling job tracking
 -define(SYNC_INTERVAL, 30000).       % Sync every 30 seconds
 -define(HEALTH_CHECK_INTERVAL, 10000). % Health check every 10 seconds
 -define(CLUSTER_TIMEOUT, 5000).      % Timeout for cluster communication
@@ -220,6 +243,12 @@ add_cluster(Name, Config) when is_binary(Name) ->
 -spec remove_cluster(cluster_name()) -> ok | {error, term()}.
 remove_cluster(Name) when is_binary(Name) ->
     gen_server:call(?SERVER, {remove_cluster, Name}).
+
+%% @doc Update federation-wide settings.
+%% Settings map may contain: routing_policy, sync_interval, health_check_interval
+-spec update_settings(map()) -> ok | {error, term()}.
+update_settings(Settings) when is_map(Settings) ->
+    gen_server:call(?SERVER, {update_settings, Settings}).
 
 %% @doc List all federated clusters with their status.
 -spec list_clusters() -> [map()].
@@ -411,6 +440,13 @@ init([]) ->
         {keypos, #remote_job.local_ref}
     ]),
 
+    %% Phase 7D: Sibling job tracking table
+    %% Key: federation_job_id, stores #fed_job_tracker{} records
+    ets:new(?FED_SIBLING_JOBS, [
+        named_table, public, set,
+        {keypos, #fed_job_tracker.federation_job_id}
+    ]),
+
     %% Get local cluster name from config
     LocalCluster = get_local_cluster_name(),
     RoutingPolicy = get_routing_policy(),
@@ -470,6 +506,11 @@ handle_call({remove_cluster, Name}, _From, State) ->
             ets:match_delete(?FED_PARTITION_MAP, #partition_map{cluster = Name, _ = '_'}),
             {reply, ok, State}
     end;
+
+handle_call({update_settings, Settings}, _From, State) ->
+    %% Update federation-wide settings
+    NewState = apply_settings(Settings, State),
+    {reply, ok, NewState};
 
 handle_call({submit_job, Job, Options}, _From, State) ->
     Result = do_submit_job(Job, Options, State),
@@ -604,6 +645,46 @@ handle_call(is_federated, _From, State) ->
 
 handle_call(get_local_cluster, _From, State) ->
     {reply, State#state.local_cluster, State};
+
+%% Sibling Job Coordination (Phase 7D)
+handle_call({create_sibling_jobs, JobSpec, TargetClusters}, _From, State) ->
+    Result = do_create_sibling_jobs(JobSpec, TargetClusters, State),
+    {reply, Result, State};
+
+handle_call({notify_job_started, FederationJobId, LocalJobId}, _From, State) ->
+    Result = do_notify_job_started(FederationJobId, LocalJobId, State),
+    {reply, Result, State};
+
+handle_call({revoke_siblings, FederationJobId, RunningCluster}, _From, State) ->
+    Result = do_revoke_siblings(FederationJobId, RunningCluster, State),
+    {reply, Result, State};
+
+handle_call({handle_sibling_revoke, Msg}, _From, State) ->
+    Result = do_handle_sibling_revoke(Msg, State),
+    {reply, Result, State};
+
+handle_call({get_running_cluster, FederationJobId}, _From, State) ->
+    case ets:lookup(?FED_SIBLING_JOBS, FederationJobId) of
+        [#fed_job_tracker{running_cluster = RunningCluster}] ->
+            {reply, {ok, RunningCluster}, State};
+        [] ->
+            {reply, {error, not_found}, State}
+    end;
+
+handle_call({get_sibling_job_state, FederationJobId, ClusterName}, _From, State) ->
+    case ets:lookup(?FED_SIBLING_JOBS, FederationJobId) of
+        [#fed_job_tracker{sibling_states = SiblingStates}] ->
+            case maps:get(ClusterName, SiblingStates, undefined) of
+                undefined -> {reply, {error, not_found}, State};
+                SiblingState -> {reply, {ok, SiblingState}, State}
+            end;
+        [] ->
+            {reply, {error, not_found}, State}
+    end;
+
+handle_call({handle_federation_message, MsgType, EncodedMsg}, _From, State) ->
+    Result = do_handle_federation_message(MsgType, EncodedMsg, State),
+    {reply, Result, State};
 
 handle_call(_Request, _From, State) ->
     {reply, {error, unknown_request}, State}.
@@ -1196,6 +1277,51 @@ headers_to_proplist(Headers) ->
     [{binary_to_list(K), binary_to_list(V)} || {K, V} <- Headers].
 
 %%====================================================================
+%% Internal Functions - Settings Management
+%%====================================================================
+
+%% @doc Apply federation settings to state.
+%% Supports: routing_policy, sync_interval, health_check_interval
+-spec apply_settings(map(), #state{}) -> #state{}.
+apply_settings(Settings, State) ->
+    State1 = case maps:find(routing_policy, Settings) of
+        {ok, PolicyBin} when is_binary(PolicyBin) ->
+            Policy = try binary_to_existing_atom(PolicyBin, utf8)
+                     catch _:_ -> State#state.routing_policy
+                     end,
+            State#state{routing_policy = Policy};
+        {ok, Policy} when is_atom(Policy) ->
+            State#state{routing_policy = Policy};
+        error ->
+            State
+    end,
+    State2 = case maps:find(sync_interval, Settings) of
+        {ok, Interval} when is_integer(Interval), Interval > 0 ->
+            %% Cancel old timer and start new one
+            case State1#state.sync_timer of
+                undefined -> ok;
+                OldTimer -> erlang:cancel_timer(OldTimer)
+            end,
+            NewTimer = erlang:send_after(Interval, self(), sync_clusters),
+            State1#state{sync_timer = NewTimer};
+        _ ->
+            State1
+    end,
+    State3 = case maps:find(health_check_interval, Settings) of
+        {ok, HCInterval} when is_integer(HCInterval), HCInterval > 0 ->
+            %% Cancel old timer and start new one
+            case State2#state.health_timer of
+                undefined -> ok;
+                OldHCTimer -> erlang:cancel_timer(OldHCTimer)
+            end,
+            NewHCTimer = erlang:send_after(HCInterval, self(), health_check),
+            State2#state{health_timer = NewHCTimer};
+        _ ->
+            State2
+    end,
+    State3.
+
+%%====================================================================
 %% Internal Functions - Helpers
 %%====================================================================
 
@@ -1445,3 +1571,503 @@ submit_to_cluster(ClusterName, Job) ->
         [] ->
             {error, cluster_not_found}
     end.
+
+%%====================================================================
+%% API - Sibling Job Coordination (Phase 7D)
+%%====================================================================
+%%
+%% TLA+ Safety Invariants enforced:
+%%   - SiblingExclusivity: At most one sibling runs at any time
+%%   - OriginAwareness: Origin cluster tracks which sibling is running
+%%   - NoJobLoss: Jobs must have at least one active sibling or be terminal
+%%
+%% Protocol flow:
+%%   1. submit_federated_job -> create_sibling_jobs on suitable clusters
+%%   2. Each cluster independently attempts to schedule its sibling
+%%   3. When a sibling starts: notify_job_started -> origin revokes other siblings
+%%   4. Other clusters receive MSG_FED_SIBLING_REVOKE -> cancel their sibling
+%%   5. When job completes/fails: origin is notified via MSG_FED_JOB_COMPLETED/FAILED
+%%====================================================================
+
+%% @doc Create sibling jobs on federated clusters for a given job spec.
+%% This implements the first step of the federation job submission protocol.
+%% Returns {ok, FederationJobId} on success with the federation-wide job identifier.
+%%
+%% TLA+ Invariant: NoJobLoss - at least one sibling must be created
+-spec create_sibling_jobs(map(), [cluster_name()]) -> {ok, binary()} | {error, term()}.
+create_sibling_jobs(JobSpec, TargetClusters) when is_map(JobSpec), is_list(TargetClusters) ->
+    gen_server:call(?SERVER, {create_sibling_jobs, JobSpec, TargetClusters}, ?CLUSTER_TIMEOUT * 2).
+
+%% @doc Notify the origin cluster that a sibling job has started running.
+%% This triggers revocation of all other siblings to maintain SiblingExclusivity.
+%%
+%% TLA+ Invariant: SiblingExclusivity - this is the trigger for revocation
+-spec notify_job_started(binary(), non_neg_integer()) -> ok | {error, term()}.
+notify_job_started(FederationJobId, LocalJobId) when is_binary(FederationJobId) ->
+    gen_server:call(?SERVER, {notify_job_started, FederationJobId, LocalJobId}).
+
+%% @doc Revoke sibling jobs on other clusters (called by origin after receiving start notification).
+%% This sends MSG_FED_SIBLING_REVOKE to all clusters except the one running the job.
+%%
+%% TLA+ Invariant: SiblingExclusivity - ensures only one sibling runs
+-spec revoke_siblings(binary(), cluster_name()) -> ok | {error, term()}.
+revoke_siblings(FederationJobId, RunningCluster) when is_binary(FederationJobId), is_binary(RunningCluster) ->
+    gen_server:call(?SERVER, {revoke_siblings, FederationJobId, RunningCluster}).
+
+%% @doc Handle incoming sibling revocation request.
+%% Cancels the local sibling job if it hasn't started running.
+-spec handle_sibling_revoke(#fed_sibling_revoke_msg{}) -> ok | {error, term()}.
+handle_sibling_revoke(#fed_sibling_revoke_msg{} = Msg) ->
+    gen_server:call(?SERVER, {handle_sibling_revoke, Msg}).
+
+%% @doc Get the cluster currently running a federated job.
+%% Returns {ok, ClusterName} if a sibling is running, {ok, undefined} if not started.
+%%
+%% TLA+ Invariant: OriginAwareness - origin tracks which sibling is running
+-spec get_running_cluster(binary()) -> {ok, cluster_name() | undefined} | {error, term()}.
+get_running_cluster(FederationJobId) when is_binary(FederationJobId) ->
+    gen_server:call(?SERVER, {get_running_cluster, FederationJobId}).
+
+%% @doc Get the state of a sibling job on a specific cluster.
+%% Returns the sibling job state record with current status.
+-spec get_sibling_job_state(binary(), cluster_name()) -> {ok, #sibling_job_state{}} | {error, term()}.
+get_sibling_job_state(FederationJobId, ClusterName) when is_binary(FederationJobId), is_binary(ClusterName) ->
+    gen_server:call(?SERVER, {get_sibling_job_state, FederationJobId, ClusterName}).
+
+%%====================================================================
+%% Internal - Sibling Job Coordination
+%%====================================================================
+
+%% @doc Create sibling jobs on multiple clusters (internal implementation).
+%% Called via gen_server to ensure atomicity.
+-spec do_create_sibling_jobs(map(), [cluster_name()], #state{}) -> {ok, binary()} | {error, term()}.
+do_create_sibling_jobs(JobSpec, TargetClusters, State) ->
+    %% Generate federation-wide job ID
+    FederationJobId = generate_federation_id(),
+    OriginCluster = State#state.local_cluster,
+    SubmitTime = erlang:system_time(second),
+
+    %% Initialize sibling states map
+    InitialSiblingStates = lists:foldl(fun(Cluster, Acc) ->
+        SiblingState = #sibling_job_state{
+            federation_job_id = FederationJobId,
+            sibling_cluster = Cluster,
+            origin_cluster = OriginCluster,
+            local_job_id = 0,
+            state = ?SIBLING_STATE_NULL,
+            submit_time = SubmitTime
+        },
+        maps:put(Cluster, SiblingState, Acc)
+    end, #{}, TargetClusters),
+
+    %% Create federation job tracker at origin
+    Tracker = #fed_job_tracker{
+        federation_job_id = FederationJobId,
+        origin_cluster = OriginCluster,
+        origin_job_id = 0,  % Will be set when local sibling is created
+        running_cluster = undefined,
+        sibling_states = InitialSiblingStates,
+        submit_time = SubmitTime,
+        job_spec = JobSpec
+    },
+    ets:insert(?FED_SIBLING_JOBS, Tracker),
+
+    %% Send sibling creation messages to each target cluster
+    SuccessCount = lists:foldl(fun(Cluster, Count) ->
+        Msg = #fed_job_submit_msg{
+            federation_job_id = FederationJobId,
+            origin_cluster = OriginCluster,
+            target_cluster = Cluster,
+            job_spec = JobSpec,
+            submit_time = SubmitTime
+        },
+        case send_sibling_create_msg(Cluster, Msg, State) of
+            ok ->
+                %% Update sibling state to PENDING
+                update_sibling_state(FederationJobId, Cluster, ?SIBLING_STATE_PENDING),
+                Count + 1;
+            {error, Reason} ->
+                lager:warning("Failed to create sibling on ~s: ~p", [Cluster, Reason]),
+                Count
+        end
+    end, 0, TargetClusters),
+
+    %% TLA+ NoJobLoss: Ensure at least one sibling was created
+    case SuccessCount of
+        0 ->
+            %% No siblings created - remove tracker and return error
+            ets:delete(?FED_SIBLING_JOBS, FederationJobId),
+            {error, no_siblings_created};
+        _ ->
+            catch flurm_metrics:increment(flurm_federation_sibling_jobs_created_total, SuccessCount),
+            {ok, FederationJobId}
+    end.
+
+%% @doc Send a sibling creation message to a cluster.
+-spec send_sibling_create_msg(cluster_name(), #fed_job_submit_msg{}, #state{}) -> ok | {error, term()}.
+send_sibling_create_msg(ClusterName, Msg, State) ->
+    case ClusterName =:= State#state.local_cluster of
+        true ->
+            %% Local cluster - submit directly
+            handle_local_sibling_create(Msg);
+        false ->
+            %% Remote cluster - send via protocol
+            send_federation_msg(ClusterName, ?MSG_FED_JOB_SUBMIT, Msg, State)
+    end.
+
+%% @doc Handle creating a sibling job locally.
+-spec handle_local_sibling_create(#fed_job_submit_msg{}) -> ok | {error, term()}.
+handle_local_sibling_create(#fed_job_submit_msg{federation_job_id = FedJobId, job_spec = JobSpec}) ->
+    %% Convert job spec to job record and submit
+    Job = map_to_job(JobSpec),
+    case catch flurm_scheduler:submit_job(Job) of
+        {ok, LocalJobId} ->
+            %% Update local sibling state with job ID
+            update_sibling_state(FedJobId, get_local_cluster_name(), ?SIBLING_STATE_PENDING),
+            update_sibling_local_job_id(FedJobId, get_local_cluster_name(), LocalJobId),
+            ok;
+        {error, Reason} ->
+            {error, Reason};
+        {'EXIT', Reason} ->
+            {error, {scheduler_not_available, Reason}}
+    end.
+
+%% @doc Handle notification that a sibling job started (internal implementation).
+-spec do_notify_job_started(binary(), non_neg_integer(), #state{}) -> ok | {error, term()}.
+do_notify_job_started(FederationJobId, LocalJobId, State) ->
+    LocalCluster = State#state.local_cluster,
+    StartTime = erlang:system_time(second),
+
+    case ets:lookup(?FED_SIBLING_JOBS, FederationJobId) of
+        [#fed_job_tracker{origin_cluster = OriginCluster} = Tracker] ->
+            %% Update local sibling state to RUNNING
+            update_sibling_state(FederationJobId, LocalCluster, ?SIBLING_STATE_RUNNING),
+            update_sibling_start_time(FederationJobId, LocalCluster, StartTime),
+
+            case LocalCluster =:= OriginCluster of
+                true ->
+                    %% We are the origin - directly revoke other siblings
+                    %% TLA+ SiblingExclusivity: At most one sibling runs
+                    UpdatedTracker = Tracker#fed_job_tracker{running_cluster = LocalCluster},
+                    ets:insert(?FED_SIBLING_JOBS, UpdatedTracker),
+                    do_revoke_siblings(FederationJobId, LocalCluster, State);
+                false ->
+                    %% Notify origin cluster that we started
+                    Msg = #fed_job_started_msg{
+                        federation_job_id = FederationJobId,
+                        running_cluster = LocalCluster,
+                        local_job_id = LocalJobId,
+                        start_time = StartTime
+                    },
+                    send_federation_msg(OriginCluster, ?MSG_FED_JOB_STARTED, Msg, State)
+            end;
+        [] ->
+            {error, federation_job_not_found}
+    end.
+
+%% @doc Revoke siblings on all clusters except the running one (internal implementation).
+%% TLA+ SiblingExclusivity: This ensures only one sibling runs at any time.
+-spec do_revoke_siblings(binary(), cluster_name(), #state{}) -> ok | {error, term()}.
+do_revoke_siblings(FederationJobId, RunningCluster, State) ->
+    case ets:lookup(?FED_SIBLING_JOBS, FederationJobId) of
+        [#fed_job_tracker{sibling_states = SiblingStates} = Tracker] ->
+            %% Update tracker with running cluster
+            %% TLA+ OriginAwareness: Origin tracks which sibling is running
+            UpdatedTracker = Tracker#fed_job_tracker{running_cluster = RunningCluster},
+            ets:insert(?FED_SIBLING_JOBS, UpdatedTracker),
+
+            %% Send revoke messages to all other clusters with non-terminal siblings
+            RevokeMsg = #fed_sibling_revoke_msg{
+                federation_job_id = FederationJobId,
+                running_cluster = RunningCluster,
+                revoke_reason = <<"sibling_started">>
+            },
+
+            maps:fold(fun(Cluster, #sibling_job_state{state = SibState}, Acc) ->
+                case Cluster =:= RunningCluster of
+                    true ->
+                        Acc;  % Don't revoke the running sibling
+                    false ->
+                        case is_sibling_revocable(SibState) of
+                            true ->
+                                case Cluster =:= State#state.local_cluster of
+                                    true ->
+                                        %% Local revocation
+                                        do_handle_sibling_revoke(RevokeMsg, State);
+                                    false ->
+                                        %% Remote revocation
+                                        send_federation_msg(Cluster, ?MSG_FED_SIBLING_REVOKE, RevokeMsg, State)
+                                end,
+                                Acc + 1;
+                            false ->
+                                Acc  % Already terminal, skip
+                        end
+                end
+            end, 0, SiblingStates),
+
+            catch flurm_metrics:increment(flurm_federation_sibling_revocations_total),
+            ok;
+        [] ->
+            {error, federation_job_not_found}
+    end.
+
+%% @doc Check if a sibling state is revocable (not already terminal or running elsewhere).
+-spec is_sibling_revocable(non_neg_integer()) -> boolean().
+is_sibling_revocable(?SIBLING_STATE_PENDING) -> true;
+is_sibling_revocable(?SIBLING_STATE_NULL) -> true;
+is_sibling_revocable(_) -> false.
+
+%% @doc Handle incoming sibling revocation (internal implementation).
+-spec do_handle_sibling_revoke(#fed_sibling_revoke_msg{}, #state{}) -> ok | {error, term()}.
+do_handle_sibling_revoke(#fed_sibling_revoke_msg{
+    federation_job_id = FederationJobId,
+    running_cluster = RunningCluster
+}, State) ->
+    LocalCluster = State#state.local_cluster,
+
+    %% Don't revoke if we are the running cluster
+    case LocalCluster =:= RunningCluster of
+        true ->
+            ok;
+        false ->
+            case ets:lookup(?FED_SIBLING_JOBS, FederationJobId) of
+                [#fed_job_tracker{sibling_states = SiblingStates}] ->
+                    case maps:get(LocalCluster, SiblingStates, undefined) of
+                        undefined ->
+                            ok;  % No local sibling
+                        #sibling_job_state{state = SibState, local_job_id = LocalJobId} ->
+                            case is_sibling_revocable(SibState) of
+                                true ->
+                                    %% Cancel the local job if it has a valid ID
+                                    case LocalJobId > 0 of
+                                        true ->
+                                            catch flurm_scheduler:cancel_job(LocalJobId);
+                                        false ->
+                                            ok
+                                    end,
+                                    %% Update state to REVOKED
+                                    %% TLA+ RevokedIsTerminal: Once revoked, stays revoked
+                                    update_sibling_state(FederationJobId, LocalCluster, ?SIBLING_STATE_REVOKED),
+                                    catch flurm_metrics:increment(flurm_federation_sibling_revoked_total),
+                                    ok;
+                                false ->
+                                    %% Already running or terminal - cannot revoke
+                                    ok
+                            end
+                    end;
+                [] ->
+                    %% No tracker - might be received before sibling create
+                    %% Store the revocation intent for later
+                    ok
+            end
+    end.
+
+%% @doc Update a sibling's state in the tracker.
+-spec update_sibling_state(binary(), cluster_name(), non_neg_integer()) -> ok.
+update_sibling_state(FederationJobId, Cluster, NewState) ->
+    case ets:lookup(?FED_SIBLING_JOBS, FederationJobId) of
+        [#fed_job_tracker{sibling_states = States} = Tracker] ->
+            case maps:get(Cluster, States, undefined) of
+                undefined ->
+                    ok;
+                SibState ->
+                    UpdatedSibState = SibState#sibling_job_state{state = NewState},
+                    UpdatedStates = maps:put(Cluster, UpdatedSibState, States),
+                    UpdatedTracker = Tracker#fed_job_tracker{sibling_states = UpdatedStates},
+                    ets:insert(?FED_SIBLING_JOBS, UpdatedTracker)
+            end;
+        [] ->
+            ok
+    end.
+
+%% @doc Update a sibling's local job ID in the tracker.
+-spec update_sibling_local_job_id(binary(), cluster_name(), non_neg_integer()) -> ok.
+update_sibling_local_job_id(FederationJobId, Cluster, LocalJobId) ->
+    case ets:lookup(?FED_SIBLING_JOBS, FederationJobId) of
+        [#fed_job_tracker{sibling_states = States} = Tracker] ->
+            case maps:get(Cluster, States, undefined) of
+                undefined ->
+                    ok;
+                SibState ->
+                    UpdatedSibState = SibState#sibling_job_state{local_job_id = LocalJobId},
+                    UpdatedStates = maps:put(Cluster, UpdatedSibState, States),
+                    UpdatedTracker = Tracker#fed_job_tracker{sibling_states = UpdatedStates},
+                    ets:insert(?FED_SIBLING_JOBS, UpdatedTracker)
+            end;
+        [] ->
+            ok
+    end.
+
+%% @doc Update a sibling's start time in the tracker.
+-spec update_sibling_start_time(binary(), cluster_name(), non_neg_integer()) -> ok.
+update_sibling_start_time(FederationJobId, Cluster, StartTime) ->
+    case ets:lookup(?FED_SIBLING_JOBS, FederationJobId) of
+        [#fed_job_tracker{sibling_states = States} = Tracker] ->
+            case maps:get(Cluster, States, undefined) of
+                undefined ->
+                    ok;
+                SibState ->
+                    UpdatedSibState = SibState#sibling_job_state{start_time = StartTime},
+                    UpdatedStates = maps:put(Cluster, UpdatedSibState, States),
+                    UpdatedTracker = Tracker#fed_job_tracker{sibling_states = UpdatedStates},
+                    ets:insert(?FED_SIBLING_JOBS, UpdatedTracker)
+            end;
+        [] ->
+            ok
+    end.
+
+%% @doc Send a federation message to a cluster.
+-spec send_federation_msg(cluster_name(), non_neg_integer(), term(), #state{}) -> ok | {error, term()}.
+send_federation_msg(ClusterName, MsgType, Msg, _State) ->
+    case ets:lookup(?FED_CLUSTERS_TABLE, ClusterName) of
+        [#fed_cluster{host = Host, port = Port, auth = Auth, state = up}] ->
+            %% Encode the message
+            case flurm_protocol_codec:encode(MsgType, Msg) of
+                {ok, EncodedMsg} ->
+                    %% Send via HTTP (federation messages use REST API)
+                    Url = build_url(Host, Port, <<"/api/v1/federation/message">>),
+                    Body = jsx:encode(#{
+                        msg_type => MsgType,
+                        payload => base64:encode(EncodedMsg)
+                    }),
+                    Headers = build_auth_headers(Auth),
+                    case http_post(Url, Headers, Body, ?CLUSTER_TIMEOUT) of
+                        {ok, _Response} ->
+                            ok;
+                        {error, Reason} ->
+                            {error, {send_failed, Reason}}
+                    end;
+                {error, Reason} ->
+                    {error, {encode_failed, Reason}}
+            end;
+        [#fed_cluster{state = State}] ->
+            {error, {cluster_unavailable, State}};
+        [] ->
+            {error, cluster_not_found}
+    end.
+
+%% @doc Handle incoming federation message (called from controller).
+-spec handle_federation_message(non_neg_integer(), binary()) -> ok | {error, term()}.
+handle_federation_message(MsgType, EncodedMsg) ->
+    gen_server:call(?SERVER, {handle_federation_message, MsgType, EncodedMsg}).
+
+%% @doc Process incoming federation message (internal).
+-spec do_handle_federation_message(non_neg_integer(), binary(), #state{}) -> ok | {error, term()}.
+do_handle_federation_message(MsgType, EncodedMsg, State) ->
+    case flurm_protocol_codec:decode_body(MsgType, EncodedMsg) of
+        {ok, Msg} ->
+            case MsgType of
+                ?MSG_FED_JOB_SUBMIT ->
+                    handle_local_sibling_create(Msg);
+                ?MSG_FED_JOB_STARTED ->
+                    handle_remote_job_started(Msg, State);
+                ?MSG_FED_SIBLING_REVOKE ->
+                    do_handle_sibling_revoke(Msg, State);
+                ?MSG_FED_JOB_COMPLETED ->
+                    handle_job_completed(Msg, State);
+                ?MSG_FED_JOB_FAILED ->
+                    handle_job_failed(Msg, State);
+                _ ->
+                    {error, {unknown_message_type, MsgType}}
+            end;
+        {error, Reason} ->
+            {error, {decode_failed, Reason}}
+    end.
+
+%% @doc Handle remote job started notification (at origin).
+-spec handle_remote_job_started(#fed_job_started_msg{}, #state{}) -> ok | {error, term()}.
+handle_remote_job_started(#fed_job_started_msg{
+    federation_job_id = FederationJobId,
+    running_cluster = RunningCluster,
+    local_job_id = LocalJobId,
+    start_time = StartTime
+}, State) ->
+    case ets:lookup(?FED_SIBLING_JOBS, FederationJobId) of
+        [#fed_job_tracker{origin_cluster = OriginCluster} = Tracker] ->
+            case State#state.local_cluster =:= OriginCluster of
+                true ->
+                    %% We are origin - update tracker and revoke other siblings
+                    UpdatedTracker = Tracker#fed_job_tracker{running_cluster = RunningCluster},
+                    ets:insert(?FED_SIBLING_JOBS, UpdatedTracker),
+
+                    %% Update sibling state
+                    update_sibling_state(FederationJobId, RunningCluster, ?SIBLING_STATE_RUNNING),
+                    update_sibling_local_job_id(FederationJobId, RunningCluster, LocalJobId),
+                    update_sibling_start_time(FederationJobId, RunningCluster, StartTime),
+
+                    %% Revoke all other siblings
+                    %% TLA+ SiblingExclusivity: At most one sibling runs
+                    do_revoke_siblings(FederationJobId, RunningCluster, State);
+                false ->
+                    %% Not origin - forward to origin
+                    Msg = #fed_job_started_msg{
+                        federation_job_id = FederationJobId,
+                        running_cluster = RunningCluster,
+                        local_job_id = LocalJobId,
+                        start_time = StartTime
+                    },
+                    send_federation_msg(OriginCluster, ?MSG_FED_JOB_STARTED, Msg, State)
+            end;
+        [] ->
+            {error, federation_job_not_found}
+    end.
+
+%% @doc Handle job completed notification.
+-spec handle_job_completed(#fed_job_completed_msg{}, #state{}) -> ok | {error, term()}.
+handle_job_completed(#fed_job_completed_msg{
+    federation_job_id = FederationJobId,
+    running_cluster = RunningCluster,
+    end_time = EndTime,
+    exit_code = ExitCode
+}, _State) ->
+    update_sibling_state(FederationJobId, RunningCluster, ?SIBLING_STATE_COMPLETED),
+    case ets:lookup(?FED_SIBLING_JOBS, FederationJobId) of
+        [#fed_job_tracker{sibling_states = States} = Tracker] ->
+            case maps:get(RunningCluster, States, undefined) of
+                undefined ->
+                    ok;
+                SibState ->
+                    UpdatedSibState = SibState#sibling_job_state{
+                        state = ?SIBLING_STATE_COMPLETED,
+                        end_time = EndTime,
+                        exit_code = ExitCode
+                    },
+                    UpdatedStates = maps:put(RunningCluster, UpdatedSibState, States),
+                    UpdatedTracker = Tracker#fed_job_tracker{sibling_states = UpdatedStates},
+                    ets:insert(?FED_SIBLING_JOBS, UpdatedTracker)
+            end;
+        [] ->
+            ok
+    end,
+    catch flurm_metrics:increment(flurm_federation_sibling_completed_total),
+    ok.
+
+%% @doc Handle job failed notification.
+-spec handle_job_failed(#fed_job_failed_msg{}, #state{}) -> ok | {error, term()}.
+handle_job_failed(#fed_job_failed_msg{
+    federation_job_id = FederationJobId,
+    running_cluster = RunningCluster,
+    end_time = EndTime,
+    exit_code = ExitCode
+}, _State) ->
+    update_sibling_state(FederationJobId, RunningCluster, ?SIBLING_STATE_FAILED),
+    case ets:lookup(?FED_SIBLING_JOBS, FederationJobId) of
+        [#fed_job_tracker{sibling_states = States} = Tracker] ->
+            case maps:get(RunningCluster, States, undefined) of
+                undefined ->
+                    ok;
+                SibState ->
+                    UpdatedSibState = SibState#sibling_job_state{
+                        state = ?SIBLING_STATE_FAILED,
+                        end_time = EndTime,
+                        exit_code = ExitCode
+                    },
+                    UpdatedStates = maps:put(RunningCluster, UpdatedSibState, States),
+                    UpdatedTracker = Tracker#fed_job_tracker{sibling_states = UpdatedStates},
+                    ets:insert(?FED_SIBLING_JOBS, UpdatedTracker)
+            end;
+        [] ->
+            ok
+    end,
+    catch flurm_metrics:increment(flurm_federation_sibling_failed_total),
+    ok.

@@ -177,14 +177,14 @@ decode_with_extra(_) ->
 strip_auth_section(<<PluginId:32/big, CredLen:32/big, Rest/binary>> = Full) when CredLen =< byte_size(Rest) ->
     lager:debug("strip_auth: plugin_id=~p, cred_len=~p, rest_size=~p, full_size=~p",
                 [PluginId, CredLen, byte_size(Rest), byte_size(Full)]),
-    <<_Credential:CredLen/binary, ActualBody/binary>> = Rest,
+    <<Credential:CredLen/binary, ActualBody/binary>> = Rest,
     lager:debug("strip_auth: stripped ~p bytes auth, body_size=~p", [8 + CredLen, byte_size(ActualBody)]),
     %% Check if credential is MUNGE (plugin_id 101)
     AuthType = case PluginId of
         101 -> munge;
         _ -> unknown
     end,
-    AuthInfo = #{auth_type => AuthType, plugin_id => PluginId, cred_len => CredLen},
+    AuthInfo = #{auth_type => AuthType, plugin_id => PluginId, cred_len => CredLen, credential => Credential},
     {ok, ActualBody, AuthInfo};
 strip_auth_section(<<PluginId:32/big, CredLen:32/big, Rest/binary>>) ->
     lager:warning("strip_auth FAIL: plugin_id=~p, cred_len=~p, rest_size=~p (too short)",
@@ -648,6 +648,34 @@ decode_body(?RESPONSE_FEDERATION_JOB_STATUS, Binary) ->
 decode_body(?RESPONSE_FEDERATION_JOB_CANCEL, Binary) ->
     decode_federation_job_cancel_response(Binary);
 
+%% REQUEST_UPDATE_FEDERATION (2064) - Federation update request
+decode_body(?REQUEST_UPDATE_FEDERATION, Binary) ->
+    decode_update_federation_request(Binary);
+
+%% RESPONSE_UPDATE_FEDERATION (2065) - Federation update response
+decode_body(?RESPONSE_UPDATE_FEDERATION, Binary) ->
+    decode_update_federation_response(Binary);
+
+%% MSG_FED_JOB_SUBMIT (2070) - Sibling job creation
+decode_body(?MSG_FED_JOB_SUBMIT, Binary) ->
+    decode_fed_job_submit_msg(Binary);
+
+%% MSG_FED_JOB_STARTED (2071) - Job started notification
+decode_body(?MSG_FED_JOB_STARTED, Binary) ->
+    decode_fed_job_started_msg(Binary);
+
+%% MSG_FED_SIBLING_REVOKE (2072) - Sibling revocation
+decode_body(?MSG_FED_SIBLING_REVOKE, Binary) ->
+    decode_fed_sibling_revoke_msg(Binary);
+
+%% MSG_FED_JOB_COMPLETED (2073) - Job completed notification
+decode_body(?MSG_FED_JOB_COMPLETED, Binary) ->
+    decode_fed_job_completed_msg(Binary);
+
+%% MSG_FED_JOB_FAILED (2074) - Job failed notification
+decode_body(?MSG_FED_JOB_FAILED, Binary) ->
+    decode_fed_job_failed_msg(Binary);
+
 %% Unknown message type - return raw body
 decode_body(_MsgType, Binary) ->
     {ok, Binary}.
@@ -840,6 +868,34 @@ encode_body(?RESPONSE_FEDERATION_JOB_STATUS, Resp) ->
 encode_body(?RESPONSE_FEDERATION_JOB_CANCEL, Resp) ->
     encode_federation_job_cancel_response(Resp);
 
+%% REQUEST_UPDATE_FEDERATION (2064) - Federation update request
+encode_body(?REQUEST_UPDATE_FEDERATION, Req) ->
+    encode_update_federation_request(Req);
+
+%% RESPONSE_UPDATE_FEDERATION (2065) - Federation update response
+encode_body(?RESPONSE_UPDATE_FEDERATION, Resp) ->
+    encode_update_federation_response(Resp);
+
+%% MSG_FED_JOB_SUBMIT (2070) - Sibling job creation
+encode_body(?MSG_FED_JOB_SUBMIT, Msg) ->
+    encode_fed_job_submit_msg(Msg);
+
+%% MSG_FED_JOB_STARTED (2071) - Job started notification
+encode_body(?MSG_FED_JOB_STARTED, Msg) ->
+    encode_fed_job_started_msg(Msg);
+
+%% MSG_FED_SIBLING_REVOKE (2072) - Sibling revocation
+encode_body(?MSG_FED_SIBLING_REVOKE, Msg) ->
+    encode_fed_sibling_revoke_msg(Msg);
+
+%% MSG_FED_JOB_COMPLETED (2073) - Job completed notification
+encode_body(?MSG_FED_JOB_COMPLETED, Msg) ->
+    encode_fed_job_completed_msg(Msg);
+
+%% MSG_FED_JOB_FAILED (2074) - Job failed notification
+encode_body(?MSG_FED_JOB_FAILED, Msg) ->
+    encode_fed_job_failed_msg(Msg);
+
 %% Raw binary passthrough
 encode_body(_MsgType, Binary) when is_binary(Binary) ->
     {ok, Binary};
@@ -906,6 +962,8 @@ message_type_name(?REQUEST_FEDERATION_JOB_STATUS) -> request_federation_job_stat
 message_type_name(?RESPONSE_FEDERATION_JOB_STATUS) -> response_federation_job_status;
 message_type_name(?REQUEST_FEDERATION_JOB_CANCEL) -> request_federation_job_cancel;
 message_type_name(?RESPONSE_FEDERATION_JOB_CANCEL) -> response_federation_job_cancel;
+message_type_name(?REQUEST_UPDATE_FEDERATION) -> request_update_federation;
+message_type_name(?RESPONSE_UPDATE_FEDERATION) -> response_update_federation;
 message_type_name(Type) -> {unknown, Type}.
 
 %% @doc Check if message type is a request.
@@ -947,6 +1005,7 @@ is_request(?REQUEST_FED_INFO) -> true;
 is_request(?REQUEST_FEDERATION_SUBMIT) -> true;
 is_request(?REQUEST_FEDERATION_JOB_STATUS) -> true;
 is_request(?REQUEST_FEDERATION_JOB_CANCEL) -> true;
+is_request(?REQUEST_UPDATE_FEDERATION) -> true;
 %% Fallback: check if it starts with REQUEST_ pattern (1xxx, 2xxx odd, 4xxx, 5xxx)
 is_request(Type) when Type >= 1001, Type =< 1029 -> true;
 is_request(_) -> false.
@@ -983,6 +1042,7 @@ is_response(?RESPONSE_FED_INFO) -> true;
 is_response(?RESPONSE_FEDERATION_SUBMIT) -> true;
 is_response(?RESPONSE_FEDERATION_JOB_STATUS) -> true;
 is_response(?RESPONSE_FEDERATION_JOB_CANCEL) -> true;
+is_response(?RESPONSE_UPDATE_FEDERATION) -> true;
 is_response(_) -> false.
 
 %%%===================================================================
@@ -4980,6 +5040,108 @@ encode_federation_job_cancel_response(#federation_job_cancel_response{} = R) ->
 encode_federation_job_cancel_response(_) ->
     {ok, <<0:32, 0:32, 0:32>>}.
 
+%% Decode REQUEST_UPDATE_FEDERATION (2064)
+decode_update_federation_request(Binary) ->
+    try
+        %% Format: action:32, cluster_name:packstr, host:packstr, port:32, settings_count:32, [key:packstr, value:packstr]*
+        <<ActionCode:32/big, Rest1/binary>> = Binary,
+        Action = case ActionCode of
+            1 -> add_cluster;
+            2 -> remove_cluster;
+            3 -> update_settings;
+            _ -> unknown
+        end,
+        {ClusterName, Rest2} = flurm_protocol_pack:unpack_string(Rest1),
+        {Host, Rest3} = flurm_protocol_pack:unpack_string(Rest2),
+        <<Port:32/big, SettingsCount:32/big, Rest4/binary>> = Rest3,
+        Settings = decode_settings_map(SettingsCount, Rest4, #{}),
+        {ok, #update_federation_request{
+            action = Action,
+            cluster_name = ClusterName,
+            host = Host,
+            port = Port,
+            settings = Settings
+        }}
+    catch
+        _:_ ->
+            {ok, #update_federation_request{action = unknown}}
+    end.
+
+%% Decode RESPONSE_UPDATE_FEDERATION (2065)
+decode_update_federation_response(Binary) ->
+    try
+        <<ErrorCode:32/big, Rest/binary>> = Binary,
+        {ErrorMsg, _} = flurm_protocol_pack:unpack_string(Rest),
+        {ok, #update_federation_response{
+            error_code = ErrorCode,
+            error_msg = ErrorMsg
+        }}
+    catch
+        _:_ ->
+            {ok, #update_federation_response{error_code = 1, error_msg = <<"decode error">>}}
+    end.
+
+%% Encode REQUEST_UPDATE_FEDERATION (2064)
+encode_update_federation_request(#update_federation_request{} = R) ->
+    ActionCode = case R#update_federation_request.action of
+        add_cluster -> 1;
+        remove_cluster -> 2;
+        update_settings -> 3;
+        _ -> 0
+    end,
+    SettingsList = maps:to_list(R#update_federation_request.settings),
+    SettingsBin = encode_settings_map(SettingsList),
+    Parts = [
+        <<ActionCode:32/big>>,
+        flurm_protocol_pack:pack_string(R#update_federation_request.cluster_name),
+        flurm_protocol_pack:pack_string(R#update_federation_request.host),
+        <<(R#update_federation_request.port):32/big,
+          (length(SettingsList)):32/big>>,
+        SettingsBin
+    ],
+    {ok, iolist_to_binary(Parts)};
+encode_update_federation_request(_) ->
+    {ok, <<0:32, 0:32, 0:32, 0:32, 0:32>>}.
+
+%% Encode RESPONSE_UPDATE_FEDERATION (2065)
+encode_update_federation_response(#update_federation_response{} = R) ->
+    Parts = [
+        <<(R#update_federation_response.error_code):32/big>>,
+        flurm_protocol_pack:pack_string(R#update_federation_response.error_msg)
+    ],
+    {ok, iolist_to_binary(Parts)};
+encode_update_federation_response(_) ->
+    {ok, <<0:32, 0:32>>}.
+
+%% Helper: Decode settings map from binary
+decode_settings_map(0, _Rest, Acc) ->
+    Acc;
+decode_settings_map(Count, Binary, Acc) ->
+    try
+        {Key, Rest1} = flurm_protocol_pack:unpack_string(Binary),
+        {Value, Rest2} = flurm_protocol_pack:unpack_string(Rest1),
+        decode_settings_map(Count - 1, Rest2, Acc#{Key => Value})
+    catch
+        _:_ ->
+            Acc
+    end.
+
+%% Helper: Encode settings map to binary
+encode_settings_map(SettingsList) ->
+    lists:map(fun({Key, Value}) ->
+        KeyBin = if is_binary(Key) -> Key;
+                    is_atom(Key) -> atom_to_binary(Key, utf8);
+                    true -> term_to_binary(Key)
+                 end,
+        ValueBin = if is_binary(Value) -> Value;
+                      is_atom(Value) -> atom_to_binary(Value, utf8);
+                      is_integer(Value) -> integer_to_binary(Value);
+                      true -> term_to_binary(Value)
+                   end,
+        [flurm_protocol_pack:pack_string(KeyBin),
+         flurm_protocol_pack:pack_string(ValueBin)]
+    end, SettingsList).
+
 %% Helper: Decode a list of strings for federation messages
 decode_string_list(0, Rest, Acc) ->
     {lists:reverse(Acc), Rest};
@@ -4991,4 +5153,187 @@ decode_string_list(Count, Binary, Acc) ->
         _:_ ->
             {lists:reverse(Acc), <<>>}
     end.
+
+%%%===================================================================
+%%% Sibling Job Coordination Message Encoding/Decoding (Phase 7D)
+%%%
+%%% TLA+ Safety Invariants:
+%%%   - SiblingExclusivity: At most one sibling runs at any time
+%%%   - OriginAwareness: Origin cluster tracks which sibling is running
+%%%   - NoJobLoss: Jobs must have at least one active sibling or be terminal
+%%%===================================================================
+
+%% Decode MSG_FED_JOB_SUBMIT (2070) - Origin -> All: Create sibling job
+decode_fed_job_submit_msg(Binary) ->
+    try
+        {FedJobId, Rest1} = flurm_protocol_pack:unpack_string(Binary),
+        {OriginCluster, Rest2} = flurm_protocol_pack:unpack_string(Rest1),
+        {TargetCluster, Rest3} = flurm_protocol_pack:unpack_string(Rest2),
+        <<SubmitTime:64/big, JobSpecLen:32/big, Rest4/binary>> = Rest3,
+        <<JobSpecBin:JobSpecLen/binary, _/binary>> = Rest4,
+        JobSpec = binary_to_term(JobSpecBin),
+        {ok, #fed_job_submit_msg{
+            federation_job_id = FedJobId,
+            origin_cluster = OriginCluster,
+            target_cluster = TargetCluster,
+            job_spec = JobSpec,
+            submit_time = SubmitTime
+        }}
+    catch
+        _:_ ->
+            {ok, #fed_job_submit_msg{
+                federation_job_id = <<>>,
+                origin_cluster = <<>>,
+                target_cluster = <<>>,
+                job_spec = #{}
+            }}
+    end.
+
+%% Encode MSG_FED_JOB_SUBMIT (2070)
+encode_fed_job_submit_msg(#fed_job_submit_msg{} = M) ->
+    JobSpecBin = term_to_binary(M#fed_job_submit_msg.job_spec),
+    Parts = [
+        flurm_protocol_pack:pack_string(M#fed_job_submit_msg.federation_job_id),
+        flurm_protocol_pack:pack_string(M#fed_job_submit_msg.origin_cluster),
+        flurm_protocol_pack:pack_string(M#fed_job_submit_msg.target_cluster),
+        <<(M#fed_job_submit_msg.submit_time):64/big>>,
+        <<(byte_size(JobSpecBin)):32/big>>,
+        JobSpecBin
+    ],
+    {ok, iolist_to_binary(Parts)};
+encode_fed_job_submit_msg(_) ->
+    {ok, <<0:32, 0:32, 0:32, 0:64, 0:32>>}.
+
+%% Decode MSG_FED_JOB_STARTED (2071) - Running -> Origin: Job started
+decode_fed_job_started_msg(Binary) ->
+    try
+        {FedJobId, Rest1} = flurm_protocol_pack:unpack_string(Binary),
+        {RunningCluster, Rest2} = flurm_protocol_pack:unpack_string(Rest1),
+        <<LocalJobId:32/big, StartTime:64/big, _/binary>> = Rest2,
+        {ok, #fed_job_started_msg{
+            federation_job_id = FedJobId,
+            running_cluster = RunningCluster,
+            local_job_id = LocalJobId,
+            start_time = StartTime
+        }}
+    catch
+        _:_ ->
+            {ok, #fed_job_started_msg{
+                federation_job_id = <<>>,
+                running_cluster = <<>>
+            }}
+    end.
+
+%% Encode MSG_FED_JOB_STARTED (2071)
+encode_fed_job_started_msg(#fed_job_started_msg{} = M) ->
+    Parts = [
+        flurm_protocol_pack:pack_string(M#fed_job_started_msg.federation_job_id),
+        flurm_protocol_pack:pack_string(M#fed_job_started_msg.running_cluster),
+        <<(M#fed_job_started_msg.local_job_id):32/big,
+          (M#fed_job_started_msg.start_time):64/big>>
+    ],
+    {ok, iolist_to_binary(Parts)};
+encode_fed_job_started_msg(_) ->
+    {ok, <<0:32, 0:32, 0:32, 0:64>>}.
+
+%% Decode MSG_FED_SIBLING_REVOKE (2072) - Origin -> All: Cancel siblings
+decode_fed_sibling_revoke_msg(Binary) ->
+    try
+        {FedJobId, Rest1} = flurm_protocol_pack:unpack_string(Binary),
+        {RunningCluster, Rest2} = flurm_protocol_pack:unpack_string(Rest1),
+        {RevokeReason, _} = flurm_protocol_pack:unpack_string(Rest2),
+        {ok, #fed_sibling_revoke_msg{
+            federation_job_id = FedJobId,
+            running_cluster = RunningCluster,
+            revoke_reason = RevokeReason
+        }}
+    catch
+        _:_ ->
+            {ok, #fed_sibling_revoke_msg{
+                federation_job_id = <<>>,
+                running_cluster = <<>>
+            }}
+    end.
+
+%% Encode MSG_FED_SIBLING_REVOKE (2072)
+encode_fed_sibling_revoke_msg(#fed_sibling_revoke_msg{} = M) ->
+    Parts = [
+        flurm_protocol_pack:pack_string(M#fed_sibling_revoke_msg.federation_job_id),
+        flurm_protocol_pack:pack_string(M#fed_sibling_revoke_msg.running_cluster),
+        flurm_protocol_pack:pack_string(M#fed_sibling_revoke_msg.revoke_reason)
+    ],
+    {ok, iolist_to_binary(Parts)};
+encode_fed_sibling_revoke_msg(_) ->
+    {ok, <<0:32, 0:32, 0:32>>}.
+
+%% Decode MSG_FED_JOB_COMPLETED (2073) - Running -> Origin: Job completed
+decode_fed_job_completed_msg(Binary) ->
+    try
+        {FedJobId, Rest1} = flurm_protocol_pack:unpack_string(Binary),
+        {RunningCluster, Rest2} = flurm_protocol_pack:unpack_string(Rest1),
+        <<LocalJobId:32/big, EndTime:64/big, ExitCode:32/signed-big, _/binary>> = Rest2,
+        {ok, #fed_job_completed_msg{
+            federation_job_id = FedJobId,
+            running_cluster = RunningCluster,
+            local_job_id = LocalJobId,
+            end_time = EndTime,
+            exit_code = ExitCode
+        }}
+    catch
+        _:_ ->
+            {ok, #fed_job_completed_msg{
+                federation_job_id = <<>>,
+                running_cluster = <<>>
+            }}
+    end.
+
+%% Encode MSG_FED_JOB_COMPLETED (2073)
+encode_fed_job_completed_msg(#fed_job_completed_msg{} = M) ->
+    Parts = [
+        flurm_protocol_pack:pack_string(M#fed_job_completed_msg.federation_job_id),
+        flurm_protocol_pack:pack_string(M#fed_job_completed_msg.running_cluster),
+        <<(M#fed_job_completed_msg.local_job_id):32/big,
+          (M#fed_job_completed_msg.end_time):64/big,
+          (M#fed_job_completed_msg.exit_code):32/signed-big>>
+    ],
+    {ok, iolist_to_binary(Parts)};
+encode_fed_job_completed_msg(_) ->
+    {ok, <<0:32, 0:32, 0:32, 0:64, 0:32>>}.
+
+%% Decode MSG_FED_JOB_FAILED (2074) - Running -> Origin: Job failed
+decode_fed_job_failed_msg(Binary) ->
+    try
+        {FedJobId, Rest1} = flurm_protocol_pack:unpack_string(Binary),
+        {RunningCluster, Rest2} = flurm_protocol_pack:unpack_string(Rest1),
+        <<LocalJobId:32/big, EndTime:64/big, ExitCode:32/signed-big, Rest3/binary>> = Rest2,
+        {ErrorMsg, _} = flurm_protocol_pack:unpack_string(Rest3),
+        {ok, #fed_job_failed_msg{
+            federation_job_id = FedJobId,
+            running_cluster = RunningCluster,
+            local_job_id = LocalJobId,
+            end_time = EndTime,
+            exit_code = ExitCode,
+            error_msg = ErrorMsg
+        }}
+    catch
+        _:_ ->
+            {ok, #fed_job_failed_msg{
+                federation_job_id = <<>>,
+                running_cluster = <<>>
+            }}
+    end.
+
+%% Encode MSG_FED_JOB_FAILED (2074)
+encode_fed_job_failed_msg(#fed_job_failed_msg{} = M) ->
+    Parts = [
+        flurm_protocol_pack:pack_string(M#fed_job_failed_msg.federation_job_id),
+        flurm_protocol_pack:pack_string(M#fed_job_failed_msg.running_cluster),
+        <<(M#fed_job_failed_msg.local_job_id):32/big,
+          (M#fed_job_failed_msg.end_time):64/big,
+          (M#fed_job_failed_msg.exit_code):32/signed-big>>,
+        flurm_protocol_pack:pack_string(M#fed_job_failed_msg.error_msg)
+    ],
+    {ok, iolist_to_binary(Parts)};
+encode_fed_job_failed_msg(_) ->
+    {ok, <<0:32, 0:32, 0:32, 0:64, 0:32, 0:32>>}.
 

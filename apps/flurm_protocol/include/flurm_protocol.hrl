@@ -1410,6 +1410,114 @@
     error_msg = <<>> :: binary()
 }).
 
+%% Federation update request (REQUEST_UPDATE_FEDERATION - 2064)
+%% Used by scontrol update federation for dynamic cluster management
+-define(REQUEST_UPDATE_FEDERATION, 2064).
+-define(RESPONSE_UPDATE_FEDERATION, 2065).
+
+-record(update_federation_request, {
+    action :: add_cluster | remove_cluster | update_settings,
+    cluster_name = <<>> :: binary(),
+    host = <<>> :: binary(),
+    port = 6817 :: pos_integer(),
+    settings = #{} :: map()
+}).
+
+-record(update_federation_response, {
+    error_code = 0 :: non_neg_integer(),
+    error_msg = <<>> :: binary()
+}).
+
+%%%===================================================================
+%%% Sibling Job Coordination Message Types (Phase 7D)
+%%% TLA+ Safety Invariants:
+%%%   - SiblingExclusivity: At most one sibling runs at any time
+%%%   - OriginAwareness: Origin cluster tracks which sibling is running
+%%%   - NoJobLoss: Jobs must have at least one active sibling or be terminal
+%%%===================================================================
+
+%% Message type constants for sibling job coordination
+-define(MSG_FED_JOB_SUBMIT, 2070).       % Origin -> All: Create sibling
+-define(MSG_FED_JOB_STARTED, 2071).      % Running -> Origin: Notify job started
+-define(MSG_FED_SIBLING_REVOKE, 2072).   % Origin -> All: Cancel other siblings
+-define(MSG_FED_JOB_COMPLETED, 2073).    % Running -> Origin: Job finished
+-define(MSG_FED_JOB_FAILED, 2074).       % Running -> Origin: Job failed
+
+%% Sibling job states (mirrors TLA+ SiblingStates)
+-define(SIBLING_STATE_NULL, 0).          % No sibling exists
+-define(SIBLING_STATE_PENDING, 1).       % Sibling queued, waiting for resources
+-define(SIBLING_STATE_RUNNING, 2).       % Sibling is executing
+-define(SIBLING_STATE_REVOKED, 3).       % Sibling cancelled because another cluster started
+-define(SIBLING_STATE_COMPLETED, 4).     % Sibling completed successfully
+-define(SIBLING_STATE_FAILED, 5).        % Sibling failed
+
+%% Sibling job state record - tracks per-sibling state
+-record(sibling_job_state, {
+    federation_job_id :: binary(),           % Federation-wide job ID
+    sibling_cluster :: binary(),             % Cluster where this sibling exists
+    origin_cluster :: binary(),              % Cluster that submitted the original job
+    local_job_id = 0 :: non_neg_integer(),   % Job ID on the sibling cluster
+    state = ?SIBLING_STATE_NULL :: non_neg_integer(),
+    submit_time = 0 :: non_neg_integer(),    % Unix timestamp
+    start_time = 0 :: non_neg_integer(),     % Unix timestamp when started (or 0)
+    end_time = 0 :: non_neg_integer(),       % Unix timestamp when ended (or 0)
+    exit_code = 0 :: integer()               % Exit code if completed/failed
+}).
+
+%% Federation job tracker - tracks the overall federated job state at origin
+-record(fed_job_tracker, {
+    federation_job_id :: binary(),           % Federation-wide unique ID
+    origin_cluster :: binary(),              % Cluster where job was submitted
+    origin_job_id :: non_neg_integer(),      % Original job ID on origin cluster
+    running_cluster = undefined :: binary() | undefined, % Which cluster is running (nil = none)
+    sibling_states :: #{binary() => #sibling_job_state{}}, % Cluster -> sibling state
+    submit_time = 0 :: non_neg_integer(),    % When job was submitted
+    job_spec :: map()                        % Original job specification
+}).
+
+%% MSG_FED_JOB_SUBMIT (2070) - Origin -> All: Create sibling job
+-record(fed_job_submit_msg, {
+    federation_job_id :: binary(),           % Federation-wide job ID
+    origin_cluster :: binary(),              % Originating cluster
+    target_cluster :: binary(),              % Target cluster for this sibling
+    job_spec :: map(),                       % Job specification
+    submit_time = 0 :: non_neg_integer()
+}).
+
+%% MSG_FED_JOB_STARTED (2071) - Running -> Origin: Job started notification
+-record(fed_job_started_msg, {
+    federation_job_id :: binary(),           % Federation-wide job ID
+    running_cluster :: binary(),             % Cluster that started the job
+    local_job_id = 0 :: non_neg_integer(),   % Job ID on running cluster
+    start_time = 0 :: non_neg_integer()
+}).
+
+%% MSG_FED_SIBLING_REVOKE (2072) - Origin -> All: Revoke/cancel siblings
+-record(fed_sibling_revoke_msg, {
+    federation_job_id :: binary(),           % Federation-wide job ID
+    running_cluster :: binary(),             % Cluster that is running (do not revoke)
+    revoke_reason = <<"sibling_started">> :: binary()
+}).
+
+%% MSG_FED_JOB_COMPLETED (2073) - Running -> Origin: Job completed
+-record(fed_job_completed_msg, {
+    federation_job_id :: binary(),           % Federation-wide job ID
+    running_cluster :: binary(),             % Cluster that completed the job
+    local_job_id = 0 :: non_neg_integer(),   % Job ID on running cluster
+    end_time = 0 :: non_neg_integer(),
+    exit_code = 0 :: integer()
+}).
+
+%% MSG_FED_JOB_FAILED (2074) - Running -> Origin: Job failed
+-record(fed_job_failed_msg, {
+    federation_job_id :: binary(),           % Federation-wide job ID
+    running_cluster :: binary(),             % Cluster where job failed
+    local_job_id = 0 :: non_neg_integer(),   % Job ID on running cluster
+    end_time = 0 :: non_neg_integer(),
+    exit_code = 0 :: integer(),
+    error_msg = <<>> :: binary()
+}).
+
 %%%===================================================================
 %%% Legacy Type Definitions (for backwards compatibility)
 %%%===================================================================
