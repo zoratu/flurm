@@ -265,49 +265,49 @@ parse_tlc_lines([Line | Rest], State) ->
 %% @doc Parse a single TLC output line
 parse_tlc_line(Line, State) ->
     %% Check for model checking completion
-    case string:find(Line, "Model checking completed") of
-        nomatch -> ok;
+    State1 = case string:find(Line, "Model checking completed") of
+        nomatch -> State;
         _ -> State#{completed => true}
     end,
 
     %% Check for state count
-    case re:run(Line, "([0-9,]+) distinct states found", [{capture, [1], list}]) of
+    State2 = case re:run(Line, "([0-9,]+) distinct states found", [{capture, [1], list}]) of
         {match, [StatesStr]} ->
             States = list_to_integer(string:replace(StatesStr, ",", "", all)),
-            State#{states => States};
-        nomatch -> ok
+            State1#{states => States};
+        nomatch -> State1
     end,
 
     %% Check for invariant violation
-    case string:find(Line, "is violated") of
-        nomatch -> ok;
+    State3 = case string:find(Line, "is violated") of
+        nomatch -> State2;
         _ ->
             case re:run(Line, "Invariant ([^ ]+) is violated", [{capture, [1], list}]) of
                 {match, [InvName]} ->
-                    State#{error => {error, {invariant_violated, InvName, Line}}};
+                    State2#{error => {error, {invariant_violated, InvName, Line}}};
                 nomatch ->
                     case re:run(Line, "Property ([^ ]+)", [{capture, [1], list}]) of
                         {match, [PropName]} ->
-                            State#{error => {error, {property_violated, PropName, Line}}};
+                            State2#{error => {error, {property_violated, PropName, Line}}};
                         nomatch ->
-                            State#{error => {error, {invariant_violated, "unknown", Line}}}
+                            State2#{error => {error, {invariant_violated, "unknown", Line}}}
                     end
             end
     end,
 
     %% Check for deadlock
-    case string:find(Line, "Deadlock reached") of
-        nomatch -> ok;
-        _ -> State#{error => {error, {deadlock, Line}}}
+    State4 = case string:find(Line, "Deadlock reached") of
+        nomatch -> State3;
+        _ -> State3#{error => {error, {deadlock, Line}}}
     end,
 
     %% Check for TLC errors
     case string:find(Line, "Error:") of
-        nomatch -> State;
+        nomatch -> State4;
         _ ->
-            case maps:is_key(error, State) of
-                true -> State;  % Keep first error
-                false -> State#{error => {error, {tlc_error, Line}}}
+            case maps:is_key(error, State4) of
+                true -> State4;  % Keep first error
+                false -> State4#{error => {error, {tlc_error, Line}}}
             end
     end.
 
