@@ -46,8 +46,14 @@
 -record(state, {
     jobs = #{} :: #{job_id() => #job{}},
     job_counter = 1 :: pos_integer(),
-    persistence_mode = none :: ra | ets | none
+    persistence_mode = none :: ra | ets | none,
+    queue_check_timer :: reference() | undefined
 }).
+
+%% Message queue monitoring thresholds
+-define(QUEUE_WARNING_THRESHOLD, 1000).
+-define(QUEUE_CRITICAL_THRESHOLD, 10000).
+-define(QUEUE_CHECK_INTERVAL, 5000).  % Check every 5 seconds
 
 %%====================================================================
 %% API
@@ -112,7 +118,10 @@ init([]) ->
     {Jobs, Counter, Mode} = load_persisted_jobs(),
     lager:info("Job Manager started (persistence: ~p, loaded ~p jobs)",
                [Mode, maps:size(Jobs)]),
-    {ok, #state{jobs = Jobs, job_counter = Counter, persistence_mode = Mode}}.
+    %% Start message queue monitoring timer
+    TimerRef = erlang:send_after(?QUEUE_CHECK_INTERVAL, self(), check_message_queue),
+    {ok, #state{jobs = Jobs, job_counter = Counter, persistence_mode = Mode,
+                queue_check_timer = TimerRef}}.
 
 handle_call({submit_job, JobSpec}, _From, #state{jobs = Jobs, job_counter = Counter} = State) ->
     %% Check if this is an array job submission
@@ -324,10 +333,37 @@ handle_call(_Request, _From, State) ->
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
+handle_info(check_message_queue, State) ->
+    %% Check message queue length and log warnings if backpressure detected
+    QueueLen = case process_info(self(), message_queue_len) of
+        {message_queue_len, Len} -> Len;
+        undefined -> 0
+    end,
+    if
+        QueueLen >= ?QUEUE_CRITICAL_THRESHOLD ->
+            lager:error("CRITICAL: Job manager queue at ~p messages (threshold: ~p) - system overloaded",
+                       [QueueLen, ?QUEUE_CRITICAL_THRESHOLD]),
+            catch flurm_metrics:gauge(flurm_job_manager_queue_len, QueueLen);
+        QueueLen >= ?QUEUE_WARNING_THRESHOLD ->
+            lager:warning("Job manager queue at ~p messages (threshold: ~p) - backpressure detected",
+                         [QueueLen, ?QUEUE_WARNING_THRESHOLD]),
+            catch flurm_metrics:gauge(flurm_job_manager_queue_len, QueueLen);
+        true ->
+            ok
+    end,
+    %% Reschedule the check
+    TimerRef = erlang:send_after(?QUEUE_CHECK_INTERVAL, self(), check_message_queue),
+    {noreply, State#state{queue_check_timer = TimerRef}};
+
 handle_info(_Info, State) ->
     {noreply, State}.
 
-terminate(_Reason, _State) ->
+terminate(_Reason, #state{queue_check_timer = TimerRef}) ->
+    %% Cancel queue monitoring timer
+    case TimerRef of
+        undefined -> ok;
+        Ref -> erlang:cancel_timer(Ref)
+    end,
     ok.
 
 %%====================================================================

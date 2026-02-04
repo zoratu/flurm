@@ -51,6 +51,19 @@ start(_StartType, _StartArgs) ->
     log(info, "Starting FLURM Controller (flurmctld)"),
     log(info, "========================================"),
 
+    %% Validate configuration before proceeding
+    case validate_config() of
+        ok ->
+            start_validated();
+        {error, ConfigErrors} ->
+            lists:foreach(fun(Err) ->
+                log(error, "Configuration error: ~s", [Err])
+            end, ConfigErrors),
+            {error, {config_validation_failed, ConfigErrors}}
+    end.
+
+%% @doc Continue startup after config validation passes.
+start_validated() ->
     %% Log configuration
     log_startup_config(),
 
@@ -101,9 +114,41 @@ prep_stop(State) ->
     _ = flurm_controller_sup:stop_listener(),
     _ = flurm_controller_sup:stop_node_listener(),
     _ = flurm_controller_sup:stop_http_api(),
-    %% Allow time for in-flight requests to complete
-    timer:sleep(1000),
+    %% Allow time for in-flight requests to complete (configurable)
+    DrainTimeout = get_config(shutdown_drain_timeout, 5000),
+    log(info, "Waiting ~p ms for in-flight requests to drain...", [DrainTimeout]),
+    wait_for_connections_to_drain(DrainTimeout),
     State.
+
+%% @doc Wait for connections to drain with timeout.
+wait_for_connections_to_drain(Timeout) ->
+    Start = erlang:monotonic_time(millisecond),
+    wait_for_connections_to_drain(Start, Timeout).
+
+wait_for_connections_to_drain(Start, Timeout) ->
+    Elapsed = erlang:monotonic_time(millisecond) - Start,
+    case Elapsed >= Timeout of
+        true ->
+            %% Timeout reached, check final state
+            case flurm_controller_sup:listener_info() of
+                {error, not_found} ->
+                    log(info, "All listeners stopped");
+                #{active_connections := 0} ->
+                    log(info, "All connections drained");
+                #{active_connections := N} ->
+                    log(warning, "Timeout: ~p connections still active", [N])
+            end;
+        false ->
+            case flurm_controller_sup:listener_info() of
+                {error, not_found} ->
+                    ok;  % Listener already stopped
+                #{active_connections := 0} ->
+                    ok;  % All drained
+                #{active_connections := _N} ->
+                    timer:sleep(100),  % Wait 100ms and check again
+                    wait_for_connections_to_drain(Start, Timeout)
+            end
+    end.
 
 %% @doc Stop the FLURM controller application.
 stop(_State) ->
@@ -165,6 +210,94 @@ cluster_status() ->
 %%====================================================================
 %% Internal functions
 %%====================================================================
+
+%% @doc Validate configuration before startup.
+%% Returns ok if all configuration is valid, or {error, [Errors]} with
+%% a list of human-readable error messages.
+-spec validate_config() -> ok | {error, [string()]}.
+validate_config() ->
+    Validators = [
+        fun validate_listen_port/0,
+        fun validate_listen_address/0,
+        fun validate_num_acceptors/0,
+        fun validate_max_connections/0,
+        fun validate_ra_data_dir/0,
+        fun validate_http_api_port/0
+    ],
+    Errors = lists:filtermap(fun(V) ->
+        case V() of
+            ok -> false;
+            {error, Msg} -> {true, Msg}
+        end
+    end, Validators),
+    case Errors of
+        [] -> ok;
+        _ -> {error, Errors}
+    end.
+
+%% Configuration validators
+validate_listen_port() ->
+    Port = get_config(listen_port, 6817),
+    case is_integer(Port) andalso Port >= 1 andalso Port =< 65535 of
+        true -> ok;
+        false -> {error, io_lib:format("listen_port must be 1-65535, got: ~p", [Port])}
+    end.
+
+validate_listen_address() ->
+    Addr = get_config(listen_address, "0.0.0.0"),
+    case Addr of
+        A when is_list(A) ->
+            case inet:parse_address(A) of
+                {ok, _} -> ok;
+                {error, _} -> {error, io_lib:format("listen_address invalid: ~s", [A])}
+            end;
+        _ ->
+            {error, io_lib:format("listen_address must be a string, got: ~p", [Addr])}
+    end.
+
+validate_num_acceptors() ->
+    N = get_config(num_acceptors, 10),
+    case is_integer(N) andalso N >= 1 andalso N =< 1000 of
+        true -> ok;
+        false -> {error, io_lib:format("num_acceptors must be 1-1000, got: ~p", [N])}
+    end.
+
+validate_max_connections() ->
+    Max = get_config(max_connections, 1000),
+    case is_integer(Max) andalso Max >= 10 andalso Max =< 100000 of
+        true -> ok;
+        false -> {error, io_lib:format("max_connections must be 10-100000, got: ~p", [Max])}
+    end.
+
+validate_ra_data_dir() ->
+    Dir = get_config(ra_data_dir, "/var/lib/flurm/ra"),
+    ClusterNodes = get_config(cluster_nodes, [node()]),
+    case length(ClusterNodes) > 1 of
+        false ->
+            ok;  % Ra not used in single-node mode
+        true ->
+            case filelib:is_dir(Dir) of
+                true -> ok;
+                false ->
+                    %% Try to create the directory
+                    case filelib:ensure_dir(filename:join(Dir, "dummy")) of
+                        ok -> ok;
+                        {error, Reason} ->
+                            {error, io_lib:format("ra_data_dir ~s cannot be created: ~p", [Dir, Reason])}
+                    end
+            end
+    end.
+
+validate_http_api_port() ->
+    case get_config(enable_bridge_api, true) of
+        false -> ok;
+        true ->
+            Port = get_config(http_api_port, 6820),
+            case is_integer(Port) andalso Port >= 1 andalso Port =< 65535 of
+                true -> ok;
+                false -> {error, io_lib:format("http_api_port must be 1-65535, got: ~p", [Port])}
+            end
+    end.
 
 %% @doc Log configuration at startup.
 log_startup_config() ->
@@ -305,10 +438,9 @@ log(Level, Fmt) ->
     log(Level, Fmt, []).
 
 log(Level, Fmt, Args) ->
-    Msg = io_lib:format(Fmt, Args),
     case Level of
-        debug -> ok;  % Skip debug messages
-        info -> error_logger:info_msg("[flurmctld] ~s~n", [Msg]);
-        warning -> error_logger:warning_msg("[flurmctld] ~s~n", [Msg]);
-        error -> error_logger:error_msg("[flurmctld] ~s~n", [Msg])
+        debug -> lager:debug(Fmt, Args);
+        info -> lager:info(Fmt, Args);
+        warning -> lager:warning(Fmt, Args);
+        error -> lager:error(Fmt, Args)
     end.

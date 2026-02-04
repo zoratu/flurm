@@ -248,6 +248,16 @@ init([]) ->
 
     %% Base children - always started
     BaseChildren = [
+        %% Connection Limiter - tracks per-peer connection limits
+        %% Must start early as it's used by acceptors
+        #{
+            id => flurm_connection_limiter,
+            start => {flurm_connection_limiter, start_link, []},
+            restart => permanent,
+            shutdown => 5000,
+            type => worker,
+            modules => [flurm_connection_limiter]
+        },
         %% Metrics Server - collects Prometheus metrics
         #{
             id => flurm_metrics,
@@ -471,10 +481,9 @@ parse_address(Address) when is_tuple(Address) ->
 
 %% Logging helpers
 log(Level, Fmt, Args) ->
-    Msg = io_lib:format(Fmt, Args),
     case Level of
-        debug -> ok;
-        info -> error_logger:info_msg("[flurm_controller_sup] ~s~n", [Msg]);
-        warning -> error_logger:warning_msg("[flurm_controller_sup] ~s~n", [Msg]);
-        error -> error_logger:error_msg("[flurm_controller_sup] ~s~n", [Msg])
+        debug -> lager:debug(Fmt, Args);
+        info -> lager:info(Fmt, Args);
+        warning -> lager:warning(Fmt, Args);
+        error -> lager:error(Fmt, Args)
     end.

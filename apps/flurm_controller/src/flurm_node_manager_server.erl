@@ -41,8 +41,14 @@
 
 -define(HEARTBEAT_TIMEOUT, 30000). % 30 seconds
 
+%% Message queue monitoring thresholds
+-define(QUEUE_WARNING_THRESHOLD, 1000).
+-define(QUEUE_CRITICAL_THRESHOLD, 10000).
+-define(QUEUE_CHECK_INTERVAL, 5000).  % Check every 5 seconds
+
 -record(state, {
-    nodes = #{} :: #{binary() => #node{}}
+    nodes = #{} :: #{binary() => #node{}},
+    queue_check_timer :: reference() | undefined
 }).
 
 %%====================================================================
@@ -232,9 +238,11 @@ init([]) ->
     lager:info("Node Manager started"),
     %% Start heartbeat checker
     erlang:send_after(?HEARTBEAT_TIMEOUT, self(), check_heartbeats),
+    %% Start message queue monitoring timer
+    QueueTimerRef = erlang:send_after(?QUEUE_CHECK_INTERVAL, self(), check_message_queue),
     %% Subscribe to node config changes
     catch flurm_config_server:subscribe_changes([nodes]),
-    {ok, #state{}}.
+    {ok, #state{queue_check_timer = QueueTimerRef}}.
 
 handle_call({register_node, NodeSpec}, _From, #state{nodes = Nodes} = State) ->
     Node = flurm_core:new_node(NodeSpec),
@@ -744,10 +752,37 @@ handle_info({config_changed, _Key, _OldValue, _NewValue}, State) ->
     %% Ignore other config changes
     {noreply, State};
 
+handle_info(check_message_queue, State) ->
+    %% Check message queue length and log warnings if backpressure detected
+    QueueLen = case process_info(self(), message_queue_len) of
+        {message_queue_len, Len} -> Len;
+        undefined -> 0
+    end,
+    if
+        QueueLen >= ?QUEUE_CRITICAL_THRESHOLD ->
+            lager:error("CRITICAL: Node manager queue at ~p messages (threshold: ~p) - system overloaded",
+                       [QueueLen, ?QUEUE_CRITICAL_THRESHOLD]),
+            catch flurm_metrics:gauge(flurm_node_manager_queue_len, QueueLen);
+        QueueLen >= ?QUEUE_WARNING_THRESHOLD ->
+            lager:warning("Node manager queue at ~p messages (threshold: ~p) - backpressure detected",
+                         [QueueLen, ?QUEUE_WARNING_THRESHOLD]),
+            catch flurm_metrics:gauge(flurm_node_manager_queue_len, QueueLen);
+        true ->
+            ok
+    end,
+    %% Reschedule the check
+    TimerRef = erlang:send_after(?QUEUE_CHECK_INTERVAL, self(), check_message_queue),
+    {noreply, State#state{queue_check_timer = TimerRef}};
+
 handle_info(_Info, State) ->
     {noreply, State}.
 
-terminate(_Reason, _State) ->
+terminate(_Reason, #state{queue_check_timer = TimerRef}) ->
+    %% Cancel queue monitoring timer
+    case TimerRef of
+        undefined -> ok;
+        Ref -> erlang:cancel_timer(Ref)
+    end,
     ok.
 
 %%====================================================================

@@ -201,10 +201,9 @@ terminate(_Reason, _State) ->
 %%====================================================================
 
 log(Level, Fmt, Args) ->
-    Msg = io_lib:format(Fmt, Args),
     case Level of
-        debug -> ok;
-        info -> error_logger:info_msg("[node_conn_mgr] ~s~n", [Msg]);
-        warning -> error_logger:warning_msg("[node_conn_mgr] ~s~n", [Msg]);
-        error -> error_logger:error_msg("[node_conn_mgr] ~s~n", [Msg])
+        debug -> lager:debug(Fmt, Args);
+        info -> lager:info(Fmt, Args);
+        warning -> lager:warning(Fmt, Args);
+        error -> lager:error(Fmt, Args)
     end.

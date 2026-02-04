@@ -51,6 +51,12 @@
 -define(LENGTH_PREFIX_SIZE, 4).
 %% Receive timeout (30 seconds)
 -define(RECV_TIMEOUT, 30000).
+%% Maximum buffer size to prevent memory exhaustion (10 MB)
+%% SLURM messages should never exceed a few MB; this protects against
+%% malicious or malformed clients sending unbounded data
+-define(MAX_BUFFER_SIZE, 10_000_000).
+%% Handler timeout (60 seconds) - prevents handlers from blocking forever
+-define(HANDLER_TIMEOUT, 60000).
 
 %%====================================================================
 %% Ranch Protocol Callbacks
@@ -64,28 +70,50 @@ start_link(Ref, Transport, Opts) ->
     {ok, Pid}.
 
 %% @doc Initialize the connection handler.
-%% Performs Ranch handshake and enters the receive loop.
+%% Performs Ranch handshake, checks per-peer limits, and enters the receive loop.
 -spec init(ranch:ref(), module(), map()) -> ok | {error, term()}.
 init(Ref, Transport, Opts) ->
     case ranch:handshake(Ref) of
         {ok, Socket} ->
-            lager:debug("New SLURM client connection accepted"),
-            %% Set socket options for low latency
-            ok = Transport:setopts(Socket, [
-                {nodelay, true},      % TCP_NODELAY for low latency
-                {keepalive, true},    % Enable TCP keepalive
-                {active, false}       % Passive mode for controlled receives
-            ]),
-            %% Initialize connection state
-            State = #{
-                socket => Socket,
-                transport => Transport,
-                opts => Opts,
-                buffer => <<>>,
-                request_count => 0,
-                start_time => erlang:system_time(millisecond)
-            },
-            loop(State);
+            %% Get peer IP for connection limiting
+            case inet:peername(Socket) of
+                {ok, {PeerIP, _PeerPort}} ->
+                    %% Check if this peer is allowed (under connection limit)
+                    case flurm_connection_limiter:connection_allowed(PeerIP) of
+                        true ->
+                            %% Record the connection
+                            flurm_connection_limiter:connection_opened(PeerIP),
+                            lager:debug("New SLURM client connection accepted from ~s",
+                                       [inet:ntoa(PeerIP)]),
+                            %% Set socket options for low latency
+                            ok = Transport:setopts(Socket, [
+                                {nodelay, true},      % TCP_NODELAY for low latency
+                                {keepalive, true},    % Enable TCP keepalive
+                                {active, false}       % Passive mode for controlled receives
+                            ]),
+                            %% Initialize connection state
+                            State = #{
+                                socket => Socket,
+                                transport => Transport,
+                                opts => Opts,
+                                buffer => <<>>,
+                                request_count => 0,
+                                start_time => erlang:system_time(millisecond),
+                                peer_ip => PeerIP
+                            },
+                            loop(State);
+                        false ->
+                            %% Peer has too many connections
+                            lager:warning("Rejecting connection from ~s: per-peer limit exceeded",
+                                         [inet:ntoa(PeerIP)]),
+                            Transport:close(Socket),
+                            {error, peer_limit_exceeded}
+                    end;
+                {error, Reason} ->
+                    lager:warning("Failed to get peer address: ~p", [Reason]),
+                    Transport:close(Socket),
+                    {error, Reason}
+            end;
         {error, Reason} ->
             lager:warning("Ranch handshake failed: ~p", [Reason]),
             {error, Reason}
@@ -118,12 +146,21 @@ loop(#{socket := Socket, transport := Transport, buffer := Buffer} = State) ->
                               [V, F, MT, BL]);
                 false -> ok
             end,
-            NewBuffer = <<Buffer/binary, Data/binary>>,
-            case process_buffer(NewBuffer, State) of
-                {continue, UpdatedState} ->
-                    loop(UpdatedState);
-                {close, _Reason} ->
-                    close_connection(State)
+            %% Check buffer size before accumulating to prevent memory exhaustion
+            NewBufferSize = byte_size(Buffer) + byte_size(Data),
+            case NewBufferSize > ?MAX_BUFFER_SIZE of
+                true ->
+                    lager:warning("Buffer overflow: ~p bytes exceeds limit of ~p, closing connection",
+                                  [NewBufferSize, ?MAX_BUFFER_SIZE]),
+                    close_connection(State);
+                false ->
+                    NewBuffer = <<Buffer/binary, Data/binary>>,
+                    case process_buffer(NewBuffer, State) of
+                        {continue, UpdatedState} ->
+                            loop(UpdatedState);
+                        {close, _Reason} ->
+                            close_connection(State)
+                    end
             end;
         {error, closed} ->
             lager:debug("Client connection closed normally"),
@@ -209,8 +246,8 @@ handle_message(MessageBin, #{socket := Socket, transport := Transport,
                                  flurm_protocol_codec:message_type_name(Header#slurm_header.msg_type),
                                  maps:get(hostname, ExtraInfo2, <<"unknown">>),
                                  AuthResult]),
-                    %% Route to handler
-            case flurm_controller_handler:handle(Header, Body) of
+                    %% Route to handler with timeout protection
+            case call_handler_with_timeout(Header, Body) of
                 {ok, ResponseType, ResponseBody} ->
                     send_response(Socket, Transport, ResponseType, ResponseBody),
                     {ok, State#{request_count => Count + 1}};
@@ -263,6 +300,39 @@ handle_message(MessageBin, #{socket := Socket, transport := Transport,
             ErrorResponse = #slurm_rc_response{return_code = -1},
             send_response(Socket, Transport, ?RESPONSE_SLURM_RC, ErrorResponse),
             {error, Reason}
+    end.
+
+%% @doc Call the handler with timeout protection.
+%% Spawns the handler in a separate process and monitors it to enforce timeout.
+%% This prevents slow or hung handlers from blocking the connection indefinitely.
+-spec call_handler_with_timeout(term(), term()) ->
+    {ok, non_neg_integer(), term()} |
+    {ok, non_neg_integer(), term(), map()} |
+    {error, term()}.
+call_handler_with_timeout(Header, Body) ->
+    Parent = self(),
+    Ref = make_ref(),
+    {Pid, MonRef} = spawn_monitor(fun() ->
+        Result = flurm_controller_handler:handle(Header, Body),
+        Parent ! {handler_result, Ref, Result}
+    end),
+    receive
+        {handler_result, Ref, Result} ->
+            erlang:demonitor(MonRef, [flush]),
+            Result;
+        {'DOWN', MonRef, process, Pid, Reason} ->
+            lager:error("Handler process crashed: ~p", [Reason]),
+            {error, {handler_crash, Reason}}
+    after ?HANDLER_TIMEOUT ->
+        lager:error("Handler timeout after ~p ms, killing handler process", [?HANDLER_TIMEOUT]),
+        exit(Pid, kill),
+        erlang:demonitor(MonRef, [flush]),
+        %% Drain the result message if it arrives late
+        receive
+            {handler_result, Ref, _} -> ok
+        after 0 -> ok
+        end,
+        {error, handler_timeout}
     end.
 
 %% @doc Send a response message back to the client.
@@ -693,9 +763,14 @@ send_srun_ping_message(Socket, JobId) ->
 %% @doc Close the connection gracefully.
 -spec close_connection(map()) -> ok.
 close_connection(#{socket := Socket, transport := Transport,
-                   request_count := Count, start_time := StartTime}) ->
+                   request_count := Count, start_time := StartTime} = State) ->
     Duration = erlang:system_time(millisecond) - StartTime,
     lager:debug("Closing connection after ~p requests, duration: ~p ms",
                 [Count, Duration]),
+    %% Decrement connection count for this peer
+    case maps:get(peer_ip, State, undefined) of
+        undefined -> ok;
+        PeerIP -> flurm_connection_limiter:connection_closed(PeerIP)
+    end,
     Transport:close(Socket),
     ok.

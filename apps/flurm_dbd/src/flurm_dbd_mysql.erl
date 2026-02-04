@@ -81,9 +81,12 @@
 -define(CONNECT_TIMEOUT, 10000).
 -define(QUERY_TIMEOUT, 30000).
 
-%% Retry configuration
+%% Retry configuration with exponential backoff
 -define(MAX_RETRIES, 3).
 -define(RETRY_DELAY, 1000).
+-define(INITIAL_RECONNECT_DELAY, 1000).   % 1 second
+-define(MAX_RECONNECT_DELAY, 60000).      % 60 seconds
+-define(MAX_RECONNECT_ATTEMPTS, 10).      % Stop trying after 10 failures
 
 -record(state, {
     connection :: pid() | undefined,
@@ -91,7 +94,9 @@
     connected :: boolean(),
     schema_version :: non_neg_integer() | undefined,
     last_error :: term(),
-    stats :: map()
+    stats :: map(),
+    reconnect_attempts = 0 :: non_neg_integer(),
+    current_reconnect_delay = ?INITIAL_RECONNECT_DELAY :: pos_integer()
 }).
 
 %%====================================================================
@@ -330,28 +335,57 @@ handle_call(_Request, _From, State) ->
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
+handle_info(auto_connect, #state{reconnect_attempts = Attempts} = State)
+  when Attempts >= ?MAX_RECONNECT_ATTEMPTS ->
+    lager:error("Max reconnection attempts (~p) reached for slurmdbd MySQL. Giving up.",
+               [?MAX_RECONNECT_ATTEMPTS]),
+    Stats = maps:put(reconnect_gave_up, true, State#state.stats),
+    {noreply, State#state{stats = Stats}};
+
 handle_info(auto_connect, State) ->
     case maps:size(State#state.config) > 0 of
         true ->
             case do_connect(State#state.config) of
                 {ok, Conn} ->
-                    lager:info("Auto-connected to slurmdbd MySQL"),
-                    {noreply, State#state{connection = Conn, connected = true}};
+                    lager:info("Auto-connected to slurmdbd MySQL (after ~p attempts)",
+                              [State#state.reconnect_attempts]),
+                    {noreply, State#state{
+                        connection = Conn,
+                        connected = true,
+                        reconnect_attempts = 0,
+                        current_reconnect_delay = ?INITIAL_RECONNECT_DELAY
+                    }};
                 {error, Reason} ->
-                    lager:warning("Auto-connect to slurmdbd MySQL failed: ~p", [Reason]),
-                    %% Retry after delay
-                    erlang:send_after(5000, self(), auto_connect),
-                    {noreply, State#state{last_error = Reason}}
+                    NewAttempts = State#state.reconnect_attempts + 1,
+                    %% Exponential backoff with jitter
+                    BaseDelay = min(State#state.current_reconnect_delay * 2, ?MAX_RECONNECT_DELAY),
+                    Jitter = rand:uniform(BaseDelay div 4),  % Up to 25% jitter
+                    NextDelay = BaseDelay + Jitter,
+                    lager:warning("Auto-connect to slurmdbd MySQL failed (attempt ~p/~p): ~p. "
+                                 "Retrying in ~p ms",
+                                 [NewAttempts, ?MAX_RECONNECT_ATTEMPTS, Reason, NextDelay]),
+                    erlang:send_after(NextDelay, self(), auto_connect),
+                    {noreply, State#state{
+                        last_error = Reason,
+                        reconnect_attempts = NewAttempts,
+                        current_reconnect_delay = NextDelay
+                    }}
             end;
         false ->
             {noreply, State}
     end;
 
 handle_info({'DOWN', _Ref, process, Pid, Reason}, #state{connection = Pid} = State) ->
-    lager:warning("slurmdbd MySQL connection lost: ~p", [Reason]),
-    %% Try to reconnect
-    self() ! auto_connect,
-    {noreply, State#state{connection = undefined, connected = false, last_error = Reason}};
+    lager:warning("slurmdbd MySQL connection lost: ~p. Will attempt to reconnect.", [Reason]),
+    %% Reset reconnect delay and start reconnection
+    erlang:send_after(?INITIAL_RECONNECT_DELAY, self(), auto_connect),
+    {noreply, State#state{
+        connection = undefined,
+        connected = false,
+        last_error = Reason,
+        reconnect_attempts = 0,
+        current_reconnect_delay = ?INITIAL_RECONNECT_DELAY
+    }};
 
 handle_info(_Info, State) ->
     {noreply, State}.
