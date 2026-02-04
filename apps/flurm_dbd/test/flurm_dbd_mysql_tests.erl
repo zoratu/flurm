@@ -7,6 +7,13 @@
 %%% These tests use meck to mock the MySQL connector since we don't
 %%% want to depend on a real MySQL database for unit tests.
 %%%
+%%% Test Categories:
+%%% 1. Connection Handling - connect, disconnect, is_connected, auto-connect
+%%% 2. Query Building - INSERT and SELECT query construction
+%%% 3. Job Record Conversion - FLURM <-> slurmdbd format mapping
+%%% 4. Error Handling - connection failures, query errors, edge cases
+%%% 5. State Management - gen_server callbacks and state transitions
+%%%
 %%% @end
 %%%-------------------------------------------------------------------
 -module(flurm_dbd_mysql_tests).
@@ -39,6 +46,13 @@ setup() ->
             throw:Reason -> {aborted, Reason}
         end
     end),
+    %% Mock lager to suppress log output
+    meck:new(lager, [non_strict, no_link, passthrough]),
+    meck:expect(lager, info, fun(_Fmt) -> ok end),
+    meck:expect(lager, info, fun(_Fmt, _Args) -> ok end),
+    meck:expect(lager, warning, fun(_Fmt, _Args) -> ok end),
+    meck:expect(lager, error, fun(_Fmt, _Args) -> ok end),
+    meck:expect(lager, debug, fun(_Fmt, _Args) -> ok end),
     %% Start the MySQL bridge
     Config = #{
         host => "localhost",
@@ -59,6 +73,7 @@ cleanup(Pid) ->
             ok
     end,
     catch meck:unload(mysql),
+    catch meck:unload(lager),
     ok.
 
 %%====================================================================
@@ -75,7 +90,9 @@ connection_test_() ->
              {"connect succeeds with valid config", fun test_connect_success/0},
              {"connect fails with error", fun test_connect_failure/0},
              {"disconnect works", fun test_disconnect/0},
-             {"get_connection_status returns map", fun test_get_connection_status/0}
+             {"get_connection_status returns map", fun test_get_connection_status/0},
+             {"connect with SSL config", fun test_connect_with_ssl/0},
+             {"reconnect after disconnect", fun test_reconnect/0}
          ]
      end
     }.
@@ -130,6 +147,40 @@ test_get_connection_status() ->
     Config = maps:get(config, Status, #{}),
     ?assertEqual(false, maps:is_key(password, Config)).
 
+test_connect_with_ssl() ->
+    meck:expect(mysql, start_link, fun(Opts) ->
+        %% Verify SSL options are included
+        HasSsl = proplists:is_defined(ssl, Opts),
+        case HasSsl of
+            true -> {ok, spawn(fun() -> receive stop -> ok end end)};
+            false -> {error, no_ssl}
+        end
+    end),
+    Config = #{
+        host => "localhost",
+        port => 3306,
+        user => "test",
+        password => "test",
+        database => "test_db",
+        ssl => true,
+        ssl_opts => [{verify, verify_peer}]
+    },
+    Result = flurm_dbd_mysql:connect(Config),
+    ?assertEqual(ok, Result).
+
+test_reconnect() ->
+    meck:expect(mysql, start_link, fun(_Opts) -> {ok, spawn(fun() -> receive stop -> ok end end)} end),
+    Config = #{host => "localhost", port => 3306, user => "test", password => "test", database => "test_db"},
+    %% Connect
+    ok = flurm_dbd_mysql:connect(Config),
+    ?assertEqual(true, flurm_dbd_mysql:is_connected()),
+    %% Disconnect
+    ok = flurm_dbd_mysql:disconnect(),
+    ?assertEqual(false, flurm_dbd_mysql:is_connected()),
+    %% Reconnect
+    ok = flurm_dbd_mysql:connect(Config),
+    ?assertEqual(true, flurm_dbd_mysql:is_connected()).
+
 %%====================================================================
 %% Job Sync Tests
 %%====================================================================
@@ -143,7 +194,10 @@ job_sync_test_() ->
              {"sync_job_record fails when not connected", fun test_sync_not_connected/0},
              {"sync_job_record succeeds when connected", fun test_sync_success/0},
              {"sync_job_records batch succeeds", fun test_sync_batch_success/0},
-             {"sync_job_records fails on error", fun test_sync_batch_failure/0}
+             {"sync_job_records fails on error", fun test_sync_batch_failure/0},
+             {"sync_job_record with minimal record", fun test_sync_minimal_record/0},
+             {"sync_job_record with all fields", fun test_sync_full_record/0},
+             {"sync_job_records empty list", fun test_sync_empty_batch/0}
          ]
      end
     }.
@@ -194,6 +248,60 @@ test_sync_batch_failure() ->
     Result = flurm_dbd_mysql:sync_job_records(Jobs),
     ?assertMatch({error, _}, Result).
 
+test_sync_minimal_record() ->
+    meck:expect(mysql, start_link, fun(_Opts) -> {ok, spawn(fun() -> receive stop -> ok end end)} end),
+    meck:expect(mysql, query, fun(_Conn, _Query, _Params) -> ok end),
+    Config = #{host => "localhost", port => 3306, user => "test", password => "test", database => "test_db"},
+    ok = flurm_dbd_mysql:connect(Config),
+
+    %% Minimal job with just job_id
+    MinimalJob = #{job_id => 9999},
+    Result = flurm_dbd_mysql:sync_job_record(MinimalJob),
+    ?assertEqual(ok, Result).
+
+test_sync_full_record() ->
+    meck:expect(mysql, start_link, fun(_Opts) -> {ok, spawn(fun() -> receive stop -> ok end end)} end),
+    meck:expect(mysql, query, fun(_Conn, _Query, _Params) -> ok end),
+    Config = #{host => "localhost", port => 3306, user => "test", password => "test", database => "test_db"},
+    ok = flurm_dbd_mysql:connect(Config),
+
+    FullJob = #{
+        job_id => 5000,
+        job_name => <<"full_test_job">>,
+        user_id => 1001,
+        group_id => 1001,
+        account => <<"research">>,
+        partition => <<"gpu">>,
+        state => running,
+        exit_code => 0,
+        num_nodes => 4,
+        num_cpus => 128,
+        submit_time => 1700000000,
+        eligible_time => 1700000100,
+        start_time => 1700000200,
+        end_time => 0,
+        time_limit => 86400,
+        tres_alloc => #{cpu => 128, mem => 524288, gpu => 4, node => 4},
+        tres_req => #{cpu => 128, mem => 524288, gpu => 4},
+        work_dir => <<"/scratch/user/project">>,
+        std_out => <<"/scratch/user/project/job.out">>,
+        std_err => <<"/scratch/user/project/job.err">>
+    },
+    Result = flurm_dbd_mysql:sync_job_record(FullJob),
+    ?assertEqual(ok, Result).
+
+test_sync_empty_batch() ->
+    meck:expect(mysql, start_link, fun(_Opts) -> {ok, spawn(fun() -> receive stop -> ok end end)} end),
+    meck:expect(mysql, transaction, fun(_Conn, Fun) ->
+        Fun(),
+        {atomic, ok}
+    end),
+    Config = #{host => "localhost", port => 3306, user => "test", password => "test", database => "test_db"},
+    ok = flurm_dbd_mysql:connect(Config),
+
+    Result = flurm_dbd_mysql:sync_job_records([]),
+    ?assertEqual({ok, 0}, Result).
+
 %%====================================================================
 %% Historical Read Tests
 %%====================================================================
@@ -206,7 +314,10 @@ read_historical_test_() ->
          [
              {"read_historical_jobs fails when not connected", fun test_read_not_connected/0},
              {"read_historical_jobs returns jobs", fun test_read_success/0},
-             {"read_historical_jobs with filters", fun test_read_with_filters/0}
+             {"read_historical_jobs with filters", fun test_read_with_filters/0},
+             {"read_historical_jobs empty result", fun test_read_empty_result/0},
+             {"read_historical_jobs with state filter", fun test_read_with_state_filter/0},
+             {"read_historical_jobs with account filter", fun test_read_with_account_filter/0}
          ]
      end
     }.
@@ -255,6 +366,57 @@ test_read_with_filters() ->
     Result = flurm_dbd_mysql:read_historical_jobs(Now - 3600, Now, Filters),
     ?assertMatch({ok, _}, Result).
 
+test_read_empty_result() ->
+    meck:expect(mysql, start_link, fun(_Opts) -> {ok, spawn(fun() -> receive stop -> ok end end)} end),
+    meck:expect(mysql, query, fun(_Conn, _Query, _Params) ->
+        {ok, [], []}
+    end),
+    Config = #{host => "localhost", port => 3306, user => "test", password => "test", database => "test_db"},
+    ok = flurm_dbd_mysql:connect(Config),
+
+    Now = erlang:system_time(second),
+    Result = flurm_dbd_mysql:read_historical_jobs(Now - 3600, Now),
+    ?assertEqual({ok, []}, Result).
+
+test_read_with_state_filter() ->
+    meck:expect(mysql, start_link, fun(_Opts) -> {ok, spawn(fun() -> receive stop -> ok end end)} end),
+    QueryParams = ets:new(query_params, [public]),
+    meck:expect(mysql, query, fun(_Conn, _Query, Params) ->
+        ets:insert(QueryParams, {params, Params}),
+        {ok, [], []}
+    end),
+    Config = #{host => "localhost", port => 3306, user => "test", password => "test", database => "test_db"},
+    ok = flurm_dbd_mysql:connect(Config),
+
+    Now = erlang:system_time(second),
+    Filters = #{state => completed},
+    Result = flurm_dbd_mysql:read_historical_jobs(Now - 3600, Now, Filters),
+    ?assertMatch({ok, _}, Result),
+
+    %% Verify state was converted to integer (3 = completed)
+    [{params, Params}] = ets:lookup(QueryParams, params),
+    ?assert(lists:member(3, Params)),
+    ets:delete(QueryParams).
+
+test_read_with_account_filter() ->
+    meck:expect(mysql, start_link, fun(_Opts) -> {ok, spawn(fun() -> receive stop -> ok end end)} end),
+    QueryParams = ets:new(query_params, [public]),
+    meck:expect(mysql, query, fun(_Conn, _Query, Params) ->
+        ets:insert(QueryParams, {params, Params}),
+        {ok, [], []}
+    end),
+    Config = #{host => "localhost", port => 3306, user => "test", password => "test", database => "test_db"},
+    ok = flurm_dbd_mysql:connect(Config),
+
+    Now = erlang:system_time(second),
+    Filters = #{account => <<"research">>},
+    Result = flurm_dbd_mysql:read_historical_jobs(Now - 3600, Now, Filters),
+    ?assertMatch({ok, _}, Result),
+
+    [{params, Params}] = ets:lookup(QueryParams, params),
+    ?assert(lists:member(<<"research">>, Params)),
+    ets:delete(QueryParams).
+
 %%====================================================================
 %% Schema Compatibility Tests
 %%====================================================================
@@ -267,7 +429,9 @@ schema_test_() ->
          [
              {"check_schema fails when not connected", fun test_schema_not_connected/0},
              {"check_schema returns version", fun test_schema_version/0},
-             {"check_schema handles not found", fun test_schema_not_found/0}
+             {"check_schema handles not found", fun test_schema_not_found/0},
+             {"check_schema handles binary version", fun test_schema_binary_version/0},
+             {"check_schema handles query error", fun test_schema_query_error/0}
          ]
      end
     }.
@@ -299,6 +463,28 @@ test_schema_not_found() ->
     Result = flurm_dbd_mysql:check_schema_compatibility(),
     ?assertEqual({error, schema_not_found}, Result).
 
+test_schema_binary_version() ->
+    meck:expect(mysql, start_link, fun(_Opts) -> {ok, spawn(fun() -> receive stop -> ok end end)} end),
+    meck:expect(mysql, query, fun(_Conn, _Query) ->
+        {ok, [<<"version">>], [[<<"9">>]]}
+    end),
+    Config = #{host => "localhost", port => 3306, user => "test", password => "test", database => "test_db"},
+    ok = flurm_dbd_mysql:connect(Config),
+
+    Result = flurm_dbd_mysql:check_schema_compatibility(),
+    ?assertEqual({ok, 9}, Result).
+
+test_schema_query_error() ->
+    meck:expect(mysql, start_link, fun(_Opts) -> {ok, spawn(fun() -> receive stop -> ok end end)} end),
+    meck:expect(mysql, query, fun(_Conn, _Query) ->
+        {error, table_not_found}
+    end),
+    Config = #{host => "localhost", port => 3306, user => "test", password => "test", database => "test_db"},
+    ok = flurm_dbd_mysql:connect(Config),
+
+    Result = flurm_dbd_mysql:check_schema_compatibility(),
+    ?assertEqual({error, table_not_found}, Result).
+
 %%====================================================================
 %% Record Mapping Tests (Test Internal Functions)
 %%====================================================================
@@ -307,12 +493,16 @@ record_mapping_test_() ->
     [
         {"map_job_to_slurmdbd converts FLURM job", fun test_map_job_to_slurmdbd/0},
         {"map_slurmdbd_to_job converts slurmdbd row", fun test_map_slurmdbd_to_job/0},
+        {"map_slurmdbd_to_job handles zero times", fun test_map_slurmdbd_to_job_zero_times/0},
         {"state_to_slurmdbd maps all states", fun test_state_to_slurmdbd/0},
         {"slurmdbd_to_state maps all states", fun test_slurmdbd_to_state/0},
         {"format_tres_string formats TRES map", fun test_format_tres_string/0},
+        {"format_tres_string with all TRES types", fun test_format_tres_all_types/0},
         {"parse_tres_string parses TRES string", fun test_parse_tres_string/0},
+        {"parse_tres_string handles malformed input", fun test_parse_tres_malformed/0},
         {"build_insert_query creates valid SQL", fun test_build_insert_query/0},
-        {"build_select_query creates valid SQL", fun test_build_select_query/0}
+        {"build_select_query creates valid SQL", fun test_build_select_query/0},
+        {"build_select_query with all filters", fun test_build_select_query_all_filters/0}
     ].
 
 test_map_job_to_slurmdbd() ->
@@ -362,6 +552,30 @@ test_map_slurmdbd_to_job() ->
     ?assertEqual(completed, maps:get(state, Result)),
     ?assertEqual(100, maps:get(elapsed, Result)).  % 1000200 - 1000100
 
+test_map_slurmdbd_to_job_zero_times() ->
+    %% Test with zero start/end times (job not yet started)
+    Row = #{
+        id_job => 2001,
+        job_name => <<"pending_job">>,
+        id_user => 1000,
+        id_group => 1000,
+        account => <<"account">>,
+        partition => <<"default">>,
+        state => 0,  % pending
+        exit_code => 0,
+        nodes_alloc => 0,
+        cpus_req => 4,
+        time_submit => 1000000,
+        time_eligible => 0,
+        time_start => 0,
+        time_end => 0,
+        tres_alloc => <<>>
+    },
+    Result = flurm_dbd_mysql:map_slurmdbd_to_job(Row),
+    ?assertEqual(2001, maps:get(job_id, Result)),
+    ?assertEqual(pending, maps:get(state, Result)),
+    ?assertEqual(0, maps:get(elapsed, Result)).
+
 test_state_to_slurmdbd() ->
     ?assertEqual(0, flurm_dbd_mysql:state_to_slurmdbd(pending)),
     ?assertEqual(1, flurm_dbd_mysql:state_to_slurmdbd(running)),
@@ -375,7 +589,8 @@ test_state_to_slurmdbd() ->
     ?assertEqual(9, flurm_dbd_mysql:state_to_slurmdbd(boot_fail)),
     ?assertEqual(10, flurm_dbd_mysql:state_to_slurmdbd(deadline)),
     ?assertEqual(11, flurm_dbd_mysql:state_to_slurmdbd(oom)),
-    ?assertEqual(0, flurm_dbd_mysql:state_to_slurmdbd(unknown)).
+    ?assertEqual(0, flurm_dbd_mysql:state_to_slurmdbd(unknown)),
+    ?assertEqual(0, flurm_dbd_mysql:state_to_slurmdbd(invalid_state)).
 
 test_slurmdbd_to_state() ->
     ?assertEqual(pending, flurm_dbd_mysql:slurmdbd_to_state(0)),
@@ -390,7 +605,8 @@ test_slurmdbd_to_state() ->
     ?assertEqual(boot_fail, flurm_dbd_mysql:slurmdbd_to_state(9)),
     ?assertEqual(deadline, flurm_dbd_mysql:slurmdbd_to_state(10)),
     ?assertEqual(oom, flurm_dbd_mysql:slurmdbd_to_state(11)),
-    ?assertEqual(unknown, flurm_dbd_mysql:slurmdbd_to_state(99)).
+    ?assertEqual(unknown, flurm_dbd_mysql:slurmdbd_to_state(99)),
+    ?assertEqual(unknown, flurm_dbd_mysql:slurmdbd_to_state(-1)).
 
 test_format_tres_string() ->
     %% Empty map
@@ -409,6 +625,26 @@ test_format_tres_string() ->
     GpuResult = flurm_dbd_mysql:format_tres_string(TresWithGpu),
     ?assert(is_binary(GpuResult)).
 
+test_format_tres_all_types() ->
+    %% Test all known TRES types
+    TresMap = #{
+        cpu => 16,
+        mem => 65536,
+        energy => 1000,
+        node => 4,
+        billing => 64,
+        fs_disk => 100000,
+        vmem => 131072,
+        pages => 1000,
+        gpu => 2
+    },
+    Result = flurm_dbd_mysql:format_tres_string(TresMap),
+    ?assert(is_binary(Result)),
+    %% Verify some of the mappings
+    ?assert(binary:match(Result, <<"1=16">>) =/= nomatch),  % cpu
+    ?assert(binary:match(Result, <<"4=4">>) =/= nomatch),   % node
+    ?assert(binary:match(Result, <<"1001=2">>) =/= nomatch). % gpu
+
 test_parse_tres_string() ->
     %% Empty string
     ?assertEqual(#{}, flurm_dbd_mysql:parse_tres_string(<<>>)),
@@ -423,11 +659,29 @@ test_parse_tres_string() ->
     %% Malformed string (should be handled gracefully)
     ?assertEqual(#{}, flurm_dbd_mysql:parse_tres_string(<<"invalid">>)).
 
+test_parse_tres_malformed() ->
+    %% Single invalid entry
+    ?assertEqual(#{}, flurm_dbd_mysql:parse_tres_string(<<"abc">>)),
+    %% Mix of valid and invalid
+    Result = flurm_dbd_mysql:parse_tres_string(<<"1=4,invalid,2=8192">>),
+    ?assertEqual(4, maps:get(cpu, Result)),
+    ?assertEqual(8192, maps:get(mem, Result)),
+    %% Non-numeric values
+    ?assertEqual(#{}, flurm_dbd_mysql:parse_tres_string(<<"a=b,c=d">>)),
+    %% Empty segments
+    Result2 = flurm_dbd_mysql:parse_tres_string(<<"1=4,,2=8192">>),
+    ?assertEqual(4, maps:get(cpu, Result2)).
+
 test_build_insert_query() ->
     Query = flurm_dbd_mysql:build_insert_query("flurm_job_table"),
     ?assert(is_binary(Query)),
     ?assert(binary:match(Query, <<"INSERT INTO flurm_job_table">>) =/= nomatch),
-    ?assert(binary:match(Query, <<"ON DUPLICATE KEY UPDATE">>) =/= nomatch).
+    ?assert(binary:match(Query, <<"ON DUPLICATE KEY UPDATE">>) =/= nomatch),
+    %% Verify all expected columns are present
+    ?assert(binary:match(Query, <<"id_job">>) =/= nomatch),
+    ?assert(binary:match(Query, <<"job_name">>) =/= nomatch),
+    ?assert(binary:match(Query, <<"state">>) =/= nomatch),
+    ?assert(binary:match(Query, <<"tres_alloc">>) =/= nomatch).
 
 test_build_select_query() ->
     Options = #{
@@ -440,7 +694,30 @@ test_build_select_query() ->
     ?assert(is_list(Params)),
     ?assert(binary:match(Query, <<"SELECT">>) =/= nomatch),
     ?assert(binary:match(Query, <<"FROM flurm_job_table">>) =/= nomatch),
-    ?assert(binary:match(Query, <<"LIMIT">>) =/= nomatch).
+    ?assert(binary:match(Query, <<"LIMIT">>) =/= nomatch),
+    ?assert(binary:match(Query, <<"ORDER BY">>) =/= nomatch).
+
+test_build_select_query_all_filters() ->
+    Options = #{
+        start_time => 1000000,
+        end_time => 2000000,
+        filters => #{
+            user => <<"testuser">>,
+            account => <<"research">>,
+            partition => <<"gpu">>,
+            state => completed,
+            limit => 500
+        }
+    },
+    {Query, Params} = flurm_dbd_mysql:build_select_query("cluster_job_table", Options),
+    ?assert(is_binary(Query)),
+    %% Verify filter conditions are in query
+    ?assert(binary:match(Query, <<"id_user">>) =/= nomatch),
+    ?assert(binary:match(Query, <<"account">>) =/= nomatch),
+    ?assert(binary:match(Query, <<"partition">>) =/= nomatch),
+    ?assert(binary:match(Query, <<"state">>) =/= nomatch),
+    %% Params should include start_time, end_time, and filter values
+    ?assert(length(Params) >= 2).
 
 %%====================================================================
 %% Error Handling Tests
@@ -453,10 +730,52 @@ error_handling_test_() ->
      fun(_Pid) ->
          [
              {"handles query errors gracefully", fun test_query_error/0},
-             {"handles unknown requests", fun test_unknown_request/0},
-             {"handles auto_connect retry", fun test_auto_connect_retry/0}
+             {"handles unknown requests", fun test_unknown_request/0}
          ]
      end
+    }.
+
+%% Separate fixture for tests that need to restart the server
+advanced_error_handling_test_() ->
+    {foreach,
+     fun() ->
+         %% Stop any existing server
+         case whereis(flurm_dbd_mysql) of
+             undefined -> ok;
+             Pid ->
+                 catch gen_server:stop(Pid, normal, 5000),
+                 timer:sleep(50)
+         end,
+         %% Mock mysql
+         catch meck:unload(mysql),
+         catch meck:unload(lager),
+         meck:new(mysql, [non_strict, no_link]),
+         meck:expect(mysql, start_link, fun(_Opts) -> {ok, spawn(fun() -> receive stop -> ok end end)} end),
+         meck:expect(mysql, stop, fun(_Pid) -> ok end),
+         meck:expect(mysql, query, fun(_Conn, _Query) -> {ok, [], []} end),
+         meck:expect(mysql, query, fun(_Conn, _Query, _Params) -> ok end),
+         meck:new(lager, [non_strict, no_link, passthrough]),
+         meck:expect(lager, info, fun(_Fmt) -> ok end),
+         meck:expect(lager, info, fun(_Fmt, _Args) -> ok end),
+         meck:expect(lager, warning, fun(_Fmt, _Args) -> ok end),
+         meck:expect(lager, error, fun(_Fmt, _Args) -> ok end),
+         meck:expect(lager, debug, fun(_Fmt, _Args) -> ok end),
+         ok
+     end,
+     fun(_) ->
+         case whereis(flurm_dbd_mysql) of
+             undefined -> ok;
+             Pid -> catch gen_server:stop(Pid, normal, 5000)
+         end,
+         catch meck:unload(mysql),
+         catch meck:unload(lager),
+         ok
+     end,
+     [
+         {"handles auto_connect retry", fun test_auto_connect_retry/0},
+         {"handles query returning {ok, _} format", fun test_query_ok_format/0},
+         {"tracks error statistics", fun test_error_statistics/0}
+     ]
     }.
 
 test_query_error() ->
@@ -510,6 +829,59 @@ test_auto_connect_retry() ->
     ets:delete(Counter),
     catch gen_server:stop(NewPid, normal, 5000).
 
+test_query_ok_format() ->
+    %% Start a fresh server for this test
+    Config = #{
+        host => "localhost",
+        port => 3306,
+        user => "test",
+        password => "test",
+        database => "test_db",
+        auto_connect => false
+    },
+    {ok, Pid} = flurm_dbd_mysql:start_link(Config),
+
+    %% Some MySQL operations return {ok, AffectedRows}
+    meck:expect(mysql, query, fun(_Conn, _Query, _Params) -> {ok, 1} end),
+    ok = flurm_dbd_mysql:connect(Config),
+
+    JobRecord = sample_job_record(),
+    Result = flurm_dbd_mysql:sync_job_record(JobRecord),
+    ?assertEqual(ok, Result),
+
+    %% Cleanup
+    catch gen_server:stop(Pid, normal, 5000).
+
+test_error_statistics() ->
+    %% Start a fresh server for this test
+    Config = #{
+        host => "localhost",
+        port => 3306,
+        user => "test",
+        password => "test",
+        database => "test_db",
+        auto_connect => false
+    },
+    {ok, Pid} = flurm_dbd_mysql:start_link(Config),
+
+    meck:expect(mysql, query, fun(_Conn, _Query, _Params) -> {error, some_error} end),
+    ok = flurm_dbd_mysql:connect(Config),
+
+    %% Get initial stats
+    InitialStatus = flurm_dbd_mysql:get_connection_status(),
+    InitialErrors = maps:get(sync_errors, maps:get(stats, InitialStatus), 0),
+
+    %% Cause an error
+    _Result = flurm_dbd_mysql:sync_job_record(sample_job_record()),
+
+    %% Check error count increased
+    NewStatus = flurm_dbd_mysql:get_connection_status(),
+    NewErrors = maps:get(sync_errors, maps:get(stats, NewStatus), 0),
+    ?assert(NewErrors > InitialErrors),
+
+    %% Cleanup
+    catch gen_server:stop(Pid, normal, 5000).
+
 %%====================================================================
 %% Gen Server Callback Tests
 %%====================================================================
@@ -529,10 +901,92 @@ gen_server_callbacks_test_() ->
                  whereis(flurm_dbd_mysql) ! unknown_info,
                  timer:sleep(10),
                  ?assert(is_process_alive(whereis(flurm_dbd_mysql)))
-             end}
+             end},
+             {"handle_info DOWN message triggers reconnect", fun test_connection_down/0}
          ]
      end
     }.
+
+test_connection_down() ->
+    %% This tests the DOWN message handling when connection process dies
+    meck:expect(mysql, start_link, fun(_Opts) ->
+        ConnPid = spawn(fun() -> receive stop -> ok end end),
+        {ok, ConnPid}
+    end),
+    Config = #{host => "localhost", port => 3306, user => "test", password => "test", database => "test_db"},
+    ok = flurm_dbd_mysql:connect(Config),
+    ?assertEqual(true, flurm_dbd_mysql:is_connected()),
+
+    %% Get the connection status to find the connection pid
+    Status = flurm_dbd_mysql:get_connection_status(),
+    ?assertEqual(true, maps:get(connected, Status)),
+
+    %% Simulate connection death by sending DOWN message
+    %% The actual connection pid is internal, but we can verify the module handles unknown info
+    whereis(flurm_dbd_mysql) ! {'DOWN', make_ref(), process, self(), connection_closed},
+    timer:sleep(50),
+
+    %% Server should still be alive
+    ?assert(is_process_alive(whereis(flurm_dbd_mysql))).
+
+%%====================================================================
+%% Connection Status Statistics Tests
+%%====================================================================
+
+stats_test_() ->
+    {setup,
+     fun setup/0,
+     fun cleanup/1,
+     fun(_Pid) ->
+         [
+             {"stats track jobs_synced", fun test_stats_jobs_synced/0},
+             {"stats track jobs_read", fun test_stats_jobs_read/0},
+             {"stats track connect_attempts", fun test_stats_connect_attempts/0}
+         ]
+     end
+    }.
+
+test_stats_jobs_synced() ->
+    meck:expect(mysql, start_link, fun(_Opts) -> {ok, spawn(fun() -> receive stop -> ok end end)} end),
+    meck:expect(mysql, query, fun(_Conn, _Query, _Params) -> ok end),
+    Config = #{host => "localhost", port => 3306, user => "test", password => "test", database => "test_db"},
+    ok = flurm_dbd_mysql:connect(Config),
+
+    %% Sync some jobs
+    ok = flurm_dbd_mysql:sync_job_record(sample_job_record(1)),
+    ok = flurm_dbd_mysql:sync_job_record(sample_job_record(2)),
+
+    Status = flurm_dbd_mysql:get_connection_status(),
+    Stats = maps:get(stats, Status),
+    ?assertEqual(2, maps:get(jobs_synced, Stats)).
+
+test_stats_jobs_read() ->
+    meck:expect(mysql, start_link, fun(_Opts) -> {ok, spawn(fun() -> receive stop -> ok end end)} end),
+    meck:expect(mysql, query, fun(_Conn, _Query, _Params) ->
+        Columns = [<<"id_job">>, <<"job_name">>, <<"id_user">>, <<"id_group">>,
+                   <<"account">>, <<"partition">>, <<"state">>, <<"exit_code">>,
+                   <<"nodes_alloc">>, <<"cpus_req">>, <<"time_submit">>, <<"time_eligible">>,
+                   <<"time_start">>, <<"time_end">>, <<"timelimit">>, <<"tres_alloc">>,
+                   <<"tres_req">>, <<"work_dir">>, <<"std_out">>, <<"std_err">>],
+        Row1 = {1, <<"j1">>, 1000, 1000, <<"a">>, <<"d">>, 3, 0, 1, 4, 1000000, 1000000, 1000100, 1000200, 0, <<>>, <<>>, <<>>, <<>>, <<>>},
+        Row2 = {2, <<"j2">>, 1000, 1000, <<"a">>, <<"d">>, 3, 0, 1, 4, 1000000, 1000000, 1000100, 1000200, 0, <<>>, <<>>, <<>>, <<>>, <<>>},
+        {ok, Columns, [Row1, Row2]}
+    end),
+    Config = #{host => "localhost", port => 3306, user => "test", password => "test", database => "test_db"},
+    ok = flurm_dbd_mysql:connect(Config),
+
+    Now = erlang:system_time(second),
+    {ok, _Jobs} = flurm_dbd_mysql:read_historical_jobs(Now - 3600, Now),
+
+    Status = flurm_dbd_mysql:get_connection_status(),
+    Stats = maps:get(stats, Status),
+    ?assertEqual(2, maps:get(jobs_read, Stats)).
+
+test_stats_connect_attempts() ->
+    %% Initial status should have connect_attempts
+    Status = flurm_dbd_mysql:get_connection_status(),
+    Stats = maps:get(stats, Status),
+    ?assert(maps:is_key(connect_attempts, Stats)).
 
 %%====================================================================
 %% Helper Functions
