@@ -1,0 +1,320 @@
+# HA Failover Integration Testing Configuration
+# Phase 8E: High-Availability Failover Testing
+#
+# This compose file extends the base HA configuration with additional services
+# and features specifically designed for failover testing:
+# - 3-node FLURM controller cluster with Ra consensus
+# - Network simulation capabilities for partition testing
+# - Test orchestrator for automated failover scenarios
+# - Health monitoring endpoints
+#
+# Usage:
+#   docker-compose -f docker-compose.ha-failover.yml up -d
+#   ./scripts/run-ha-failover-tests.sh
+#
+# Test scenarios supported:
+#   - Leader election on startup
+#   - Leader failure and recovery
+#   - Network partition (split-brain prevention)
+#   - Minority partition write rejection
+#   - Node rejoin after network heal
+#   - Cascading failure handling
+#   - Job submission during failover
+#   - Accounting consistency verification
+
+services:
+  # Controller 1 (initial leader candidate)
+  flurm-ctrl-1:
+    image: flurm-server-ha:latest
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.flurm-server-ha
+    hostname: flurm-ctrl-1
+    container_name: ${COMPOSE_PROJECT_NAME:-flurm-ha-failover}-ctrl-1
+    environment:
+      - FLURM_NODE_NAME=flurm@flurm-ctrl-1
+      - FLURM_COOKIE=flurm_ha_failover_secret
+      - FLURM_CLUSTER_NODES=flurm@flurm-ctrl-1,flurm@flurm-ctrl-2,flurm@flurm-ctrl-3
+      - FLURM_RA_DATA_DIR=/var/lib/flurm/ra
+      - FLURM_NODE_ID=1
+      - FLURM_HA_MODE=true
+      - FLURM_ELECTION_TIMEOUT_MS=5000
+      - FLURM_HEARTBEAT_INTERVAL_MS=1000
+    ports:
+      - "6817:6817"   # SLURM protocol port (slurmctld)
+      - "6818:6818"   # Node communication port
+      - "9090:9090"   # Metrics/health endpoint
+      - "4369:4369"   # EPMD
+    volumes:
+      - munge-key:/etc/munge
+      - ctrl1-data:/var/lib/flurm
+    networks:
+      flurm-ha-failover-net:
+        ipv4_address: 172.29.0.10
+    # Required for network partition simulation (iptables)
+    cap_add:
+      - NET_ADMIN
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:9090/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+    labels:
+      - "flurm.role=controller"
+      - "flurm.node_id=1"
+
+  # Controller 2
+  flurm-ctrl-2:
+    image: flurm-server-ha:latest
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.flurm-server-ha
+    hostname: flurm-ctrl-2
+    container_name: ${COMPOSE_PROJECT_NAME:-flurm-ha-failover}-ctrl-2
+    environment:
+      - FLURM_NODE_NAME=flurm@flurm-ctrl-2
+      - FLURM_COOKIE=flurm_ha_failover_secret
+      - FLURM_CLUSTER_NODES=flurm@flurm-ctrl-1,flurm@flurm-ctrl-2,flurm@flurm-ctrl-3
+      - FLURM_RA_DATA_DIR=/var/lib/flurm/ra
+      - FLURM_NODE_ID=2
+      - FLURM_HA_MODE=true
+      - FLURM_ELECTION_TIMEOUT_MS=5000
+      - FLURM_HEARTBEAT_INTERVAL_MS=1000
+    ports:
+      - "6827:6817"   # SLURM protocol port
+      - "6828:6818"   # Node communication port
+      - "9091:9090"   # Metrics/health endpoint
+    volumes:
+      - munge-key:/etc/munge
+      - ctrl2-data:/var/lib/flurm
+    networks:
+      flurm-ha-failover-net:
+        ipv4_address: 172.29.0.11
+    cap_add:
+      - NET_ADMIN
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:9090/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 30s
+    depends_on:
+      flurm-ctrl-1:
+        condition: service_started
+    restart: unless-stopped
+    labels:
+      - "flurm.role=controller"
+      - "flurm.node_id=2"
+
+  # Controller 3
+  flurm-ctrl-3:
+    image: flurm-server-ha:latest
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.flurm-server-ha
+    hostname: flurm-ctrl-3
+    container_name: ${COMPOSE_PROJECT_NAME:-flurm-ha-failover}-ctrl-3
+    environment:
+      - FLURM_NODE_NAME=flurm@flurm-ctrl-3
+      - FLURM_COOKIE=flurm_ha_failover_secret
+      - FLURM_CLUSTER_NODES=flurm@flurm-ctrl-1,flurm@flurm-ctrl-2,flurm@flurm-ctrl-3
+      - FLURM_RA_DATA_DIR=/var/lib/flurm/ra
+      - FLURM_NODE_ID=3
+      - FLURM_HA_MODE=true
+      - FLURM_ELECTION_TIMEOUT_MS=5000
+      - FLURM_HEARTBEAT_INTERVAL_MS=1000
+    ports:
+      - "6837:6817"   # SLURM protocol port
+      - "6838:6818"   # Node communication port
+      - "9092:9090"   # Metrics/health endpoint
+    volumes:
+      - munge-key:/etc/munge
+      - ctrl3-data:/var/lib/flurm
+    networks:
+      flurm-ha-failover-net:
+        ipv4_address: 172.29.0.12
+    cap_add:
+      - NET_ADMIN
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:9090/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 30s
+    depends_on:
+      flurm-ctrl-1:
+        condition: service_started
+    restart: unless-stopped
+    labels:
+      - "flurm.role=controller"
+      - "flurm.node_id=3"
+
+  # Compute node 1
+  flurm-node-1:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.flurm-node
+    hostname: flurm-node-1
+    container_name: ${COMPOSE_PROJECT_NAME:-flurm-ha-failover}-node-1
+    environment:
+      - FLURM_CONTROLLER_HOST=flurm-ctrl-1
+      - FLURM_CONTROLLER_PORT=6818
+      - FLURM_BACKUP_CONTROLLERS=flurm-ctrl-2:6818,flurm-ctrl-3:6818
+      - FLURM_RECONNECT_INTERVAL_MS=2000
+      - FLURM_HEARTBEAT_TIMEOUT_MS=10000
+    volumes:
+      - munge-key:/etc/munge
+    networks:
+      flurm-ha-failover-net:
+        ipv4_address: 172.29.0.20
+    cap_add:
+      - NET_ADMIN
+    depends_on:
+      flurm-ctrl-1:
+        condition: service_started
+    restart: unless-stopped
+    labels:
+      - "flurm.role=compute"
+      - "flurm.node_id=1"
+
+  # Compute node 2
+  flurm-node-2:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.flurm-node
+    hostname: flurm-node-2
+    container_name: ${COMPOSE_PROJECT_NAME:-flurm-ha-failover}-node-2
+    environment:
+      - FLURM_CONTROLLER_HOST=flurm-ctrl-1
+      - FLURM_CONTROLLER_PORT=6818
+      - FLURM_BACKUP_CONTROLLERS=flurm-ctrl-2:6818,flurm-ctrl-3:6818
+      - FLURM_RECONNECT_INTERVAL_MS=2000
+      - FLURM_HEARTBEAT_TIMEOUT_MS=10000
+    volumes:
+      - munge-key:/etc/munge
+    networks:
+      flurm-ha-failover-net:
+        ipv4_address: 172.29.0.21
+    cap_add:
+      - NET_ADMIN
+    depends_on:
+      flurm-ctrl-1:
+        condition: service_started
+    restart: unless-stopped
+    labels:
+      - "flurm.role=compute"
+      - "flurm.node_id=2"
+
+  # SLURM client for job submission testing
+  slurm-client:
+    build:
+      context: .
+      dockerfile: Dockerfile.slurm-client-munge
+    hostname: slurm-client
+    container_name: ${COMPOSE_PROJECT_NAME:-flurm-ha-failover}-slurm-client
+    environment:
+      - SLURM_CONF=/etc/slurm/slurm.conf
+      # Connect to first controller by default
+      - SLURMCTLD_HOST=flurm-ctrl-1
+      - SLURM_BACKUP_CONTROLLER_1=flurm-ctrl-2
+      - SLURM_BACKUP_CONTROLLER_2=flurm-ctrl-3
+    volumes:
+      - munge-key:/etc/munge
+    networks:
+      flurm-ha-failover-net:
+        ipv4_address: 172.29.0.100
+    stdin_open: true
+    tty: true
+    depends_on:
+      flurm-ctrl-1:
+        condition: service_started
+      flurm-ctrl-2:
+        condition: service_started
+      flurm-ctrl-3:
+        condition: service_started
+    restart: unless-stopped
+    labels:
+      - "flurm.role=client"
+
+  # Test orchestrator - runs the HA failover test suite
+  test-orchestrator:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.flurm-server-ha
+    hostname: test-orchestrator
+    container_name: ${COMPOSE_PROJECT_NAME:-flurm-ha-failover}-test-orchestrator
+    environment:
+      - FLURM_NODE_NAME=test@test-orchestrator
+      - FLURM_COOKIE=flurm_ha_failover_secret
+      - FLURM_CLUSTER_NODES=flurm@flurm-ctrl-1,flurm@flurm-ctrl-2,flurm@flurm-ctrl-3
+      - FLURM_TEST_MODE=true
+      - CTRL_1_IP=172.29.0.10
+      - CTRL_2_IP=172.29.0.11
+      - CTRL_3_IP=172.29.0.12
+    volumes:
+      - munge-key:/etc/munge
+      - ../apps:/flurm/apps:ro
+      - test-results:/test-results
+    networks:
+      flurm-ha-failover-net:
+        ipv4_address: 172.29.0.200
+    cap_add:
+      - NET_ADMIN
+    depends_on:
+      flurm-ctrl-1:
+        condition: service_healthy
+      flurm-ctrl-2:
+        condition: service_healthy
+      flurm-ctrl-3:
+        condition: service_healthy
+    command: ["sleep", "infinity"]
+    labels:
+      - "flurm.role=test-orchestrator"
+
+  # Network chaos proxy - for simulating network issues
+  # Uses toxiproxy for fine-grained network fault injection
+  network-chaos:
+    image: ghcr.io/shopify/toxiproxy:2.5.0
+    hostname: network-chaos
+    container_name: ${COMPOSE_PROJECT_NAME:-flurm-ha-failover}-network-chaos
+    ports:
+      - "8474:8474"   # Toxiproxy API
+      - "16817:16817" # Proxy to ctrl-1 port 6817
+      - "16827:16827" # Proxy to ctrl-2 port 6817
+      - "16837:16837" # Proxy to ctrl-3 port 6817
+    networks:
+      flurm-ha-failover-net:
+        ipv4_address: 172.29.0.250
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:8474/version"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+    labels:
+      - "flurm.role=network-chaos"
+
+volumes:
+  munge-key:
+    driver: local
+  ctrl1-data:
+    driver: local
+  ctrl2-data:
+    driver: local
+  ctrl3-data:
+    driver: local
+  test-results:
+    driver: local
+
+networks:
+  flurm-ha-failover-net:
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.29.0.0/16
+          gateway: 172.29.0.1
+    # Enable inter-container communication
+    driver_opts:
+      com.docker.network.bridge.enable_icc: "true"

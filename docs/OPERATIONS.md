@@ -1091,6 +1091,244 @@ scheduler:utilization(5000).
 
 ---
 
+## HA Failover Testing
+
+### Overview
+
+FLURM includes comprehensive high-availability failover testing (Phase 8E) to verify cluster resilience under various failure scenarios. The testing infrastructure includes:
+
+- **Docker-based 3-node cluster** for realistic HA testing
+- **Integration test suite** covering failover scenarios
+- **Chaos engineering tests** for fault injection
+- **Property-based tests** for HA invariants
+
+### Running HA Failover Tests
+
+#### Quick Start
+
+```bash
+# Run the HA failover test suite
+./scripts/run-ha-failover-tests.sh
+
+# Run with all test types (integration, chaos, property-based)
+./scripts/run-ha-failover-tests.sh --all
+
+# Run quick smoke tests only
+./scripts/run-ha-failover-tests.sh --quick
+
+# Rebuild containers before testing
+./scripts/run-ha-failover-tests.sh --rebuild
+```
+
+#### Test Runner Options
+
+| Option | Description |
+|--------|-------------|
+| `--rebuild` | Rebuild Docker images before testing |
+| `--skip-cleanup` | Keep containers running after tests |
+| `--verbose` | Enable verbose output and logs |
+| `--quick` | Run quick smoke tests only |
+| `--chaos` | Enable chaos testing scenarios |
+| `--props` | Run property-based tests |
+| `--all` | Run all test suites |
+
+### Test Scenarios
+
+#### Cluster Formation Tests
+
+| Test | Description |
+|------|-------------|
+| `three_node_cluster_formation_test` | Verifies 3-node cluster forms correctly |
+| `leader_election_test` | Verifies leader is elected on startup |
+
+#### Failover Tests
+
+| Test | Description |
+|------|-------------|
+| `leader_kill_recovery_test` | New leader elected when leader dies |
+| `minority_partition_test` | Minority partition cannot accept writes |
+| `split_brain_prevention_test` | No split-brain scenarios occur |
+| `cascading_failure_test` | Multiple node failures handled correctly |
+
+#### Data Consistency Tests
+
+| Test | Description |
+|------|-------------|
+| `job_submission_during_failover_test` | Jobs survive leader change |
+| `accounting_consistency_after_failover_test` | TRES data consistent after failover |
+| `node_rejoin_test` | Node rejoins after network heals |
+
+### Docker Compose Configuration
+
+The HA failover testing uses `docker/docker-compose.ha-failover.yml`:
+
+```yaml
+# Start the HA test cluster
+cd docker
+docker-compose -f docker-compose.ha-failover.yml up -d
+
+# View cluster status
+docker-compose -f docker-compose.ha-failover.yml ps
+
+# View controller logs
+docker-compose -f docker-compose.ha-failover.yml logs -f flurm-ctrl-1
+
+# Stop the cluster
+docker-compose -f docker-compose.ha-failover.yml down
+```
+
+#### Service Architecture
+
+| Service | IP Address | Ports | Role |
+|---------|------------|-------|------|
+| `flurm-ctrl-1` | 172.29.0.10 | 6817, 9090 | Controller 1 |
+| `flurm-ctrl-2` | 172.29.0.11 | 6827, 9091 | Controller 2 |
+| `flurm-ctrl-3` | 172.29.0.12 | 6837, 9092 | Controller 3 |
+| `flurm-node-1` | 172.29.0.20 | - | Compute node |
+| `flurm-node-2` | 172.29.0.21 | - | Compute node |
+| `slurm-client` | 172.29.0.100 | - | Test client |
+| `test-orchestrator` | 172.29.0.200 | - | Test runner |
+
+### Chaos Engineering
+
+The chaos testing module (`flurm_chaos.erl`) supports:
+
+#### Process Kill Injection
+
+```erlang
+%% Enable process kill chaos (in Erlang console)
+flurm_chaos:enable().
+flurm_chaos:enable_scenario(kill_random_process).
+flurm_chaos:set_scenario(kill_random_process, 0.001). % 0.1% per tick
+```
+
+#### Network Partition Simulation
+
+```erlang
+%% Partition a node from the cluster
+flurm_chaos:partition_node('flurm@flurm-ctrl-2').
+
+%% Check partition status
+flurm_chaos:get_partitions().
+
+%% Heal all partitions
+flurm_chaos:heal_all_partitions().
+```
+
+#### Message Delay Injection
+
+```erlang
+%% Enable message delays
+flurm_chaos:enable_scenario(delay_message).
+flurm_chaos:set_delay_config(#{
+    min_delay_ms => 10,
+    max_delay_ms => 500
+}).
+```
+
+#### GC Pressure Testing
+
+```erlang
+%% Force GC on all processes
+flurm_chaos:gc_all_processes().
+
+%% Enable periodic GC pressure
+flurm_chaos:enable_scenario(gc_pressure).
+flurm_chaos:set_gc_config(#{aggressive => true}).
+```
+
+### Property-Based Testing
+
+The property-based tests verify fundamental HA invariants:
+
+| Property | Description |
+|----------|-------------|
+| `prop_leader_uniqueness` | At most one leader exists at any time |
+| `prop_consensus_consistency` | All nodes agree on committed values |
+| `prop_availability_with_majority` | Writes succeed with majority available |
+| `prop_minority_no_progress` | Minority partition cannot make progress |
+| `prop_term_monotonicity` | Term numbers are monotonically increasing |
+
+Run property tests:
+
+```bash
+# Via rebar3
+cd /path/to/flurm
+rebar3 proper --module=flurm_ha_prop_tests --numtests=100
+
+# Or via test runner
+./scripts/run-ha-failover-tests.sh --props
+```
+
+### Manual Failover Testing
+
+#### Simulating Leader Failure
+
+```bash
+# Find current leader
+docker exec flurm-ha-failover-ctrl-1 curl -s http://localhost:9090/health
+
+# Stop the leader (assuming ctrl-1 is leader)
+docker stop flurm-ha-failover-ctrl-1
+
+# Watch for new leader election (check ctrl-2 and ctrl-3)
+docker exec flurm-ha-failover-ctrl-2 curl -s http://localhost:9090/health
+docker exec flurm-ha-failover-ctrl-3 curl -s http://localhost:9090/health
+
+# Restart the failed node
+docker start flurm-ha-failover-ctrl-1
+
+# Verify rejoined
+docker exec flurm-ha-failover-ctrl-1 curl -s http://localhost:9090/health
+```
+
+#### Simulating Network Partition
+
+```bash
+# Create partition using iptables (inside container)
+docker exec flurm-ha-failover-ctrl-3 iptables -A INPUT -s 172.29.0.10 -j DROP
+docker exec flurm-ha-failover-ctrl-3 iptables -A INPUT -s 172.29.0.11 -j DROP
+
+# Verify partition effects
+docker exec flurm-ha-failover-ctrl-3 ping -c 1 172.29.0.10
+
+# Heal partition
+docker exec flurm-ha-failover-ctrl-3 iptables -F
+```
+
+### Interpreting Test Results
+
+#### Common Test Output
+
+```
+=INFO REPORT====
+Starting test case: leader_kill_recovery_test
+Current leader: 'flurm@flurm-ctrl-1'
+Simulating leader failure on 'flurm@flurm-ctrl-1'...
+Waiting for new leader from: ['flurm@flurm-ctrl-2','flurm@flurm-ctrl-3']
+New leader elected: 'flurm@flurm-ctrl-2'
+Finished test case: leader_kill_recovery_test (duration: 5234ms)
+```
+
+#### Troubleshooting Failed Tests
+
+1. **Cluster formation timeout**: Check container health and network connectivity
+2. **Leader election failure**: Verify Ra data directory is writable
+3. **Partition test failure**: Ensure containers have NET_ADMIN capability
+4. **Job persistence failure**: Check job manager state replication
+
+### Test Results Location
+
+Test results are written to:
+
+| Location | Content |
+|----------|---------|
+| `test-results/` | CT HTML reports |
+| `_build/test/logs/` | Detailed test logs |
+| Container logs | Runtime diagnostics |
+
+---
+
 ## Quick Reference
 
 ### Common Commands
