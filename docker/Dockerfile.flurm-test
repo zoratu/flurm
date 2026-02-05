@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     libssl-dev \
     curl \
+    ca-certificates \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
@@ -26,15 +27,8 @@ RUN curl -Lo /usr/local/bin/rebar3 https://s3.amazonaws.com/rebar3/rebar3 \
 # Create working directory
 WORKDIR /app
 
-# Copy only rebar files first for layer caching
+# Copy rebar files first for layer caching
 COPY rebar.config rebar.lock ./
-COPY apps/flurm_core/rebar.config apps/flurm_core/
-COPY apps/flurm_controller/rebar.config apps/flurm_controller/
-COPY apps/flurm_node_daemon/rebar.config apps/flurm_node_daemon/
-COPY apps/flurm_protocol/rebar.config apps/flurm_protocol/
-COPY apps/flurm_config/rebar.config apps/flurm_config/
-COPY apps/flurm_db/rebar.config apps/flurm_db/
-COPY apps/flurm_dbd/rebar.config apps/flurm_dbd/
 
 # Fetch dependencies (cached layer)
 RUN rebar3 deps
