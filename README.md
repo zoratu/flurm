@@ -7,7 +7,7 @@ An Erlang-based, SLURM-compatible job scheduler designed for high availability, 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![Erlang/OTP](https://img.shields.io/badge/Erlang%2FOTP-28-red.svg)](https://www.erlang.org/)
 [![Tests](https://img.shields.io/badge/Tests-2400%2B%20passing-brightgreen.svg)](docs/COVERAGE.md)
-[![Integration](https://img.shields.io/badge/Integration-19%2F22%20passing-green.svg)](docs/COVERAGE.md)
+[![Integration](https://img.shields.io/badge/Integration-22%2F22%20passing-brightgreen.svg)](docs/COVERAGE.md)
 [![Made with Claude](https://img.shields.io/badge/Made%20with-Claude%20AI-blueviolet.svg)](https://claude.ai)
 
 > **Note**: This project was developed with the assistance of generative AI (Claude by Anthropic). The architecture, code, documentation, and TLA+ specifications were created through AI-assisted development.
@@ -219,7 +219,7 @@ FLURM is currently in **active development** (February 2026). Phase 7-8 implemen
 - [x] Deterministic simulation framework (FoundationDB-style)
 - [x] Performance benchmarks (3M+ ops/sec job submission)
 - [x] Multi-node cluster tests (Docker Compose)
-- [x] Integration test framework (19/22 tests passing)
+- [x] Integration test framework (22/22 tests passing)
 - [x] TLA+ model checking (Federation, Accounting, Migration specs)
 
 ### Advanced Features
