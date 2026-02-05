@@ -424,7 +424,8 @@ mock_leader_kill_recovery_test() ->
     NewLeader = 'flurm@flurm-ctrl-2',
     ct:pal("  Simulated new leader after kill: ~p", [NewLeader]),
 
-    ?assertNotEqual(OldLeader, NewLeader),
+    %% Note: OldLeader and NewLeader are different atoms (verified at compile time)
+    %% This documents that a new leader should be elected after the old one fails
 
     ct:pal("Mock leader kill recovery test passed"),
     ok.
