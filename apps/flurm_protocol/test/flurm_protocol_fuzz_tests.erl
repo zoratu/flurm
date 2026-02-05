@@ -32,7 +32,11 @@
     prop_header_corruption_no_crash/0,
     prop_roundtrip_preserves_data/0,
     prop_length_field_manipulation/0,
-    prop_message_type_fuzzing/0
+    prop_message_type_fuzzing/0,
+    %% New: decode_body fuzzing
+    prop_decode_body_random_bytes/0,
+    prop_decode_body_truncated/0,
+    prop_federation_roundtrip/0
 ]).
 
 %% PropEr generators
@@ -230,6 +234,100 @@ prop_message_type_fuzzing() ->
             case Result of
                 {crash, _} -> false;
                 _ -> true
+            end
+        end).
+
+%% @doc decode_body with random bytes for all message types
+%% Tests that decode_body handles arbitrary bytes without crashing.
+prop_decode_body_random_bytes() ->
+    AllMsgTypes = [
+        ?REQUEST_PING, ?REQUEST_JOB_INFO, ?REQUEST_NODE_INFO,
+        ?REQUEST_PARTITION_INFO, ?REQUEST_NODE_REGISTRATION_STATUS,
+        ?REQUEST_SUBMIT_BATCH_JOB, ?REQUEST_CANCEL_JOB, ?REQUEST_KILL_JOB,
+        ?REQUEST_UPDATE_JOB, ?REQUEST_JOB_WILL_RUN, ?REQUEST_JOB_STEP_CREATE,
+        ?REQUEST_JOB_STEP_INFO, ?REQUEST_RESERVATION_INFO, ?REQUEST_LICENSE_INFO,
+        ?REQUEST_TOPO_INFO, ?REQUEST_FRONT_END_INFO, ?REQUEST_BURST_BUFFER_INFO,
+        ?REQUEST_RECONFIGURE, ?REQUEST_RECONFIGURE_WITH_CONFIG, ?REQUEST_SHUTDOWN,
+        ?REQUEST_BUILD_INFO, ?REQUEST_CONFIG_INFO, ?REQUEST_STATS_INFO,
+        ?REQUEST_LAUNCH_TASKS, ?REQUEST_FED_INFO, ?REQUEST_FEDERATION_SUBMIT,
+        ?REQUEST_FEDERATION_JOB_STATUS, ?REQUEST_FEDERATION_JOB_CANCEL,
+        ?REQUEST_UPDATE_FEDERATION,
+        ?RESPONSE_SLURM_RC, ?RESPONSE_SUBMIT_BATCH_JOB, ?RESPONSE_JOB_INFO,
+        ?RESPONSE_PARTITION_INFO, ?RESPONSE_FED_INFO, ?RESPONSE_FEDERATION_SUBMIT,
+        ?RESPONSE_FEDERATION_JOB_STATUS, ?RESPONSE_FEDERATION_JOB_CANCEL,
+        ?RESPONSE_UPDATE_FEDERATION,
+        ?MSG_FED_JOB_SUBMIT, ?MSG_FED_JOB_STARTED, ?MSG_FED_SIBLING_REVOKE,
+        ?MSG_FED_JOB_COMPLETED, ?MSG_FED_JOB_FAILED
+    ],
+    ?FORALL({MsgType, Bytes}, {oneof(AllMsgTypes), binary()},
+        begin
+            Result = try
+                flurm_protocol_codec:decode_body(MsgType, Bytes)
+            catch
+                error:badarg -> {crash, badarg};
+                error:function_clause -> {crash, function_clause};
+                error:{badmatch, _} -> {crash, badmatch};
+                error:badarith -> {crash, badarith};
+                _:_ -> ok
+            end,
+            case Result of
+                {crash, _} -> false;
+                _ -> true
+            end
+        end).
+
+%% @doc decode_body with truncated valid messages
+%% Tests that decode_body handles truncation gracefully.
+prop_decode_body_truncated() ->
+    ?FORALL({MsgType, TruncLen}, {message_type(), range(0, 100)},
+        begin
+            Body = create_body_for_type(MsgType),
+            case catch flurm_protocol_codec:encode_body(MsgType, Body) of
+                {ok, Encoded} when byte_size(Encoded) > 0 ->
+                    %% Truncate to random length
+                    ActualLen = min(TruncLen, byte_size(Encoded)),
+                    Truncated = binary:part(Encoded, 0, ActualLen),
+                    Result = try
+                        flurm_protocol_codec:decode_body(MsgType, Truncated)
+                    catch
+                        error:badarg -> {crash, badarg};
+                        error:function_clause -> {crash, function_clause};
+                        error:{badmatch, _} -> {crash, badmatch};
+                        _:_ -> ok
+                    end,
+                    case Result of
+                        {crash, _} -> false;
+                        _ -> true
+                    end;
+                _ ->
+                    true  % Skip if encoding fails
+            end
+        end).
+
+%% @doc Federation message roundtrip
+%% Tests encode/decode roundtrip for federation messages.
+prop_federation_roundtrip() ->
+    FedMsgTypes = [
+        ?REQUEST_FED_INFO, ?RESPONSE_FED_INFO,
+        ?REQUEST_FEDERATION_SUBMIT, ?RESPONSE_FEDERATION_SUBMIT,
+        ?REQUEST_FEDERATION_JOB_STATUS, ?RESPONSE_FEDERATION_JOB_STATUS,
+        ?REQUEST_FEDERATION_JOB_CANCEL, ?RESPONSE_FEDERATION_JOB_CANCEL,
+        ?REQUEST_UPDATE_FEDERATION, ?RESPONSE_UPDATE_FEDERATION,
+        ?MSG_FED_JOB_SUBMIT, ?MSG_FED_JOB_STARTED, ?MSG_FED_SIBLING_REVOKE,
+        ?MSG_FED_JOB_COMPLETED, ?MSG_FED_JOB_FAILED
+    ],
+    ?FORALL(MsgType, oneof(FedMsgTypes),
+        begin
+            Body = create_federation_body(MsgType),
+            case catch flurm_protocol_codec:encode_body(MsgType, Body) of
+                {ok, Encoded} ->
+                    case catch flurm_protocol_codec:decode_body(MsgType, Encoded) of
+                        {ok, _Decoded} -> true;
+                        {error, _} -> true;  % May fail for some types
+                        {'EXIT', _} -> false
+                    end;
+                {error, _} -> true;  % Some types might not be encodable
+                {'EXIT', _} -> true
             end
         end).
 
@@ -488,6 +586,73 @@ create_body_for_type(_) ->
     %% Unknown type - empty body
     <<>>.
 
+%% @doc Create federation message bodies for testing
+create_federation_body(?REQUEST_FED_INFO) ->
+    #fed_info_request{show_flags = 0};
+create_federation_body(?RESPONSE_FED_INFO) ->
+    #fed_info_response{federation_name = <<"test">>, clusters = []};
+create_federation_body(?REQUEST_FEDERATION_SUBMIT) ->
+    #federation_submit_request{
+        source_cluster = <<"cluster1">>,
+        target_cluster = <<"cluster2">>,
+        name = <<"testjob">>,
+        user_id = 1000
+    };
+create_federation_body(?RESPONSE_FEDERATION_SUBMIT) ->
+    #federation_submit_response{job_id = 12345, error_code = 0};
+create_federation_body(?REQUEST_FEDERATION_JOB_STATUS) ->
+    #federation_job_status_request{job_id = 12345, source_cluster = <<"cluster1">>};
+create_federation_body(?RESPONSE_FEDERATION_JOB_STATUS) ->
+    #federation_job_status_response{job_id = 12345, job_state = 1, error_code = 0};
+create_federation_body(?REQUEST_FEDERATION_JOB_CANCEL) ->
+    #federation_job_cancel_request{job_id = 12345, source_cluster = <<"cluster1">>};
+create_federation_body(?RESPONSE_FEDERATION_JOB_CANCEL) ->
+    #federation_job_cancel_response{job_id = 12345, error_code = 0};
+create_federation_body(?REQUEST_UPDATE_FEDERATION) ->
+    #update_federation_request{action = add_cluster, cluster_name = <<"test">>, host = <<"localhost">>, port = 6817};
+create_federation_body(?RESPONSE_UPDATE_FEDERATION) ->
+    #update_federation_response{error_code = 0};
+create_federation_body(?MSG_FED_JOB_SUBMIT) ->
+    #fed_job_submit_msg{
+        federation_job_id = <<"fed-123">>,
+        origin_cluster = <<"cluster1">>,
+        target_cluster = <<"cluster2">>,
+        job_spec = #{name => <<"test">>},
+        submit_time = 1700000000
+    };
+create_federation_body(?MSG_FED_JOB_STARTED) ->
+    #fed_job_started_msg{
+        federation_job_id = <<"fed-123">>,
+        running_cluster = <<"cluster1">>,
+        local_job_id = 12345,
+        start_time = 1700000000
+    };
+create_federation_body(?MSG_FED_SIBLING_REVOKE) ->
+    #fed_sibling_revoke_msg{
+        federation_job_id = <<"fed-123">>,
+        running_cluster = <<"cluster1">>,
+        revoke_reason = <<"job started elsewhere">>
+    };
+create_federation_body(?MSG_FED_JOB_COMPLETED) ->
+    #fed_job_completed_msg{
+        federation_job_id = <<"fed-123">>,
+        running_cluster = <<"cluster1">>,
+        local_job_id = 12345,
+        exit_code = 0,
+        end_time = 1700003600
+    };
+create_federation_body(?MSG_FED_JOB_FAILED) ->
+    #fed_job_failed_msg{
+        federation_job_id = <<"fed-123">>,
+        running_cluster = <<"cluster1">>,
+        local_job_id = 12345,
+        exit_code = 1,
+        error_msg = <<"job failed">>,
+        end_time = 1700003600
+    };
+create_federation_body(_) ->
+    <<>>.
+
 %% @doc Get task count from array spec
 get_task_count(Spec) when is_map(Spec) ->
     maps:get(task_count, Spec, 0);
@@ -566,6 +731,25 @@ tres_parsing_test_() ->
     {timeout, 60, fun() ->
         ?assertEqual(true, proper:quickcheck(prop_tres_string_parsing(),
             [{numtests, 2000}, {to_file, user}]))
+    end}.
+
+%% New decode_body fuzzing tests
+fuzz_decode_body_random_test_() ->
+    {timeout, 120, fun() ->
+        ?assertEqual(true, proper:quickcheck(prop_decode_body_random_bytes(),
+            [{numtests, 2000}, {to_file, user}]))
+    end}.
+
+fuzz_decode_body_truncated_test_() ->
+    {timeout, 60, fun() ->
+        ?assertEqual(true, proper:quickcheck(prop_decode_body_truncated(),
+            [{numtests, 1000}, {to_file, user}]))
+    end}.
+
+federation_roundtrip_test_() ->
+    {timeout, 60, fun() ->
+        ?assertEqual(true, proper:quickcheck(prop_federation_roundtrip(),
+            [{numtests, 500}, {to_file, user}]))
     end}.
 
 %% Quick smoke test that runs fast for CI
