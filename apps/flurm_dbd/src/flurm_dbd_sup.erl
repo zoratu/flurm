@@ -186,6 +186,15 @@ init([]) ->
             type => worker,
             modules => [flurm_dbd_storage]
         },
+        %% Auto-fragmenting time-based storage
+        #{
+            id => flurm_dbd_fragment,
+            start => {flurm_dbd_fragment, start_link, []},
+            restart => permanent,
+            shutdown => 5000,
+            type => worker,
+            modules => [flurm_dbd_fragment]
+        },
         %% Main DBD server
         #{
             id => flurm_dbd_server,

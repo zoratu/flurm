@@ -1,0 +1,412 @@
+# Comprehensive FLURM Test Environment
+#
+# Includes all components for testing:
+# - 3 FLURM controllers (HA cluster with Ra consensus)
+# - 4 compute nodes (small, medium, large, gpu)
+# - SLURM controller + node (migration testing)
+# - Test client with SLURM tools
+# - MySQL (accounting)
+# - Prometheus (metrics)
+#
+# Usage:
+#   docker compose -f docker-compose.comprehensive-test.yml up -d
+#   ./scripts/test-scenarios/run-all-scenarios.sh
+
+services:
+  #============================================================================
+  # FLURM Controllers (HA Cluster)
+  #============================================================================
+
+  flurm-ctrl-1:
+    build:
+      context: .
+      dockerfile: Dockerfile.flurm-server-ha
+    hostname: flurm-ctrl-1
+    container_name: flurm-test-ctrl-1
+    environment:
+      - FLURM_NODE_NAME=flurm@flurm-ctrl-1
+      - FLURM_COOKIE=flurm_comprehensive_test
+      - FLURM_CLUSTER_NODES=flurm@flurm-ctrl-1,flurm@flurm-ctrl-2,flurm@flurm-ctrl-3
+      - FLURM_RA_DATA_DIR=/var/lib/flurm/ra
+      - FLURM_METRICS_PORT=9090
+      - FLURM_REST_PORT=8080
+      # Bridge configuration
+      - FLURM_BRIDGE_MODE=standalone
+      - FLURM_BRIDGE_SLURM_CONTROLLER=slurm-controller:6817
+    ports:
+      - "6817:6817"    # SLURM protocol
+      - "9090:9090"    # Prometheus metrics
+      - "8080:8080"    # REST API
+    volumes:
+      - munge-key:/etc/munge
+      - ctrl1-data:/var/lib/flurm
+      - ./jobs/comprehensive:/jobs:ro
+      - ./config/flurm-comprehensive.conf:/etc/flurm/flurm.conf:ro
+    networks:
+      flurm-test-net:
+        ipv4_address: 172.40.0.10
+    cap_add:
+      - NET_ADMIN
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:9090/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  flurm-ctrl-2:
+    build:
+      context: .
+      dockerfile: Dockerfile.flurm-server-ha
+    hostname: flurm-ctrl-2
+    container_name: flurm-test-ctrl-2
+    environment:
+      - FLURM_NODE_NAME=flurm@flurm-ctrl-2
+      - FLURM_COOKIE=flurm_comprehensive_test
+      - FLURM_CLUSTER_NODES=flurm@flurm-ctrl-1,flurm@flurm-ctrl-2,flurm@flurm-ctrl-3
+      - FLURM_RA_DATA_DIR=/var/lib/flurm/ra
+      - FLURM_METRICS_PORT=9090
+      - FLURM_REST_PORT=8080
+      - FLURM_BRIDGE_MODE=standalone
+    ports:
+      - "6827:6817"
+      - "9091:9090"
+      - "8081:8080"
+    volumes:
+      - munge-key:/etc/munge
+      - ctrl2-data:/var/lib/flurm
+      - ./jobs/comprehensive:/jobs:ro
+    networks:
+      flurm-test-net:
+        ipv4_address: 172.40.0.11
+    cap_add:
+      - NET_ADMIN
+    depends_on:
+      flurm-ctrl-1:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:9090/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  flurm-ctrl-3:
+    build:
+      context: .
+      dockerfile: Dockerfile.flurm-server-ha
+    hostname: flurm-ctrl-3
+    container_name: flurm-test-ctrl-3
+    environment:
+      - FLURM_NODE_NAME=flurm@flurm-ctrl-3
+      - FLURM_COOKIE=flurm_comprehensive_test
+      - FLURM_CLUSTER_NODES=flurm@flurm-ctrl-1,flurm@flurm-ctrl-2,flurm@flurm-ctrl-3
+      - FLURM_RA_DATA_DIR=/var/lib/flurm/ra
+      - FLURM_METRICS_PORT=9090
+      - FLURM_REST_PORT=8080
+      - FLURM_BRIDGE_MODE=standalone
+    ports:
+      - "6837:6817"
+      - "9092:9090"
+      - "8082:8080"
+    volumes:
+      - munge-key:/etc/munge
+      - ctrl3-data:/var/lib/flurm
+      - ./jobs/comprehensive:/jobs:ro
+    networks:
+      flurm-test-net:
+        ipv4_address: 172.40.0.12
+    cap_add:
+      - NET_ADMIN
+    depends_on:
+      flurm-ctrl-1:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:9090/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  #============================================================================
+  # Compute Nodes (Varied Resources)
+  #============================================================================
+
+  # Small node - debug/quick jobs
+  flurm-node-small:
+    build:
+      context: .
+      dockerfile: Dockerfile.flurm-node
+    hostname: flurm-node-small
+    container_name: flurm-test-node-small
+    environment:
+      - FLURM_CONTROLLER=flurm-ctrl-1:6817
+      - FLURM_NODE_NAME=flurm-node-small
+      - FLURM_NODE_CPUS=2
+      - FLURM_NODE_MEMORY=2048
+      - FLURM_NODE_PARTITIONS=debug,small
+      - FLURM_COOKIE=flurm_comprehensive_test
+    volumes:
+      - munge-key:/etc/munge
+      - ./jobs/comprehensive:/jobs:ro
+      - node-small-data:/var/spool/flurm
+    networks:
+      flurm-test-net:
+        ipv4_address: 172.40.0.20
+    depends_on:
+      flurm-ctrl-1:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Medium node - batch jobs
+  flurm-node-medium:
+    build:
+      context: .
+      dockerfile: Dockerfile.flurm-node
+    hostname: flurm-node-medium
+    container_name: flurm-test-node-medium
+    environment:
+      - FLURM_CONTROLLER=flurm-ctrl-1:6817
+      - FLURM_NODE_NAME=flurm-node-medium
+      - FLURM_NODE_CPUS=4
+      - FLURM_NODE_MEMORY=8192
+      - FLURM_NODE_PARTITIONS=batch,medium
+      - FLURM_COOKIE=flurm_comprehensive_test
+    volumes:
+      - munge-key:/etc/munge
+      - ./jobs/comprehensive:/jobs:ro
+      - node-medium-data:/var/spool/flurm
+    networks:
+      flurm-test-net:
+        ipv4_address: 172.40.0.21
+    depends_on:
+      flurm-ctrl-1:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Large node - big compute jobs
+  flurm-node-large:
+    build:
+      context: .
+      dockerfile: Dockerfile.flurm-node
+    hostname: flurm-node-large
+    container_name: flurm-test-node-large
+    environment:
+      - FLURM_CONTROLLER=flurm-ctrl-1:6817
+      - FLURM_NODE_NAME=flurm-node-large
+      - FLURM_NODE_CPUS=8
+      - FLURM_NODE_MEMORY=16384
+      - FLURM_NODE_PARTITIONS=batch,large
+      - FLURM_COOKIE=flurm_comprehensive_test
+    volumes:
+      - munge-key:/etc/munge
+      - ./jobs/comprehensive:/jobs:ro
+      - node-large-data:/var/spool/flurm
+    networks:
+      flurm-test-net:
+        ipv4_address: 172.40.0.22
+    depends_on:
+      flurm-ctrl-1:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # GPU node - ML/GPU jobs (simulated GPUs)
+  flurm-node-gpu:
+    build:
+      context: .
+      dockerfile: Dockerfile.flurm-node
+    hostname: flurm-node-gpu
+    container_name: flurm-test-node-gpu
+    environment:
+      - FLURM_CONTROLLER=flurm-ctrl-1:6817
+      - FLURM_NODE_NAME=flurm-node-gpu
+      - FLURM_NODE_CPUS=4
+      - FLURM_NODE_MEMORY=8192
+      - FLURM_NODE_PARTITIONS=gpu
+      - FLURM_NODE_GRES=gpu:2
+      - FLURM_COOKIE=flurm_comprehensive_test
+    volumes:
+      - munge-key:/etc/munge
+      - ./jobs/comprehensive:/jobs:ro
+      - node-gpu-data:/var/spool/flurm
+    networks:
+      flurm-test-net:
+        ipv4_address: 172.40.0.23
+    depends_on:
+      flurm-ctrl-1:
+        condition: service_healthy
+    restart: unless-stopped
+
+  #============================================================================
+  # SLURM (For Migration Testing)
+  #============================================================================
+
+  slurm-controller:
+    build:
+      context: .
+      dockerfile: Dockerfile.slurm-controller
+    hostname: slurm-controller
+    container_name: flurm-test-slurm-ctrl
+    environment:
+      - SLURM_CLUSTER_NAME=slurm-cluster
+    ports:
+      - "6818:6817"
+    volumes:
+      - munge-key:/etc/munge
+      - slurm-ctrl-data:/var/spool/slurmctld
+      - ./config/slurm-test.conf:/etc/slurm/slurm.conf:ro
+    networks:
+      flurm-test-net:
+        ipv4_address: 172.40.0.50
+    healthcheck:
+      test: ["CMD", "scontrol", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+
+  slurm-node:
+    build:
+      context: .
+      dockerfile: Dockerfile.slurm-node
+    hostname: slurm-node
+    container_name: flurm-test-slurm-node
+    environment:
+      - SLURM_CONTROLLER=slurm-controller
+    volumes:
+      - munge-key:/etc/munge
+      - slurm-node-data:/var/spool/slurmd
+      - ./jobs/comprehensive:/jobs:ro
+    networks:
+      flurm-test-net:
+        ipv4_address: 172.40.0.51
+    depends_on:
+      slurm-controller:
+        condition: service_healthy
+    restart: unless-stopped
+
+  #============================================================================
+  # Test Client
+  #============================================================================
+
+  test-client:
+    build:
+      context: .
+      dockerfile: Dockerfile.slurm-client-munge
+    hostname: test-client
+    container_name: flurm-test-client
+    environment:
+      - SLURM_CONF=/etc/slurm/slurm-flurm.conf
+      - FLURM_CONTROLLER=flurm-ctrl-1:6817
+    volumes:
+      - munge-key:/etc/munge
+      - ./jobs/comprehensive:/jobs:ro
+      - ./config/slurm-flurm-test.conf:/etc/slurm/slurm-flurm.conf:ro
+      - ../scripts/test-scenarios:/test-scenarios:ro
+    networks:
+      flurm-test-net:
+        ipv4_address: 172.40.0.100
+    depends_on:
+      flurm-ctrl-1:
+        condition: service_healthy
+    command: ["sleep", "infinity"]
+    restart: unless-stopped
+
+  #============================================================================
+  # Support Services
+  #============================================================================
+
+  # MySQL for accounting (slurmdbd bridge testing)
+  mysql:
+    image: mysql:8.0
+    hostname: mysql
+    container_name: flurm-test-mysql
+    environment:
+      - MYSQL_ROOT_PASSWORD=flurm_test
+      - MYSQL_DATABASE=flurm_acct
+      - MYSQL_USER=flurm
+      - MYSQL_PASSWORD=flurm_test
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ./config/mysql-init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    networks:
+      flurm-test-net:
+        ipv4_address: 172.40.0.200
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-pflurm_test"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  # Prometheus for metrics collection
+  prometheus:
+    image: prom/prometheus:v2.47.0
+    hostname: prometheus
+    container_name: flurm-test-prometheus
+    ports:
+      - "9000:9090"
+    volumes:
+      - ./config/prometheus-comprehensive.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    networks:
+      flurm-test-net:
+        ipv4_address: 172.40.0.201
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    restart: unless-stopped
+
+  # MUNGE key generator (init container)
+  munge-init:
+    image: ghcr.io/dun/munge:0.5.15
+    container_name: flurm-test-munge-init
+    volumes:
+      - munge-key:/etc/munge
+    command: >
+      sh -c '
+        if [ ! -f /etc/munge/munge.key ]; then
+          echo "Generating MUNGE key...";
+          dd if=/dev/urandom of=/etc/munge/munge.key bs=1024 count=1;
+          chmod 400 /etc/munge/munge.key;
+          chown daemon:daemon /etc/munge/munge.key;
+        fi
+      '
+    restart: "no"
+
+#============================================================================
+# Networks
+#============================================================================
+
+networks:
+  flurm-test-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.40.0.0/16
+
+#============================================================================
+# Volumes
+#============================================================================
+
+volumes:
+  munge-key:
+  ctrl1-data:
+  ctrl2-data:
+  ctrl3-data:
+  node-small-data:
+  node-medium-data:
+  node-large-data:
+  node-gpu-data:
+  slurm-ctrl-data:
+  slurm-node-data:
+  mysql-data:
+  prometheus-data:

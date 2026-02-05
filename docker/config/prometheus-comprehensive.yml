@@ -1,0 +1,37 @@
+# Prometheus configuration for FLURM comprehensive testing
+#
+# Scrapes metrics from:
+# - 3 FLURM controllers (HA cluster)
+# - Node daemons (optional)
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # FLURM Controllers
+  - job_name: 'flurm-controllers'
+    static_configs:
+      - targets:
+          - 'flurm-ctrl-1:9090'
+          - 'flurm-ctrl-2:9090'
+          - 'flurm-ctrl-3:9090'
+        labels:
+          cluster: 'flurm-test'
+
+  # SLURM Controller (for comparison during migration)
+  - job_name: 'slurm-controller'
+    static_configs:
+      - targets:
+          - 'slurm-controller:9100'  # Node exporter if available
+        labels:
+          cluster: 'slurm-test'
+
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+# Recording rules for common metrics
+rule_files:
+  # - /etc/prometheus/flurm_rules.yml
