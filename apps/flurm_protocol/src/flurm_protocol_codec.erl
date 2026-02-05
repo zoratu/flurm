@@ -2549,21 +2549,8 @@ encode_batch_job_response(#batch_job_response{
 %% 24. cluster_rec_present: uint8 (0 = NULL, 1 = present)
 %% 25. (working_cluster_rec if present)
 
-encode_resource_allocation_response(#resource_allocation_response{
-    error_code = ErrorCode
-}) when ErrorCode =/= 0 ->
-    %% For errors, encode with proper format but error_code set
-    encode_resource_allocation_response(#resource_allocation_response{
-        job_id = 0,
-        node_list = <<>>,
-        num_nodes = 0,
-        partition = <<"default">>,
-        error_code = ErrorCode,
-        job_submit_user_msg = <<>>,
-        cpus_per_node = [],
-        num_cpu_groups = 0
-    });
-
+%% Main encoding function - handles all cases including errors
+%% (The main clause properly handles undefined fields with defaults)
 encode_resource_allocation_response(#resource_allocation_response{
     job_id = JobId,
     node_list = NodeList,
