@@ -1,4 +1,4 @@
-FROM erlang:26-slim
+FROM erlang:28-slim
 
 # Install build tools and munge
 RUN apt-get update && \
@@ -60,6 +60,6 @@ RUN echo '#!/bin/bash' > /entrypoint.sh && \
     echo 'cd /flurm && escript escripts/start_controller.erl' >> /entrypoint.sh && \
     chmod +x /entrypoint.sh
 
-EXPOSE 6817 6818
+EXPOSE 6817 6818 6820 9090
 
 CMD ["/entrypoint.sh"]

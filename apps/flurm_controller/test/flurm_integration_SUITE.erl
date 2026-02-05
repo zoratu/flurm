@@ -71,10 +71,23 @@
     test_oversized_message/1
 ]).
 
--define(CONTROLLER_HOST, "127.0.0.1").
--define(CONTROLLER_PORT, 6817).
+%% Support environment variable override for Docker testing
+-define(CONTROLLER_HOST, get_controller_host()).
+-define(CONTROLLER_PORT, get_controller_port()).
 -define(CONNECT_TIMEOUT, 5000).
 -define(RECV_TIMEOUT, 10000).
+
+get_controller_host() ->
+    case os:getenv("FLURM_CONTROLLER_HOST") of
+        false -> "127.0.0.1";
+        Host -> Host
+    end.
+
+get_controller_port() ->
+    case os:getenv("FLURM_CONTROLLER_PORT") of
+        false -> 6817;
+        PortStr -> list_to_integer(PortStr)
+    end.
 
 %%====================================================================
 %% CT Callbacks
@@ -151,8 +164,10 @@ init_per_suite(Config) ->
             gen_tcp:close(Socket),
             [{controller_available, true} | Config];
         {error, _} ->
+            Host = ?CONTROLLER_HOST,
+            Port = ?CONTROLLER_PORT,
             ct:pal("WARNING: Controller not available at ~s:~p~n",
-                   [?CONTROLLER_HOST, ?CONTROLLER_PORT]),
+                   [Host, Port]),
             [{controller_available, false} | Config]
     end.
 

@@ -1,7 +1,7 @@
 # Test Runner Image for FLURM Integration Tests
 # Contains Erlang/OTP and rebar3 for running Common Test suites
 
-FROM erlang:26-slim
+FROM erlang:28-slim
 
 LABEL maintainer="FLURM Project"
 LABEL description="Integration test runner for FLURM"

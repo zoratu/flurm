@@ -29,6 +29,7 @@ services:
       - "6817:6817"
       - "6818:6818"
       - "6820:6820"
+      - "9090:9090"
     volumes:
       - munge-key:/etc/munge
       - flurm-data:/var/lib/flurm
@@ -37,7 +38,7 @@ services:
         aliases:
           - flurm-controller
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:6820/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:9090/health"]
       interval: 5s
       timeout: 3s
       retries: 10

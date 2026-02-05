@@ -1,4 +1,4 @@
-FROM erlang:26-slim
+FROM erlang:28-slim
 
 # Install tools for HA testing (curl for health checks, iptables for split-brain)
 RUN apt-get update && \

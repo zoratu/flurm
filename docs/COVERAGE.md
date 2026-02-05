@@ -276,29 +276,112 @@ Achieve 40% coverage for:
 
 ## Coverage Improvement Roadmap
 
-### Phase 1: Foundation (Q1 2026)
-- [ ] Fix coverage compilation errors in `flurm_benchmark.erl`
-- [ ] Increase `flurm_protocol_codec` coverage from 31% to 60%
-- [ ] Set up common_test integration test framework
-- [ ] Add coverage reporting to CI pipeline
+### Current Status (February 2026)
 
-### Phase 2: Core Modules (Q2 2026)
-- [ ] Add integration tests for `flurm_scheduler`
-- [ ] Add integration tests for `flurm_job_manager`
-- [ ] Improve `flurm_dbd_*` coverage with better mocking strategies
-- [ ] Target: Overall coverage to 20%
+| Module | Current | Target | Priority |
+|--------|---------|--------|----------|
+| `flurm_jwt` | 70% | 80% | High |
+| `flurm_protocol_header` | 60% | 80% | High |
+| `flurm_protocol_codec` | 4% | 60% | **Critical** |
+| `flurm_protocol_pack` | 7% | 60% | High |
+| `flurm_munge` | 0%* | 60% | Medium |
+| `flurm_tres` | 0%* | 60% | Medium |
 
-### Phase 3: Feature Completeness (Q3 2026)
-- [ ] Complete preemption and reservation test coverage
-- [ ] Add property-based tests for protocol codec
-- [ ] Implement fault injection test suite
-- [ ] Target: Overall coverage to 40%
+*Note: Many 0% modules have extensive test suites but coverage instrumentation fails due to mocking.
 
-### Phase 4: Production Readiness (Q4 2026)
-- [ ] All critical path modules at 80%+ coverage
-- [ ] All feature modules at 60%+ coverage
-- [ ] All infrastructure modules at 40%+ coverage
-- [ ] Target: Overall coverage to 60%
+### Immediate Actions (Next Sprint)
+
+#### 1. Fix Protocol Codec Coverage (4% → 60%)
+
+The protocol codec is critical for SLURM compatibility. Current coverage is artificially low.
+
+**Action Items:**
+- [ ] Add direct unit tests without mocking in `flurm_protocol_codec_tests.erl`
+- [ ] Test each message type encoding/decoding individually
+- [ ] Add boundary tests for all numeric fields
+- [ ] Test error handling for malformed inputs
+
+**Specific test additions needed:**
+```erlang
+%% apps/flurm_protocol/test/flurm_protocol_codec_tests.erl
+%% Add tests for these message types:
+- REQUEST_SUBMIT_BATCH_JOB encoding/decoding
+- RESPONSE_JOB_INFO encoding/decoding
+- REQUEST_NODE_REGISTRATION encoding/decoding
+- REQUEST_CANCEL_JOB encoding/decoding
+- All error response types
+```
+
+#### 2. Improve Integration Test Infrastructure
+
+**Action Items:**
+- [ ] Fix `flurm_integration_SUITE.erl` protocol encoding issues (6 test failures)
+- [ ] Add more robust connection handling in integration tests
+- [ ] Create test fixtures for common scenarios
+
+#### 3. Add TRES Coverage
+
+TRES (Trackable Resources) has comprehensive tests but 0% reported coverage.
+
+**Action Items:**
+- [ ] Refactor `flurm_tres_tests.erl` to reduce mocking
+- [ ] Add direct function call tests
+- [ ] Test TRES parsing and formatting edge cases
+
+### Medium-Term Actions (Next Month)
+
+#### 4. Add Coverage for Core Managers
+
+| Module | Approach |
+|--------|----------|
+| `flurm_job_manager` | Create lightweight integration tests using `ct_slave` |
+| `flurm_scheduler` | Add unit tests for scheduling algorithms in isolation |
+| `flurm_node_manager` | Test node state transitions without full cluster |
+
+#### 5. Improve DBD Coverage
+
+| Module | Current | Action |
+|--------|---------|--------|
+| `flurm_dbd_ra` | 0% | Test Ra state machine apply function directly |
+| `flurm_dbd_query` | 0% | Unit test query building without database |
+| `flurm_dbd_mysql` | 0% | Mock MySQL driver responses |
+
+### Long-Term Goals
+
+#### Phase 1: Instrumentation Fixes
+- [ ] Investigate why many modules show 0% despite having tests
+- [ ] Fix `{no_abstract_code}` compilation errors
+- [ ] Add `-compile(export_all).` to test builds if needed
+
+#### Phase 2: Integration Test Expansion
+- [ ] Create Docker-based integration test suite (in progress)
+- [ ] Add multi-node cluster tests
+- [ ] Test failover scenarios
+
+#### Phase 3: Target Coverage
+
+| Category | Target | Modules |
+|----------|--------|---------|
+| Critical Path | 80% | protocol, job_manager, scheduler |
+| Features | 60% | preemption, reservation, fairshare |
+| Infrastructure | 40% | supervisors, apps, config |
+
+### Pre-commit Hook Coverage
+
+The existing pre-commit hook runs tests but doesn't enforce coverage thresholds.
+To add coverage gates when ready:
+
+```bash
+# In .git/hooks/pre-commit, add:
+MIN_COVERAGE=30
+COVERAGE=$(rebar3 cover --verbose 2>&1 | grep "total" | awk '{print $3}' | tr -d '%')
+if [ "$COVERAGE" -lt "$MIN_COVERAGE" ]; then
+    echo "Coverage $COVERAGE% is below minimum $MIN_COVERAGE%"
+    exit 1
+fi
+```
+
+**Note:** Don't enable this until coverage instrumentation is fixed.
 
 ## Contributing
 
