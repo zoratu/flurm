@@ -1739,7 +1739,7 @@ do_notify_job_started(FederationJobId, LocalJobId, State) ->
     StartTime = erlang:system_time(second),
 
     case ets:lookup(?FED_SIBLING_JOBS, FederationJobId) of
-        [#fed_job_tracker{origin_cluster = OriginCluster} = Tracker] ->
+        [#fed_job_tracker{origin_cluster = OriginCluster}] ->
             %% Update local sibling state to RUNNING
             update_sibling_state(FederationJobId, LocalCluster, ?SIBLING_STATE_RUNNING),
             update_sibling_start_time(FederationJobId, LocalCluster, StartTime),
@@ -1748,7 +1748,9 @@ do_notify_job_started(FederationJobId, LocalJobId, State) ->
                 true ->
                     %% We are the origin - directly revoke other siblings
                     %% TLA+ SiblingExclusivity: At most one sibling runs
-                    UpdatedTracker = Tracker#fed_job_tracker{running_cluster = LocalCluster},
+                    %% Re-read tracker to get updated sibling states before adding running_cluster
+                    [CurrentTracker] = ets:lookup(?FED_SIBLING_JOBS, FederationJobId),
+                    UpdatedTracker = CurrentTracker#fed_job_tracker{running_cluster = LocalCluster},
                     ets:insert(?FED_SIBLING_JOBS, UpdatedTracker),
                     do_revoke_siblings(FederationJobId, LocalCluster, State);
                 false ->
@@ -1796,7 +1798,9 @@ do_revoke_siblings(FederationJobId, RunningCluster, State) ->
                                         do_handle_sibling_revoke(RevokeMsg, State);
                                     false ->
                                         %% Remote revocation
-                                        send_federation_msg(Cluster, ?MSG_FED_SIBLING_REVOKE, RevokeMsg, State)
+                                        send_federation_msg(Cluster, ?MSG_FED_SIBLING_REVOKE, RevokeMsg, State),
+                                        %% TLA+ OriginAwareness: Update local tracker to reflect revoked state
+                                        update_sibling_state(FederationJobId, Cluster, ?SIBLING_STATE_REVOKED)
                                 end,
                                 Acc + 1;
                             false ->
