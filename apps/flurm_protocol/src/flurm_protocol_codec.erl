@@ -2017,11 +2017,15 @@ strip_null(Bin) ->
 %% Decode REQUEST_CANCEL_JOB (4006)
 decode_cancel_job_request(Binary) ->
     case Binary of
-        <<JobId:32/big, StepId:32/big, Signal:32/big, Flags:32/big, Rest/binary>> ->
-            {ok, JobIdStr, _} = flurm_protocol_pack:unpack_string(Rest),
+        <<JobId:32/big, StepId:32/big, Signal:32/big, Flags:32/big, Rest/binary>> when byte_size(Rest) > 0 ->
+            %% Try to unpack the optional job_id_str, default to undefined on error
+            JobIdStr = case flurm_protocol_pack:unpack_string(Rest) of
+                {ok, Str, _} -> ensure_binary(Str);
+                {error, _} -> undefined
+            end,
             {ok, #cancel_job_request{
                 job_id = JobId,
-                job_id_str = ensure_binary(JobIdStr),
+                job_id_str = JobIdStr,
                 step_id = StepId,
                 signal = Signal,
                 flags = Flags
@@ -2159,13 +2163,17 @@ decode_slurm_rc_response(_) ->
 %% Decode RESPONSE_SUBMIT_BATCH_JOB (4004)
 decode_batch_job_response(Binary) ->
     case Binary of
-        <<JobId:32/big, StepId:32/big, ErrorCode:32/big, Rest/binary>> ->
-            {ok, UserMsg, _} = flurm_protocol_pack:unpack_string(Rest),
+        <<JobId:32/big, StepId:32/big, ErrorCode:32/big, Rest/binary>> when byte_size(Rest) > 0 ->
+            %% Try to unpack the optional user message, default to undefined on error
+            UserMsg = case flurm_protocol_pack:unpack_string(Rest) of
+                {ok, Msg, _} -> ensure_binary(Msg);
+                {error, _} -> undefined
+            end,
             {ok, #batch_job_response{
                 job_id = JobId,
                 step_id = StepId,
                 error_code = ErrorCode,
-                job_submit_user_msg = ensure_binary(UserMsg)
+                job_submit_user_msg = UserMsg
             }};
         <<JobId:32/big, StepId:32/big, ErrorCode:32/big>> ->
             {ok, #batch_job_response{

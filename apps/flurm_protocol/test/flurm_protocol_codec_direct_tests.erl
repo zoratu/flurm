@@ -339,10 +339,11 @@ encode_with_extra_test() ->
 
 decode_with_extra_test() ->
     %% Create a message with auth section
-    AuthHeader = <<0:64/big, 101:16/big>>,
+    %% Auth section format: <<PluginId:32/big, CredLen:32/big, Credential/binary>>
+    %% Plugin ID 101 = MUNGE authentication
     Credential = <<"MUNGE:test_credential">>,
     CredLen = byte_size(Credential),
-    AuthSection = <<AuthHeader/binary, CredLen:32/big, Credential/binary>>,
+    AuthSection = <<101:32/big, CredLen:32/big, Credential/binary>>,
 
     %% Create body
     BodyBin = <<0:32/signed-big>>,  % return_code = 0
@@ -803,5 +804,434 @@ is_response_coverage_test_() ->
         ?assert(flurm_protocol_codec:is_response(?RESPONSE_BURST_BUFFER_INFO)),
         ?assert(flurm_protocol_codec:is_response(?RESPONSE_CONFIG_INFO)),
         ?assert(flurm_protocol_codec:is_response(?RESPONSE_STATS_INFO))
+      end}
+    ].
+
+%%%===================================================================
+%%% Additional Coverage Tests - Response Encoders
+%%%===================================================================
+
+encode_job_info_response_test_() ->
+    [
+     {"encode empty job info response", fun() ->
+        Response = #job_info_response{
+            last_update = 1700000000,
+            job_count = 0,
+            jobs = []
+        },
+        Result = flurm_protocol_codec:encode_body(?RESPONSE_JOB_INFO, Response),
+        ?assertMatch({ok, _Binary}, Result)
+      end},
+     {"encode job info response with jobs", fun() ->
+        Job = #job_info{
+            job_id = 12345,
+            name = <<"test_job">>,
+            partition = <<"default">>,
+            job_state = 1,
+            user_id = 1000,
+            group_id = 1000,
+            num_nodes = 1,
+            num_cpus = 4,
+            priority = 100
+        },
+        Response = #job_info_response{
+            last_update = 1700000000,
+            job_count = 1,
+            jobs = [Job]
+        },
+        Result = flurm_protocol_codec:encode_body(?RESPONSE_JOB_INFO, Response),
+        ?assertMatch({ok, _Binary}, Result)
+      end}
+    ].
+
+encode_node_info_response_test_() ->
+    [
+     {"encode empty node info response", fun() ->
+        Response = #node_info_response{
+            last_update = 1700000000,
+            node_count = 0,
+            nodes = []
+        },
+        Result = flurm_protocol_codec:encode_body(?RESPONSE_NODE_INFO, Response),
+        ?assertMatch({ok, _Binary}, Result)
+      end},
+     {"encode node info response with nodes", fun() ->
+        Node = #node_info{
+            name = <<"node001">>,
+            node_state = 0,
+            cpus = 16,
+            sockets = 2,
+            cores = 4,
+            threads = 2,
+            real_memory = 65536,
+            tmp_disk = 100000
+        },
+        Response = #node_info_response{
+            last_update = 1700000000,
+            node_count = 1,
+            nodes = [Node]
+        },
+        Result = flurm_protocol_codec:encode_body(?RESPONSE_NODE_INFO, Response),
+        ?assertMatch({ok, _Binary}, Result)
+      end}
+    ].
+
+encode_partition_info_response_test_() ->
+    [
+     {"encode empty partition info response", fun() ->
+        Response = #partition_info_response{
+            last_update = 1700000000,
+            partition_count = 0,
+            partitions = []
+        },
+        Result = flurm_protocol_codec:encode_body(?RESPONSE_PARTITION_INFO, Response),
+        ?assertMatch({ok, _Binary}, Result)
+      end},
+     {"encode partition info response with partitions", fun() ->
+        Part = #partition_info{
+            name = <<"compute">>,
+            state_up = 1,
+            total_nodes = 10,
+            total_cpus = 160,
+            max_time = 86400,
+            nodes = <<"node[001-010]">>
+        },
+        Response = #partition_info_response{
+            last_update = 1700000000,
+            partition_count = 1,
+            partitions = [Part]
+        },
+        Result = flurm_protocol_codec:encode_body(?RESPONSE_PARTITION_INFO, Response),
+        ?assertMatch({ok, _Binary}, Result)
+      end}
+    ].
+
+encode_resource_allocation_response_test_() ->
+    [
+     {"encode minimal resource allocation response", fun() ->
+        Response = #resource_allocation_response{
+            job_id = 12345,
+            node_list = <<"node001">>,
+            node_cnt = 1,
+            cpus_per_node = [4],
+            num_cpu_groups = 1
+        },
+        Result = flurm_protocol_codec:encode_body(?RESPONSE_RESOURCE_ALLOCATION, Response),
+        ?assertMatch({ok, _Binary}, Result)
+      end}
+    ].
+
+encode_job_step_create_response_test_() ->
+    [
+     {"encode job step create response", fun() ->
+        Response = #job_step_create_response{
+            job_id = 12345,
+            job_step_id = 0,
+            error_code = 0,
+            node_list = <<"node001">>
+        },
+        Result = flurm_protocol_codec:encode_body(?RESPONSE_JOB_STEP_CREATE, Response),
+        ?assertMatch({ok, _Binary}, Result)
+      end}
+    ].
+
+encode_launch_tasks_response_test_() ->
+    [
+     {"encode launch tasks response with record", fun() ->
+        Response = #launch_tasks_response{
+            return_code = 0,
+            node_name = <<"node001">>,
+            local_pids = [1234, 1235],
+            gtids = [0, 1]
+        },
+        Result = flurm_protocol_codec:encode_body(?RESPONSE_LAUNCH_TASKS, Response),
+        ?assertMatch({ok, _Binary}, Result)
+      end},
+     {"encode launch tasks response with map", fun() ->
+        Response = #{
+            return_code => 0,
+            node_name => <<"node001">>,
+            local_pids => [1234],
+            gtids => [0]
+        },
+        Result = flurm_protocol_codec:encode_body(?RESPONSE_LAUNCH_TASKS, Response),
+        ?assertMatch({ok, _Binary}, Result)
+      end}
+    ].
+
+encode_task_exit_msg_test_() ->
+    [
+     {"encode task exit message", fun() ->
+        Msg = #{
+            job_id => 12345,
+            step_id => 0,
+            task_id => 0,
+            exit_status => 0
+        },
+        Result = flurm_protocol_codec:encode_body(?MESSAGE_TASK_EXIT, Msg),
+        ?assertMatch({ok, _Binary}, Result)
+      end}
+    ].
+
+encode_reservation_info_response_test_() ->
+    [
+     {"encode empty reservation info response", fun() ->
+        Response = #reservation_info_response{
+            last_update = 1700000000,
+            reservation_count = 0,
+            reservations = []
+        },
+        Result = flurm_protocol_codec:encode_body(?RESPONSE_RESERVATION_INFO, Response),
+        ?assertMatch({ok, _Binary}, Result)
+      end}
+    ].
+
+encode_license_info_response_test_() ->
+    [
+     {"encode empty license info response", fun() ->
+        Response = #license_info_response{
+            last_update = 1700000000,
+            license_count = 0,
+            licenses = []
+        },
+        Result = flurm_protocol_codec:encode_body(?RESPONSE_LICENSE_INFO, Response),
+        ?assertMatch({ok, _Binary}, Result)
+      end}
+    ].
+
+encode_build_info_response_test_() ->
+    [
+     {"encode build info response", fun() ->
+        Response = #build_info_response{
+            version = <<"23.02.0">>,
+            cluster_name = <<"test_cluster">>,
+            control_machine = <<"controller">>,
+            slurmctld_port = 6817
+        },
+        Result = flurm_protocol_codec:encode_body(?RESPONSE_BUILD_INFO, Response),
+        ?assertMatch({ok, _Binary}, Result)
+      end}
+    ].
+
+encode_stats_info_response_test_() ->
+    [
+     {"encode stats info response", fun() ->
+        Response = #stats_info_response{
+            parts_packed = 0,
+            req_time = 1700000000,
+            req_time_start = 1699900000,
+            server_thread_count = 4,
+            jobs_submitted = 1000,
+            jobs_started = 800,
+            jobs_completed = 700,
+            jobs_canceled = 50,
+            jobs_failed = 10
+        },
+        Result = flurm_protocol_codec:encode_body(?RESPONSE_STATS_INFO, Response),
+        ?assertMatch({ok, _Binary}, Result)
+      end}
+    ].
+
+%%%===================================================================
+%%% Federation Message Tests
+%%%===================================================================
+
+encode_fed_info_response_test_() ->
+    [
+     {"encode fed info response", fun() ->
+        Response = #fed_info_response{
+            federation_name = <<"test_federation">>,
+            local_cluster = <<"local_cluster">>,
+            cluster_count = 0,
+            clusters = []
+        },
+        Result = flurm_protocol_codec:encode_body(?RESPONSE_FED_INFO, Response),
+        ?assertMatch({ok, _Binary}, Result)
+      end}
+    ].
+
+encode_federation_submit_request_test_() ->
+    [
+     {"encode federation submit request", fun() ->
+        Request = #federation_submit_request{
+            source_cluster = <<"local_cluster">>,
+            target_cluster = <<"remote_cluster">>,
+            job_id = 12345,
+            user_id = 1000,
+            script = <<"#!/bin/bash\necho hello">>
+        },
+        Result = flurm_protocol_codec:encode_body(?REQUEST_FEDERATION_SUBMIT, Request),
+        ?assertMatch({ok, _Binary}, Result)
+      end}
+    ].
+
+encode_federation_job_status_request_test_() ->
+    [
+     {"encode federation job status request", fun() ->
+        Request = #federation_job_status_request{
+            job_id = 12345,
+            source_cluster = <<"origin_cluster">>
+        },
+        Result = flurm_protocol_codec:encode_body(?REQUEST_FEDERATION_JOB_STATUS, Request),
+        ?assertMatch({ok, _Binary}, Result)
+      end}
+    ].
+
+encode_federation_job_cancel_request_test_() ->
+    [
+     {"encode federation job cancel request", fun() ->
+        Request = #federation_job_cancel_request{
+            job_id = 12345,
+            source_cluster = <<"origin_cluster">>,
+            signal = 15
+        },
+        Result = flurm_protocol_codec:encode_body(?REQUEST_FEDERATION_JOB_CANCEL, Request),
+        ?assertMatch({ok, _Binary}, Result)
+      end}
+    ].
+
+encode_fed_job_messages_test_() ->
+    [
+     {"encode fed job submit msg", fun() ->
+        Msg = #fed_job_submit_msg{
+            federation_job_id = <<"fed-12345">>,
+            origin_cluster = <<"origin">>,
+            target_cluster = <<"target">>,
+            job_spec = #{},
+            submit_time = 1700000000
+        },
+        Result = flurm_protocol_codec:encode_body(?MSG_FED_JOB_SUBMIT, Msg),
+        ?assertMatch({ok, _Binary}, Result)
+      end},
+     {"encode fed job started msg", fun() ->
+        Msg = #fed_job_started_msg{
+            federation_job_id = <<"fed-12345">>,
+            running_cluster = <<"running">>,
+            local_job_id = 12345,
+            start_time = 1700000100
+        },
+        Result = flurm_protocol_codec:encode_body(?MSG_FED_JOB_STARTED, Msg),
+        ?assertMatch({ok, _Binary}, Result)
+      end},
+     {"encode fed sibling revoke msg", fun() ->
+        Msg = #fed_sibling_revoke_msg{
+            federation_job_id = <<"fed-12345">>,
+            running_cluster = <<"origin">>,
+            revoke_reason = <<"job started elsewhere">>
+        },
+        Result = flurm_protocol_codec:encode_body(?MSG_FED_SIBLING_REVOKE, Msg),
+        ?assertMatch({ok, _Binary}, Result)
+      end},
+     {"encode fed job completed msg", fun() ->
+        Msg = #fed_job_completed_msg{
+            federation_job_id = <<"fed-12345">>,
+            running_cluster = <<"origin">>,
+            local_job_id = 12345,
+            exit_code = 0,
+            end_time = 1700001000
+        },
+        Result = flurm_protocol_codec:encode_body(?MSG_FED_JOB_COMPLETED, Msg),
+        ?assertMatch({ok, _Binary}, Result)
+      end},
+     {"encode fed job failed msg", fun() ->
+        Msg = #fed_job_failed_msg{
+            federation_job_id = <<"fed-12345">>,
+            running_cluster = <<"origin">>,
+            local_job_id = 12345,
+            exit_code = 1,
+            error_msg = <<"out of memory">>
+        },
+        Result = flurm_protocol_codec:encode_body(?MSG_FED_JOB_FAILED, Msg),
+        ?assertMatch({ok, _Binary}, Result)
+      end}
+    ].
+
+%%%===================================================================
+%%% Request Encoder Tests
+%%%===================================================================
+
+encode_cancel_job_request_test_() ->
+    [
+     {"encode cancel job request", fun() ->
+        Request = #cancel_job_request{
+            job_id = 12345,
+            job_id_str = <<"12345">>,
+            step_id = 0,
+            signal = 15,
+            flags = 0
+        },
+        Result = flurm_protocol_codec:encode_body(?REQUEST_CANCEL_JOB, Request),
+        ?assertMatch({ok, _Binary}, Result)
+      end}
+    ].
+
+encode_kill_job_request_test_() ->
+    [
+     {"encode kill job request", fun() ->
+        Request = #kill_job_request{
+            job_id = 12345,
+            step_id = 0,
+            signal = 9,
+            flags = 0
+        },
+        Result = flurm_protocol_codec:encode_body(?REQUEST_KILL_JOB, Request),
+        ?assertMatch({ok, _Binary}, Result)
+      end}
+    ].
+
+encode_node_info_request_test_() ->
+    [
+     {"encode node info request", fun() ->
+        Request = #node_info_request{
+            show_flags = 0,
+            node_name = <<>>
+        },
+        Result = flurm_protocol_codec:encode_body(?REQUEST_NODE_INFO, Request),
+        ?assertMatch({ok, _Binary}, Result)
+      end}
+    ].
+
+encode_partition_info_request_test_() ->
+    [
+     {"encode partition info request", fun() ->
+        Request = #partition_info_request{
+            show_flags = 0,
+            partition_name = <<>>
+        },
+        Result = flurm_protocol_codec:encode_body(?REQUEST_PARTITION_INFO, Request),
+        ?assertMatch({ok, _Binary}, Result)
+      end}
+    ].
+
+%%%===================================================================
+%%% Error Path Tests
+%%%===================================================================
+
+decode_invalid_messages_test_() ->
+    [
+     {"decode with truncated header", fun() ->
+        Result = flurm_protocol_codec:decode(<<1, 2, 3>>),
+        ?assertMatch({error, _}, Result)
+      end},
+     {"decode with invalid length", fun() ->
+        Result = flurm_protocol_codec:decode(<<1000:32/big, 1, 2, 3>>),
+        ?assertMatch({error, _}, Result)
+      end},
+     {"decode_response with truncated data", fun() ->
+        Result = flurm_protocol_codec:decode_response(<<5:32/big, 1, 2>>),
+        ?assertMatch({error, _}, Result)
+      end}
+    ].
+
+encode_body_fallback_test_() ->
+    [
+     {"encode raw binary passes through", fun() ->
+        Binary = <<"raw data">>,
+        Result = flurm_protocol_codec:encode_body(99999, Binary),
+        ?assertMatch({ok, Binary}, Result)
+      end},
+     {"encode unknown body type returns error", fun() ->
+        Result = flurm_protocol_codec:encode_body(99999, {unknown, record}),
+        ?assertMatch({error, _}, Result)
       end}
     ].
