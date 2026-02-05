@@ -42,8 +42,8 @@ flurm_dbd_acceptor_coverage_test_() ->
 setup() ->
     meck:new(ranch, [non_strict]),
     meck:new(lager, [non_strict]),
-    meck:new(flurm_protocol_codec, [non_strict]),
-    meck:new(flurm_dbd_server, [non_strict]),
+    meck:new(flurm_protocol_codec, [passthrough, non_strict]),
+    meck:new(flurm_dbd_server, [passthrough, non_strict]),
 
     meck:expect(lager, debug, fun(_) -> ok end),
     meck:expect(lager, debug, fun(_, _) -> ok end),

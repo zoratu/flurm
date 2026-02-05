@@ -41,10 +41,10 @@ setup() ->
     meck:new(lager, [non_strict]),
     meck:expect(lager, md, fun() -> [] end),
     meck:expect(lager, md, fun(_) -> ok end),
-    meck:new(flurm_job_manager, [non_strict]),
-    meck:new(flurm_node_manager_server, [non_strict]),
-    meck:new(flurm_partition_manager, [non_strict]),
-    meck:new(flurm_protocol, [non_strict]),
+    meck:new(flurm_job_manager, [passthrough, non_strict]),
+    meck:new(flurm_node_manager_server, [passthrough, non_strict]),
+    meck:new(flurm_partition_manager, [passthrough, non_strict]),
+    meck:new(flurm_protocol, [passthrough, non_strict]),
 
     %% Default lager expectations
     meck:expect(lager, debug, fun(_) -> ok end),
@@ -182,7 +182,7 @@ protocol_flow_test_() ->
      ]}.
 
 setup_flow() ->
-    meck:new(flurm_protocol, [non_strict]),
+    meck:new(flurm_protocol, [passthrough, non_strict]),
     ok.
 
 cleanup_flow(_) ->

@@ -44,7 +44,7 @@ connection_manager_test_() ->
 
 setup() ->
     %% Mock flurm_node_manager_server for DOWN handling
-    meck:new(flurm_node_manager_server, [non_strict]),
+    meck:new(flurm_node_manager_server, [passthrough, non_strict]),
     meck:expect(flurm_node_manager_server, update_node, fun(_, _) -> ok end),
 
     %% Stop any existing server

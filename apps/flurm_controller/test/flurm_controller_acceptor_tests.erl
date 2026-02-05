@@ -31,9 +31,9 @@ setup() ->
     application:ensure_all_started(lager),
     meck:new(ranch, [passthrough, unstick]),
     meck:new(ranch_tcp, [passthrough, unstick]),
-    %% Use non_strict for modules that might not have debug_info
-    meck:new(flurm_protocol_codec, [non_strict]),
-    meck:new(flurm_controller_handler, [non_strict]),
+    %% Use passthrough to preserve coverage instrumentation
+    meck:new(flurm_protocol_codec, [passthrough, non_strict]),
+    meck:new(flurm_controller_handler, [passthrough, non_strict]),
     ok.
 
 cleanup(_) ->
@@ -126,8 +126,8 @@ process_buffer_test_() ->
          application:ensure_all_started(lager),
          meck:new(ranch, [passthrough, unstick]),
          meck:new(ranch_tcp, [passthrough, unstick]),
-         meck:new(flurm_protocol_codec, [non_strict]),
-         meck:new(flurm_controller_handler, [non_strict])
+         meck:new(flurm_protocol_codec, [passthrough, non_strict]),
+         meck:new(flurm_controller_handler, [passthrough, non_strict])
      end,
      fun(_) ->
          meck:unload(ranch),
@@ -223,8 +223,8 @@ message_handling_test_() ->
          application:ensure_all_started(lager),
          meck:new(ranch, [passthrough, unstick]),
          meck:new(ranch_tcp, [passthrough, unstick]),
-         meck:new(flurm_protocol_codec, [non_strict]),
-         meck:new(flurm_controller_handler, [non_strict])
+         meck:new(flurm_protocol_codec, [passthrough, non_strict]),
+         meck:new(flurm_controller_handler, [passthrough, non_strict])
      end,
      fun(_) ->
          meck:unload(ranch),
@@ -375,8 +375,8 @@ buffer_edge_cases_test_() ->
          application:ensure_all_started(lager),
          meck:new(ranch, [passthrough, unstick]),
          meck:new(ranch_tcp, [passthrough, unstick]),
-         meck:new(flurm_protocol_codec, [non_strict]),
-         meck:new(flurm_controller_handler, [non_strict])
+         meck:new(flurm_protocol_codec, [passthrough, non_strict]),
+         meck:new(flurm_controller_handler, [passthrough, non_strict])
      end,
      fun(_) ->
          meck:unload(ranch),
@@ -482,8 +482,8 @@ response_test_() ->
          application:ensure_all_started(lager),
          meck:new(ranch, [passthrough, unstick]),
          meck:new(ranch_tcp, [passthrough, unstick]),
-         meck:new(flurm_protocol_codec, [non_strict]),
-         meck:new(flurm_controller_handler, [non_strict])
+         meck:new(flurm_protocol_codec, [passthrough, non_strict]),
+         meck:new(flurm_controller_handler, [passthrough, non_strict])
      end,
      fun(_) ->
          meck:unload(ranch),

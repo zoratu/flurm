@@ -66,7 +66,7 @@ setup_with_registry() ->
     setup(),
 
     %% Mock flurm_node for get_info calls during registration
-    meck:new(flurm_node, [non_strict]),
+    meck:new(flurm_node, [passthrough, non_strict]),
     meck:expect(flurm_node, get_info, fun(_Pid) ->
         {ok, #{
             hostname => <<"test.local">>,
@@ -634,7 +634,7 @@ test_handle_down_message() ->
 
 test_handle_config_reload() ->
     %% Mock flurm_config_slurm
-    meck:new(flurm_config_slurm, [non_strict]),
+    meck:new(flurm_config_slurm, [passthrough, non_strict]),
     meck:expect(flurm_config_slurm, expand_hostlist, fun(Pattern) -> [Pattern] end),
 
     %% Send config reload message to registry
@@ -651,7 +651,7 @@ test_handle_config_reload() ->
 
 test_handle_config_changed() ->
     %% Mock flurm_config_slurm
-    meck:new(flurm_config_slurm, [non_strict]),
+    meck:new(flurm_config_slurm, [passthrough, non_strict]),
     meck:expect(flurm_config_slurm, expand_hostlist, fun(Pattern) -> [Pattern] end),
 
     %% Send config changed message

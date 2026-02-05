@@ -32,14 +32,14 @@ setup() ->
     application:ensure_all_started(sasl),
     application:ensure_all_started(lager),
     %% Start meck for external dependencies only - NOT flurm_scheduler_advanced
-    meck:new(flurm_job_registry, [non_strict, no_link]),
-    meck:new(flurm_node_registry, [non_strict, no_link]),
-    meck:new(flurm_job, [non_strict, no_link]),
-    meck:new(flurm_node, [non_strict, no_link]),
-    meck:new(flurm_backfill, [non_strict, no_link]),
-    meck:new(flurm_preemption, [non_strict, no_link]),
-    meck:new(flurm_priority, [non_strict, no_link]),
-    meck:new(flurm_fairshare, [non_strict, no_link]),
+    meck:new(flurm_job_registry, [passthrough, non_strict, no_link]),
+    meck:new(flurm_node_registry, [passthrough, non_strict, no_link]),
+    meck:new(flurm_job, [passthrough, non_strict, no_link]),
+    meck:new(flurm_node, [passthrough, non_strict, no_link]),
+    meck:new(flurm_backfill, [passthrough, non_strict, no_link]),
+    meck:new(flurm_preemption, [passthrough, non_strict, no_link]),
+    meck:new(flurm_priority, [passthrough, non_strict, no_link]),
+    meck:new(flurm_fairshare, [passthrough, non_strict, no_link]),
 
     %% Setup default mocks
     setup_default_mocks(),

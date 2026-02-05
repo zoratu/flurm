@@ -40,19 +40,19 @@ setup() ->
     meck:expect(lager, md, fun(_) -> ok end),
 
     %% Mock flurm_config_server
-    meck:new(flurm_config_server, [non_strict, no_link]),
+    meck:new(flurm_config_server, [passthrough, non_strict, no_link]),
     meck:expect(flurm_config_server, subscribe_changes, fun(_) -> ok end),
     meck:expect(flurm_config_server, get, fun(_, Default) -> Default end),
 
     %% Mock flurm_metrics
-    meck:new(flurm_metrics, [non_strict, no_link]),
+    meck:new(flurm_metrics, [passthrough, non_strict, no_link]),
     meck:expect(flurm_metrics, increment, fun(_) -> ok end),
     meck:expect(flurm_metrics, increment, fun(_, _) -> ok end),
     meck:expect(flurm_metrics, histogram, fun(_, _) -> ok end),
     meck:expect(flurm_metrics, gauge, fun(_, _) -> ok end),
 
     %% Mock flurm_job_manager
-    meck:new(flurm_job_manager, [non_strict, no_link]),
+    meck:new(flurm_job_manager, [passthrough, non_strict, no_link]),
     meck:expect(flurm_job_manager, get_job, fun(JobId) ->
         {ok, #job{id = JobId, name = <<"test_job">>, state = pending,
                   script = <<"#!/bin/bash\necho test">>,
@@ -62,7 +62,7 @@ setup() ->
     meck:expect(flurm_job_manager, update_job, fun(_, _) -> ok end),
 
     %% Mock flurm_node_manager
-    meck:new(flurm_node_manager, [non_strict, no_link]),
+    meck:new(flurm_node_manager, [passthrough, non_strict, no_link]),
     meck:expect(flurm_node_manager, get_available_nodes_for_job, fun(_, _, _) ->
         [#node{hostname = <<"node01">>, cpus = 8, memory_mb = 16384, state = idle}]
     end),
@@ -73,33 +73,33 @@ setup() ->
     meck:expect(flurm_node_manager, release_resources, fun(_, _) -> ok end),
 
     %% Mock flurm_job_deps
-    meck:new(flurm_job_deps, [non_strict, no_link]),
+    meck:new(flurm_job_deps, [passthrough, non_strict, no_link]),
     meck:expect(flurm_job_deps, check_dependencies, fun(_) -> ok end),
     meck:expect(flurm_job_deps, notify_completion, fun(_, _) -> ok end),
 
     %% Mock flurm_limits
-    meck:new(flurm_limits, [non_strict, no_link]),
+    meck:new(flurm_limits, [passthrough, non_strict, no_link]),
     meck:expect(flurm_limits, check_limits, fun(_) -> ok end),
     meck:expect(flurm_limits, enforce_limit, fun(_, _, _) -> ok end),
 
     %% Mock flurm_job_dispatcher
-    meck:new(flurm_job_dispatcher, [non_strict, no_link]),
+    meck:new(flurm_job_dispatcher, [passthrough, non_strict, no_link]),
     meck:expect(flurm_job_dispatcher, dispatch_job, fun(_, _) -> ok end),
 
     %% Mock flurm_backfill
-    meck:new(flurm_backfill, [non_strict, no_link]),
+    meck:new(flurm_backfill, [passthrough, non_strict, no_link]),
     meck:expect(flurm_backfill, is_backfill_enabled, fun() -> false end),
     meck:expect(flurm_backfill, get_backfill_candidates, fun(_) -> [] end),
     meck:expect(flurm_backfill, run_backfill_cycle, fun(_, _) -> [] end),
 
     %% Mock flurm_reservation
-    meck:new(flurm_reservation, [non_strict, no_link]),
+    meck:new(flurm_reservation, [passthrough, non_strict, no_link]),
     meck:expect(flurm_reservation, check_reservation_access, fun(_, _) -> ok end),
     meck:expect(flurm_reservation, get_available_nodes_excluding_reserved, fun(Nodes) -> Nodes end),
     meck:expect(flurm_reservation, confirm_reservation, fun(_) -> ok end),
 
     %% Mock flurm_preemption
-    meck:new(flurm_preemption, [non_strict, no_link]),
+    meck:new(flurm_preemption, [passthrough, non_strict, no_link]),
     meck:expect(flurm_preemption, get_priority_threshold, fun() -> 0 end),
     meck:expect(flurm_preemption, find_preemptable_jobs, fun(_, _) -> {error, none_available} end),
     meck:expect(flurm_preemption, get_preemption_mode, fun(_) -> off end),
@@ -107,11 +107,11 @@ setup() ->
     meck:expect(flurm_preemption, execute_preemption, fun(_, _) -> ok end),
 
     %% Mock flurm_license
-    meck:new(flurm_license, [non_strict, no_link]),
+    meck:new(flurm_license, [passthrough, non_strict, no_link]),
     meck:expect(flurm_license, deallocate, fun(_, _) -> ok end),
 
     %% Mock flurm_gres
-    meck:new(flurm_gres, [non_strict, no_link]),
+    meck:new(flurm_gres, [passthrough, non_strict, no_link]),
     meck:expect(flurm_gres, filter_nodes_by_gres, fun(Nodes, _) -> Nodes end),
 
     ok.

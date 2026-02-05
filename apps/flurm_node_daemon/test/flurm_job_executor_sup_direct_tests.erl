@@ -30,7 +30,7 @@ executor_sup_test_() ->
 
 setup() ->
     %% Mock the job executor to avoid real execution
-    meck:new(flurm_job_executor, [non_strict]),
+    meck:new(flurm_job_executor, [passthrough, non_strict]),
     meck:expect(flurm_job_executor, start_link, fun(JobSpec) ->
         %% Spawn a simple process that acts like an executor
         Pid = spawn(fun() ->
@@ -215,7 +215,7 @@ test_temporary_restart() ->
 supervisor_behavior_test_() ->
     {setup,
      fun() ->
-         meck:new(flurm_job_executor, [non_strict]),
+         meck:new(flurm_job_executor, [passthrough, non_strict]),
          meck:expect(flurm_job_executor, start_link, fun(_) ->
              {ok, spawn(fun() -> receive stop -> ok end end)}
          end),

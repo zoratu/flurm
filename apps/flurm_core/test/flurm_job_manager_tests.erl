@@ -79,25 +79,25 @@ setup() ->
     catch meck:unload(flurm_job_array),
     catch meck:unload(flurm_core),
 
-    meck:new(flurm_db_persist, [non_strict]),
+    meck:new(flurm_db_persist, [passthrough, non_strict]),
     meck:expect(flurm_db_persist, persistence_mode, fun() -> none end),
     meck:expect(flurm_db_persist, store_job, fun(_Job) -> ok end),
     meck:expect(flurm_db_persist, update_job, fun(_JobId, _Updates) -> ok end),
     meck:expect(flurm_db_persist, list_jobs, fun() -> [] end),
 
-    meck:new(flurm_limits, [non_strict]),
+    meck:new(flurm_limits, [passthrough, non_strict]),
     meck:expect(flurm_limits, check_submit_limits, fun(_Spec) -> ok end),
 
-    meck:new(flurm_license, [non_strict]),
+    meck:new(flurm_license, [passthrough, non_strict]),
     meck:expect(flurm_license, parse_license_spec, fun(<<>>) -> {ok, []};
                                                      (_) -> {ok, [{<<"matlab">>, 1}]} end),
     meck:expect(flurm_license, validate_licenses, fun(_) -> ok end),
 
-    meck:new(flurm_scheduler, [non_strict]),
+    meck:new(flurm_scheduler, [passthrough, non_strict]),
     meck:expect(flurm_scheduler, submit_job, fun(_JobId) -> ok end),
     meck:expect(flurm_scheduler, job_failed, fun(_JobId) -> ok end),
 
-    meck:new(flurm_job_deps, [non_strict]),
+    meck:new(flurm_job_deps, [passthrough, non_strict]),
     meck:expect(flurm_job_deps, parse_dependency_spec, fun(<<>>) -> {ok, []};
                                                           (_) -> {ok, []} end),
     meck:expect(flurm_job_deps, add_dependencies, fun(_JobId, _Spec) -> ok end),
@@ -106,13 +106,13 @@ setup() ->
     meck:expect(flurm_job_deps, remove_all_dependencies, fun(_JobId) -> ok end),
     meck:expect(flurm_job_deps, has_circular_dependency, fun(_J1, _J2) -> false end),
 
-    meck:new(flurm_metrics, [non_strict]),
+    meck:new(flurm_metrics, [passthrough, non_strict]),
     meck:expect(flurm_metrics, increment, fun(_Metric) -> ok end),
 
-    meck:new(flurm_job_dispatcher_server, [non_strict]),
+    meck:new(flurm_job_dispatcher_server, [passthrough, non_strict]),
     meck:expect(flurm_job_dispatcher_server, cancel_job, fun(_JobId, _Nodes) -> ok end),
 
-    meck:new(flurm_job_array, [non_strict]),
+    meck:new(flurm_job_array, [passthrough, non_strict]),
     meck:expect(flurm_job_array, parse_array_spec, fun(<<"1-10">>) -> {ok, #{start => 1, stop => 10, step => 1}};
                                                       (<<"invalid">>) -> {error, invalid_spec};
                                                       (_) -> {ok, #{start => 1, stop => 5, step => 1}} end),
@@ -120,7 +120,7 @@ setup() ->
     meck:expect(flurm_job_array, get_schedulable_tasks, fun(_ArrayJobId) -> [] end),
     meck:expect(flurm_job_array, update_task_state, fun(_ArrayJobId, _TaskId, _Updates) -> ok end),
 
-    meck:new(flurm_core, [non_strict]),
+    meck:new(flurm_core, [passthrough, non_strict]),
     meck:expect(flurm_core, update_job_state, fun(Job, NewState) ->
         Job#job{state = NewState}
     end),
@@ -652,7 +652,7 @@ setup_with_persistence() ->
     catch meck:unload(flurm_core),
 
     %% Setup persistence with ETS mode and pre-existing jobs
-    meck:new(flurm_db_persist, [non_strict]),
+    meck:new(flurm_db_persist, [passthrough, non_strict]),
     meck:expect(flurm_db_persist, persistence_mode, fun() -> ets end),
     meck:expect(flurm_db_persist, store_job, fun(_Job) -> ok end),
     meck:expect(flurm_db_persist, update_job, fun(_JobId, _Updates) -> ok end),
@@ -671,31 +671,31 @@ setup_with_persistence() ->
         ]
     end),
 
-    meck:new(flurm_limits, [non_strict]),
+    meck:new(flurm_limits, [passthrough, non_strict]),
     meck:expect(flurm_limits, check_submit_limits, fun(_Spec) -> ok end),
 
-    meck:new(flurm_license, [non_strict]),
+    meck:new(flurm_license, [passthrough, non_strict]),
     meck:expect(flurm_license, parse_license_spec, fun(_) -> {ok, []} end),
     meck:expect(flurm_license, validate_licenses, fun(_) -> ok end),
 
-    meck:new(flurm_scheduler, [non_strict]),
+    meck:new(flurm_scheduler, [passthrough, non_strict]),
     meck:expect(flurm_scheduler, submit_job, fun(_JobId) -> ok end),
     meck:expect(flurm_scheduler, job_failed, fun(_JobId) -> ok end),
 
-    meck:new(flurm_job_deps, [non_strict]),
+    meck:new(flurm_job_deps, [passthrough, non_strict]),
     meck:expect(flurm_job_deps, parse_dependency_spec, fun(_) -> {ok, []} end),
     meck:expect(flurm_job_deps, add_dependencies, fun(_, _) -> ok end),
     meck:expect(flurm_job_deps, check_dependencies, fun(_) -> {ok, []} end),
     meck:expect(flurm_job_deps, on_job_state_change, fun(_, _) -> ok end),
     meck:expect(flurm_job_deps, remove_all_dependencies, fun(_) -> ok end),
 
-    meck:new(flurm_metrics, [non_strict]),
+    meck:new(flurm_metrics, [passthrough, non_strict]),
     meck:expect(flurm_metrics, increment, fun(_Metric) -> ok end),
 
-    meck:new(flurm_job_dispatcher_server, [non_strict]),
+    meck:new(flurm_job_dispatcher_server, [passthrough, non_strict]),
     meck:expect(flurm_job_dispatcher_server, cancel_job, fun(_, _) -> ok end),
 
-    meck:new(flurm_core, [non_strict]),
+    meck:new(flurm_core, [passthrough, non_strict]),
     meck:expect(flurm_core, update_job_state, fun(Job, NewState) ->
         Job#job{state = NewState}
     end),

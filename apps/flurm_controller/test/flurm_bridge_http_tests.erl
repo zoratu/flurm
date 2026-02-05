@@ -719,7 +719,7 @@ cowboy_callback_test_() ->
     {setup,
      fun() ->
          meck:new(cowboy_req, [non_strict]),
-         meck:new(flurm_federation, [non_strict]),
+         meck:new(flurm_federation, [passthrough, non_strict]),
          ok
      end,
      fun(_) ->
@@ -816,7 +816,7 @@ jwt_auth_middleware_test_() ->
     {setup,
      fun() ->
          meck:new(cowboy_req, [non_strict]),
-         meck:new(flurm_jwt, [non_strict]),
+         meck:new(flurm_jwt, [passthrough, non_strict]),
          application:set_env(flurm_controller, jwt_secret, <<"test-secret">>),
          ok
      end,
@@ -1022,7 +1022,7 @@ integration_encoding_roundtrip() ->
 edge_case_test_() ->
     {setup,
      fun() ->
-         meck:new(flurm_federation, [non_strict]),
+         meck:new(flurm_federation, [passthrough, non_strict]),
          meck:expect(flurm_federation, add_cluster, fun(_, _) -> ok end),
          ok
      end,
@@ -1078,7 +1078,7 @@ edge_long_cluster_name() ->
 default_values_test_() ->
     {setup,
      fun() ->
-         meck:new(flurm_federation, [non_strict]),
+         meck:new(flurm_federation, [passthrough, non_strict]),
          meck:expect(flurm_federation, add_cluster, fun(_Name, Config) ->
              %% Verify default values are applied
              ?assertEqual(6817, maps:get(port, Config)),

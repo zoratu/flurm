@@ -33,9 +33,9 @@ setup() ->
     %% Start meck for mocking external dependencies
     meck:new(flurm_job_registry, [passthrough, no_link]),
     meck:new(flurm_job_dispatcher, [passthrough, no_link]),
-    meck:new(flurm_metrics, [non_strict, no_link]),
-    meck:new(flurm_scheduler, [non_strict, no_link]),
-    meck:new(flurm_node_manager, [non_strict, no_link]),
+    meck:new(flurm_metrics, [passthrough, non_strict, no_link]),
+    meck:new(flurm_scheduler, [passthrough, non_strict, no_link]),
+    meck:new(flurm_node_manager, [passthrough, non_strict, no_link]),
 
     %% Default mocks
     meck:expect(flurm_job_registry, register_job, fun(_, _) -> ok end),

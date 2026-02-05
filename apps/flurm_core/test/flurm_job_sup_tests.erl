@@ -40,14 +40,14 @@ setup() ->
     application:ensure_all_started(sasl),
 
     %% Mock dependencies
-    meck:new(flurm_job, [non_strict]),
+    meck:new(flurm_job, [passthrough, non_strict]),
     meck:expect(flurm_job, start_link, fun(#job_spec{} = _Spec) ->
         %% Create a dummy process that acts like a job
         Pid = spawn(fun() -> job_loop() end),
         {ok, Pid}
     end),
 
-    meck:new(flurm_accounting, [non_strict]),
+    meck:new(flurm_accounting, [passthrough, non_strict]),
     meck:expect(flurm_accounting, record_job_submit, fun(_Data) -> ok end),
 
     ok.
@@ -309,7 +309,7 @@ integration_setup() ->
     application:ensure_all_started(sasl),
 
     %% Use mock for accounting only
-    meck:new(flurm_accounting, [non_strict]),
+    meck:new(flurm_accounting, [passthrough, non_strict]),
     meck:expect(flurm_accounting, record_job_submit, fun(_Data) -> ok end),
     meck:expect(flurm_accounting, record_job_start, fun(_JobId, _Nodes) -> ok end),
     meck:expect(flurm_accounting, record_job_end, fun(_JobId, _ExitCode, _State) -> ok end),

@@ -39,11 +39,11 @@ flurm_node_acceptor_coverage_test_() ->
 
 setup() ->
     meck:new(ranch, [non_strict]),
-    meck:new(flurm_protocol, [non_strict]),
-    meck:new(flurm_node_manager_server, [non_strict]),
-    meck:new(flurm_node_connection_manager, [non_strict]),
-    meck:new(flurm_job_manager, [non_strict]),
-    meck:new(flurm_scheduler, [non_strict]),
+    meck:new(flurm_protocol, [passthrough, non_strict]),
+    meck:new(flurm_node_manager_server, [passthrough, non_strict]),
+    meck:new(flurm_node_connection_manager, [passthrough, non_strict]),
+    meck:new(flurm_job_manager, [passthrough, non_strict]),
+    meck:new(flurm_scheduler, [passthrough, non_strict]),
 
     meck:expect(ranch, handshake, fun(_Ref) -> {ok, fake_socket} end),
     meck:expect(flurm_protocol, encode, fun(Msg) ->

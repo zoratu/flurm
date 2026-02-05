@@ -80,8 +80,8 @@ cleanup(_) ->
 
 test_start_link() ->
     %% Mock the child processes to avoid actually starting them
-    meck:new(flurm_dbd_storage, [non_strict]),
-    meck:new(flurm_dbd_server, [non_strict]),
+    meck:new(flurm_dbd_storage, [passthrough, non_strict]),
+    meck:new(flurm_dbd_server, [passthrough, non_strict]),
     meck:expect(flurm_dbd_storage, start_link, fun() -> {ok, spawn(fun() -> receive stop -> ok end end)} end),
     meck:expect(flurm_dbd_server, start_link, fun() -> {ok, spawn(fun() -> receive stop -> ok end end)} end),
 

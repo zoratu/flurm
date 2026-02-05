@@ -89,7 +89,7 @@ test_run_no_nodes() ->
             %% Mock the behavior by starting a simple gen_server
             %% that returns empty list for list_connected_nodes
             try
-                meck:new(flurm_node_connection_manager, [non_strict]),
+                meck:new(flurm_node_connection_manager, [passthrough, non_strict]),
                 meck:expect(flurm_node_connection_manager, list_connected_nodes, fun() -> [] end),
 
                 Result = flurm_test_runner:run(),
@@ -139,8 +139,8 @@ setup_mocked() ->
     safe_meck_unload(flurm_job_manager),
 
     %% Set up meck for dependencies
-    meck:new(flurm_node_connection_manager, [non_strict]),
-    meck:new(flurm_job_manager, [non_strict]),
+    meck:new(flurm_node_connection_manager, [passthrough, non_strict]),
+    meck:new(flurm_job_manager, [passthrough, non_strict]),
 
     %% Default: return one connected node
     meck:expect(flurm_node_connection_manager, list_connected_nodes, fun() -> [<<"node1">>] end),
@@ -262,8 +262,8 @@ test_job_spec_fields() ->
     safe_meck_unload(flurm_node_connection_manager),
     safe_meck_unload(flurm_job_manager),
 
-    meck:new(flurm_node_connection_manager, [non_strict]),
-    meck:new(flurm_job_manager, [non_strict]),
+    meck:new(flurm_node_connection_manager, [passthrough, non_strict]),
+    meck:new(flurm_job_manager, [passthrough, non_strict]),
 
     meck:expect(flurm_node_connection_manager, list_connected_nodes, fun() -> [<<"node1">>] end),
 
@@ -331,8 +331,8 @@ test_output_messages() ->
     safe_meck_unload(flurm_node_connection_manager),
     safe_meck_unload(flurm_job_manager),
 
-    meck:new(flurm_node_connection_manager, [non_strict]),
-    meck:new(flurm_job_manager, [non_strict]),
+    meck:new(flurm_node_connection_manager, [passthrough, non_strict]),
+    meck:new(flurm_job_manager, [passthrough, non_strict]),
 
     try
         meck:expect(flurm_node_connection_manager, list_connected_nodes, fun() -> [<<"node1">>] end),
@@ -423,7 +423,7 @@ test_empty_node_list() ->
     %% Clean up any existing mocks first
     safe_meck_unload(flurm_node_connection_manager),
 
-    meck:new(flurm_node_connection_manager, [non_strict]),
+    meck:new(flurm_node_connection_manager, [passthrough, non_strict]),
     try
         meck:expect(flurm_node_connection_manager, list_connected_nodes, fun() -> [] end),
 
@@ -439,8 +439,8 @@ test_multiple_nodes() ->
     safe_meck_unload(flurm_node_connection_manager),
     safe_meck_unload(flurm_job_manager),
 
-    meck:new(flurm_node_connection_manager, [non_strict]),
-    meck:new(flurm_job_manager, [non_strict]),
+    meck:new(flurm_node_connection_manager, [passthrough, non_strict]),
+    meck:new(flurm_job_manager, [passthrough, non_strict]),
 
     try
         %% Multiple nodes available
@@ -475,8 +475,8 @@ state_transition_test_() ->
          catch application:ensure_all_started(lager),
          safe_meck_unload(flurm_node_connection_manager),
          safe_meck_unload(flurm_job_manager),
-         meck:new(flurm_node_connection_manager, [non_strict]),
-         meck:new(flurm_job_manager, [non_strict]),
+         meck:new(flurm_node_connection_manager, [passthrough, non_strict]),
+         meck:new(flurm_job_manager, [passthrough, non_strict]),
          meck:expect(flurm_node_connection_manager, list_connected_nodes, fun() -> [<<"node1">>] end),
          ok
      end,

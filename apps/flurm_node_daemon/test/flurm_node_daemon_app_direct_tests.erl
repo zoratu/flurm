@@ -31,10 +31,10 @@ setup() ->
     application:set_env(flurm_node_daemon, controller_port, 6817),
 
     %% Mock external dependencies
-    meck:new(flurm_state_persistence, [non_strict]),
-    meck:new(flurm_node_daemon_sup, [non_strict]),
-    meck:new(flurm_controller_connector, [non_strict]),
-    meck:new(flurm_system_monitor, [non_strict]),
+    meck:new(flurm_state_persistence, [passthrough, non_strict]),
+    meck:new(flurm_node_daemon_sup, [passthrough, non_strict]),
+    meck:new(flurm_controller_connector, [passthrough, non_strict]),
+    meck:new(flurm_system_monitor, [passthrough, non_strict]),
 
     %% Start lager for logging
     catch application:start(lager),
@@ -168,10 +168,10 @@ internal_cleanup_test_() ->
 setup_cleanup_tests() ->
     application:set_env(flurm_node_daemon, controller_host, "localhost"),
     application:set_env(flurm_node_daemon, controller_port, 6817),
-    meck:new(flurm_state_persistence, [non_strict]),
-    meck:new(flurm_node_daemon_sup, [non_strict]),
-    meck:new(flurm_controller_connector, [non_strict]),
-    meck:new(flurm_system_monitor, [non_strict]),
+    meck:new(flurm_state_persistence, [passthrough, non_strict]),
+    meck:new(flurm_node_daemon_sup, [passthrough, non_strict]),
+    meck:new(flurm_controller_connector, [passthrough, non_strict]),
+    meck:new(flurm_system_monitor, [passthrough, non_strict]),
     catch application:start(lager),
     ok.
 

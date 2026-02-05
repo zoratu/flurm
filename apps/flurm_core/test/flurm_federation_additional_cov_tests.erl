@@ -51,7 +51,7 @@ setup() ->
     end),
 
     %% Mock flurm_config_server
-    meck:new(flurm_config_server, [non_strict, no_link]),
+    meck:new(flurm_config_server, [passthrough, non_strict, no_link]),
     meck:expect(flurm_config_server, get, fun
         (cluster_name, Default) -> Default;
         (federation_host, _) -> <<"localhost">>;
@@ -61,15 +61,15 @@ setup() ->
     end),
 
     %% Mock flurm_partition_manager
-    meck:new(flurm_partition_manager, [non_strict, no_link]),
+    meck:new(flurm_partition_manager, [passthrough, non_strict, no_link]),
     meck:expect(flurm_partition_manager, list_partitions, fun() -> [#{name => <<"batch">>}] end),
 
     %% Mock flurm_job_manager
-    meck:new(flurm_job_manager, [non_strict, no_link]),
+    meck:new(flurm_job_manager, [passthrough, non_strict, no_link]),
     meck:expect(flurm_job_manager, submit_job, fun(_) -> {ok, 99999} end),
 
     %% Mock flurm_scheduler (for submit_local_job)
-    meck:new(flurm_scheduler, [non_strict, no_link]),
+    meck:new(flurm_scheduler, [passthrough, non_strict, no_link]),
     meck:expect(flurm_scheduler, submit_job, fun(_) -> {ok, 99999} end),
 
     ok.

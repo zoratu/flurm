@@ -37,9 +37,9 @@ flurm_node_daemon_test_() ->
      ]}.
 
 setup() ->
-    meck:new(flurm_controller_connector, [non_strict]),
-    meck:new(flurm_system_monitor, [non_strict]),
-    meck:new(flurm_job_executor, [non_strict]),
+    meck:new(flurm_controller_connector, [passthrough, non_strict]),
+    meck:new(flurm_system_monitor, [passthrough, non_strict]),
+    meck:new(flurm_job_executor, [passthrough, non_strict]),
     ok.
 
 cleanup(_) ->

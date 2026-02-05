@@ -24,10 +24,10 @@ setup() ->
     application:set_env(flurm_node_daemon, controller_port, 6817),
 
     %% Create mocks for dependencies
-    meck:new(flurm_state_persistence, [non_strict]),
-    meck:new(flurm_node_daemon_sup, [non_strict]),
-    meck:new(flurm_controller_connector, [non_strict]),
-    meck:new(flurm_system_monitor, [non_strict]),
+    meck:new(flurm_state_persistence, [passthrough, non_strict]),
+    meck:new(flurm_node_daemon_sup, [passthrough, non_strict]),
+    meck:new(flurm_controller_connector, [passthrough, non_strict]),
+    meck:new(flurm_system_monitor, [passthrough, non_strict]),
 
     ok.
 
@@ -291,7 +291,7 @@ env_config_test_() ->
             application:unset_env(flurm_node_daemon, controller_port),
 
             %% Mock to get past the load_state call
-            meck:new(flurm_state_persistence, [non_strict]),
+            meck:new(flurm_state_persistence, [passthrough, non_strict]),
             meck:expect(flurm_state_persistence, load_state, fun() -> {error, no_state} end),
 
             %% Should fail when trying to get controller_port

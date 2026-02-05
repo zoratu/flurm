@@ -48,7 +48,7 @@ setup_with_supervisor() ->
     %% Mock flurm_node to prevent actual node process startup issues
     %% The supervisor uses simple_one_for_one which calls start_link with [NodeSpec]
     %% where NodeSpec comes from start_child call argument
-    meck:new(flurm_node, [non_strict]),
+    meck:new(flurm_node, [passthrough, non_strict]),
     meck:expect(flurm_node, start_link, fun(NodeSpec) when is_record(NodeSpec, node_spec) ->
         %% Use spawn (not spawn_link) to avoid exit signal propagation
         {ok, spawn(fun() -> receive stop -> ok end end)}

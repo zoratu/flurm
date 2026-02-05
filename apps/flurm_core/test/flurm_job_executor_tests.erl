@@ -43,7 +43,7 @@ setup() ->
     meck:expect(lager, md, fun(_) -> ok end),
 
     %% Mock the controller connector
-    meck:new(flurm_controller_connector, [non_strict]),
+    meck:new(flurm_controller_connector, [passthrough, non_strict]),
     meck:expect(flurm_controller_connector, report_job_complete,
                 fun(_JobId, _ExitCode, _Output, _Energy) -> ok end),
     meck:expect(flurm_controller_connector, report_job_failed,
@@ -309,7 +309,7 @@ setup_completion() ->
     meck:expect(lager, error, fun(_Fmt, _Args) -> ok end),
     meck:expect(lager, md, fun(_) -> ok end),
 
-    meck:new(flurm_controller_connector, [non_strict]),
+    meck:new(flurm_controller_connector, [passthrough, non_strict]),
     meck:expect(flurm_controller_connector, report_job_complete,
                 fun(_JobId, _ExitCode, _Output, _Energy) -> ok end),
     meck:expect(flurm_controller_connector, report_job_failed,
@@ -373,7 +373,7 @@ setup_timeout() ->
     meck:expect(lager, error, fun(_Fmt, _Args) -> ok end),
     meck:expect(lager, md, fun(_) -> ok end),
 
-    meck:new(flurm_controller_connector, [non_strict]),
+    meck:new(flurm_controller_connector, [passthrough, non_strict]),
     meck:expect(flurm_controller_connector, report_job_complete,
                 fun(_JobId, _ExitCode, _Output, _Energy) -> ok end),
     meck:expect(flurm_controller_connector, report_job_failed,
@@ -429,7 +429,7 @@ setup_live() ->
     meck:expect(lager, error, fun(_Fmt, _Args) -> ok end),
     meck:expect(lager, md, fun(_) -> ok end),
 
-    meck:new(flurm_controller_connector, [non_strict]),
+    meck:new(flurm_controller_connector, [passthrough, non_strict]),
     meck:expect(flurm_controller_connector, report_job_complete,
                 fun(_JobId, _ExitCode, _Output, _Energy) -> ok end),
     meck:expect(flurm_controller_connector, report_job_failed,

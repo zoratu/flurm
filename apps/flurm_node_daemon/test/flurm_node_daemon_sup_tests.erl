@@ -193,9 +193,9 @@ test_start_link_name() ->
     process_flag(trap_exit, true),
 
     %% Mock the child modules to prevent actual startup errors
-    meck:new(flurm_system_monitor, [non_strict]),
-    meck:new(flurm_controller_connector, [non_strict]),
-    meck:new(flurm_job_executor_sup, [non_strict]),
+    meck:new(flurm_system_monitor, [passthrough, non_strict]),
+    meck:new(flurm_controller_connector, [passthrough, non_strict]),
+    meck:new(flurm_job_executor_sup, [passthrough, non_strict]),
 
     %% Use spawn (not spawn_link) to avoid exit signal propagation
     meck:expect(flurm_system_monitor, start_link, fun() ->

@@ -26,9 +26,9 @@ supervisor_test_() ->
 
 setup() ->
     %% Mock child modules to prevent actual startup
-    meck:new(flurm_system_monitor, [non_strict]),
-    meck:new(flurm_controller_connector, [non_strict]),
-    meck:new(flurm_job_executor_sup, [non_strict]),
+    meck:new(flurm_system_monitor, [passthrough, non_strict]),
+    meck:new(flurm_controller_connector, [passthrough, non_strict]),
+    meck:new(flurm_job_executor_sup, [passthrough, non_strict]),
 
     meck:expect(flurm_system_monitor, start_link, fun() ->
         {ok, spawn(fun() -> receive stop -> ok end end)}

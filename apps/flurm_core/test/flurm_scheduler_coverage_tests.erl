@@ -21,7 +21,7 @@ setup() ->
     application:ensure_all_started(lager),
     %% Start meck for mocking external dependencies
     meck:new(flurm_job_manager, [passthrough, no_link]),
-    meck:new(flurm_node_manager, [non_strict, no_link]),
+    meck:new(flurm_node_manager, [passthrough, non_strict, no_link]),
     meck:new(flurm_job_deps, [passthrough, no_link]),
     meck:new(flurm_license, [passthrough, no_link]),
     meck:new(flurm_limits, [passthrough, no_link]),
@@ -30,7 +30,7 @@ setup() ->
     meck:new(flurm_preemption, [passthrough, no_link]),
     meck:new(flurm_job_dispatcher, [passthrough, no_link]),
     meck:new(flurm_gres, [passthrough, no_link]),
-    meck:new(flurm_metrics, [non_strict, no_link]),
+    meck:new(flurm_metrics, [passthrough, non_strict, no_link]),
     meck:new(flurm_config_server, [passthrough, no_link]),
 
     %% Default mocks for external dependencies

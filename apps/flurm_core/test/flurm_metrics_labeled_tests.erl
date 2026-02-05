@@ -178,11 +178,11 @@ cleanup_tres_mocks(_) ->
 
 test_tres_no_registry() ->
     %% Mock node registry to return error
-    meck:new(flurm_node_registry, [non_strict]),
+    meck:new(flurm_node_registry, [passthrough, non_strict]),
     meck:expect(flurm_node_registry, list_nodes, fun() -> {error, not_running} end),
 
     %% Mock account manager
-    meck:new(flurm_account_manager, [non_strict]),
+    meck:new(flurm_account_manager, [passthrough, non_strict]),
     meck:expect(flurm_account_manager, list_tres, fun() -> [] end),
 
     %% Should not crash
@@ -193,7 +193,7 @@ test_tres_no_registry() ->
 
 test_tres_aggregation() ->
     %% Mock node registry with test data
-    meck:new(flurm_node_registry, [non_strict]),
+    meck:new(flurm_node_registry, [passthrough, non_strict]),
     meck:expect(flurm_node_registry, list_nodes, fun() ->
         [{<<"node1">>, self()}, {<<"node2">>, self()}]
     end),
@@ -229,7 +229,7 @@ test_tres_aggregation() ->
     end),
 
     %% Mock account manager
-    meck:new(flurm_account_manager, [non_strict]),
+    meck:new(flurm_account_manager, [passthrough, non_strict]),
     meck:expect(flurm_account_manager, list_tres, fun() ->
         [
             #tres{id = 1, type = <<"cpu">>, name = <<>>},

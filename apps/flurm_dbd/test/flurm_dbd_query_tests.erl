@@ -29,7 +29,7 @@ setup() ->
         Pid -> exit(Pid, kill)
     end,
     %% Mock flurm_dbd_server
-    meck:new(flurm_dbd_server, [non_strict, no_link]),
+    meck:new(flurm_dbd_server, [passthrough, non_strict, no_link]),
     meck:expect(flurm_dbd_server, list_job_records, fun(_Filters) ->
         sample_jobs()
     end),

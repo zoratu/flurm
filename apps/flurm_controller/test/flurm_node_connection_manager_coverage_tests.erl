@@ -46,7 +46,7 @@ setup() ->
         undefined -> ok;
         Pid -> catch gen_server:stop(Pid, normal, 1000)
     end,
-    meck:new(flurm_node_manager_server, [non_strict]),
+    meck:new(flurm_node_manager_server, [passthrough, non_strict]),
     meck:expect(flurm_node_manager_server, update_node, fun(_, _) -> ok end),
     ok.
 

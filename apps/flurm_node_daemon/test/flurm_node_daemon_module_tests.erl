@@ -33,9 +33,9 @@ daemon_api_test_() ->
      ]}.
 
 setup_daemon_mocks() ->
-    meck:new(flurm_controller_connector, [non_strict]),
-    meck:new(flurm_system_monitor, [non_strict]),
-    meck:new(flurm_job_executor, [non_strict]),
+    meck:new(flurm_controller_connector, [passthrough, non_strict]),
+    meck:new(flurm_system_monitor, [passthrough, non_strict]),
+    meck:new(flurm_job_executor, [passthrough, non_strict]),
     ok.
 
 cleanup_daemon_mocks(_) ->
@@ -172,10 +172,10 @@ daemon_app_test_() ->
      ]}.
 
 setup_app_mocks() ->
-    meck:new(flurm_state_persistence, [non_strict]),
-    meck:new(flurm_node_daemon_sup, [non_strict]),
-    meck:new(flurm_controller_connector, [non_strict]),
-    meck:new(flurm_system_monitor, [non_strict]),
+    meck:new(flurm_state_persistence, [passthrough, non_strict]),
+    meck:new(flurm_node_daemon_sup, [passthrough, non_strict]),
+    meck:new(flurm_controller_connector, [passthrough, non_strict]),
+    meck:new(flurm_system_monitor, [passthrough, non_strict]),
     meck:new(lager, [non_strict, passthrough]),
     %% Set up application env
     application:set_env(flurm_node_daemon, controller_host, "localhost"),

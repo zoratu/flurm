@@ -27,8 +27,8 @@ app_start_test_() ->
 
 setup_app_start() ->
     meck:new(lager, [non_strict, passthrough]),
-    meck:new(flurm_state_persistence, [non_strict]),
-    meck:new(flurm_node_daemon_sup, [non_strict]),
+    meck:new(flurm_state_persistence, [passthrough, non_strict]),
+    meck:new(flurm_node_daemon_sup, [passthrough, non_strict]),
     %% Set up required environment
     application:set_env(flurm_node_daemon, controller_host, "localhost"),
     application:set_env(flurm_node_daemon, controller_port, 6818),
@@ -145,9 +145,9 @@ prep_stop_test_() ->
 
 setup_prep_stop() ->
     meck:new(lager, [non_strict, passthrough]),
-    meck:new(flurm_state_persistence, [non_strict]),
-    meck:new(flurm_controller_connector, [non_strict]),
-    meck:new(flurm_system_monitor, [non_strict]),
+    meck:new(flurm_state_persistence, [passthrough, non_strict]),
+    meck:new(flurm_controller_connector, [passthrough, non_strict]),
+    meck:new(flurm_system_monitor, [passthrough, non_strict]),
     ok.
 
 cleanup_prep_stop(_) ->
@@ -221,10 +221,10 @@ lifecycle_test_() ->
 
 setup_lifecycle() ->
     meck:new(lager, [non_strict, passthrough]),
-    meck:new(flurm_state_persistence, [non_strict]),
-    meck:new(flurm_node_daemon_sup, [non_strict]),
-    meck:new(flurm_controller_connector, [non_strict]),
-    meck:new(flurm_system_monitor, [non_strict]),
+    meck:new(flurm_state_persistence, [passthrough, non_strict]),
+    meck:new(flurm_node_daemon_sup, [passthrough, non_strict]),
+    meck:new(flurm_controller_connector, [passthrough, non_strict]),
+    meck:new(flurm_system_monitor, [passthrough, non_strict]),
     application:set_env(flurm_node_daemon, controller_host, "localhost"),
     application:set_env(flurm_node_daemon, controller_port, 6818),
     ok.

@@ -31,7 +31,7 @@ setup() ->
     meck:expect(lager, warning, fun(_, _) -> ok end),
     meck:expect(lager, error, fun(_, _) -> ok end),
     meck:expect(lager, md, fun(_) -> ok end),
-    meck:new(flurm_limits, [non_strict, no_link]),
+    meck:new(flurm_limits, [passthrough, non_strict, no_link]),
     meck:expect(flurm_limits, get_usage, fun(_, _) -> undefined end),
     ok.
 

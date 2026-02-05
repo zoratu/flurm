@@ -44,8 +44,8 @@
 setup() ->
     application:ensure_all_started(sasl),
     %% Start meck for external dependencies only - NOT flurm_preemption
-    meck:new(flurm_job_registry, [non_strict, no_link]),
-    meck:new(flurm_job, [non_strict, no_link]),
+    meck:new(flurm_job_registry, [passthrough, non_strict, no_link]),
+    meck:new(flurm_job, [passthrough, non_strict, no_link]),
 
     %% Setup default mocks
     setup_default_mocks(),

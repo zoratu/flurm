@@ -109,7 +109,7 @@ handle_dbd_request_unsupported_test() ->
 
 handle_dbd_request_job_start_test() ->
     %% Mock flurm_dbd_server
-    meck:new(flurm_dbd_server, [non_strict]),
+    meck:new(flurm_dbd_server, [passthrough, non_strict]),
     meck:expect(flurm_dbd_server, record_job_start, fun(_) -> ok end),
 
     Header = #slurm_header{msg_type = ?ACCOUNTING_UPDATE_MSG},
@@ -124,7 +124,7 @@ handle_dbd_request_job_start_test() ->
 
 handle_dbd_request_job_end_test() ->
     %% Mock flurm_dbd_server
-    meck:new(flurm_dbd_server, [non_strict]),
+    meck:new(flurm_dbd_server, [passthrough, non_strict]),
     meck:expect(flurm_dbd_server, record_job_end, fun(_) -> ok end),
 
     Header = #slurm_header{msg_type = ?ACCOUNTING_UPDATE_MSG},
