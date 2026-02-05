@@ -5,15 +5,22 @@ main(Args) ->
     io:format("Starting FLURM node daemon...~n"),
     code:add_paths(filelib:wildcard("_build/default/lib/*/ebin")),
 
-    %% Parse controller host from args or environment
-    ControllerHost = case Args of
-        [Host | _] -> Host;
-        [] -> os:getenv("FLURM_CONTROLLER_HOST", "localhost")
-    end,
-
-    ControllerPort = case os:getenv("FLURM_CONTROLLER_PORT") of
-        false -> 6818;
-        Port -> list_to_integer(Port)
+    %% Parse controller host and port from args or environment
+    {ControllerHost, ControllerPort} = case Args of
+        [Host, Port | _] ->
+            {Host, list_to_integer(Port)};
+        [Host | _] ->
+            PortFromEnv = case os:getenv("FLURM_CONTROLLER_PORT") of
+                false -> 6817;
+                P -> list_to_integer(P)
+            end,
+            {Host, PortFromEnv};
+        [] ->
+            {os:getenv("FLURM_CONTROLLER_HOST", "localhost"),
+             case os:getenv("FLURM_CONTROLLER_PORT") of
+                 false -> 6817;
+                 P2 -> list_to_integer(P2)
+             end}
     end,
 
     %% Set the controller host/port before starting

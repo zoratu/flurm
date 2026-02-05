@@ -80,24 +80,24 @@ decode(Credential) when is_binary(Credential) ->
 decode_with_unmunge(Credential) ->
     %% Use unmunge command to decode credential
     %% The verbose mode (default) provides UID/GID information in the output
-    %% Redirect stderr to stdout to capture error messages
-    CredentialStr = binary_to_list(Credential),
-    %% Escape single quotes in credential to prevent shell injection
-    EscapedCred = escape_shell_string(CredentialStr),
-    Cmd = "echo -n '" ++ EscapedCred ++ "' | unmunge 2>&1",
-    case os:cmd(Cmd) of
-        [] ->
-            {error, unmunge_failed};
-        Result when is_list(Result) ->
-            parse_unmunge_output(Result)
+    %% Write credential to temp file to avoid shell escaping issues with os:cmd
+    TempFile = "/tmp/flurm_munge_" ++ integer_to_list(erlang:unique_integer([positive])),
+    try
+        ok = file:write_file(TempFile, Credential),
+        Cmd = "unmunge < " ++ TempFile ++ " 2>&1",
+        Result = os:cmd(Cmd),
+        file:delete(TempFile),
+        case Result of
+            [] ->
+                {error, unmunge_failed};
+            _ ->
+                parse_unmunge_output(Result)
+        end
+    catch
+        error:Reason ->
+            file:delete(TempFile),
+            {error, {unmunge_error, Reason}}
     end.
-
-%% @doc Escape single quotes in a string for safe shell usage.
--spec escape_shell_string(string()) -> string().
-escape_shell_string(Str) ->
-    lists:flatmap(fun($') -> "'\\''";
-                     (C) -> [C]
-                  end, Str).
 
 %% @doc Verify a MUNGE credential is valid (not expired, not replayed).
 %% This function validates the credential without returning the extracted data.

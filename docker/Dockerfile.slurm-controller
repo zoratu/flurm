@@ -17,6 +17,10 @@ RUN dnf install -y epel-release && \
         iproute \
         && dnf clean all
 
+# Create slurm user/group if they don't exist (EPEL package may not create them)
+RUN getent group slurm || groupadd -r slurm && \
+    getent passwd slurm || useradd -r -g slurm -d /var/spool/slurm -s /sbin/nologin slurm
+
 # Create required directories
 RUN mkdir -p /var/spool/slurmctld /var/spool/slurmd \
              /var/log/slurm /var/run/slurm \

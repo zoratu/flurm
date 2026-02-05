@@ -19,8 +19,8 @@ services:
 
   flurm-ctrl-1:
     build:
-      context: .
-      dockerfile: Dockerfile.flurm-server-ha
+      context: ..
+      dockerfile: docker/Dockerfile.flurm-server-ha
     hostname: flurm-ctrl-1
     container_name: flurm-test-ctrl-1
     environment:
@@ -57,8 +57,8 @@ services:
 
   flurm-ctrl-2:
     build:
-      context: .
-      dockerfile: Dockerfile.flurm-server-ha
+      context: ..
+      dockerfile: docker/Dockerfile.flurm-server-ha
     hostname: flurm-ctrl-2
     container_name: flurm-test-ctrl-2
     environment:
@@ -95,8 +95,8 @@ services:
 
   flurm-ctrl-3:
     build:
-      context: .
-      dockerfile: Dockerfile.flurm-server-ha
+      context: ..
+      dockerfile: docker/Dockerfile.flurm-server-ha
     hostname: flurm-ctrl-3
     container_name: flurm-test-ctrl-3
     environment:
@@ -138,12 +138,12 @@ services:
   # Small node - debug/quick jobs
   flurm-node-small:
     build:
-      context: .
-      dockerfile: Dockerfile.flurm-node
+      context: ..
+      dockerfile: docker/Dockerfile.flurm-node
     hostname: flurm-node-small
     container_name: flurm-test-node-small
     environment:
-      - FLURM_CONTROLLER=flurm-ctrl-1:6817
+      - FLURM_CONTROLLER=flurm-ctrl-1:6818
       - FLURM_NODE_NAME=flurm-node-small
       - FLURM_NODE_CPUS=2
       - FLURM_NODE_MEMORY=2048
@@ -164,12 +164,12 @@ services:
   # Medium node - batch jobs
   flurm-node-medium:
     build:
-      context: .
-      dockerfile: Dockerfile.flurm-node
+      context: ..
+      dockerfile: docker/Dockerfile.flurm-node
     hostname: flurm-node-medium
     container_name: flurm-test-node-medium
     environment:
-      - FLURM_CONTROLLER=flurm-ctrl-1:6817
+      - FLURM_CONTROLLER=flurm-ctrl-1:6818
       - FLURM_NODE_NAME=flurm-node-medium
       - FLURM_NODE_CPUS=4
       - FLURM_NODE_MEMORY=8192
@@ -190,12 +190,12 @@ services:
   # Large node - big compute jobs
   flurm-node-large:
     build:
-      context: .
-      dockerfile: Dockerfile.flurm-node
+      context: ..
+      dockerfile: docker/Dockerfile.flurm-node
     hostname: flurm-node-large
     container_name: flurm-test-node-large
     environment:
-      - FLURM_CONTROLLER=flurm-ctrl-1:6817
+      - FLURM_CONTROLLER=flurm-ctrl-1:6818
       - FLURM_NODE_NAME=flurm-node-large
       - FLURM_NODE_CPUS=8
       - FLURM_NODE_MEMORY=16384
@@ -216,12 +216,12 @@ services:
   # GPU node - ML/GPU jobs (simulated GPUs)
   flurm-node-gpu:
     build:
-      context: .
-      dockerfile: Dockerfile.flurm-node
+      context: ..
+      dockerfile: docker/Dockerfile.flurm-node
     hostname: flurm-node-gpu
     container_name: flurm-test-node-gpu
     environment:
-      - FLURM_CONTROLLER=flurm-ctrl-1:6817
+      - FLURM_CONTROLLER=flurm-ctrl-1:6818
       - FLURM_NODE_NAME=flurm-node-gpu
       - FLURM_NODE_CPUS=4
       - FLURM_NODE_MEMORY=8192
@@ -301,7 +301,7 @@ services:
     container_name: flurm-test-client
     environment:
       - SLURM_CONF=/etc/slurm/slurm-flurm.conf
-      - FLURM_CONTROLLER=flurm-ctrl-1:6817
+      - FLURM_CONTROLLER=flurm-ctrl-1:6818
     volumes:
       - munge-key:/etc/munge
       - ./jobs/comprehensive:/jobs:ro
@@ -367,7 +367,7 @@ services:
 
   # MUNGE key generator (init container)
   munge-init:
-    image: ghcr.io/dun/munge:0.5.15
+    image: alpine:3.19
     container_name: flurm-test-munge-init
     volumes:
       - munge-key:/etc/munge
@@ -375,10 +375,11 @@ services:
       sh -c '
         if [ ! -f /etc/munge/munge.key ]; then
           echo "Generating MUNGE key...";
-          dd if=/dev/urandom of=/etc/munge/munge.key bs=1024 count=1;
+          dd if=/dev/urandom of=/etc/munge/munge.key bs=1024 count=1 2>/dev/null;
           chmod 400 /etc/munge/munge.key;
-          chown daemon:daemon /etc/munge/munge.key;
-        fi
+        fi;
+        echo "MUNGE key ready";
+        ls -la /etc/munge/
       '
     restart: "no"
 

@@ -50,6 +50,36 @@ main(_Args) ->
             halt(1)
     end,
 
+    %% Load config file if present
+    ConfigFile = get_env("FLURM_CONFIG", "/etc/flurm/flurm.conf"),
+    case filelib:is_regular(ConfigFile) of
+        true ->
+            io:format("Loading config from: ~s~n", [ConfigFile]),
+            case file:consult(ConfigFile) of
+                {ok, [Config]} ->
+                    %% Apply config to applications
+                    lists:foreach(fun({App, Env}) ->
+                        application:load(App),
+                        lists:foreach(fun({Key, Val}) ->
+                            io:format("  ~p:~p = ...~n", [App, Key]),
+                            application:set_env(App, Key, Val)
+                        end, Env)
+                    end, Config);
+                {ok, Config} when is_list(Config) ->
+                    lists:foreach(fun({App, Env}) ->
+                        application:load(App),
+                        lists:foreach(fun({Key, Val}) ->
+                            io:format("  ~p:~p = ...~n", [App, Key]),
+                            application:set_env(App, Key, Val)
+                        end, Env)
+                    end, Config);
+                {error, Reason} ->
+                    io:format("[WARN] Failed to load config: ~p~n", [Reason])
+            end;
+        false ->
+            io:format("No config file at ~s~n", [ConfigFile])
+    end,
+
     %% Set up Ra data directory
     application:load(ra),
     application:set_env(ra, data_dir, RaDataDir),

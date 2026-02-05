@@ -79,17 +79,54 @@ remove_node(PartitionName, NodeName) ->
 
 init([]) ->
     lager:info("Partition Manager started"),
-    %% Create default partition
-    DefaultPartition = flurm_core:new_partition(#{
-        name => <<"default">>,
-        state => up,
-        nodes => [],
-        max_time => 86400,      % 24 hours
-        default_time => 3600,   % 1 hour
-        max_nodes => 1000,
-        priority => 100
-    }),
-    Partitions = #{<<"default">> => DefaultPartition},
+    %% Load partitions from config or create default
+    ConfigPartitions = case application:get_env(flurm_controller, partitions) of
+        {ok, PartitionList} when is_list(PartitionList) ->
+            lager:info("Loading ~p partitions from config", [length(PartitionList)]),
+            lists:foldl(fun({Name, Spec}, Acc) when is_binary(Name), is_map(Spec) ->
+                            %% Add name to spec
+                            FullSpec = Spec#{name => Name, state => up},
+                            P = flurm_core:new_partition(FullSpec),
+                            lager:info("Created partition: ~s", [Name]),
+                            maps:put(Name, P, Acc);
+                           ({Name, Spec}, Acc) when is_list(Name), is_map(Spec) ->
+                            %% Convert list to binary
+                            BinName = list_to_binary(Name),
+                            FullSpec = Spec#{name => BinName, state => up},
+                            P = flurm_core:new_partition(FullSpec),
+                            lager:info("Created partition: ~s", [BinName]),
+                            maps:put(BinName, P, Acc);
+                           (_, Acc) ->
+                            Acc
+                        end, #{}, PartitionList);
+        _ ->
+            lager:info("No partitions configured, creating default"),
+            DefaultPartition = flurm_core:new_partition(#{
+                name => <<"default">>,
+                state => up,
+                nodes => [],
+                max_time => 86400,      % 24 hours
+                default_time => 3600,   % 1 hour
+                max_nodes => 1000,
+                priority => 100
+            }),
+            #{<<"default">> => DefaultPartition}
+    end,
+    %% Ensure at least default partition exists
+    Partitions = case maps:is_key(<<"default">>, ConfigPartitions) of
+        true -> ConfigPartitions;
+        false ->
+            DefaultP = flurm_core:new_partition(#{
+                name => <<"default">>,
+                state => up,
+                nodes => [],
+                max_time => 86400,
+                default_time => 3600,
+                max_nodes => 1000,
+                priority => 100
+            }),
+            maps:put(<<"default">>, DefaultP, ConfigPartitions)
+    end,
     {ok, #state{partitions = Partitions}}.
 
 handle_call({create_partition, PartitionSpec}, _From, #state{partitions = Partitions} = State) ->

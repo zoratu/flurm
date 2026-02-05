@@ -175,7 +175,12 @@ handle_call({forward_to_leader, Operation, Args}, _From,
             #state{is_leader = true} = State) ->
     %% We are the leader, process locally
     Result = handle_local_operation(Operation, Args),
-    {reply, Result, State};
+    %% Wrap result in {ok, ...} as per function spec
+    WrappedResult = case Result of
+        {error, _} = Err -> Err;
+        Other -> {ok, Other}
+    end,
+    {reply, WrappedResult, State};
 
 handle_call({forward_to_leader, _Operation, _Args}, _From,
             #state{current_leader = undefined} = State) ->
@@ -191,7 +196,13 @@ handle_call({forward_to_leader, Operation, Args}, _From,
         _:Reason ->
             {error, {forward_failed, Reason}}
     end,
-    {reply, Result, State};
+    %% Wrap result in {ok, ...} as per function spec
+    WrappedResult = case Result of
+        {error, _} = Err -> Err;
+        {badrpc, RpcReason} -> {error, {rpc_failed, RpcReason}};
+        Other -> {ok, Other}
+    end,
+    {reply, WrappedResult, State};
 
 handle_call(cluster_status, _From, State) ->
     #state{

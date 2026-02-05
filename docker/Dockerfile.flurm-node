@@ -52,11 +52,17 @@ RUN echo '#!/bin/bash' > /entrypoint.sh && \
     echo '  exit 1' >> /entrypoint.sh && \
     echo 'fi' >> /entrypoint.sh && \
     echo '# Start FLURM node daemon' >> /entrypoint.sh && \
-    echo 'CONTROLLER_HOST=${FLURM_CONTROLLER_HOST:-flurm-server}' >> /entrypoint.sh && \
-    echo 'CONTROLLER_PORT=${FLURM_CONTROLLER_PORT:-6818}' >> /entrypoint.sh && \
+    echo '# Parse FLURM_CONTROLLER (host:port) or use separate vars' >> /entrypoint.sh && \
+    echo 'if [ -n "$FLURM_CONTROLLER" ]; then' >> /entrypoint.sh && \
+    echo '  CONTROLLER_HOST=$(echo $FLURM_CONTROLLER | cut -d: -f1)' >> /entrypoint.sh && \
+    echo '  CONTROLLER_PORT=$(echo $FLURM_CONTROLLER | cut -d: -f2)' >> /entrypoint.sh && \
+    echo 'else' >> /entrypoint.sh && \
+    echo '  CONTROLLER_HOST=${FLURM_CONTROLLER_HOST:-flurm-server}' >> /entrypoint.sh && \
+    echo '  CONTROLLER_PORT=${FLURM_CONTROLLER_PORT:-6817}' >> /entrypoint.sh && \
+    echo 'fi' >> /entrypoint.sh && \
     echo 'echo "Starting FLURM node daemon..."' >> /entrypoint.sh && \
     echo 'echo "Connecting to controller at $CONTROLLER_HOST:$CONTROLLER_PORT"' >> /entrypoint.sh && \
-    echo 'cd /flurm && escript escripts/start_node.erl $CONTROLLER_HOST' >> /entrypoint.sh && \
+    echo 'cd /flurm && escript escripts/start_node.erl $CONTROLLER_HOST $CONTROLLER_PORT' >> /entrypoint.sh && \
     chmod +x /entrypoint.sh
 
 # Expose port 6818 for srun connections
