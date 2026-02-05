@@ -2,16 +2,18 @@
 
 This document outlines the code coverage strategy for the FLURM project, including current status, target coverage levels per module category, justified exceptions, and how to run coverage reports.
 
-## Current Status (January 2026)
+## Current Status (February 2026)
 
 | Metric | Value |
 |--------|-------|
-| **Total Tests** | ~2330 |
-| **Tests Passing** | ~2309 |
-| **Tests Failing** | 23 (node_daemon_sup setup issues) |
-| **Test Pass Rate** | 99% |
-| **Protocol Coverage** | 73-76% |
-| **Overall Coverage** | Low (instrumentation issues) |
+| **Total Tests** | ~2400+ |
+| **Tests Passing** | ~2400 |
+| **Tests Failing** | ~2 (minor setup issues) |
+| **Test Pass Rate** | 99%+ |
+| **Protocol Codec Coverage** | 18% |
+| **Protocol Pack Coverage** | 76% |
+| **Protocol Header Coverage** | 40% |
+| **Integration Tests** | 22/22 passing |
 | **Test Files** | 420+ test modules |
 
 ### Why Overall Coverage is Low
@@ -36,11 +38,11 @@ These modules are core to the functionality of FLURM and require high test cover
 
 | Module | Description | Target | Current |
 |--------|-------------|--------|---------|
-| `flurm_protocol_codec` | SLURM protocol encoding/decoding | 80% | 0% |
-| `flurm_protocol_header` | Protocol header parsing | 80% | **73%** |
+| `flurm_protocol_codec` | SLURM protocol encoding/decoding | 80% | 18% |
+| `flurm_protocol_header` | Protocol header parsing | 80% | **40%** |
 | `flurm_protocol_pack` | Data serialization utilities | 80% | **76%** |
 | `flurm_protocol` | Main protocol module | 80% | 0% |
-| `flurm_protocol_auth` | Authentication handling | 80% | 0% |
+| `flurm_protocol_auth` | Authentication handling | 80% | 25% |
 | `flurm_job_manager` | Job lifecycle management | 80% | 0% |
 | `flurm_scheduler` | Job scheduling logic | 80% | 0% |
 | `flurm_node_manager` | Node resource management | 80% | 0% |

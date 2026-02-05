@@ -17,7 +17,7 @@ An Erlang-based, SLURM-compatible job scheduler designed for high availability, 
 | Component | Status |
 |-----------|--------|
 | Unit Tests | 2400+ passing |
-| Integration Tests | 19/22 passing |
+| Integration Tests | 22/22 passing |
 | Protocol Fuzzing | 33K+ property tests |
 | TLA+ Verification | All specs pass |
 | Performance | Benchmarked (see docs/BENCHMARKS.md) |
@@ -49,7 +49,7 @@ FLURM is a next-generation workload manager that speaks the SLURM protocol while
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-org/flurm.git
+git clone https://github.com/zoratu/flurm.git
 cd flurm
 
 # Fetch dependencies and compile
