@@ -243,7 +243,9 @@
     memory_total  :: pos_integer(),
     memory_avail  :: non_neg_integer(),
     gpus_total    :: non_neg_integer(),
-    gpus_avail    :: non_neg_integer()
+    gpus_avail    :: non_neg_integer(),
+    %% Job allocations: #{JobId => {CpusAllocated, MemoryAllocated}}
+    allocations = #{} :: #{pos_integer() => {pos_integer(), pos_integer()}}
 }).
 
 %%====================================================================

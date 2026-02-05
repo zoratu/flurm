@@ -754,51 +754,32 @@ current_period() ->
     list_to_binary(io_lib:format("~4..0B-~2..0B", [Year, Month])).
 
 %% @private Aggregate two TRES maps (for testing).
+%% Delegates to flurm_tres:add/2 for consistency
 aggregate_tres(Tres1, Tres2) when is_map(Tres1), is_map(Tres2) ->
-    maps:fold(fun(K, V, Acc) ->
-        maps:update_with(K, fun(Existing) -> Existing + V end, V, Acc)
-    end, Tres1, Tres2).
+    flurm_tres:add(Tres1, Tres2).
 
 %% @private Get the set of recorded job IDs (for testing).
 job_recorded_set(#ra_acct_state{recorded_jobs = Set}) ->
     Set.
 
 %% @private Calculate TRES usage from a job record.
+%% Delegates to flurm_tres:from_job/1 for consistency
 calculate_tres_from_job(#job_record{} = Job) ->
-    Elapsed = Job#job_record.elapsed,
-    TresAlloc = Job#job_record.tres_alloc,
-    #{
-        cpu_seconds => Elapsed * Job#job_record.num_cpus,
-        mem_seconds => Elapsed * Job#job_record.req_mem,
-        node_seconds => Elapsed * Job#job_record.num_nodes,
-        gpu_seconds => Elapsed * maps:get(gpu, TresAlloc, 0),
-        job_count => 1,
-        job_time => Elapsed
-    }.
+    flurm_tres:from_job(#{
+        elapsed => Job#job_record.elapsed,
+        num_cpus => Job#job_record.num_cpus,
+        req_mem => Job#job_record.req_mem,
+        num_nodes => Job#job_record.num_nodes,
+        tres_alloc => Job#job_record.tres_alloc
+    }).
 
 %% @private Update entity (user/account) running totals.
+%% Uses flurm_tres:add/2 for consistent aggregation
 update_entity_totals(EntityId, TresUsage, Totals) when is_binary(EntityId) ->
-    Existing = maps:get(EntityId, Totals, empty_totals()),
-    Updated = #{
-        cpu_seconds => maps:get(cpu_seconds, Existing, 0) + maps:get(cpu_seconds, TresUsage, 0),
-        mem_seconds => maps:get(mem_seconds, Existing, 0) + maps:get(mem_seconds, TresUsage, 0),
-        gpu_seconds => maps:get(gpu_seconds, Existing, 0) + maps:get(gpu_seconds, TresUsage, 0),
-        node_seconds => maps:get(node_seconds, Existing, 0) + maps:get(node_seconds, TresUsage, 0),
-        job_count => maps:get(job_count, Existing, 0) + maps:get(job_count, TresUsage, 0),
-        job_time => maps:get(job_time, Existing, 0) + maps:get(job_time, TresUsage, 0)
-    },
+    Existing = maps:get(EntityId, Totals, flurm_tres:zero()),
+    Updated = flurm_tres:add(Existing, TresUsage),
     maps:put(EntityId, Updated, Totals);
 update_entity_totals(<<>>, _TresUsage, Totals) ->
     %% Empty entity ID, don't update
     Totals.
 
-%% @private Return empty totals map.
-empty_totals() ->
-    #{
-        cpu_seconds => 0,
-        mem_seconds => 0,
-        gpu_seconds => 0,
-        node_seconds => 0,
-        job_count => 0,
-        job_time => 0
-    }.

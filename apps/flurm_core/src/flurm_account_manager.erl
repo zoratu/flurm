@@ -1215,12 +1215,10 @@ check_tres_limits(Requested, Limits, LimitType) ->
         _ -> {error, {LimitType, Violations}}
     end.
 
-%% @doc Combine two TRES maps
+%% @doc Combine two TRES maps. Delegates to flurm_tres:add/2.
 -spec combine_tres_maps(map(), map()) -> map().
 combine_tres_maps(Map1, Map2) ->
-    maps:fold(fun(K, V, Acc) ->
-        maps:update_with(K, fun(Existing) -> Existing + V end, V, Acc)
-    end, Map1, Map2).
+    flurm_tres:add(Map1, Map2).
 
 %%====================================================================
 %% Usage Query Helpers

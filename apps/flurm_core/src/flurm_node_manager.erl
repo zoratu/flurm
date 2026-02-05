@@ -74,12 +74,12 @@ get_available_nodes_with_gres(NumCpus, MemoryMb, Partition, GRESSpec) ->
 
 %% @doc Allocate resources on a node for a job.
 -spec allocate_resources(binary(), pos_integer(), pos_integer(), pos_integer()) -> ok | {error, term()}.
-allocate_resources(NodeName, _JobId, Cpus, Memory) ->
-    %% Try direct registry allocation (for remote node daemons)
-    case flurm_node_registry:allocate_resources(NodeName, Cpus, Memory) of
+allocate_resources(NodeName, JobId, Cpus, Memory) ->
+    %% Try direct registry allocation with job tracking
+    case flurm_node_registry:allocate_resources(NodeName, JobId, Cpus, Memory) of
         ok ->
-            lager:info("Allocated ~p cpus, ~p MB on node ~s via registry",
-                      [Cpus, Memory, NodeName]),
+            lager:info("Allocated ~p CPUs, ~p MB to job ~p on node ~s",
+                      [Cpus, Memory, JobId, NodeName]),
             ok;
         {error, not_found} ->
             {error, node_not_found};
@@ -88,16 +88,13 @@ allocate_resources(NodeName, _JobId, Cpus, Memory) ->
     end.
 
 %% @doc Release resources from a job on a node.
-%% Note: We don't track which specific resources were allocated per job,
-%% so we use a placeholder of 1 CPU and 256 MB as default release.
-%% TODO: Track allocations per job for accurate release.
+%% Uses the tracked allocation to release the correct amount.
 -spec release_resources(binary(), pos_integer()) -> ok | {error, term()}.
-release_resources(NodeName, _JobId) ->
-    %% Release via registry (assumes 1 CPU, 256 MB per job as placeholder)
-    %% In production, should track actual allocations per job
-    case flurm_node_registry:release_resources(NodeName, 1, 256) of
+release_resources(NodeName, JobId) ->
+    %% Release via registry using tracked job allocation
+    case flurm_node_registry:release_resources(NodeName, JobId) of
         ok ->
-            lager:info("Released resources on node ~s via registry", [NodeName]),
+            lager:info("Released resources for job ~p on node ~s", [JobId, NodeName]),
             ok;
         {error, not_found} ->
             {error, node_not_found};

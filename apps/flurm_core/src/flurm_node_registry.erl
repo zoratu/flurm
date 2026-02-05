@@ -38,7 +38,10 @@
     count_by_state/0,
     count_nodes/0,
     allocate_resources/3,
-    release_resources/3
+    allocate_resources/4,
+    release_resources/2,
+    release_resources/3,
+    get_job_allocation/2
 ]).
 
 %% gen_server callbacks
@@ -201,17 +204,30 @@ count_nodes() ->
 list_all_nodes() ->
     list_nodes().
 
-%% @doc Allocate resources on a node (for nodes registered with register_node_direct).
+%% @doc Allocate resources on a node (legacy version without job tracking).
 %% Decrements cpus_avail and memory_avail in the node entry.
 -spec allocate_resources(binary(), pos_integer(), pos_integer()) -> ok | {error, term()}.
 allocate_resources(NodeName, Cpus, Memory) when is_binary(NodeName) ->
+    allocate_resources(NodeName, 0, Cpus, Memory).
+
+%% @doc Allocate resources on a node for a specific job.
+%% Decrements cpus_avail and memory_avail, and tracks the allocation per job.
+-spec allocate_resources(binary(), pos_integer(), pos_integer(), pos_integer()) -> ok | {error, term()}.
+allocate_resources(NodeName, JobId, Cpus, Memory) when is_binary(NodeName) ->
     case ets:lookup(?NODES_BY_NAME, NodeName) of
-        [#node_entry{cpus_avail = CpusAvail, memory_avail = MemAvail} = Entry] ->
+        [#node_entry{cpus_avail = CpusAvail, memory_avail = MemAvail,
+                     allocations = Allocations} = Entry] ->
             if
                 CpusAvail >= Cpus andalso MemAvail >= Memory ->
+                    %% Track allocation by job ID
+                    NewAllocations = case JobId of
+                        0 -> Allocations;  % Legacy call, don't track
+                        _ -> maps:put(JobId, {Cpus, Memory}, Allocations)
+                    end,
                     NewEntry = Entry#node_entry{
                         cpus_avail = CpusAvail - Cpus,
-                        memory_avail = MemAvail - Memory
+                        memory_avail = MemAvail - Memory,
+                        allocations = NewAllocations
                     },
                     ets:insert(?NODES_BY_NAME, NewEntry),
                     ok;
@@ -222,7 +238,29 @@ allocate_resources(NodeName, Cpus, Memory) when is_binary(NodeName) ->
             {error, not_found}
     end.
 
-%% @doc Release resources on a node.
+%% @doc Release resources on a node for a specific job.
+%% Uses tracked allocation to determine how much to release.
+-spec release_resources(binary(), pos_integer()) -> ok | {error, term()}.
+release_resources(NodeName, JobId) when is_binary(NodeName) ->
+    case ets:lookup(?NODES_BY_NAME, NodeName) of
+        [#node_entry{cpus_avail = CpusAvail, memory_avail = MemAvail,
+                     cpus_total = CpusTotal, memory_total = MemTotal,
+                     allocations = Allocations} = Entry] ->
+            %% Look up allocation for this job
+            {Cpus, Memory} = maps:get(JobId, Allocations, {1, 256}),
+            NewAllocations = maps:remove(JobId, Allocations),
+            NewEntry = Entry#node_entry{
+                cpus_avail = min(CpusAvail + Cpus, CpusTotal),
+                memory_avail = min(MemAvail + Memory, MemTotal),
+                allocations = NewAllocations
+            },
+            ets:insert(?NODES_BY_NAME, NewEntry),
+            ok;
+        [] ->
+            {error, not_found}
+    end.
+
+%% @doc Release resources on a node (legacy version with explicit amounts).
 %% Increments cpus_avail and memory_avail back in the node entry.
 -spec release_resources(binary(), pos_integer(), pos_integer()) -> ok | {error, term()}.
 release_resources(NodeName, Cpus, Memory) when is_binary(NodeName) ->
@@ -237,6 +275,19 @@ release_resources(NodeName, Cpus, Memory) when is_binary(NodeName) ->
             ok;
         [] ->
             {error, not_found}
+    end.
+
+%% @doc Get the resource allocation for a specific job on a node.
+-spec get_job_allocation(binary(), pos_integer()) -> {ok, {pos_integer(), pos_integer()}} | {error, term()}.
+get_job_allocation(NodeName, JobId) when is_binary(NodeName) ->
+    case ets:lookup(?NODES_BY_NAME, NodeName) of
+        [#node_entry{allocations = Allocations}] ->
+            case maps:find(JobId, Allocations) of
+                {ok, Allocation} -> {ok, Allocation};
+                error -> {error, not_found}
+            end;
+        [] ->
+            {error, node_not_found}
     end.
 
 %%====================================================================

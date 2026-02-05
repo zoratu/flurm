@@ -1144,80 +1144,44 @@ format_exit_code(_) ->
     "0:0".
 
 %% Calculate TRES (Trackable Resources) usage from a job record
+%% Delegates to flurm_tres:from_job/1 for consistency
 calculate_tres_usage(#job_record{} = R) ->
-    Elapsed = R#job_record.elapsed,
-    TresAlloc = R#job_record.tres_alloc,
-    #{
-        cpu_seconds => Elapsed * R#job_record.num_cpus,
-        mem_seconds => Elapsed * R#job_record.req_mem,
-        node_seconds => Elapsed * R#job_record.num_nodes,
-        gpu_seconds => Elapsed * maps:get(gpu, TresAlloc, 0)
-    }.
+    flurm_tres:from_job(#{
+        elapsed => R#job_record.elapsed,
+        num_cpus => R#job_record.num_cpus,
+        req_mem => R#job_record.req_mem,
+        num_nodes => R#job_record.num_nodes,
+        tres_alloc => R#job_record.tres_alloc
+    }).
 
 %% Aggregate TRES usage by user
+%% Uses flurm_tres:add/2 for consistent aggregation
 calculate_user_tres_usage(Username, JobRecords) ->
-    BaseUsage = #{
-        cpu_seconds => 0,
-        mem_seconds => 0,
-        gpu_seconds => 0,
-        node_seconds => 0,
-        job_count => 0,
-        elapsed_total => 0
-    },
+    BaseUsage = maps:put(elapsed_total, 0, flurm_tres:zero()),
     ets:foldl(fun(#job_record{user_name = U} = R, Acc) when U =:= Username ->
                       TresUsage = calculate_tres_usage(R),
-                      #{
-                          cpu_seconds => maps:get(cpu_seconds, Acc, 0) + maps:get(cpu_seconds, TresUsage, 0),
-                          mem_seconds => maps:get(mem_seconds, Acc, 0) + maps:get(mem_seconds, TresUsage, 0),
-                          gpu_seconds => maps:get(gpu_seconds, Acc, 0) + maps:get(gpu_seconds, TresUsage, 0),
-                          node_seconds => maps:get(node_seconds, Acc, 0) + maps:get(node_seconds, TresUsage, 0),
-                          job_count => maps:get(job_count, Acc, 0) + 1,
-                          elapsed_total => maps:get(elapsed_total, Acc, 0) + R#job_record.elapsed
-                      };
+                      Acc1 = flurm_tres:add(Acc, TresUsage),
+                      maps:put(elapsed_total, maps:get(elapsed_total, Acc, 0) + R#job_record.elapsed, Acc1);
                  (_, Acc) -> Acc
               end, BaseUsage, JobRecords).
 
 %% Aggregate TRES usage by account
+%% Uses flurm_tres:add/2 for consistent aggregation
 calculate_account_tres_usage(Account, JobRecords) ->
-    BaseUsage = #{
-        cpu_seconds => 0,
-        mem_seconds => 0,
-        gpu_seconds => 0,
-        node_seconds => 0,
-        job_count => 0,
-        elapsed_total => 0
-    },
+    BaseUsage = maps:put(elapsed_total, 0, flurm_tres:zero()),
     ets:foldl(fun(#job_record{account = A} = R, Acc) when A =:= Account ->
                       TresUsage = calculate_tres_usage(R),
-                      #{
-                          cpu_seconds => maps:get(cpu_seconds, Acc, 0) + maps:get(cpu_seconds, TresUsage, 0),
-                          mem_seconds => maps:get(mem_seconds, Acc, 0) + maps:get(mem_seconds, TresUsage, 0),
-                          gpu_seconds => maps:get(gpu_seconds, Acc, 0) + maps:get(gpu_seconds, TresUsage, 0),
-                          node_seconds => maps:get(node_seconds, Acc, 0) + maps:get(node_seconds, TresUsage, 0),
-                          job_count => maps:get(job_count, Acc, 0) + 1,
-                          elapsed_total => maps:get(elapsed_total, Acc, 0) + R#job_record.elapsed
-                      };
+                      Acc1 = flurm_tres:add(Acc, TresUsage),
+                      maps:put(elapsed_total, maps:get(elapsed_total, Acc, 0) + R#job_record.elapsed, Acc1);
                  (_, Acc) -> Acc
               end, BaseUsage, JobRecords).
 
 %% Aggregate TRES usage cluster-wide
+%% Uses flurm_tres:add/2 for consistent aggregation
 calculate_cluster_tres_usage(JobRecords) ->
-    BaseUsage = #{
-        cpu_seconds => 0,
-        mem_seconds => 0,
-        gpu_seconds => 0,
-        node_seconds => 0,
-        job_count => 0,
-        elapsed_total => 0
-    },
+    BaseUsage = maps:put(elapsed_total, 0, flurm_tres:zero()),
     ets:foldl(fun(#job_record{} = R, Acc) ->
                       TresUsage = calculate_tres_usage(R),
-                      #{
-                          cpu_seconds => maps:get(cpu_seconds, Acc, 0) + maps:get(cpu_seconds, TresUsage, 0),
-                          mem_seconds => maps:get(mem_seconds, Acc, 0) + maps:get(mem_seconds, TresUsage, 0),
-                          gpu_seconds => maps:get(gpu_seconds, Acc, 0) + maps:get(gpu_seconds, TresUsage, 0),
-                          node_seconds => maps:get(node_seconds, Acc, 0) + maps:get(node_seconds, TresUsage, 0),
-                          job_count => maps:get(job_count, Acc, 0) + 1,
-                          elapsed_total => maps:get(elapsed_total, Acc, 0) + R#job_record.elapsed
-                      }
+                      Acc1 = flurm_tres:add(Acc, TresUsage),
+                      maps:put(elapsed_total, maps:get(elapsed_total, Acc, 0) + R#job_record.elapsed, Acc1)
               end, BaseUsage, JobRecords).

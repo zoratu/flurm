@@ -440,10 +440,9 @@ check_tres_map(Request, MaxTRES) ->
         _ -> {error, {tres_limit_exceeded, Violations}}
     end.
 
+%% @doc Combine two TRES maps. Delegates to flurm_tres:add/2.
 combine_tres(Map1, Map2) ->
-    maps:fold(fun(K, V, Acc) ->
-        maps:update_with(K, fun(Existing) -> Existing + V end, V, Acc)
-    end, Map1, Map2).
+    flurm_tres:add(Map1, Map2).
 
 get_user_job_counts(User) ->
     %% Query job registry for user's job counts
