@@ -2758,6 +2758,8 @@ encode_job_info_response(#job_info_response{
 %% Fields MUST be in exact order matching SLURM's _unpack_job_info_members()
 %% From src/common/slurm_protocol_pack.c
 encode_single_job_info(#job_info{} = J) ->
+    lager:info("Encoding job_info: job_id=~p, array_job_id=~p, array_task_id=~p, state=~p",
+               [J#job_info.job_id, J#job_info.array_job_id, J#job_info.array_task_id, J#job_info.job_state]),
     %% SLURM 22.05 unpacks ALL fields unconditionally - no conditional packing!
     [
         %% Fields 1-10: array_job_id, array_task_id, array_task_str, array_max_tasks,

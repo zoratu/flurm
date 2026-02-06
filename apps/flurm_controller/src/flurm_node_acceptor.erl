@@ -96,13 +96,20 @@ handle_message(Socket, Transport, #{type := node_register, payload := Payload}) 
     log(info, "Node ~s registering", [Hostname]),
 
     %% Register with node manager
+    %% Get partitions from payload, falling back to default
+    Partitions = case maps:get(<<"partitions">>, Payload, undefined) of
+        undefined -> [<<"default">>];
+        [] -> [<<"default">>];
+        P when is_list(P) -> P
+    end,
     NodeSpec = #{
         hostname => Hostname,
         cpus => maps:get(<<"cpus">>, Payload, 1),
         memory_mb => maps:get(<<"memory_mb">>, Payload, 1024),
         state => idle,
-        partitions => [<<"default">>]
+        partitions => Partitions
     },
+    log(info, "Node ~s registering with partitions: ~p", [Hostname, Partitions]),
     log(info, "Node ~s calling node_manager:register_node", [Hostname]),
     case flurm_node_manager_server:register_node(NodeSpec) of
         ok ->

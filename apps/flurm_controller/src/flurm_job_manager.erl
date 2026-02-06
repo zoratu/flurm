@@ -202,16 +202,29 @@ handle_call({cancel_job, JobId}, _From, #state{jobs = Jobs} = State) ->
             {reply, {error, not_found}, State}
     end;
 
-handle_call({get_job, JobId}, _From, #state{jobs = Jobs} = State) ->
-    case maps:find(JobId, Jobs) of
-        {ok, Job} ->
-            {reply, {ok, Job}, State};
-        error ->
-            {reply, {error, not_found}, State}
-    end;
+handle_call({get_job, JobId}, _From, #state{jobs = Jobs, persistence_mode = Mode} = State) ->
+    %% In Ra mode, query the distributed state to ensure consistency
+    Result = case Mode of
+        ra ->
+            flurm_db_persist:get_job(JobId);
+        _ ->
+            case maps:find(JobId, Jobs) of
+                {ok, Job} -> {ok, Job};
+                error -> {error, not_found}
+            end
+    end,
+    {reply, Result, State};
 
-handle_call(list_jobs, _From, #state{jobs = Jobs} = State) ->
-    {reply, maps:values(Jobs), State};
+handle_call(list_jobs, _From, #state{jobs = Jobs, persistence_mode = Mode} = State) ->
+    %% In Ra mode, query the distributed state to ensure consistency
+    %% across all controller nodes. In ETS mode, use local cache.
+    Result = case Mode of
+        ra ->
+            flurm_db_persist:list_jobs();
+        _ ->
+            maps:values(Jobs)
+    end,
+    {reply, Result, State};
 
 handle_call({update_job, JobId, Updates}, _From, #state{jobs = Jobs} = State) ->
     case maps:find(JobId, Jobs) of

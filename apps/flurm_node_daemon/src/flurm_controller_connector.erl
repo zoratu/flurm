@@ -303,6 +303,9 @@ register_with_controller(Socket) ->
     Metrics = flurm_system_monitor:get_metrics(),
     GPUs = flurm_system_monitor:get_gpus(),
 
+    %% Read partitions from environment variable or config
+    Partitions = get_node_partitions(),
+
     RegisterMsg = #{
         type => node_register,
         payload => #{
@@ -311,7 +314,7 @@ register_with_controller(Socket) ->
             memory_mb => maps:get(total_memory_mb, Metrics),
             gpus => GPUs,
             features => detect_features(),
-            partitions => [<<"default">>],
+            partitions => Partitions,
             version => <<"0.1.0">>
         }
     },
@@ -531,6 +534,32 @@ send_drain_ack(Socket, Draining, Reason, RunningJobCount) ->
         }
     },
     send_protocol_message(Socket, Msg).
+
+%% Get partitions this node should join from environment or config
+%% Reads FLURM_NODE_PARTITIONS env var (comma-separated) or app env
+get_node_partitions() ->
+    case os:getenv("FLURM_NODE_PARTITIONS") of
+        false ->
+            %% Try application environment
+            case application:get_env(flurm_node_daemon, partitions) of
+                {ok, Partitions} when is_list(Partitions) ->
+                    [ensure_binary(P) || P <- Partitions];
+                _ ->
+                    [<<"default">>]
+            end;
+        PartitionsStr ->
+            %% Parse comma-separated partition names
+            Parts = string:tokens(PartitionsStr, ","),
+            case Parts of
+                [] -> [<<"default">>];
+                _ -> [list_to_binary(string:trim(P)) || P <- Parts]
+            end
+    end.
+
+%% Ensure a value is a binary
+ensure_binary(V) when is_binary(V) -> V;
+ensure_binary(V) when is_list(V) -> list_to_binary(V);
+ensure_binary(V) when is_atom(V) -> atom_to_binary(V, utf8).
 
 %% Detect hardware features available on this node
 detect_features() ->

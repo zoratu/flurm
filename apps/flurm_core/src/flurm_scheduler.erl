@@ -123,6 +123,8 @@ job_deps_satisfied(JobId) when is_integer(JobId), JobId > 0 ->
 
 %% @private
 init([]) ->
+    lager:info("Scheduler starting (interval: ~p ms)", [?SCHEDULE_INTERVAL]),
+
     %% Create ETS table for caching node state
     NodesCache = ets:new(flurm_scheduler_nodes_cache, [
         set,
@@ -147,6 +149,7 @@ init([]) ->
         pending_reasons = #{},
         schedule_pending = false
     },
+    lager:info("Scheduler started"),
     {ok, State}.
 
 %% @private
@@ -165,7 +168,8 @@ handle_call(_Request, _From, State) ->
 
 %% @private
 handle_cast({submit_job, JobId}, State) ->
-    lager:debug("Scheduler received job ~p for scheduling", [JobId]),
+    lager:info("Scheduler received job ~p for scheduling (pending queue size: ~p)",
+               [JobId, queue:len(State#scheduler_state.pending_jobs) + 1]),
     %% Add job to pending queue
     NewPending = queue:in(JobId, State#scheduler_state.pending_jobs),
     NewState = State#scheduler_state{pending_jobs = NewPending},
@@ -377,9 +381,11 @@ notify_job_deps_completion(JobId, FinalState) ->
 %% Run a scheduling cycle - try to schedule pending jobs in batches
 schedule_cycle(State) ->
     PendingCount = queue:len(State#scheduler_state.pending_jobs),
+    RunningCount = sets:size(State#scheduler_state.running_jobs),
     case PendingCount > 0 of
         true ->
-            lager:debug("Schedule cycle: ~p pending jobs", [PendingCount]);
+            lager:info("Schedule cycle: ~p pending, ~p running",
+                       [PendingCount, RunningCount]);
         false ->
             ok
     end,
@@ -413,7 +419,7 @@ schedule_pending_jobs_batch(State, MaxJobs, Scheduled) ->
                 {wait, Reason} ->
                     %% Job cannot be scheduled (insufficient resources)
                     %% Try backfill: schedule smaller jobs that can fit
-                    lager:debug("Job ~p waiting (~p), trying backfill", [JobId, Reason]),
+                    lager:info("Job ~p waiting for scheduling: ~p", [JobId, Reason]),
                     BackfillState = try_backfill_jobs(RestQueue, State),
                     %% Keep original job at front of queue
                     BackfillState;
@@ -575,11 +581,11 @@ remove_jobs_from_queue(JobsToRemove, Queue) ->
 %% Now includes resource limits checking via flurm_limits module
 %% Also checks job dependencies via flurm_job_deps before scheduling
 try_schedule_job(JobId, State) ->
-    lager:debug("Trying to schedule job ~p", [JobId]),
+    lager:info("Trying to schedule job ~p", [JobId]),
     case flurm_job_manager:get_job(JobId) of
         {ok, Job} ->
             JobState = flurm_core:job_state(Job),
-            lager:debug("Job ~p state: ~p", [JobId, JobState]),
+            lager:info("Job ~p found with state: ~p", [JobId, JobState]),
             case JobState of
                 pending ->
                     %% Check job dependencies before scheduling
@@ -837,6 +843,8 @@ find_nodes_excluding_reserved(NumNodes, NumCpus, MemoryMb, Partition) ->
     %% Get all available nodes
     AllNodes = flurm_node_manager:get_available_nodes_for_job(NumCpus, MemoryMb, Partition),
     AllNodeNames = [N#node.hostname || N <- AllNodes],
+    lager:info("find_nodes_excluding_reserved: found ~p nodes from node_manager for partition ~p",
+               [length(AllNodes), Partition]),
 
     %% Filter out reserved nodes
     AvailableNodeNames = case catch flurm_reservation:get_available_nodes_excluding_reserved(AllNodeNames) of
@@ -847,7 +855,7 @@ find_nodes_excluding_reserved(NumNodes, NumCpus, MemoryMb, Partition) ->
     %% Get the full node records for available nodes
     AvailableNodes = [N || N <- AllNodes, lists:member(N#node.hostname, AvailableNodeNames)],
 
-    lager:debug("find_nodes_excluding_reserved: need ~p nodes with ~p cpus, ~p MB, found ~p after excluding reserved",
+    lager:info("find_nodes_excluding_reserved: need ~p nodes with ~p cpus, ~p MB, found ~p after excluding reserved",
                [NumNodes, NumCpus, MemoryMb, length(AvailableNodes)]),
 
     if

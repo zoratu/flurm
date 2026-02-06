@@ -320,6 +320,11 @@ handle(#slurm_header{msg_type = ?REQUEST_JOB_INFO},
             end
     end,
     lager:info("Found ~p jobs to return", [length(Jobs)]),
+    %% Log job details for debugging
+    lists:foreach(fun(J) ->
+        lager:info("Job record: id=~p, name=~p, state=~p",
+                   [element(2, J), element(3, J), element(6, J)])
+    end, Jobs),
     %% Convert internal jobs to job_info records
     JobInfos = [job_to_job_info(J) || J <- Jobs],
     Response = #job_info_response{
@@ -464,7 +469,7 @@ handle(#slurm_header{msg_type = ?REQUEST_NODE_INFO}, _Body) ->
 
 %% REQUEST_PARTITION_INFO (2009) -> RESPONSE_PARTITION_INFO
 handle(#slurm_header{msg_type = ?REQUEST_PARTITION_INFO}, _Body) ->
-    lager:debug("Handling partition info request"),
+    lager:debug("Handling partition info request (sinfo)"),
     Partitions = flurm_partition_manager:list_partitions(),
     PartitionInfoList = [partition_to_partition_info(P) || P <- Partitions],
     Response = #partition_info_response{
@@ -1506,47 +1511,47 @@ job_to_job_info(#job{} = Job) ->
         array_job_id = 0,
         array_max_tasks = 0,
         array_task_id = 16#FFFFFFFE,  % NO_VAL for non-array jobs
-        array_task_str = <<>>,
+        array_task_str = undefined,   % NULL - not an array job
         assoc_id = 0,
         billable_tres = 0.0,
         bitflags = 0,
         boards_per_node = 0,
-        burst_buffer = <<>>,
-        burst_buffer_state = <<>>,
-        cluster = <<>>,
-        cluster_features = <<>>,
-        comment = <<>>,
-        container = <<>>,
+        burst_buffer = undefined,
+        burst_buffer_state = undefined,
+        cluster = undefined,
+        cluster_features = undefined,
+        comment = undefined,
+        container = undefined,
         contiguous = 0,
         core_spec = 16#FFFF,  % SLURM_NO_VAL16
         cores_per_socket = 0,
-        cpus_per_tres = <<>>,
+        cpus_per_tres = undefined,
         deadline = 0,
         delay_boot = 0,
-        dependency = <<>>,
+        dependency = undefined,
         derived_ec = 0,
-        exc_nodes = <<>>,
+        exc_nodes = undefined,
         exit_code = 0,
-        features = <<>>,
-        fed_origin_str = <<>>,
+        features = undefined,
+        fed_origin_str = undefined,
         fed_siblings_active = 0,
-        fed_siblings_active_str = <<>>,
+        fed_siblings_active_str = undefined,
         fed_siblings_viable = 0,
-        fed_siblings_viable_str = <<>>,
+        fed_siblings_viable_str = undefined,
         gres_detail_cnt = 0,
         gres_detail_str = [],
         het_job_id = 0,
-        het_job_id_set = <<>>,
+        het_job_id_set = undefined,
         het_job_offset = 16#FFFFFFFF,
         last_sched_eval = 0,
         licenses = format_licenses(Job#job.licenses),
         mail_type = 0,
-        mail_user = <<>>,
-        mcs_label = <<>>,
-        mem_per_tres = <<>>,
+        mail_user = undefined,
+        mcs_label = undefined,
+        mem_per_tres = undefined,
         min_mem_per_cpu = 0,
         min_mem_per_node = 0,
-        network = <<>>,
+        network = undefined,
         nice = 0,
         ntasks_per_core = 16#FFFF,
         ntasks_per_node = 16#FFFF,
@@ -1561,37 +1566,37 @@ job_to_job_info(#job{} = Job) ->
         profile = 0,
         qos = Job#job.qos,
         reboot = 0,
-        req_nodes = <<>>,
+        req_nodes = undefined,
         req_switch = 0,
         requeue = 1,
         resize_time = 0,
         restart_cnt = 0,
-        resv_name = <<>>,
-        sched_nodes = <<>>,
+        resv_name = undefined,
+        sched_nodes = undefined,
         shared = 0,
         show_flags = 0,
         site_factor = 0,
         sockets_per_board = 0,
         sockets_per_node = 0,
-        state_desc = <<>>,
+        state_desc = undefined,
         state_reason = 0,
-        std_err = <<>>,
-        std_in = <<>>,
-        std_out = <<>>,
+        std_err = undefined,
+        std_in = undefined,
+        std_out = undefined,
         suspend_time = 0,
-        system_comment = <<>>,
+        system_comment = undefined,
         threads_per_core = 0,
         time_min = 0,
-        tres_alloc_str = <<>>,
-        tres_bind = <<>>,
-        tres_freq = <<>>,
-        tres_per_job = <<>>,
-        tres_per_node = <<>>,
-        tres_per_socket = <<>>,
-        tres_per_task = <<>>,
-        tres_req_str = <<>>,
+        tres_alloc_str = undefined,
+        tres_bind = undefined,
+        tres_freq = undefined,
+        tres_per_job = undefined,
+        tres_per_node = undefined,
+        tres_per_socket = undefined,
+        tres_per_task = undefined,
+        tres_req_str = undefined,
         wait4switch = 0,
-        wckey = <<>>
+        wckey = undefined
     }.
 
 %% @doc Convert internal node record to SLURM node_info record
@@ -1617,10 +1622,26 @@ node_to_node_info(#node{} = Node) ->
 %% @doc Convert internal partition record to SLURM partition_info record
 -spec partition_to_partition_info(#partition{}) -> #partition_info{}.
 partition_to_partition_info(#partition{} = Part) ->
-    %% For now, auto-include all registered nodes in the partition
-    %% In production, this would be based on configuration
-    AllNodes = [N#node.hostname || N <- flurm_node_manager_server:list_nodes()],
-    TotalCpus = lists:sum([N#node.cpus || N <- flurm_node_manager_server:list_nodes()]),
+    %% Get nodes that belong to this partition
+    %% We filter to only include nodes that:
+    %% 1. Are actually registered (connected and up)
+    %% 2. Claim membership in this partition (via their partitions list)
+    PartitionName = Part#partition.name,
+    AllRegisteredNodes = flurm_node_manager_server:list_nodes(),
+
+    %% Filter to nodes that are both registered AND claim this partition
+    PartitionNodes = [N#node.hostname || N <- AllRegisteredNodes,
+                      %% Node must claim membership in this partition OR it's default
+                      (lists:member(PartitionName, N#node.partitions) orelse
+                       PartitionName =:= <<"default">>),
+                      %% If partition has explicit node list, node must be in it
+                      (Part#partition.nodes =:= [] orelse
+                       lists:member(N#node.hostname, Part#partition.nodes))],
+
+    %% Calculate total CPUs from the nodes in this partition
+    NodesInPartition = [N || N <- AllRegisteredNodes,
+                             lists:member(N#node.hostname, PartitionNodes)],
+    TotalCpus = lists:sum([N#node.cpus || N <- NodesInPartition]),
     #partition_info{
         name = Part#partition.name,
         state_up = partition_state_to_slurm(Part#partition.state),
@@ -1628,9 +1649,9 @@ partition_to_partition_info(#partition{} = Part) ->
         default_time = Part#partition.default_time,
         max_nodes = Part#partition.max_nodes,
         min_nodes = 1,
-        total_nodes = length(AllNodes),
+        total_nodes = length(PartitionNodes),
         total_cpus = TotalCpus,
-        nodes = format_node_list(AllNodes),
+        nodes = format_node_list(PartitionNodes),
         priority_tier = Part#partition.priority,
         priority_job_factor = 1
     }.
