@@ -1347,21 +1347,33 @@ decode_batch_job_request_scan(Binary) ->
     %% Extract time limit from #SBATCH directive in script if present
     TimeLimit = extract_time_limit(Script),
 
-    %% Extract node/task counts from script SBATCH directives (most reliable)
-    {ScriptNodes, ScriptTasks} = extract_resources(Script),
-
-    %% Also try to get from protocol binary (less reliable due to field position scanning)
-    {_ProtoNodes, ProtoCpus} = extract_resources_from_protocol(Binary),
+    %% Extract node/task/cpu counts from script SBATCH directives (most reliable)
+    {ScriptNodes, ScriptTasks, ScriptCpus} = extract_resources(Script),
 
     %% Prefer script values - they are explicitly set by user and reliably parsed.
-    %% Protocol binary scanning can misidentify values (e.g., memory as node count).
-    %% Default to 1 node if not specified in either place.
-    MinNodes = max(1, ScriptNodes),
-    MinCpus = case ProtoCpus of
-        C when C > 0, C < 16#FFFFFFFE, C =< 1000 -> C;
-        _ -> max(1, ScriptTasks)
+    %% Protocol binary scanning can misidentify values (e.g., 256 from buffer size as CPU count).
+    %% Default to 1 node and 1 CPU if not specified.
+    MinNodes = case ScriptNodes of
+        N when N > 0 -> N;
+        _ -> 1
     end,
-    NumTasks = ScriptTasks,
+
+    %% For CPUs: prefer script value, then fallback to protocol scanning, then default to 1
+    MinCpus = case ScriptCpus of
+        C when C > 0 -> C;
+        _ ->
+            %% Try protocol binary as last resort (unreliable)
+            {_ProtoNodes, ProtoCpus} = extract_resources_from_protocol(Binary),
+            case ProtoCpus of
+                PC when PC > 0, PC < 16#FFFFFFFE, PC =< 64 -> PC;  % Only accept small values
+                _ -> 1  % Default to 1 CPU
+            end
+    end,
+
+    NumTasks = case ScriptTasks of
+        T when T > 0 -> T;
+        _ -> 1
+    end,
 
     %% Find stdout/stderr paths from the protocol message or script
     StdOut = find_std_out(Binary, Script, WorkDir),
@@ -1955,6 +1967,7 @@ extract_short_string(_, _) ->
     <<>>.
 
 %% Extract resources from #SBATCH directives
+%% Returns {Nodes, Tasks, Cpus} - 0 means not specified in script
 extract_resources(Script) ->
     %% Try --nodes= first, then -N
     Nodes = case binary:match(Script, <<"--nodes=">>) of
@@ -1967,7 +1980,7 @@ extract_resources(Script) ->
                     <<_:NStart2/binary, "-N ", NRest2/binary>> = Script,
                     parse_int_value(NRest2);
                 nomatch ->
-                    1
+                    0  % Not specified
             end
     end,
     %% Try --ntasks= first, then -n
@@ -1981,10 +1994,31 @@ extract_resources(Script) ->
                     <<_:TStart2/binary, "-n ", TRest2/binary>> = Script,
                     parse_int_value(TRest2);
                 nomatch ->
-                    1
+                    0  % Not specified
             end
     end,
-    {Nodes, Tasks}.
+    %% Try --cpus-per-task= first, then -c
+    Cpus = case binary:match(Script, <<"--cpus-per-task=">>) of
+        {CStart, 16} ->
+            <<_:CStart/binary, "--cpus-per-task=", CRest/binary>> = Script,
+            parse_int_value(CRest);
+        nomatch ->
+            case binary:match(Script, <<"-c ">>) of
+                {CStart2, 3} ->
+                    <<_:CStart2/binary, "-c ", CRest2/binary>> = Script,
+                    parse_int_value(CRest2);
+                nomatch ->
+                    case binary:match(Script, <<"-c">>) of
+                        {CStart3, 2} ->
+                            <<_:CStart3/binary, "-c", CRest3/binary>> = Script,
+                            %% Handle -c1 (no space) format
+                            parse_int_value(CRest3);
+                        nomatch ->
+                            0  % Not specified
+                    end
+            end
+    end,
+    {Nodes, Tasks, Cpus}.
 
 parse_int_value(<<D, Rest/binary>>) when D >= $0, D =< $9 ->
     parse_int_value(Rest, D - $0);
