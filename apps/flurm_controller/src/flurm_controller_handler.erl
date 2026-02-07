@@ -43,6 +43,7 @@
     parse_job_id_str/1,
     safe_binary_to_integer/1,
     build_job_updates/3,
+    execute_job_update/4,
     %% State conversions
     job_state_to_slurm/1,
     node_state_to_slurm/1,
@@ -414,6 +415,134 @@ handle(#slurm_header{msg_type = ?REQUEST_KILL_JOB},
             {ok, ?RESPONSE_SLURM_RC, Response}
     end;
 
+%% REQUEST_SUSPEND (5014) -> RESPONSE_SLURM_RC
+%% Used by scontrol suspend/resume
+handle(#slurm_header{msg_type = ?REQUEST_SUSPEND},
+       #suspend_request{job_id = JobId, suspend = Suspend}) ->
+    lager:info("Handling suspend request for job_id=~p suspend=~p", [JobId, Suspend]),
+    Result = case is_cluster_enabled() of
+        true ->
+            case flurm_controller_cluster:is_leader() of
+                true ->
+                    execute_suspend(JobId, Suspend);
+                false ->
+                    Op = case Suspend of true -> suspend_job; false -> resume_job end,
+                    case flurm_controller_cluster:forward_to_leader(Op, JobId) of
+                        {ok, SuspendResult} -> SuspendResult;
+                        {error, no_leader} -> {error, controller_not_found};
+                        {error, Reason} -> {error, Reason}
+                    end
+            end;
+        false ->
+            execute_suspend(JobId, Suspend)
+    end,
+    case Result of
+        ok ->
+            Action = case Suspend of true -> "suspended"; false -> "resumed" end,
+            lager:info("Job ~p ~s successfully", [JobId, Action]),
+            Response = #slurm_rc_response{return_code = 0},
+            {ok, ?RESPONSE_SLURM_RC, Response};
+        {error, Reason2} ->
+            lager:warning("Suspend/resume failed for job ~p: ~p", [JobId, Reason2]),
+            Response = #slurm_rc_response{return_code = -1},
+            {ok, ?RESPONSE_SLURM_RC, Response}
+    end;
+
+%% REQUEST_SIGNAL_JOB (5018) -> RESPONSE_SLURM_RC
+%% Used by scancel -s SIGNAL
+handle(#slurm_header{msg_type = ?REQUEST_SIGNAL_JOB},
+       #signal_job_request{job_id = JobId, signal = Signal}) ->
+    lager:info("Handling signal job request for job_id=~p signal=~p", [JobId, Signal]),
+    Result = case is_cluster_enabled() of
+        true ->
+            case flurm_controller_cluster:is_leader() of
+                true ->
+                    flurm_job_manager:signal_job(JobId, Signal);
+                false ->
+                    case flurm_controller_cluster:forward_to_leader(signal_job, {JobId, Signal}) of
+                        {ok, SignalResult} -> SignalResult;
+                        {error, no_leader} -> {error, controller_not_found};
+                        {error, Reason} -> {error, Reason}
+                    end
+            end;
+        false ->
+            flurm_job_manager:signal_job(JobId, Signal)
+    end,
+    case Result of
+        ok ->
+            lager:info("Signal ~p sent to job ~p successfully", [Signal, JobId]),
+            Response = #slurm_rc_response{return_code = 0},
+            {ok, ?RESPONSE_SLURM_RC, Response};
+        {error, Reason2} ->
+            lager:warning("Signal job failed for job ~p: ~p", [JobId, Reason2]),
+            Response = #slurm_rc_response{return_code = -1},
+            {ok, ?RESPONSE_SLURM_RC, Response}
+    end;
+
+%% REQUEST_COMPLETE_PROLOG (5019) -> RESPONSE_SLURM_RC
+%% Sent by slurmd when prolog completes
+handle(#slurm_header{msg_type = ?REQUEST_COMPLETE_PROLOG},
+       #complete_prolog_request{job_id = JobId, prolog_rc = PrologRc, node_name = NodeName}) ->
+    lager:info("Prolog complete for job ~p on ~s, rc=~p", [JobId, NodeName, PrologRc]),
+    Status = case PrologRc of
+        0 -> complete;
+        _ -> failed
+    end,
+    %% Update job prolog status
+    case is_cluster_enabled() andalso not flurm_controller_cluster:is_leader() of
+        true ->
+            flurm_controller_cluster:forward_to_leader(update_prolog_status, {JobId, Status});
+        false ->
+            update_job_prolog_status(JobId, Status)
+    end,
+    Response = #slurm_rc_response{return_code = 0},
+    {ok, ?RESPONSE_SLURM_RC, Response};
+
+%% MESSAGE_EPILOG_COMPLETE (6012) -> RESPONSE_SLURM_RC
+%% Sent by slurmd when epilog completes
+handle(#slurm_header{msg_type = ?MESSAGE_EPILOG_COMPLETE},
+       #epilog_complete_msg{job_id = JobId, epilog_rc = EpilogRc, node_name = NodeName}) ->
+    lager:info("Epilog complete for job ~p on ~s, rc=~p", [JobId, NodeName, EpilogRc]),
+    Status = case EpilogRc of
+        0 -> complete;
+        _ -> failed
+    end,
+    %% Update job epilog status
+    case is_cluster_enabled() andalso not flurm_controller_cluster:is_leader() of
+        true ->
+            flurm_controller_cluster:forward_to_leader(update_epilog_status, {JobId, Status});
+        false ->
+            update_job_epilog_status(JobId, Status)
+    end,
+    Response = #slurm_rc_response{return_code = 0},
+    {ok, ?RESPONSE_SLURM_RC, Response};
+
+%% MESSAGE_TASK_EXIT (6003) -> RESPONSE_SLURM_RC
+%% Sent by slurmd when a task exits (completes or fails)
+handle(#slurm_header{msg_type = ?MESSAGE_TASK_EXIT},
+       #task_exit_msg{job_id = JobId, step_id = StepId, return_code = ReturnCode,
+                      task_ids = TaskIds, node_name = NodeName}) ->
+    lager:info("Task exit for job ~p step ~p, tasks=~p, rc=~p, node=~s",
+               [JobId, StepId, TaskIds, ReturnCode, NodeName]),
+    %% Update step status in step manager
+    %% If return code is 0, task completed successfully
+    %% Otherwise, the step has a failed task
+    case is_cluster_enabled() andalso not flurm_controller_cluster:is_leader() of
+        true ->
+            flurm_controller_cluster:forward_to_leader(complete_step, {JobId, StepId, ReturnCode});
+        false ->
+            %% Update step completion status
+            case flurm_step_manager:complete_step(JobId, StepId, ReturnCode) of
+                ok ->
+                    lager:debug("Step ~p.~p marked as completed", [JobId, StepId]);
+                {error, not_found} ->
+                    %% Step may have been created by srun directly, not tracked
+                    lager:debug("Step ~p.~p not found in step manager", [JobId, StepId])
+            end
+    end,
+    Response = #slurm_rc_response{return_code = 0},
+    {ok, ?RESPONSE_SLURM_RC, Response};
+
 %% REQUEST_CANCEL_JOB (4006) -> RESPONSE_SLURM_RC
 %% Write operation - requires leader or forwarding to leader
 handle(#slurm_header{msg_type = ?REQUEST_CANCEL_JOB},
@@ -727,7 +856,8 @@ handle(#slurm_header{msg_type = ?REQUEST_JOB_STEP_INFO},
     {ok, ?RESPONSE_JOB_STEP_INFO, Response};
 
 %% REQUEST_UPDATE_JOB (4014) -> RESPONSE_SLURM_RC
-%% Used by scontrol update job, hold, release
+%% Used by scontrol update job, hold, release, requeue
+%% Properly routes to hold_job/release_job/requeue_job for correct side effects
 handle(#slurm_header{msg_type = ?REQUEST_UPDATE_JOB},
        #update_job_request{} = Request) ->
     JobId = case Request#update_job_request.job_id of
@@ -741,21 +871,22 @@ handle(#slurm_header{msg_type = ?REQUEST_UPDATE_JOB},
     TimeLimit = Request#update_job_request.time_limit,
     Requeue = Request#update_job_request.requeue,
 
-    Updates = build_job_updates(Priority, TimeLimit, Requeue),
-
+    %% Route to appropriate job manager function for proper side effects
+    %% Priority=0 means hold, Priority=non-zero+non-NO_VAL means release (restore priority)
+    %% Requeue=1 means requeue the job
     Result = case is_cluster_enabled() of
         true ->
             case flurm_controller_cluster:is_leader() of
-                true -> flurm_job_manager:update_job(JobId, Updates);
+                true -> execute_job_update(JobId, Priority, TimeLimit, Requeue);
                 false ->
-                    case flurm_controller_cluster:forward_to_leader(update_job, {JobId, Updates}) of
+                    case flurm_controller_cluster:forward_to_leader(update_job_ext, {JobId, Priority, TimeLimit, Requeue}) of
                         {ok, UpdateResult} -> UpdateResult;
                         {error, no_leader} -> {error, controller_not_found};
                         {error, Reason} -> {error, Reason}
                     end
             end;
         false ->
-            flurm_job_manager:update_job(JobId, Updates)
+            execute_job_update(JobId, Priority, TimeLimit, Requeue)
     end,
     case Result of
         ok ->
@@ -1990,6 +2121,60 @@ safe_binary_to_integer(Bin) ->
     catch _:_ -> 0
     end.
 
+%% @doc Execute suspend or resume based on the suspend flag
+-spec execute_suspend(non_neg_integer(), boolean()) -> ok | {error, term()}.
+execute_suspend(JobId, true) ->
+    flurm_job_manager:suspend_job(JobId);
+execute_suspend(JobId, false) ->
+    flurm_job_manager:resume_job(JobId).
+
+%% @doc Execute job update with proper routing to job manager functions
+%% Routes to hold_job/release_job/requeue_job for correct side effects
+%% Priority=0 -> hold, Priority=non-NO_VAL and job held -> release, Requeue=1 -> requeue
+-spec execute_job_update(non_neg_integer(), non_neg_integer(), non_neg_integer(), non_neg_integer()) -> ok | {error, term()}.
+execute_job_update(JobId, Priority, TimeLimit, Requeue) ->
+    %% First handle requeue - it takes precedence
+    case Requeue of
+        1 ->
+            %% Requeue the job - uses proper requeue_job function
+            lager:info("Requeue requested for job ~p", [JobId]),
+            flurm_job_manager:requeue_job(JobId);
+        _ ->
+            %% Handle hold/release/priority update
+            case Priority of
+                0 ->
+                    %% Priority 0 = hold the job
+                    lager:info("Hold requested for job ~p", [JobId]),
+                    flurm_job_manager:hold_job(JobId);
+                16#FFFFFFFE ->
+                    %% NO_VAL - no priority change, just apply time_limit if set
+                    case TimeLimit of
+                        16#FFFFFFFE -> ok;  % Nothing to update
+                        T ->
+                            flurm_job_manager:update_job(JobId, #{time_limit => T})
+                    end;
+                P when P > 0 ->
+                    %% Non-zero priority - check if job is held and release it
+                    %% Otherwise just update the priority
+                    case flurm_job_manager:get_job(JobId) of
+                        {ok, Job} when Job#job.state =:= held ->
+                            %% Release the held job
+                            lager:info("Release requested for job ~p (priority ~p)", [JobId, P]),
+                            case flurm_job_manager:release_job(JobId) of
+                                ok when P =/= 100 ->
+                                    %% Also update priority if not default
+                                    flurm_job_manager:update_job(JobId, #{priority => P});
+                                Result -> Result
+                            end;
+                        {ok, _Job} ->
+                            %% Not held, just update priority
+                            Updates = build_job_updates(Priority, TimeLimit, 16#FFFFFFFE),
+                            flurm_job_manager:update_job(JobId, Updates);
+                        {error, _} = Error -> Error
+                    end
+            end
+    end.
+
 %% @doc Build job updates map from update request fields
 %% SLURM_NO_VAL = 0xFFFFFFFE indicates field not set
 -spec build_job_updates(non_neg_integer(), non_neg_integer(), non_neg_integer()) -> map().
@@ -2730,4 +2915,34 @@ generate_reservation_name() ->
     Timestamp = erlang:system_time(microsecond),
     Random = rand:uniform(9999),
     iolist_to_binary(io_lib:format("resv_~p_~4..0B", [Timestamp, Random])).
+
+%%====================================================================
+%% Internal Functions - Prolog/Epilog Status Updates
+%%====================================================================
+
+%% @doc Update job prolog status
+%% Called when a node reports prolog completion
+-spec update_job_prolog_status(non_neg_integer(), atom()) -> ok.
+update_job_prolog_status(JobId, Status) ->
+    case flurm_job_manager:update_prolog_status(JobId, Status) of
+        ok ->
+            lager:debug("Updated prolog status for job ~p to ~p", [JobId, Status]),
+            ok;
+        {error, Reason} ->
+            lager:warning("Failed to update prolog status for job ~p: ~p", [JobId, Reason]),
+            ok
+    end.
+
+%% @doc Update job epilog status
+%% Called when a node reports epilog completion
+-spec update_job_epilog_status(non_neg_integer(), atom()) -> ok.
+update_job_epilog_status(JobId, Status) ->
+    case flurm_job_manager:update_epilog_status(JobId, Status) of
+        ok ->
+            lager:debug("Updated epilog status for job ~p to ~p", [JobId, Status]),
+            ok;
+        {error, Reason} ->
+            lager:warning("Failed to update epilog status for job ~p: ~p", [JobId, Reason]),
+            ok
+    end.
 

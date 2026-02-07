@@ -598,6 +598,51 @@
     sibling = <<>> :: binary()
 }).
 
+%% Suspend job request (REQUEST_SUSPEND - 5014)
+%% Used by scontrol suspend/resume
+-record(suspend_request, {
+    job_id = 0 :: non_neg_integer(),
+    job_id_str = <<>> :: binary(),
+    suspend = true :: boolean()  % true = suspend, false = resume
+}).
+
+%% Signal job request (REQUEST_SIGNAL_JOB - 5018)
+%% Used by scancel -s SIGNAL and scontrol signal
+-record(signal_job_request, {
+    job_id = 0 :: non_neg_integer(),
+    job_id_str = <<>> :: binary(),
+    step_id = ?SLURM_NO_VAL :: non_neg_integer(),  % NO_VAL = all steps
+    signal = 15 :: non_neg_integer(),  % Default SIGTERM
+    flags = 0 :: non_neg_integer()
+}).
+
+%% Prolog complete request (REQUEST_COMPLETE_PROLOG - 5019)
+%% Sent by slurmd when prolog script completes
+-record(complete_prolog_request, {
+    job_id = 0 :: non_neg_integer(),
+    prolog_rc = 0 :: integer(),         % Prolog exit code (0 = success)
+    node_name = <<>> :: binary()        % Node where prolog ran
+}).
+
+%% Epilog complete message (MESSAGE_EPILOG_COMPLETE - 6012)
+%% Sent by slurmd when epilog script completes
+-record(epilog_complete_msg, {
+    job_id = 0 :: non_neg_integer(),
+    epilog_rc = 0 :: integer(),         % Epilog exit code (0 = success)
+    node_name = <<>> :: binary()        % Node where epilog ran
+}).
+
+%% Task exit message (MESSAGE_TASK_EXIT - 6003)
+%% Sent by slurmd when a task (within a job step) exits
+-record(task_exit_msg, {
+    job_id = 0 :: non_neg_integer(),
+    step_id = 0 :: non_neg_integer(),
+    step_het_comp = 16#FFFFFFFE :: non_neg_integer(),  % Heterogeneous component (NO_VAL)
+    task_ids = [] :: [non_neg_integer()],              % List of task IDs that exited
+    return_code = 0 :: integer(),                       % Exit code
+    node_name = <<>> :: binary()                        % Node where task ran
+}).
+
 %% Update job request (REQUEST_UPDATE_JOB - 4014)
 %% Used by scontrol update job, hold, release
 -record(update_job_request, {

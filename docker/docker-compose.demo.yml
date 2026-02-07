@@ -50,6 +50,7 @@ services:
       - FLURM_NODE_CPUS=4
       - FLURM_NODE_MEMORY=4096
     volumes:
+      - munge-key:/etc/munge
       - shared-tmp:/tmp
       - shared-data:/data
     networks:
@@ -72,6 +73,7 @@ services:
       - FLURM_NODE_CPUS=4
       - FLURM_NODE_MEMORY=4096
     volumes:
+      - munge-key:/etc/munge
       - shared-tmp:/tmp
       - shared-data:/data
     networks:
@@ -95,6 +97,7 @@ services:
       - FLURM_NODE_MEMORY=8192
       - FLURM_NODE_GRES=gpu:1
     volumes:
+      - munge-key:/etc/munge
       - shared-tmp:/tmp
       - shared-data:/data
     networks:

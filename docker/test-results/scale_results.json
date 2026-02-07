@@ -1,0 +1,9 @@
+{
+  "timestamp": "2026-02-06T22:12:37+00:00",
+  "config": {
+    "total_jobs": 50,
+    "batch_size": 10,
+    "delay_between_batches_s": 1,
+    "acceptable_failure_rate_pct": 10
+  },
+  "results": {

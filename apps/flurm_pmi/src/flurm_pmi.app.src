@@ -1,0 +1,19 @@
+{application, flurm_pmi,
+ [{description, "FLURM PMI (Process Management Interface) for MPI Support"},
+  {vsn, "0.1.0"},
+  {registered, [flurm_pmi_manager]},
+  {mod, {flurm_pmi_app, []}},
+  {applications,
+   [kernel,
+    stdlib,
+    lager
+   ]},
+  {env, [
+    {pmi_version, 1},           % PMI-1 by default
+    {pmi_socket_timeout, 30000}, % 30 seconds
+    {pmi_max_kvs_size, 1048576}  % 1MB max KVS
+  ]},
+  {modules, []},
+  {licenses, ["Apache-2.0"]},
+  {links, []}
+ ]}.

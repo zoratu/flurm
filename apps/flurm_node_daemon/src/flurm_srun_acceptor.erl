@@ -495,7 +495,7 @@ launch_tasks(#launch_tasks_request{} = Req, #{tasks := Tasks} = State) ->
         argv = Argv,
         env = Env0,
         cwd = Cwd0,
-        ntasks = _Ntasks,
+        ntasks = Ntasks,
         global_task_ids = GlobalTaskIds0
     } = Req,
 
@@ -514,8 +514,8 @@ launch_tasks(#launch_tasks_request{} = Req, #{tasks := Tasks} = State) ->
         CleanCwd -> CleanCwd
     end,
 
-    lager:info("Launching task: user=~s job=~p step=~p cmd=~s args=~p cwd=~s",
-               [UserName, JobId, StepId, Command, Args, Cwd]),
+    lager:info("Launching task: user=~s job=~p step=~p cmd=~s args=~p cwd=~s ntasks=~p",
+               [UserName, JobId, StepId, Command, Args, Cwd, Ntasks]),
 
     %% Extract global task IDs from request (srun tells us which task IDs to use)
     %% Format: [[TaskIds for node 0], [TaskIds for node 1], ...]
@@ -526,6 +526,33 @@ launch_tasks(#launch_tasks_request{} = Req, #{tasks := Tasks} = State) ->
     end,
     lager:info("Using global task ID (gtid) = ~p from request", [Gtid]),
 
+    %% Determine total MPI size (across all nodes)
+    Size = case Ntasks of
+        N when is_integer(N), N > 0 -> N;
+        _ -> 1
+    end,
+
+    %% Set up PMI for MPI jobs (when ntasks > 1 or MPI env vars present)
+    NeedsPmi = Size > 1 orelse has_mpi_env(Env),
+    {PmiEnv, NewState} = case NeedsPmi of
+        true ->
+            NodeName = get_hostname(),
+            case flurm_pmi_task:setup_pmi(JobId, StepId, Size, NodeName) of
+                {ok, _Pid, _SocketPath} ->
+                    lager:info("PMI enabled for job ~p step ~p (size=~p)", [JobId, StepId, Size]),
+                    PmiVars = flurm_pmi_task:get_pmi_env(JobId, StepId, Gtid, Size),
+                    {PmiVars, State#{pmi_enabled => true}};
+                {error, Reason} ->
+                    lager:warning("Failed to setup PMI: ~p, continuing without", [Reason]),
+                    {[], State}
+            end;
+        false ->
+            {[], State}
+    end,
+
+    %% Merge PMI environment with task environment
+    FinalEnv = PmiEnv ++ Env,
+
     %% Create a task process to execute the command
     %% Internal TaskId includes gtid for tracking
     TaskId = {JobId, StepId, Gtid},
@@ -533,7 +560,7 @@ launch_tasks(#launch_tasks_request{} = Req, #{tasks := Tasks} = State) ->
 
     %% Spawn task executor
     TaskPid = spawn_link(fun() ->
-        execute_task(Command, Args, Env, Parent, TaskId)
+        execute_task(Command, Args, FinalEnv, Parent, TaskId)
     end),
 
     %% Use gtid for response and a reasonable local PID (pseudo-PID for now)
@@ -549,8 +576,8 @@ launch_tasks(#launch_tasks_request{} = Req, #{tasks := Tasks} = State) ->
         gtids => [Gtid]
     },
 
-    NewTasks = maps:put(TaskId, TaskInfo, Tasks),
-    {ok, TaskInfo, State#{tasks => NewTasks}};
+    NewTasks = maps:put(TaskId, TaskInfo, maps:get(tasks, NewState, Tasks)),
+    {ok, TaskInfo, NewState#{tasks => NewTasks}};
 
 %% Fallback for raw binary bodies (decode failed)
 launch_tasks(Body, State) when is_binary(Body) ->
@@ -699,11 +726,26 @@ find_tasks(JobId, StepId, #{tasks := Tasks}) ->
 
 %% @doc Clean up all tasks on connection close.
 -spec cleanup_tasks(map()) -> ok.
-cleanup_tasks(#{tasks := Tasks}) ->
+cleanup_tasks(#{tasks := Tasks} = State) ->
+    %% Collect unique job/step pairs for PMI cleanup
+    JobSteps = lists:usort([{J, S} || {J, S, _} <- maps:keys(Tasks)]),
+
+    %% Kill all task processes
     maps:foreach(fun(TaskId, #{pid := Pid}) ->
         lager:debug("Cleaning up task ~p", [TaskId]),
         exit(Pid, shutdown)
     end, Tasks),
+
+    %% Clean up PMI for each job step if PMI was enabled
+    case maps:get(pmi_enabled, State, false) of
+        true ->
+            lists:foreach(fun({JobId, StepId}) ->
+                lager:debug("Cleaning up PMI for job ~p step ~p", [JobId, StepId]),
+                catch flurm_pmi_task:cleanup_pmi(JobId, StepId)
+            end, JobSteps);
+        false ->
+            ok
+    end,
     ok;
 cleanup_tasks(_) ->
     ok.
@@ -925,6 +967,20 @@ binary_to_hex(Bin) when is_binary(Bin) ->
         false -> Bin
     end,
     list_to_binary([[io_lib:format("~2.16.0B", [B]) || B <- binary_to_list(TruncatedBin)]]).
+
+%% @doc Check if MPI environment variables are present.
+%% This indicates the task was launched with mpirun/mpiexec.
+-spec has_mpi_env([{binary(), binary()}]) -> boolean().
+has_mpi_env(Env) ->
+    MpiVars = [<<"OMPI_">>, <<"MPICH_">>, <<"I_MPI_">>, <<"PMI_">>, <<"SLURM_MPI">>],
+    lists:any(fun({Key, _Val}) ->
+        lists:any(fun(Prefix) ->
+            case Key of
+                <<Prefix:(byte_size(Prefix))/binary, _/binary>> -> true;
+                _ -> false
+            end
+        end, MpiVars)
+    end, Env).
 
 %% @doc Convert environment list to key-value pairs.
 %% Environment comes as list of "KEY=VALUE\0" binaries from SLURM.

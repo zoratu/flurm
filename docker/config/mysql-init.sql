@@ -53,7 +53,7 @@ CREATE TABLE IF NOT EXISTS job_table (
     nodelist TEXT,
     nodes_alloc INT UNSIGNED DEFAULT 0 NOT NULL,
     node_inx TEXT,
-    partition VARCHAR(200),
+    `partition` VARCHAR(200),
     priority INT UNSIGNED DEFAULT 0 NOT NULL,
     script_hash VARCHAR(64),
     start BIGINT UNSIGNED DEFAULT 0 NOT NULL,
@@ -105,14 +105,14 @@ CREATE TABLE IF NOT EXISTS assoc_table (
     deleted TINYINT DEFAULT 0 NOT NULL,
     acct VARCHAR(255) NOT NULL,
     user VARCHAR(255) NOT NULL DEFAULT '',
-    partition VARCHAR(255) NOT NULL DEFAULT '',
+    `partition` VARCHAR(255) NOT NULL DEFAULT '',
     shares INT UNSIGNED DEFAULT 1 NOT NULL,
     PRIMARY KEY (id_assoc),
-    UNIQUE KEY user_acct (user, acct, partition)
+    UNIQUE KEY user_acct (user, acct, `partition`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- Insert default association
-INSERT INTO assoc_table (acct, user, partition, shares)
+INSERT INTO assoc_table (acct, user, `partition`, shares)
 VALUES ('default', '', '', 1)
 ON DUPLICATE KEY UPDATE shares=shares;
 

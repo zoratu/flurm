@@ -16,6 +16,8 @@
 -export([start_link/0]).
 -export([submit_job/1, cancel_job/1, get_job/1, list_jobs/0, update_job/2]).
 -export([hold_job/1, release_job/1, requeue_job/1]).
+-export([suspend_job/1, resume_job/1, signal_job/2]).
+-export([update_prolog_status/2, update_epilog_status/2]).
 -export([import_job/1]).  %% For SLURM migration
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
@@ -103,6 +105,31 @@ release_job(JobId) ->
 -spec requeue_job(job_id()) -> ok | {error, term()}.
 requeue_job(JobId) ->
     gen_server:call(?MODULE, {requeue_job, JobId}).
+
+%% @doc Suspend a running job (sends SIGSTOP)
+-spec suspend_job(job_id()) -> ok | {error, term()}.
+suspend_job(JobId) ->
+    gen_server:call(?MODULE, {suspend_job, JobId}).
+
+%% @doc Resume a suspended job (sends SIGCONT)
+-spec resume_job(job_id()) -> ok | {error, term()}.
+resume_job(JobId) ->
+    gen_server:call(?MODULE, {resume_job, JobId}).
+
+%% @doc Send a signal to a running job
+-spec signal_job(job_id(), non_neg_integer()) -> ok | {error, term()}.
+signal_job(JobId, Signal) ->
+    gen_server:call(?MODULE, {signal_job, JobId, Signal}).
+
+%% @doc Update job prolog status
+-spec update_prolog_status(job_id(), atom()) -> ok | {error, term()}.
+update_prolog_status(JobId, Status) ->
+    gen_server:call(?MODULE, {update_prolog_status, JobId, Status}).
+
+%% @doc Update job epilog status
+-spec update_epilog_status(job_id(), atom()) -> ok | {error, term()}.
+update_epilog_status(JobId, Status) ->
+    gen_server:call(?MODULE, {update_epilog_status, JobId, Status}).
 
 %% @doc Import a job from SLURM migration (preserves job ID)
 -spec import_job(map()) -> {ok, job_id()} | {error, term()}.
@@ -340,6 +367,128 @@ handle_call({requeue_job, JobId}, _From, #state{jobs = Jobs} = State) ->
             {reply, {error, not_found}, State}
     end;
 
+handle_call({suspend_job, JobId}, _From, #state{jobs = Jobs} = State) ->
+    case maps:find(JobId, Jobs) of
+        {ok, #job{state = running, allocated_nodes = Nodes} = Job} ->
+            %% Suspend running job via SIGSTOP
+            UpdatedJob = Job#job{state = suspended},
+            NewJobs = maps:put(JobId, UpdatedJob, Jobs),
+            lager:info("Job ~p suspended", [JobId]),
+            catch flurm_metrics:increment(flurm_jobs_suspended_total),
+            persist_job_update(JobId, #{state => suspended}),
+            %% Send SIGSTOP (19) to job on nodes
+            case Nodes of
+                [] -> ok;
+                _ -> signal_job_on_nodes(JobId, 19, Nodes)  % SIGSTOP
+            end,
+            {reply, ok, State#state{jobs = NewJobs}};
+        {ok, #job{state = suspended}} ->
+            %% Already suspended
+            {reply, ok, State};
+        {ok, #job{state = CurrentState}} ->
+            lager:warning("Cannot suspend job ~p in state ~p", [JobId, CurrentState]),
+            {reply, {error, {invalid_state, CurrentState}}, State};
+        error ->
+            {reply, {error, not_found}, State}
+    end;
+
+handle_call({resume_job, JobId}, _From, #state{jobs = Jobs} = State) ->
+    case maps:find(JobId, Jobs) of
+        {ok, #job{state = suspended, allocated_nodes = Nodes} = Job} ->
+            %% Resume suspended job via SIGCONT
+            UpdatedJob = Job#job{state = running},
+            NewJobs = maps:put(JobId, UpdatedJob, Jobs),
+            lager:info("Job ~p resumed", [JobId]),
+            persist_job_update(JobId, #{state => running}),
+            %% Send SIGCONT (18) to job on nodes
+            case Nodes of
+                [] -> ok;
+                _ -> signal_job_on_nodes(JobId, 18, Nodes)  % SIGCONT
+            end,
+            {reply, ok, State#state{jobs = NewJobs}};
+        {ok, #job{state = running}} ->
+            %% Already running
+            {reply, ok, State};
+        {ok, #job{state = CurrentState}} ->
+            lager:warning("Cannot resume job ~p in state ~p", [JobId, CurrentState]),
+            {reply, {error, {invalid_state, CurrentState}}, State};
+        error ->
+            {reply, {error, not_found}, State}
+    end;
+
+handle_call({signal_job, JobId, Signal}, _From, #state{jobs = Jobs} = State) ->
+    case maps:find(JobId, Jobs) of
+        {ok, #job{state = running, allocated_nodes = Nodes}} ->
+            %% Send signal to running job
+            lager:info("Sending signal ~p to job ~p", [Signal, JobId]),
+            case Nodes of
+                [] ->
+                    {reply, {error, no_nodes}, State};
+                _ ->
+                    signal_job_on_nodes(JobId, Signal, Nodes),
+                    {reply, ok, State}
+            end;
+        {ok, #job{state = suspended, allocated_nodes = Nodes}} when Signal =:= 18 ->
+            %% Allow SIGCONT to suspended jobs - this is equivalent to resume
+            lager:info("Sending SIGCONT to suspended job ~p", [JobId]),
+            case Nodes of
+                [] -> {reply, {error, no_nodes}, State};
+                _ ->
+                    signal_job_on_nodes(JobId, Signal, Nodes),
+                    {reply, ok, State}
+            end;
+        {ok, #job{state = CurrentState}} ->
+            lager:warning("Cannot signal job ~p in state ~p", [JobId, CurrentState]),
+            {reply, {error, {invalid_state, CurrentState}}, State};
+        error ->
+            {reply, {error, not_found}, State}
+    end;
+
+handle_call({update_prolog_status, JobId, Status}, _From, #state{jobs = Jobs} = State) ->
+    case maps:find(JobId, Jobs) of
+        {ok, Job} ->
+            UpdatedJob = Job#job{prolog_status = Status},
+            NewJobs = maps:put(JobId, UpdatedJob, Jobs),
+            lager:debug("Updated prolog status for job ~p to ~p", [JobId, Status]),
+            persist_job_update(JobId, #{prolog_status => Status}),
+            %% If prolog failed, fail the job
+            case Status of
+                failed ->
+                    lager:warning("Job ~p prolog failed, cancelling job", [JobId]),
+                    %% Update job state to failed
+                    FailedJob = UpdatedJob#job{state = failed},
+                    FinalJobs = maps:put(JobId, FailedJob, NewJobs),
+                    persist_job_update(JobId, #{state => failed}),
+                    catch flurm_metrics:increment(flurm_jobs_failed_total),
+                    flurm_scheduler:job_failed(JobId),
+                    {reply, ok, State#state{jobs = FinalJobs}};
+                _ ->
+                    {reply, ok, State#state{jobs = NewJobs}}
+            end;
+        error ->
+            {reply, {error, not_found}, State}
+    end;
+
+handle_call({update_epilog_status, JobId, Status}, _From, #state{jobs = Jobs} = State) ->
+    case maps:find(JobId, Jobs) of
+        {ok, Job} ->
+            UpdatedJob = Job#job{epilog_status = Status},
+            NewJobs = maps:put(JobId, UpdatedJob, Jobs),
+            lager:debug("Updated epilog status for job ~p to ~p", [JobId, Status]),
+            persist_job_update(JobId, #{epilog_status => Status}),
+            %% If epilog failed, log warning but don't fail the job
+            %% (epilog failure is less critical - job already completed)
+            case Status of
+                failed ->
+                    lager:warning("Job ~p epilog failed", [JobId]);
+                _ ->
+                    ok
+            end,
+            {reply, ok, State#state{jobs = NewJobs}};
+        error ->
+            {reply, {error, not_found}, State}
+    end;
+
 handle_call(_Request, _From, State) ->
     {reply, {error, unknown_request}, State}.
 
@@ -382,6 +531,16 @@ terminate(_Reason, #state{queue_check_timer = TimerRef}) ->
 %%====================================================================
 %% Internal functions
 %%====================================================================
+
+%% Signal a job on allocated nodes
+%% Sends the specified signal to the job process on each node
+signal_job_on_nodes(JobId, Signal, Nodes) ->
+    lists:foreach(
+        fun(Node) ->
+            catch flurm_job_dispatcher_server:signal_job(JobId, Signal, Node)
+        end,
+        Nodes
+    ).
 
 %% Submit a regular (non-array) job
 submit_regular_job(JobSpec, Jobs, Counter, State) ->
@@ -681,6 +840,8 @@ apply_job_updates(Job, Updates) ->
         (exit_code, Value, J) -> J#job{exit_code = Value};
         (priority, Value, J) -> J#job{priority = Value};
         (time_limit, Value, J) -> J#job{time_limit = Value};
+        (prolog_status, Value, J) -> J#job{prolog_status = Value};
+        (epilog_status, Value, J) -> J#job{epilog_status = Value};
         (_, _, J) -> J
     end, Job, Updates).
 

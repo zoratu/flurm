@@ -39,7 +39,15 @@
     execute_script/4,
     read_current_energy/0,
     read_rapl_energy/0,
-    sum_rapl_energies/3
+    sum_rapl_energies/3,
+    normalize_cpu_count/1,
+    format_cpu_count/1,
+    %% GPU isolation functions
+    setup_gpu_isolation/2,
+    setup_gpu_isolation_v2/2,
+    setup_gpu_isolation_v1/2,
+    allow_basic_devices/1,
+    allow_nvidia_devices/2
 ]).
 -endif.
 
@@ -54,7 +62,7 @@
     script :: binary(),
     working_dir :: binary(),
     environment :: map(),
-    num_cpus :: pos_integer(),
+    num_cpus :: number(),                     % Can be fractional (e.g., 0.5)
     memory_mb :: pos_integer(),
     time_limit :: pos_integer() | undefined,  % seconds, undefined = no limit
     port :: port() | undefined,
@@ -105,7 +113,8 @@ init(JobSpec) ->
     Script = maps:get(script, JobSpec, <<>>),
     WorkingDir = maps:get(working_dir, JobSpec, <<"/tmp">>),
     Environment = maps:get(environment, JobSpec, #{}),
-    NumCpus = maps:get(num_cpus, JobSpec, 1),
+    %% NumCpus can be fractional (e.g., 0.5 for half a CPU)
+    NumCpus = normalize_cpu_count(maps:get(num_cpus, JobSpec, 1)),
     MemoryMB = maps:get(memory_mb, JobSpec, 1024),
     TimeLimit = maps:get(time_limit, JobSpec, undefined),
     StdOut = maps:get(std_out, JobSpec, undefined),
@@ -181,6 +190,10 @@ handle_cast(_Msg, State) ->
 handle_info(setup_and_execute, #state{job_id = JobId} = State) ->
     %% Setup cgroup for resource isolation (Linux only)
     CgroupPath = setup_cgroup(JobId, State#state.num_cpus, State#state.memory_mb),
+
+    %% Setup GPU device isolation if GPUs are allocated
+    %% This restricts the job to only access its allocated GPU devices
+    setup_gpu_isolation(CgroupPath, State#state.gpus),
 
     %% Create the script file
     ScriptPath = create_script_file(JobId, State#state.script),
@@ -436,12 +449,16 @@ ensure_working_dir(WorkingDir, JobId) ->
 build_environment(#state{job_id = JobId, environment = Env, num_cpus = Cpus,
                          memory_mb = Mem, gpus = GPUs}) ->
     %% Build environment list for port
+    %% Handle fractional CPUs - provide both exact and integer versions
+    CpusStr = format_cpu_count(Cpus),
+    CpusInt = integer_to_list(max(1, round(Cpus))),
     BaseEnv = [
         {"FLURM_JOB_ID", integer_to_list(JobId)},
-        {"FLURM_JOB_CPUS", integer_to_list(Cpus)},
+        {"FLURM_JOB_CPUS", CpusStr},                % Exact value (may be fractional)
+        {"FLURM_JOB_CPUS_INT", CpusInt},            % Integer version
         {"FLURM_JOB_MEMORY_MB", integer_to_list(Mem)},
-        {"SLURM_JOB_ID", integer_to_list(JobId)},  % SLURM compatibility
-        {"SLURM_CPUS_ON_NODE", integer_to_list(Cpus)},
+        {"SLURM_JOB_ID", integer_to_list(JobId)},   % SLURM compatibility
+        {"SLURM_CPUS_ON_NODE", CpusInt},            % SLURM uses integers
         {"SLURM_MEM_PER_NODE", integer_to_list(Mem)}
     ],
     %% Add GPU environment variables if GPUs allocated
@@ -496,7 +513,10 @@ setup_cgroup_v2(CgroupName, NumCpus, MemoryMB) ->
                 file:write_file(CgroupPath ++ "/memory.max",
                                integer_to_list(MemBytes)),
                 %% Set CPU limit (100000 = 100% of one CPU)
-                CpuMax = NumCpus * 100000,
+                %% For fractional CPUs (e.g., 0.5), calculate proportional quota
+                %% cpu.max format: "$MAX $PERIOD" where MAX is microseconds of CPU time
+                %% Period is 100000 microseconds (100ms), so 0.5 CPUs = 50000 max
+                CpuMax = round(NumCpus * 100000),
                 file:write_file(CgroupPath ++ "/cpu.max",
                                io_lib:format("~p 100000", [CpuMax])),
                 {ok, CgroupPath}
@@ -523,8 +543,21 @@ setup_cgroup_v1(CgroupName, NumCpus, MemoryMB) ->
 
                 %% Create CPU cgroup
                 file:make_dir(CpuCgroupPath),
-                %% CPU shares: 1024 per CPU
-                CpuShares = NumCpus * 1024,
+
+                %% For fractional CPU support, use CFS bandwidth control:
+                %% cpu.cfs_period_us = period in microseconds (default 100000 = 100ms)
+                %% cpu.cfs_quota_us = quota in microseconds per period
+                %% For 0.5 CPUs with 100ms period: quota = 50000us
+                CfsPeriod = 100000,  % 100ms period
+                CfsQuota = round(NumCpus * CfsPeriod),
+                file:write_file(CpuCgroupPath ++ "/cpu.cfs_period_us",
+                               integer_to_list(CfsPeriod)),
+                file:write_file(CpuCgroupPath ++ "/cpu.cfs_quota_us",
+                               integer_to_list(CfsQuota)),
+
+                %% Also set cpu.shares for relative scheduling priority
+                %% This affects scheduling when system is overcommitted
+                CpuShares = max(2, round(NumCpus * 1024)),
                 file:write_file(CpuCgroupPath ++ "/cpu.shares",
                                integer_to_list(CpuShares)),
 
@@ -535,6 +568,181 @@ setup_cgroup_v1(CgroupName, NumCpus, MemoryMB) ->
         false ->
             {error, cgroup_v1_not_available}
     end.
+
+%%====================================================================
+%% GPU Device Isolation (cgroups device controller)
+%%====================================================================
+
+%% @doc Setup GPU device isolation in cgroups
+%% Restricts job to only access allocated GPU devices
+-spec setup_gpu_isolation(string() | undefined, [non_neg_integer()]) -> ok.
+setup_gpu_isolation(undefined, _GPUs) ->
+    ok;  % No cgroup, can't isolate
+setup_gpu_isolation(_CgroupPath, []) ->
+    ok;  % No GPUs allocated
+setup_gpu_isolation(CgroupPath, GPUIndices) ->
+    case os:type() of
+        {unix, linux} ->
+            %% Try cgroups v2 first, then v1
+            case setup_gpu_isolation_v2(CgroupPath, GPUIndices) of
+                ok -> ok;
+                {error, _} -> setup_gpu_isolation_v1(CgroupPath, GPUIndices)
+            end;
+        _ ->
+            ok
+    end.
+
+%% @doc Setup GPU isolation using cgroups v2 device controller
+%% In cgroups v2, device access is controlled via BPF programs
+%% attached to the "devices" controller
+-spec setup_gpu_isolation_v2(string(), [non_neg_integer()]) -> ok | {error, term()}.
+setup_gpu_isolation_v2(CgroupPath, GPUIndices) ->
+    %% Check if cgroup v2 is available and path exists
+    case filelib:is_dir(CgroupPath) of
+        true ->
+            try
+                %% Enable devices controller if not already enabled
+                %% The subtree_control file controls which controllers are delegated
+                ParentPath = filename:dirname(CgroupPath),
+                SubtreeControl = ParentPath ++ "/cgroup.subtree_control",
+                case file:read_file(SubtreeControl) of
+                    {ok, Content} ->
+                        case binary:match(Content, <<"devices">>) of
+                            nomatch ->
+                                %% Try to enable devices controller
+                                file:write_file(SubtreeControl, <<"+devices">>);
+                            _ ->
+                                ok
+                        end;
+                    _ ->
+                        ok
+                end,
+
+                %% For cgroups v2, device filtering uses BPF
+                %% We write device rules to cgroup.procs after setting up BPF
+                %% Since full BPF implementation is complex, use device.allow approach
+                %% if available (some systems have it)
+                DeviceAllowFile = CgroupPath ++ "/devices.allow",
+                case filelib:is_file(DeviceAllowFile) of
+                    true ->
+                        %% Deny all first
+                        file:write_file(CgroupPath ++ "/devices.deny", <<"a">>),
+                        %% Allow basic devices (null, zero, random, urandom, tty)
+                        allow_basic_devices(CgroupPath),
+                        %% Allow only allocated GPUs
+                        allow_nvidia_devices(CgroupPath, GPUIndices),
+                        ok;
+                    false ->
+                        %% Pure cgroups v2 without device.allow - needs BPF
+                        %% For now, skip isolation (requires root and bpf2cgroup)
+                        {error, bpf_not_supported}
+                end
+            catch
+                _:Reason -> {error, Reason}
+            end;
+        false ->
+            {error, cgroup_not_found}
+    end.
+
+%% @doc Setup GPU isolation using cgroups v1 device controller
+-spec setup_gpu_isolation_v1(string(), [non_neg_integer()]) -> ok | {error, term()}.
+setup_gpu_isolation_v1(CgroupPath, GPUIndices) ->
+    %% In cgroups v1, device controller is a separate hierarchy
+    %% Path pattern: /sys/fs/cgroup/devices/<group_name>
+    DeviceCgroupPath = case string:prefix(CgroupPath, "/sys/fs/cgroup/memory/") of
+        nomatch ->
+            CgroupPath;  % Use as-is if not memory cgroup path
+        GroupName ->
+            "/sys/fs/cgroup/devices/" ++ GroupName
+    end,
+
+    case filelib:is_dir("/sys/fs/cgroup/devices") of
+        true ->
+            try
+                %% Create device cgroup if it doesn't exist
+                filelib:ensure_dir(DeviceCgroupPath ++ "/"),
+                file:make_dir(DeviceCgroupPath),
+
+                %% Deny all devices first (whitelist approach)
+                file:write_file(DeviceCgroupPath ++ "/devices.deny", <<"a">>),
+
+                %% Allow basic devices needed for operation
+                allow_basic_devices(DeviceCgroupPath),
+
+                %% Allow only the allocated NVIDIA GPU devices
+                allow_nvidia_devices(DeviceCgroupPath, GPUIndices),
+
+                lager:info("GPU isolation configured: only GPUs ~p accessible", [GPUIndices]),
+                ok
+            catch
+                _:Reason ->
+                    lager:warning("Failed to setup GPU isolation: ~p", [Reason]),
+                    {error, Reason}
+            end;
+        false ->
+            {error, device_cgroup_not_available}
+    end.
+
+%% @doc Allow basic devices needed for process operation
+-spec allow_basic_devices(string()) -> ok.
+allow_basic_devices(CgroupPath) ->
+    AllowFile = CgroupPath ++ "/devices.allow",
+    %% Format: type major:minor access
+    %% c = character device, b = block device, a = all
+    %% access: r=read, w=write, m=mknod
+    BasicDevices = [
+        %% /dev/null (c 1:3)
+        <<"c 1:3 rwm">>,
+        %% /dev/zero (c 1:5)
+        <<"c 1:5 rwm">>,
+        %% /dev/full (c 1:7)
+        <<"c 1:7 rwm">>,
+        %% /dev/random (c 1:8)
+        <<"c 1:8 rwm">>,
+        %% /dev/urandom (c 1:9)
+        <<"c 1:9 rwm">>,
+        %% /dev/tty (c 5:0)
+        <<"c 5:0 rwm">>,
+        %% /dev/console (c 5:1)
+        <<"c 5:1 rwm">>,
+        %% /dev/ptmx (c 5:2)
+        <<"c 5:2 rwm">>,
+        %% /dev/pts/* (c 136:*)
+        <<"c 136:* rwm">>
+    ],
+    lists:foreach(fun(DevRule) ->
+        file:write_file(AllowFile, DevRule)
+    end, BasicDevices),
+    ok.
+
+%% @doc Allow NVIDIA GPU devices for allocated indices
+-spec allow_nvidia_devices(string(), [non_neg_integer()]) -> ok.
+allow_nvidia_devices(CgroupPath, GPUIndices) ->
+    AllowFile = CgroupPath ++ "/devices.allow",
+    %% NVIDIA GPU major number is 195
+    NvidiaMajor = 195,
+
+    %% Allow nvidia-uvm (required for CUDA unified memory)
+    %% /dev/nvidia-uvm is typically c 243:0 or similar (varies)
+    %% We allow all minor numbers for nvidia-uvm major
+    file:write_file(AllowFile, <<"c 243:* rwm">>),  % nvidia-uvm
+
+    %% Allow nvidia-uvm-tools if present
+    file:write_file(AllowFile, <<"c 244:* rwm">>),
+
+    %% Allow nvidiactl (c 195:255)
+    file:write_file(AllowFile, io_lib:format("c ~p:255 rwm", [NvidiaMajor])),
+
+    %% Allow nvidia-modeset (c 195:254)
+    file:write_file(AllowFile, io_lib:format("c ~p:254 rwm", [NvidiaMajor])),
+
+    %% Allow only the specific GPU devices (c 195:N where N is GPU index)
+    lists:foreach(fun(GpuIndex) ->
+        DevRule = io_lib:format("c ~p:~p rwm", [NvidiaMajor, GpuIndex]),
+        file:write_file(AllowFile, DevRule)
+    end, GPUIndices),
+
+    ok.
 
 cleanup_cgroup(undefined) ->
     ok;
@@ -607,6 +815,37 @@ write_output_files(JobId, Output, StdOut, _StdErr) ->
         {error, DirReason} ->
             lager:error("Failed to create output directory for ~s: ~p",
                        [OutPath, DirReason])
+    end.
+
+%% Normalize CPU count to a number (integer or float)
+%% Accepts strings like "0.5", integers, or floats
+normalize_cpu_count(Cpus) when is_integer(Cpus), Cpus > 0 ->
+    Cpus;
+normalize_cpu_count(Cpus) when is_float(Cpus), Cpus > 0 ->
+    Cpus;
+normalize_cpu_count(Cpus) when is_binary(Cpus) ->
+    normalize_cpu_count(binary_to_list(Cpus));
+normalize_cpu_count(Cpus) when is_list(Cpus) ->
+    case string:to_float(Cpus) of
+        {Float, []} when Float > 0 -> Float;
+        _ ->
+            case string:to_integer(Cpus) of
+                {Int, []} when Int > 0 -> Int;
+                _ -> 1  % Default
+            end
+    end;
+normalize_cpu_count(_) ->
+    1.  % Default to 1 CPU
+
+%% Format CPU count for environment variable (handle fractional values)
+format_cpu_count(Cpus) when is_integer(Cpus) ->
+    integer_to_list(Cpus);
+format_cpu_count(Cpus) when is_float(Cpus) ->
+    %% Format with up to 2 decimal places, trimming trailing zeros
+    case trunc(Cpus) == Cpus of
+        true -> integer_to_list(trunc(Cpus));
+        false ->
+            lists:flatten(io_lib:format("~.2f", [Cpus]))
     end.
 
 %% Expand SLURM-style placeholders in output paths

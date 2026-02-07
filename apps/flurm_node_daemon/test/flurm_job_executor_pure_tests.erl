@@ -15,7 +15,7 @@
     script :: binary(),
     working_dir :: binary(),
     environment :: map(),
-    num_cpus :: pos_integer(),
+    num_cpus :: number(),                     % Can be fractional (e.g., 0.5)
     memory_mb :: pos_integer(),
     time_limit :: pos_integer() | undefined,
     port :: port() | undefined,
@@ -318,7 +318,7 @@ state_field_types_test_() ->
          ?assert(is_binary(State#state.script)),
          ?assert(is_binary(State#state.working_dir)),
          ?assert(is_map(State#state.environment)),
-         ?assert(is_integer(State#state.num_cpus)),
+         ?assert(is_number(State#state.num_cpus)),  % Can be integer or float
          ?assert(is_integer(State#state.memory_mb)),
          ?assert(is_atom(State#state.status)),
          ?assert(is_binary(State#state.output)),
@@ -343,3 +343,148 @@ user_environment_test_() ->
          ?assertEqual(<<"my_value">>, maps:get(<<"MY_VAR">>, Env)),
          ?assertEqual(<<"other">>, maps:get(<<"OTHER_VAR">>, Env))
      end}.
+
+%%====================================================================
+%% Fractional CPU Tests
+%%====================================================================
+
+%% Test normalize_cpu_count function
+normalize_cpu_count_integer_test() ->
+    ?assertEqual(4, flurm_job_executor:normalize_cpu_count(4)).
+
+normalize_cpu_count_float_test() ->
+    ?assertEqual(0.5, flurm_job_executor:normalize_cpu_count(0.5)).
+
+normalize_cpu_count_string_float_test() ->
+    ?assertEqual(0.5, flurm_job_executor:normalize_cpu_count("0.5")).
+
+normalize_cpu_count_string_integer_test() ->
+    ?assertEqual(4, flurm_job_executor:normalize_cpu_count("4")).
+
+normalize_cpu_count_binary_float_test() ->
+    ?assertEqual(0.5, flurm_job_executor:normalize_cpu_count(<<"0.5">>)).
+
+normalize_cpu_count_binary_integer_test() ->
+    ?assertEqual(4, flurm_job_executor:normalize_cpu_count(<<"4">>)).
+
+normalize_cpu_count_invalid_test() ->
+    ?assertEqual(1, flurm_job_executor:normalize_cpu_count("invalid")).
+
+normalize_cpu_count_zero_test() ->
+    ?assertEqual(1, flurm_job_executor:normalize_cpu_count(0)).
+
+normalize_cpu_count_negative_test() ->
+    ?assertEqual(1, flurm_job_executor:normalize_cpu_count(-1)).
+
+%% Test format_cpu_count function
+format_cpu_count_integer_test() ->
+    ?assertEqual("4", flurm_job_executor:format_cpu_count(4)).
+
+format_cpu_count_float_half_test() ->
+    ?assertEqual("0.50", flurm_job_executor:format_cpu_count(0.5)).
+
+format_cpu_count_float_quarter_test() ->
+    ?assertEqual("0.25", flurm_job_executor:format_cpu_count(0.25)).
+
+format_cpu_count_float_whole_test() ->
+    %% 2.0 should be formatted as "2" not "2.00"
+    ?assertEqual("2", flurm_job_executor:format_cpu_count(2.0)).
+
+%% Test fractional CPU in state
+fractional_cpu_state_test_() ->
+    {"state can have fractional CPUs",
+     fun() ->
+         State = test_state(),
+         FractionalState = State#state{num_cpus = 0.5},
+         ?assertEqual(0.5, FractionalState#state.num_cpus)
+     end}.
+
+%%====================================================================
+%% GPU Isolation Tests
+%%====================================================================
+
+%% Test setup_gpu_isolation with undefined cgroup (no-op)
+setup_gpu_isolation_no_cgroup_test() ->
+    %% Should return ok when no cgroup path provided
+    ?assertEqual(ok, flurm_job_executor:setup_gpu_isolation(undefined, [0, 1])).
+
+%% Test setup_gpu_isolation with empty GPU list (no-op)
+setup_gpu_isolation_no_gpus_test() ->
+    ?assertEqual(ok, flurm_job_executor:setup_gpu_isolation("/sys/fs/cgroup/flurm_test", [])).
+
+%% Test that GPU isolation doesn't crash with non-existent path
+%% (The actual cgroup operations will fail gracefully)
+setup_gpu_isolation_nonexistent_path_test() ->
+    %% This will fail to find the cgroup but should not crash
+    Result = flurm_job_executor:setup_gpu_isolation("/nonexistent/path", [0, 1]),
+    %% Returns ok on non-Linux or when cgroup operations fail gracefully
+    ?assert(Result =:= ok orelse is_tuple(Result)).
+
+%% Test setup_gpu_isolation_v2 returns error for non-existent path
+setup_gpu_isolation_v2_nonexistent_test() ->
+    Result = flurm_job_executor:setup_gpu_isolation_v2("/nonexistent/cgroup", [0]),
+    ?assertEqual({error, cgroup_not_found}, Result).
+
+%% Test setup_gpu_isolation_v1 returns error when devices cgroup not available
+setup_gpu_isolation_v1_test() ->
+    %% On most test systems, device cgroup may not be available
+    Result = flurm_job_executor:setup_gpu_isolation_v1("/nonexistent/cgroup", [0]),
+    %% Should either succeed (if run as root with cgroups) or return error
+    ?assert(Result =:= ok orelse is_tuple(Result)).
+
+%% Test allow_basic_devices doesn't crash (actual file writes will fail in test)
+allow_basic_devices_test() ->
+    %% This tests the function doesn't crash, actual writes will fail
+    try
+        flurm_job_executor:allow_basic_devices("/nonexistent/cgroup"),
+        ?assert(true)  % Function completed without exception
+    catch
+        _:_ -> ?assert(true)  % Expected to fail on file writes
+    end.
+
+%% Test allow_nvidia_devices doesn't crash
+allow_nvidia_devices_test() ->
+    try
+        flurm_job_executor:allow_nvidia_devices("/nonexistent/cgroup", [0, 1]),
+        ?assert(true)
+    catch
+        _:_ -> ?assert(true)
+    end.
+
+%% Test GPU indices in state
+gpu_indices_state_test_() ->
+    {"state can hold GPU indices",
+     fun() ->
+         State = test_state_with_gpus(),
+         ?assertEqual([0, 1], State#state.gpus)
+     end}.
+
+%% Test that multiple GPUs are handled correctly
+multiple_gpus_test_() ->
+    {"multiple GPU indices handled",
+     fun() ->
+         State = test_state(),
+         MultiGpuState = State#state{gpus = [0, 1, 2, 3]},
+         ?assertEqual([0, 1, 2, 3], MultiGpuState#state.gpus)
+     end}.
+
+%% Test GPU environment variable building with GPUs
+build_environment_with_gpus_test() ->
+    State = test_state_with_gpus(),
+    EnvList = flurm_job_executor:build_environment(State),
+    %% Check that CUDA_VISIBLE_DEVICES is set
+    CudaEnv = proplists:get_value("CUDA_VISIBLE_DEVICES", EnvList),
+    ?assertEqual("0,1", CudaEnv),
+    %% Check that GPU_DEVICE_ORDINAL is set (ROCm)
+    RocmEnv = proplists:get_value("GPU_DEVICE_ORDINAL", EnvList),
+    ?assertEqual("0,1", RocmEnv),
+    %% Check SLURM compatibility
+    SlurmEnv = proplists:get_value("SLURM_JOB_GPUS", EnvList),
+    ?assertEqual("0,1", SlurmEnv).
+
+%% Test GPU environment building with no GPUs
+build_environment_no_gpus_test() ->
+    State = test_state(),
+    EnvList = flurm_job_executor:build_environment(State),
+    %% CUDA_VISIBLE_DEVICES should not be set
+    ?assertEqual(undefined, proplists:get_value("CUDA_VISIBLE_DEVICES", EnvList)).

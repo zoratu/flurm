@@ -1,0 +1,3 @@
+# Ignore test results (but keep the directory)
+test-results/*
+!test-results/.gitkeep

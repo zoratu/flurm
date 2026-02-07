@@ -164,6 +164,11 @@ loop(#{socket := Socket, transport := Transport, buffer := Buffer} = State) ->
             end;
         {error, closed} ->
             lager:debug("Client connection closed normally"),
+            %% Decrement connection count for this peer
+            case maps:get(peer_ip, State, undefined) of
+                undefined -> ok;
+                PeerIP -> flurm_connection_limiter:connection_closed(PeerIP)
+            end,
             ok;
         {error, timeout} ->
             lager:debug("Client connection timeout after ~p ms", [?RECV_TIMEOUT]),

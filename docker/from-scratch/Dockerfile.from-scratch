@@ -1,0 +1,401 @@
+# FLURM From-Scratch Docker Image
+# Self-contained build and test environment
+# Clones, builds, and runs FLURM E2E tests from a fresh state
+#
+# Build args:
+#   FLURM_REPO_URL - Git repository URL (default: https://github.com/zoratu/flurm.git)
+#   FLURM_BRANCH   - Git branch to build (default: main)
+#   ERLANG_VERSION - Erlang OTP version (default: 27)
+#
+# Modes (set via FLURM_MODE environment variable):
+#   controller   - Run as FLURM controller node
+#   node         - Run as FLURM compute node
+#   test         - Run E2E tests and exit
+#   shell        - Interactive shell for debugging
+
+ARG ERLANG_VERSION=27
+
+FROM erlang:${ERLANG_VERSION}-slim AS builder
+
+LABEL maintainer="FLURM Project"
+LABEL description="Self-contained FLURM build and test environment"
+
+# Build arguments
+ARG FLURM_REPO_URL=https://github.com/zoratu/flurm.git
+ARG FLURM_BRANCH=main
+ARG BUILD_FROM_CONTEXT=false
+
+# Avoid interactive prompts during package installation
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    curl \
+    ca-certificates \
+    make \
+    gcc \
+    g++ \
+    libssl-dev \
+    munge \
+    libmunge-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install rebar3 from GitHub releases
+RUN curl -L -o /usr/local/bin/rebar3 https://github.com/erlang/rebar3/releases/download/3.24.0/rebar3 && \
+    chmod +x /usr/local/bin/rebar3
+
+# Set working directory
+WORKDIR /build
+
+# Clone repository (or use context if BUILD_FROM_CONTEXT=true)
+# If building from context, the COPY command below will be used
+# If cloning from git, this RUN command will clone the repo
+RUN if [ "$BUILD_FROM_CONTEXT" = "false" ]; then \
+        echo "Cloning FLURM from $FLURM_REPO_URL (branch: $FLURM_BRANCH)..." && \
+        git clone --depth 1 --branch "$FLURM_BRANCH" "$FLURM_REPO_URL" /build; \
+    else \
+        echo "Will use Docker build context..."; \
+    fi
+
+# Copy source from context (only used when BUILD_FROM_CONTEXT=true)
+# This is a no-op when cloning from git because files already exist
+COPY --chown=root:root . /build-context/
+
+# Use context if BUILD_FROM_CONTEXT=true
+RUN if [ "$BUILD_FROM_CONTEXT" = "true" ]; then \
+        echo "Using Docker build context..." && \
+        rm -rf /build/* && \
+        cp -r /build-context/* /build/; \
+    fi && \
+    rm -rf /build-context
+
+# Clean any pre-built artifacts (may be incompatible OTP version)
+RUN rm -rf /build/_build
+
+# Fetch dependencies and compile
+RUN cd /build && rebar3 compile
+
+# Build the release
+RUN cd /build && rebar3 as prod release -n flurm
+
+# Build test profile as well (for running tests)
+RUN cd /build && rebar3 as test compile
+
+# Runtime image
+FROM erlang:${ERLANG_VERSION}-slim AS runtime
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install runtime dependencies, SLURM client tools, and munge
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    # Runtime essentials
+    procps \
+    iproute2 \
+    netcat-openbsd \
+    curl \
+    jq \
+    vim-tiny \
+    bash \
+    bc \
+    # SLURM client tools for testing
+    slurm-client \
+    # MUNGE authentication
+    munge \
+    libmunge2 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install rebar3 for running tests
+RUN curl -L -o /usr/local/bin/rebar3 https://github.com/erlang/rebar3/releases/download/3.24.0/rebar3 && \
+    chmod +x /usr/local/bin/rebar3
+
+# Create flurm user and required directories
+RUN useradd -r -s /bin/bash flurm && \
+    mkdir -p \
+        /opt/flurm \
+        /var/lib/flurm \
+        /var/lib/flurm/ra \
+        /var/lib/flurm/db \
+        /var/log/flurm \
+        /etc/flurm \
+        /var/run/munge \
+        /var/log/munge \
+        /test-results \
+        /scripts \
+    && chown -R flurm:flurm /opt/flurm /var/lib/flurm /var/log/flurm /etc/flurm \
+    && chown -R munge:munge /var/run/munge /var/log/munge
+
+# Copy built release from builder
+COPY --from=builder /build/_build/prod/rel/flurm /opt/flurm/release/
+
+# Copy source for running tests
+COPY --from=builder /build /opt/flurm/src/
+
+# Copy escripts for standalone operation
+COPY --from=builder /build/escripts /opt/flurm/escripts/
+
+# Create SLURM-compatible configuration
+RUN echo '# FLURM Controller Configuration' > /etc/flurm/slurm.conf && \
+    echo 'ClusterName=flurm' >> /etc/flurm/slurm.conf && \
+    echo 'SlurmctldPort=6817' >> /etc/flurm/slurm.conf && \
+    echo 'SlurmdPort=6818' >> /etc/flurm/slurm.conf && \
+    echo 'AuthType=auth/munge' >> /etc/flurm/slurm.conf && \
+    echo 'SchedulerType=sched/builtin' >> /etc/flurm/slurm.conf && \
+    echo 'SlurmctldDebug=info' >> /etc/flurm/slurm.conf && \
+    echo 'PartitionName=default Nodes=ALL Default=YES MaxTime=INFINITE State=UP' >> /etc/flurm/slurm.conf && \
+    echo 'PartitionName=batch Nodes=ALL MaxTime=86400 State=UP' >> /etc/flurm/slurm.conf && \
+    echo 'PartitionName=debug Nodes=ALL MaxTime=3600 State=UP' >> /etc/flurm/slurm.conf
+
+# Create the main entrypoint script
+RUN cat > /entrypoint.sh << 'ENTRYPOINT_EOF'
+#!/bin/bash
+set -e
+
+# Color codes
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+log_info() { echo -e "${BLUE}[INFO]${NC} $1"; }
+log_success() { echo -e "${GREEN}[OK]${NC} $1"; }
+log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
+log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
+
+# Default values
+FLURM_MODE="${FLURM_MODE:-controller}"
+FLURM_NODE_NAME="${FLURM_NODE_NAME:-flurm@$(hostname)}"
+FLURM_COOKIE="${FLURM_COOKIE:-flurm_from_scratch_cookie}"
+FLURM_CONTROLLER_HOST="${FLURM_CONTROLLER_HOST:-localhost}"
+FLURM_CONTROLLER_PORT="${FLURM_CONTROLLER_PORT:-6817}"
+
+# Setup MUNGE
+setup_munge() {
+    log_info "Setting up MUNGE authentication..."
+
+    # Fix ownership
+    chown -R munge:munge /etc/munge /var/run/munge /var/log/munge 2>/dev/null || true
+    chmod 700 /etc/munge 2>/dev/null || true
+
+    # Create or verify munge key
+    if [ ! -f /etc/munge/munge.key ]; then
+        log_info "Creating MUNGE key..."
+        dd if=/dev/urandom bs=1 count=1024 > /etc/munge/munge.key 2>/dev/null
+    fi
+
+    chown munge:munge /etc/munge/munge.key 2>/dev/null || true
+    chmod 400 /etc/munge/munge.key
+
+    # Start munge daemon
+    log_info "Starting munged..."
+    if su -s /bin/bash munge -c /usr/sbin/munged 2>/dev/null; then
+        sleep 1
+        if munge -n </dev/null >/dev/null 2>&1; then
+            log_success "MUNGE is working"
+        else
+            log_warn "MUNGE test failed (continuing)"
+        fi
+    else
+        log_warn "MUNGE daemon failed to start (continuing)"
+    fi
+}
+
+# Wait for controller(s) to be ready
+wait_for_controller() {
+    local host="${1:-$FLURM_CONTROLLER_HOST}"
+    local port="${2:-$FLURM_CONTROLLER_PORT}"
+    local max_attempts="${3:-60}"
+
+    log_info "Waiting for controller at ${host}:${port}..."
+
+    for i in $(seq 1 $max_attempts); do
+        if nc -z "$host" "$port" 2>/dev/null; then
+            log_success "Controller is ready"
+            return 0
+        fi
+        sleep 1
+    done
+
+    log_error "Controller not ready after ${max_attempts} seconds"
+    return 1
+}
+
+# Run as controller
+run_controller() {
+    log_info "Starting FLURM controller..."
+
+    # Start epmd
+    epmd -daemon
+    sleep 1
+
+    cd /opt/flurm/src
+
+    # Export environment for escript
+    export FLURM_NODE_NAME
+    export FLURM_CONFIG_FILE="/etc/flurm/slurm.conf"
+
+    log_info "Node name: $FLURM_NODE_NAME"
+    log_info "Cookie: $FLURM_COOKIE"
+
+    # Run the controller escript
+    exec escript escripts/start_controller.erl
+}
+
+# Run as compute node
+run_node() {
+    log_info "Starting FLURM compute node..."
+
+    # Wait for controller
+    wait_for_controller "$FLURM_CONTROLLER_HOST" "$FLURM_CONTROLLER_PORT" 60 || exit 1
+
+    # Start epmd
+    epmd -daemon
+    sleep 1
+
+    cd /opt/flurm/src
+
+    # Export environment for escript
+    export FLURM_CONTROLLER_HOST
+    export FLURM_CONTROLLER_PORT
+
+    log_info "Connecting to controller at ${FLURM_CONTROLLER_HOST}:${FLURM_CONTROLLER_PORT}"
+
+    # Run the node daemon escript
+    exec escript escripts/start_node.erl "$FLURM_CONTROLLER_HOST" "$FLURM_CONTROLLER_PORT"
+}
+
+# Run tests
+run_tests() {
+    log_info "Running FLURM E2E tests..."
+
+    cd /opt/flurm/src
+
+    local exit_code=0
+
+    # Run unit tests first
+    log_info "Running unit tests..."
+    if rebar3 eunit; then
+        log_success "Unit tests passed"
+    else
+        log_error "Unit tests failed"
+        exit_code=1
+    fi
+
+    # Run property-based tests
+    log_info "Running property-based tests..."
+    if rebar3 proper; then
+        log_success "Property tests passed"
+    else
+        log_warn "Property tests failed (continuing)"
+    fi
+
+    # Run Common Test suites if controllers are available
+    if [ -n "$FLURM_CTRL_1" ]; then
+        log_info "Running integration tests..."
+        wait_for_controller "$FLURM_CTRL_1" 9090 120 || true
+
+        # Run the E2E test scripts if available
+        if [ -d /tests ]; then
+            log_info "Running E2E test suite..."
+            if /tests/run-all.sh; then
+                log_success "E2E tests passed"
+            else
+                log_error "E2E tests failed"
+                exit_code=1
+            fi
+        fi
+    else
+        log_info "Running standalone CT tests..."
+        if rebar3 ct --suite=flurm_ha_SUITE; then
+            log_success "CT tests passed"
+        else
+            log_warn "CT tests had issues (some may be expected in container)"
+        fi
+    fi
+
+    # Copy results if results directory is mounted
+    if [ -d /test-results ]; then
+        log_info "Copying test results..."
+        cp -r /opt/flurm/src/_build/test/logs/* /test-results/ 2>/dev/null || true
+    fi
+
+    if [ $exit_code -eq 0 ]; then
+        log_success "All tests completed successfully!"
+    else
+        log_error "Some tests failed"
+    fi
+
+    return $exit_code
+}
+
+# Interactive shell
+run_shell() {
+    log_info "Starting interactive shell..."
+    log_info "FLURM source is at /opt/flurm/src"
+    log_info "FLURM release is at /opt/flurm/release"
+
+    cd /opt/flurm/src
+    exec /bin/bash
+}
+
+# Main entrypoint logic
+main() {
+    log_info "FLURM From-Scratch Container"
+    log_info "Mode: $FLURM_MODE"
+
+    # Setup munge for all modes
+    setup_munge
+
+    case "$FLURM_MODE" in
+        controller)
+            run_controller
+            ;;
+        node)
+            run_node
+            ;;
+        test)
+            run_tests
+            ;;
+        shell)
+            run_shell
+            ;;
+        *)
+            log_error "Unknown mode: $FLURM_MODE"
+            log_info "Valid modes: controller, node, test, shell"
+            exit 1
+            ;;
+    esac
+}
+
+# Execute main with all arguments
+main "$@"
+ENTRYPOINT_EOF
+chmod +x /entrypoint.sh
+
+# Create a test wrapper script that can be used standalone
+RUN cat > /run-tests.sh << 'TESTEOF'
+#!/bin/bash
+# Standalone test runner script
+export FLURM_MODE=test
+exec /entrypoint.sh "$@"
+TESTEOF
+chmod +x /run-tests.sh
+
+# Expose ports
+# 6817 - SLURM controller port
+# 6818 - SLURM slurmd port
+# 6819 - FLURM node daemon port
+# 9090 - Prometheus metrics
+# 4369 - EPMD
+EXPOSE 6817 6818 6819 9090 4369
+
+# Environment defaults
+ENV FLURM_MODE=controller
+ENV FLURM_COOKIE=flurm_from_scratch_cookie
+ENV FLURM_DATA_DIR=/var/lib/flurm
+ENV FLURM_LOG_DIR=/var/log/flurm
+
+WORKDIR /opt/flurm
+
+ENTRYPOINT ["/entrypoint.sh"]

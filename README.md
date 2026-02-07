@@ -174,6 +174,10 @@ flowchart TB
 
 ## Documentation
 
+### Getting Started
+- [Usage Guide](docs/USAGE.md) - **How to use FLURM (SLURM command reference)**
+- [Quick Start](docs/QUICKSTART.md) - Get running in 5 minutes
+
 ### Core Documentation
 - [Architecture Overview](docs/architecture.md) - System design and OTP structure
 - [Protocol Reference](docs/protocol.md) - SLURM binary protocol details

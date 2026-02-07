@@ -17,6 +17,7 @@
 -export([
     dispatch_job/2,
     cancel_job/2,
+    signal_job/3,
     preempt_job/2,
     requeue_job/1,
     drain_node/1,
@@ -53,6 +54,12 @@ dispatch_job(JobId, JobInfo) when is_integer(JobId), is_map(JobInfo) ->
 -spec cancel_job(pos_integer(), [binary()]) -> ok.
 cancel_job(JobId, Nodes) when is_integer(JobId), is_list(Nodes) ->
     gen_server:cast(?MODULE, {cancel_job, JobId, Nodes}).
+
+%% @doc Send a signal to a job on a specific node.
+%% Signal can be an integer (e.g., 15 for SIGTERM) or an atom (e.g., sigterm).
+-spec signal_job(pos_integer(), non_neg_integer() | atom(), binary()) -> ok | {error, term()}.
+signal_job(JobId, Signal, Node) when is_integer(JobId), is_binary(Node) ->
+    preempt_job(JobId, #{signal => Signal, nodes => [Node]}).
 
 %% @doc Send drain signal to a node.
 -spec drain_node(binary()) -> ok | {error, term()}.
@@ -274,7 +281,9 @@ build_job_launch_message(JobId, JobInfo) ->
             <<"user_id">> => maps:get(user_id, JobInfo, 0),
             <<"group_id">> => maps:get(group_id, JobInfo, 0),
             <<"std_out">> => StdOut,
-            <<"std_err">> => maps:get(std_err, JobInfo, <<>>)
+            <<"std_err">> => maps:get(std_err, JobInfo, <<>>),
+            <<"prolog">> => maps:get(prolog, JobInfo, <<>>),
+            <<"epilog">> => maps:get(epilog, JobInfo, <<>>)
         }
     }.
 

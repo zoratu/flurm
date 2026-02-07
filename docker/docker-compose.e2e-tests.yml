@@ -1,0 +1,187 @@
+# E2E Test Environment for FLURM
+# Provides a multi-node test cluster for comprehensive integration testing
+#
+# Usage:
+#   docker compose -f docker-compose.e2e-tests.yml up -d
+#   docker compose -f docker-compose.e2e-tests.yml exec test-runner /tests/run-all.sh
+#   docker compose -f docker-compose.e2e-tests.yml down -v
+
+services:
+  # Primary FLURM controller (leader)
+  flurm-ctrl-1:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.flurm-server-ha
+    hostname: flurm-ctrl-1
+    environment:
+      - FLURM_NODE_NAME=flurm@flurm-ctrl-1
+      - FLURM_COOKIE=flurm-e2e-test-cookie
+      - FLURM_CLUSTER_NODES=flurm@flurm-ctrl-1,flurm@flurm-ctrl-2,flurm@flurm-ctrl-3
+      - FLURM_HA_MODE=true
+      - FLURM_METRICS_PORT=9090
+    ports:
+      - "6817:6817"
+      - "9090:9090"
+    volumes:
+      - munge-key:/etc/munge
+      - ./jobs/comprehensive:/jobs:ro
+      - ./e2e-tests:/tests:ro
+    networks:
+      e2e-net:
+        ipv4_address: 172.30.0.10
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9090/metrics"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Secondary FLURM controller
+  flurm-ctrl-2:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.flurm-server-ha
+    hostname: flurm-ctrl-2
+    environment:
+      - FLURM_NODE_NAME=flurm@flurm-ctrl-2
+      - FLURM_COOKIE=flurm-e2e-test-cookie
+      - FLURM_CLUSTER_NODES=flurm@flurm-ctrl-1,flurm@flurm-ctrl-2,flurm@flurm-ctrl-3
+      - FLURM_HA_MODE=true
+      - FLURM_METRICS_PORT=9091
+    ports:
+      - "6827:6817"
+      - "9091:9091"
+    volumes:
+      - munge-key:/etc/munge
+    networks:
+      e2e-net:
+        ipv4_address: 172.30.0.11
+    depends_on:
+      flurm-ctrl-1:
+        condition: service_healthy
+
+  # Tertiary FLURM controller
+  flurm-ctrl-3:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.flurm-server-ha
+    hostname: flurm-ctrl-3
+    environment:
+      - FLURM_NODE_NAME=flurm@flurm-ctrl-3
+      - FLURM_COOKIE=flurm-e2e-test-cookie
+      - FLURM_CLUSTER_NODES=flurm@flurm-ctrl-1,flurm@flurm-ctrl-2,flurm@flurm-ctrl-3
+      - FLURM_HA_MODE=true
+      - FLURM_METRICS_PORT=9092
+    ports:
+      - "6837:6817"
+      - "9092:9092"
+    volumes:
+      - munge-key:/etc/munge
+    networks:
+      e2e-net:
+        ipv4_address: 172.30.0.12
+    depends_on:
+      flurm-ctrl-1:
+        condition: service_healthy
+
+  # Compute nodes with varying resources
+  flurm-node-1:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.flurm-node
+    hostname: flurm-node-1
+    environment:
+      - FLURM_CONTROLLER_HOST=flurm-ctrl-1
+      - FLURM_NODE_CPUS=4
+      - FLURM_NODE_MEMORY=8192
+      - FLURM_PARTITIONS=batch,debug
+    volumes:
+      - munge-key:/etc/munge
+      - ./jobs/comprehensive:/jobs:ro
+    networks:
+      e2e-net:
+        ipv4_address: 172.30.0.20
+    depends_on:
+      flurm-ctrl-1:
+        condition: service_healthy
+
+  flurm-node-2:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.flurm-node
+    hostname: flurm-node-2
+    environment:
+      - FLURM_CONTROLLER_HOST=flurm-ctrl-1
+      - FLURM_NODE_CPUS=8
+      - FLURM_NODE_MEMORY=16384
+      - FLURM_PARTITIONS=batch,large
+    volumes:
+      - munge-key:/etc/munge
+      - ./jobs/comprehensive:/jobs:ro
+    networks:
+      e2e-net:
+        ipv4_address: 172.30.0.21
+    depends_on:
+      flurm-ctrl-1:
+        condition: service_healthy
+
+  flurm-node-3:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.flurm-node
+    hostname: flurm-node-3
+    environment:
+      - FLURM_CONTROLLER_HOST=flurm-ctrl-1
+      - FLURM_NODE_CPUS=4
+      - FLURM_NODE_MEMORY=8192
+      - FLURM_NODE_GPUS=2
+      - FLURM_PARTITIONS=gpu
+    volumes:
+      - munge-key:/etc/munge
+      - ./jobs/comprehensive:/jobs:ro
+    networks:
+      e2e-net:
+        ipv4_address: 172.30.0.22
+    depends_on:
+      flurm-ctrl-1:
+        condition: service_healthy
+
+  # Test runner container
+  test-runner:
+    build:
+      context: .
+      dockerfile: Dockerfile.slurm-client-munge
+    hostname: test-runner
+    environment:
+      - SLURM_CONF=/etc/slurm/slurm.conf
+      - FLURM_CTRL_1=172.30.0.10
+      - FLURM_CTRL_2=172.30.0.11
+      - FLURM_CTRL_3=172.30.0.12
+    volumes:
+      - munge-key:/etc/munge
+      - ./jobs/comprehensive:/jobs:ro
+      - ./e2e-tests:/tests:ro
+      - ./test-results:/results
+      - ./config/slurm-e2e.conf:/etc/slurm/slurm.conf:ro
+    networks:
+      e2e-net:
+        ipv4_address: 172.30.0.100
+    depends_on:
+      - flurm-ctrl-1
+      - flurm-ctrl-2
+      - flurm-ctrl-3
+      - flurm-node-1
+      - flurm-node-2
+      - flurm-node-3
+    stdin_open: true
+    tty: true
+    command: ["sleep", "infinity"]
+
+networks:
+  e2e-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.0.0/16
+
+volumes:
+  munge-key:

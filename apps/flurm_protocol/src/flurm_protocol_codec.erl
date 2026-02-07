@@ -536,6 +536,26 @@ decode_body(?REQUEST_CANCEL_JOB, Binary) ->
 decode_body(?REQUEST_KILL_JOB, Binary) ->
     decode_kill_job_request(Binary);
 
+%% REQUEST_SUSPEND (5014) - scontrol suspend/resume
+decode_body(?REQUEST_SUSPEND, Binary) ->
+    decode_suspend_request(Binary);
+
+%% REQUEST_SIGNAL_JOB (5018) - scancel -s SIGNAL, scontrol signal
+decode_body(?REQUEST_SIGNAL_JOB, Binary) ->
+    decode_signal_job_request(Binary);
+
+%% REQUEST_COMPLETE_PROLOG (5019) - slurmd reports prolog completion
+decode_body(?REQUEST_COMPLETE_PROLOG, Binary) ->
+    decode_complete_prolog_request(Binary);
+
+%% MESSAGE_EPILOG_COMPLETE (6012) - slurmd reports epilog completion
+decode_body(?MESSAGE_EPILOG_COMPLETE, Binary) ->
+    decode_epilog_complete_msg(Binary);
+
+%% MESSAGE_TASK_EXIT (6003) - slurmd reports task exit
+decode_body(?MESSAGE_TASK_EXIT, Binary) ->
+    decode_task_exit_msg(Binary);
+
 %% REQUEST_UPDATE_JOB (4014) - scontrol update job, hold, release
 decode_body(?REQUEST_UPDATE_JOB, Binary) ->
     decode_update_job_request(Binary);
@@ -2147,6 +2167,159 @@ decode_kill_job_numeric_format(Binary) ->
         _ ->
             {error, invalid_kill_job_request}
     end.
+
+%% Decode REQUEST_SUSPEND (5014) - scontrol suspend/resume
+%% SLURM format: job_id (32), op (16: 1=suspend, 0=resume), [job_id_str]
+decode_suspend_request(Binary) ->
+    case Binary of
+        <<JobId:32/big, Op:16/big, Rest/binary>> ->
+            Suspend = Op =/= 0,
+            {ok, JobIdStr, _} = safe_unpack_string(Rest),
+            {ok, #suspend_request{
+                job_id = JobId,
+                job_id_str = ensure_binary(JobIdStr),
+                suspend = Suspend
+            }};
+        <<JobId:32/big, Op:16/big>> ->
+            Suspend = Op =/= 0,
+            {ok, #suspend_request{
+                job_id = JobId,
+                suspend = Suspend
+            }};
+        _ ->
+            {error, invalid_suspend_request}
+    end.
+
+%% Decode REQUEST_SIGNAL_JOB (5018) - scancel -s SIGNAL, scontrol signal
+%% SLURM format: job_id (32), step_id (32 signed), signal (16), flags (16), [job_id_str]
+decode_signal_job_request(Binary) ->
+    case Binary of
+        <<JobId:32/big, StepId:32/big-signed, Signal:16/big, Flags:16/big, Rest/binary>> ->
+            {ok, JobIdStr, _} = safe_unpack_string(Rest),
+            {ok, #signal_job_request{
+                job_id = JobId,
+                job_id_str = ensure_binary(JobIdStr),
+                step_id = normalize_step_id(StepId),
+                signal = Signal,
+                flags = Flags
+            }};
+        <<JobId:32/big, StepId:32/big-signed, Signal:16/big, Flags:16/big>> ->
+            {ok, #signal_job_request{
+                job_id = JobId,
+                step_id = normalize_step_id(StepId),
+                signal = Signal,
+                flags = Flags
+            }};
+        <<JobId:32/big, Signal:16/big, Flags:16/big>> ->
+            {ok, #signal_job_request{
+                job_id = JobId,
+                signal = Signal,
+                flags = Flags
+            }};
+        _ ->
+            {error, invalid_signal_job_request}
+    end.
+
+%% Decode REQUEST_COMPLETE_PROLOG (5019)
+%% SLURM format: job_id (32), prolog_rc (32), [node_name]
+decode_complete_prolog_request(Binary) ->
+    case Binary of
+        <<JobId:32/big, PrologRc:32/big-signed, Rest/binary>> ->
+            {ok, NodeName, _} = safe_unpack_string(Rest),
+            {ok, #complete_prolog_request{
+                job_id = JobId,
+                prolog_rc = PrologRc,
+                node_name = ensure_binary(NodeName)
+            }};
+        <<JobId:32/big, PrologRc:32/big-signed>> ->
+            {ok, #complete_prolog_request{
+                job_id = JobId,
+                prolog_rc = PrologRc
+            }};
+        _ ->
+            {error, invalid_complete_prolog_request}
+    end.
+
+%% Decode MESSAGE_EPILOG_COMPLETE (6012)
+%% SLURM format: job_id (32), epilog_rc (32), [node_name]
+decode_epilog_complete_msg(Binary) ->
+    case Binary of
+        <<JobId:32/big, EpilogRc:32/big-signed, Rest/binary>> ->
+            {ok, NodeName, _} = safe_unpack_string(Rest),
+            {ok, #epilog_complete_msg{
+                job_id = JobId,
+                epilog_rc = EpilogRc,
+                node_name = ensure_binary(NodeName)
+            }};
+        <<JobId:32/big, EpilogRc:32/big-signed>> ->
+            {ok, #epilog_complete_msg{
+                job_id = JobId,
+                epilog_rc = EpilogRc
+            }};
+        _ ->
+            {error, invalid_epilog_complete_msg}
+    end.
+
+%% Decode MESSAGE_TASK_EXIT (6003)
+%% Wire format from _pack_task_exit_msg / _unpack_task_exit_msg:
+%%   return_code: uint32
+%%   num_tasks: uint32 (count of task_id_list)
+%%   task_id_list: pack32_array format = count:32 + elements:32 each
+%%   step_id: slurm_step_id_t (job_id:32, step_id:32, step_het_comp:32)
+decode_task_exit_msg(Binary) ->
+    case Binary of
+        <<ReturnCode:32/big-signed, NumTasks:32/big, Rest/binary>> ->
+            %% Parse task_id_list (pack32_array: count then values)
+            case parse_task_id_array(NumTasks, Rest) of
+                {ok, TaskIds, Rest2} ->
+                    case Rest2 of
+                        <<JobId:32/big, StepId:32/big, StepHetComp:32/big, Rest3/binary>> ->
+                            %% Try to get node name if present
+                            NodeName = case safe_unpack_string(Rest3) of
+                                {ok, N, _} -> ensure_binary(N);
+                                _ -> <<>>
+                            end,
+                            {ok, #task_exit_msg{
+                                job_id = JobId,
+                                step_id = StepId,
+                                step_het_comp = StepHetComp,
+                                task_ids = TaskIds,
+                                return_code = ReturnCode,
+                                node_name = NodeName
+                            }};
+                        <<JobId:32/big, StepId:32/big>> ->
+                            {ok, #task_exit_msg{
+                                job_id = JobId,
+                                step_id = StepId,
+                                task_ids = TaskIds,
+                                return_code = ReturnCode
+                            }};
+                        _ ->
+                            %% Fallback - minimal info
+                            {ok, #task_exit_msg{
+                                task_ids = TaskIds,
+                                return_code = ReturnCode
+                            }}
+                    end;
+                {error, _} ->
+                    {error, invalid_task_exit_msg}
+            end;
+        _ ->
+            {error, invalid_task_exit_msg}
+    end.
+
+%% Parse task ID array (pack32_array format)
+parse_task_id_array(0, Rest) ->
+    {ok, [], Rest};
+parse_task_id_array(Count, Binary) ->
+    parse_task_ids(Count, Binary, []).
+
+parse_task_ids(0, Rest, Acc) ->
+    {ok, lists:reverse(Acc), Rest};
+parse_task_ids(N, <<TaskId:32/big, Rest/binary>>, Acc) when N > 0 ->
+    parse_task_ids(N - 1, Rest, [TaskId | Acc]);
+parse_task_ids(_, _, _) ->
+    {error, truncated_task_id_list}.
 
 %% Parse job ID from string (may contain array indices like "123_4")
 parse_job_id(undefined) -> 0;

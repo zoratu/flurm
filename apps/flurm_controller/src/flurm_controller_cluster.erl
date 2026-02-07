@@ -572,6 +572,42 @@ handle_local_operation(get_job, JobId) ->
 handle_local_operation(list_jobs, _Args) ->
     flurm_job_manager:list_jobs();
 
+handle_local_operation(update_job, {JobId, Updates}) ->
+    flurm_job_manager:update_job(JobId, Updates);
+
+handle_local_operation(update_job_ext, {JobId, Priority, TimeLimit, Requeue}) ->
+    flurm_controller_handler:execute_job_update(JobId, Priority, TimeLimit, Requeue);
+
+handle_local_operation(hold_job, JobId) ->
+    flurm_job_manager:hold_job(JobId);
+
+handle_local_operation(release_job, JobId) ->
+    flurm_job_manager:release_job(JobId);
+
+handle_local_operation(requeue_job, JobId) ->
+    flurm_job_manager:requeue_job(JobId);
+
+handle_local_operation(suspend_job, JobId) ->
+    flurm_job_manager:suspend_job(JobId);
+
+handle_local_operation(resume_job, JobId) ->
+    flurm_job_manager:resume_job(JobId);
+
+handle_local_operation(signal_job, {JobId, Signal}) ->
+    flurm_job_manager:signal_job(JobId, Signal);
+
+handle_local_operation(update_prolog_status, {JobId, Status}) ->
+    flurm_job_manager:update_prolog_status(JobId, Status);
+
+handle_local_operation(update_epilog_status, {JobId, Status}) ->
+    flurm_job_manager:update_epilog_status(JobId, Status);
+
+handle_local_operation(complete_step, {JobId, StepId, ExitCode}) ->
+    flurm_step_manager:complete_step(JobId, StepId, ExitCode);
+
+handle_local_operation(create_step, {JobId, StepSpec}) ->
+    flurm_step_manager:create_step(JobId, StepSpec);
+
 handle_local_operation(Operation, Args) ->
     lager:warning("Unknown operation forwarded: ~p(~p)", [Operation, Args]),
     {error, unknown_operation}.

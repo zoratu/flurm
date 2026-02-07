@@ -1,0 +1,9 @@
+{
+  "timestamp": "2026-02-06T22:12:31+00:00",
+  "config": {
+    "iterations": 10,
+    "warmup": 3,
+    "latency_threshold_ms": 500,
+    "throughput_min": 5
+  },
+  "results": {

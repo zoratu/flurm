@@ -589,14 +589,20 @@ handle_preempted_job(JobId, checkpoint) ->
     handle_preempted_job(JobId, requeue);
 handle_preempted_job(JobId, suspend) ->
     %% Suspend the job - keep resources but pause execution
-    case flurm_job_manager:get_job(JobId) of
-        {ok, _Job} ->
-            %% Note: suspend keeps resources allocated but pauses the job
-            flurm_job_manager:update_job(JobId, #{state => held}),
+    %% Use suspend_job/1 which sends SIGSTOP to the job and updates state
+    case flurm_job_manager:suspend_job(JobId) of
+        ok ->
             error_logger:info_msg("Job ~p suspended due to preemption~n", [JobId]),
             ok;
+        {error, {invalid_state, State}} ->
+            error_logger:warning_msg("Cannot suspend job ~p in state ~p~n", [JobId, State]),
+            %% Fall back to requeue if suspend fails
+            handle_preempted_job(JobId, requeue);
         {error, not_found} ->
-            {error, job_not_found}
+            {error, job_not_found};
+        {error, Reason} ->
+            error_logger:warning_msg("Failed to suspend job ~p: ~p~n", [JobId, Reason]),
+            {error, Reason}
     end;
 handle_preempted_job(_JobId, off) ->
     {error, preemption_disabled}.

@@ -1,0 +1,342 @@
+# FLURM From-Scratch Complete Test Environment
+#
+# This docker-compose file creates a complete FLURM cluster from scratch:
+# - 3 controller nodes (HA configuration)
+# - 3 compute nodes with varying resources
+# - 1 test runner node
+#
+# Usage:
+#   # Build and start the cluster:
+#   docker compose -f docker-compose.from-scratch.yml build
+#   docker compose -f docker-compose.from-scratch.yml up -d
+#
+#   # Run E2E tests:
+#   docker compose -f docker-compose.from-scratch.yml exec test-runner /run-tests.sh
+#
+#   # Clean up:
+#   docker compose -f docker-compose.from-scratch.yml down -v
+#
+# Or use the run-from-scratch.sh script for a one-command experience.
+
+services:
+  # ===========================================================================
+  # FLURM Controller Nodes (HA Cluster)
+  # ===========================================================================
+
+  flurm-ctrl-1:
+    build:
+      context: ../..
+      dockerfile: docker/from-scratch/Dockerfile.from-scratch
+      args:
+        ERLANG_VERSION: ${ERLANG_VERSION:-27}
+        FLURM_REPO_URL: ${FLURM_REPO_URL:-https://github.com/zoratu/flurm.git}
+        FLURM_BRANCH: ${FLURM_BRANCH:-main}
+        BUILD_FROM_CONTEXT: ${BUILD_FROM_CONTEXT:-true}
+    image: flurm-from-scratch:${FLURM_VERSION:-latest}
+    hostname: flurm-ctrl-1
+    container_name: flurm-scratch-ctrl-1
+    environment:
+      - FLURM_MODE=controller
+      - FLURM_NODE_NAME=flurm@flurm-ctrl-1
+      - FLURM_COOKIE=${FLURM_COOKIE:-flurm_scratch_cookie}
+      - FLURM_CLUSTER_NODES=flurm@flurm-ctrl-1,flurm@flurm-ctrl-2,flurm@flurm-ctrl-3
+      - FLURM_HA_MODE=true
+      - FLURM_METRICS_PORT=9090
+    ports:
+      - "6817:6817"
+      - "9090:9090"
+    volumes:
+      - munge-key:/etc/munge
+      - flurm-ctrl-1-data:/var/lib/flurm
+      - flurm-ctrl-1-logs:/var/log/flurm
+    networks:
+      flurm-scratch-net:
+        ipv4_address: 172.31.0.10
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "6817"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 30s
+    restart: unless-stopped
+
+  flurm-ctrl-2:
+    build:
+      context: ../..
+      dockerfile: docker/from-scratch/Dockerfile.from-scratch
+      args:
+        ERLANG_VERSION: ${ERLANG_VERSION:-27}
+        BUILD_FROM_CONTEXT: ${BUILD_FROM_CONTEXT:-true}
+    image: flurm-from-scratch:${FLURM_VERSION:-latest}
+    hostname: flurm-ctrl-2
+    container_name: flurm-scratch-ctrl-2
+    environment:
+      - FLURM_MODE=controller
+      - FLURM_NODE_NAME=flurm@flurm-ctrl-2
+      - FLURM_COOKIE=${FLURM_COOKIE:-flurm_scratch_cookie}
+      - FLURM_CLUSTER_NODES=flurm@flurm-ctrl-1,flurm@flurm-ctrl-2,flurm@flurm-ctrl-3
+      - FLURM_HA_MODE=true
+      - FLURM_METRICS_PORT=9091
+    ports:
+      - "6827:6817"
+      - "9091:9091"
+    volumes:
+      - munge-key:/etc/munge
+      - flurm-ctrl-2-data:/var/lib/flurm
+      - flurm-ctrl-2-logs:/var/log/flurm
+    networks:
+      flurm-scratch-net:
+        ipv4_address: 172.31.0.11
+    depends_on:
+      flurm-ctrl-1:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "6817"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 30s
+    restart: unless-stopped
+
+  flurm-ctrl-3:
+    build:
+      context: ../..
+      dockerfile: docker/from-scratch/Dockerfile.from-scratch
+      args:
+        ERLANG_VERSION: ${ERLANG_VERSION:-27}
+        BUILD_FROM_CONTEXT: ${BUILD_FROM_CONTEXT:-true}
+    image: flurm-from-scratch:${FLURM_VERSION:-latest}
+    hostname: flurm-ctrl-3
+    container_name: flurm-scratch-ctrl-3
+    environment:
+      - FLURM_MODE=controller
+      - FLURM_NODE_NAME=flurm@flurm-ctrl-3
+      - FLURM_COOKIE=${FLURM_COOKIE:-flurm_scratch_cookie}
+      - FLURM_CLUSTER_NODES=flurm@flurm-ctrl-1,flurm@flurm-ctrl-2,flurm@flurm-ctrl-3
+      - FLURM_HA_MODE=true
+      - FLURM_METRICS_PORT=9092
+    ports:
+      - "6837:6817"
+      - "9092:9092"
+    volumes:
+      - munge-key:/etc/munge
+      - flurm-ctrl-3-data:/var/lib/flurm
+      - flurm-ctrl-3-logs:/var/log/flurm
+    networks:
+      flurm-scratch-net:
+        ipv4_address: 172.31.0.12
+    depends_on:
+      flurm-ctrl-1:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "6817"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 30s
+    restart: unless-stopped
+
+  # ===========================================================================
+  # FLURM Compute Nodes
+  # ===========================================================================
+
+  flurm-node-1:
+    build:
+      context: ../..
+      dockerfile: docker/from-scratch/Dockerfile.from-scratch
+      args:
+        ERLANG_VERSION: ${ERLANG_VERSION:-27}
+        BUILD_FROM_CONTEXT: ${BUILD_FROM_CONTEXT:-true}
+    image: flurm-from-scratch:${FLURM_VERSION:-latest}
+    hostname: flurm-node-1
+    container_name: flurm-scratch-node-1
+    environment:
+      - FLURM_MODE=node
+      - FLURM_NODE_NAME=flurmnd@flurm-node-1
+      - FLURM_COOKIE=${FLURM_COOKIE:-flurm_scratch_cookie}
+      - FLURM_CONTROLLER_HOST=flurm-ctrl-1
+      - FLURM_CONTROLLER_PORT=6817
+      - FLURM_NODE_CPUS=4
+      - FLURM_NODE_MEMORY=8192
+      - FLURM_PARTITIONS=batch,debug,default
+    volumes:
+      - munge-key:/etc/munge
+      - flurm-node-1-data:/var/lib/flurm
+    networks:
+      flurm-scratch-net:
+        ipv4_address: 172.31.0.20
+    depends_on:
+      flurm-ctrl-1:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "pgrep", "-f", "beam"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
+  flurm-node-2:
+    build:
+      context: ../..
+      dockerfile: docker/from-scratch/Dockerfile.from-scratch
+      args:
+        ERLANG_VERSION: ${ERLANG_VERSION:-27}
+        BUILD_FROM_CONTEXT: ${BUILD_FROM_CONTEXT:-true}
+    image: flurm-from-scratch:${FLURM_VERSION:-latest}
+    hostname: flurm-node-2
+    container_name: flurm-scratch-node-2
+    environment:
+      - FLURM_MODE=node
+      - FLURM_NODE_NAME=flurmnd@flurm-node-2
+      - FLURM_COOKIE=${FLURM_COOKIE:-flurm_scratch_cookie}
+      - FLURM_CONTROLLER_HOST=flurm-ctrl-1
+      - FLURM_CONTROLLER_PORT=6817
+      - FLURM_NODE_CPUS=8
+      - FLURM_NODE_MEMORY=16384
+      - FLURM_PARTITIONS=batch,large
+    volumes:
+      - munge-key:/etc/munge
+      - flurm-node-2-data:/var/lib/flurm
+    networks:
+      flurm-scratch-net:
+        ipv4_address: 172.31.0.21
+    depends_on:
+      flurm-ctrl-1:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "pgrep", "-f", "beam"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
+  flurm-node-3:
+    build:
+      context: ../..
+      dockerfile: docker/from-scratch/Dockerfile.from-scratch
+      args:
+        ERLANG_VERSION: ${ERLANG_VERSION:-27}
+        BUILD_FROM_CONTEXT: ${BUILD_FROM_CONTEXT:-true}
+    image: flurm-from-scratch:${FLURM_VERSION:-latest}
+    hostname: flurm-node-3
+    container_name: flurm-scratch-node-3
+    environment:
+      - FLURM_MODE=node
+      - FLURM_NODE_NAME=flurmnd@flurm-node-3
+      - FLURM_COOKIE=${FLURM_COOKIE:-flurm_scratch_cookie}
+      - FLURM_CONTROLLER_HOST=flurm-ctrl-1
+      - FLURM_CONTROLLER_PORT=6817
+      - FLURM_NODE_CPUS=4
+      - FLURM_NODE_MEMORY=8192
+      - FLURM_NODE_GPUS=2
+      - FLURM_PARTITIONS=gpu,default
+    volumes:
+      - munge-key:/etc/munge
+      - flurm-node-3-data:/var/lib/flurm
+    networks:
+      flurm-scratch-net:
+        ipv4_address: 172.31.0.22
+    depends_on:
+      flurm-ctrl-1:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "pgrep", "-f", "beam"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
+  # ===========================================================================
+  # Test Runner
+  # ===========================================================================
+
+  test-runner:
+    build:
+      context: ../..
+      dockerfile: docker/from-scratch/Dockerfile.from-scratch
+      args:
+        ERLANG_VERSION: ${ERLANG_VERSION:-27}
+        BUILD_FROM_CONTEXT: ${BUILD_FROM_CONTEXT:-true}
+    image: flurm-from-scratch:${FLURM_VERSION:-latest}
+    hostname: test-runner
+    container_name: flurm-scratch-test-runner
+    environment:
+      - FLURM_MODE=shell
+      - FLURM_COOKIE=${FLURM_COOKIE:-flurm_scratch_cookie}
+      - FLURM_CTRL_1=172.31.0.10
+      - FLURM_CTRL_2=172.31.0.11
+      - FLURM_CTRL_3=172.31.0.12
+      - SLURM_CONF=/etc/slurm/slurm.conf
+    volumes:
+      - munge-key:/etc/munge
+      - ./test-results:/test-results
+      - ../e2e-tests:/tests:ro
+      - ../jobs:/jobs:ro
+    networks:
+      flurm-scratch-net:
+        ipv4_address: 172.31.0.100
+    depends_on:
+      flurm-ctrl-1:
+        condition: service_healthy
+      flurm-ctrl-2:
+        condition: service_healthy
+      flurm-ctrl-3:
+        condition: service_healthy
+      flurm-node-1:
+        condition: service_healthy
+      flurm-node-2:
+        condition: service_healthy
+      flurm-node-3:
+        condition: service_healthy
+    stdin_open: true
+    tty: true
+    command: ["sleep", "infinity"]
+
+# ===========================================================================
+# Networks
+# ===========================================================================
+
+networks:
+  flurm-scratch-net:
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.31.0.0/16
+          gateway: 172.31.0.1
+
+# ===========================================================================
+# Volumes
+# ===========================================================================
+
+volumes:
+  # Shared munge key for authentication
+  munge-key:
+    driver: local
+
+  # Controller data volumes
+  flurm-ctrl-1-data:
+    driver: local
+  flurm-ctrl-2-data:
+    driver: local
+  flurm-ctrl-3-data:
+    driver: local
+
+  # Controller log volumes
+  flurm-ctrl-1-logs:
+    driver: local
+  flurm-ctrl-2-logs:
+    driver: local
+  flurm-ctrl-3-logs:
+    driver: local
+
+  # Node data volumes
+  flurm-node-1-data:
+    driver: local
+  flurm-node-2-data:
+    driver: local
+  flurm-node-3-data:
+    driver: local

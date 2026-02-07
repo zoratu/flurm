@@ -13,7 +13,7 @@
 -type job_id() :: pos_integer().
 -type user_id() :: pos_integer().
 -type group_id() :: pos_integer().
--type job_state() :: pending | held | configuring | running | completing |
+-type job_state() :: pending | held | configuring | running | suspended | completing |
                      completed | cancelled | failed | timeout | node_fail | requeued.
 -type node_state() :: up | down | drain | idle | allocated | mixed.
 -type partition_state() :: up | down | drain | inactive.
@@ -73,7 +73,12 @@
     gres_per_task = <<>> :: binary(),  % GRES per task requirement
     gpu_type = <<>> :: binary(),       % GPU type constraint (e.g., "a100", "v100")
     gpu_memory_mb = 0 :: non_neg_integer(), % GPU memory requirement in MB
-    gpu_exclusive = true :: boolean()  % Whether GPUs should be exclusive to job
+    gpu_exclusive = true :: boolean(),  % Whether GPUs should be exclusive to job
+    %% Prolog/Epilog scripts
+    prolog = <<>> :: binary(),          % Prolog script path (runs before job)
+    epilog = <<>> :: binary(),          % Epilog script path (runs after job)
+    prolog_status = pending :: pending | running | complete | failed,
+    epilog_status = pending :: pending | running | complete | failed
 }).
 
 %%====================================================================

@@ -77,31 +77,46 @@ init([]) ->
 
 %% @doc Start the Ranch listener for srun connections.
 %% This allows srun to connect directly to the node daemon to launch tasks.
+%% Gracefully handles the case when Ranch isn't available (e.g., during tests).
 -spec start_srun_listener(non_neg_integer()) -> {ok, pid()} | {error, term()}.
 start_srun_listener(Port) ->
     lager:info("Starting srun listener on port ~p", [Port]),
-    TransportOpts = #{
-        socket_opts => [
-            {port, Port},
-            {reuseaddr, true}
-        ],
-        num_acceptors => 10
-    },
-    ProtocolOpts = #{},
-    case ranch:start_listener(
-        ?SRUN_LISTENER_NAME,
-        ranch_tcp,
-        TransportOpts,
-        flurm_srun_acceptor,
-        ProtocolOpts
-    ) of
-        {ok, Pid} ->
-            lager:info("srun listener started on port ~p (pid=~p)", [Port, Pid]),
-            {ok, Pid};
-        {error, {already_started, Pid}} ->
-            lager:info("srun listener already running on port ~p (pid=~p)", [Port, Pid]),
-            {ok, Pid};
-        {error, Reason} ->
-            lager:error("Failed to start srun listener on port ~p: ~p", [Port, Reason]),
-            {error, Reason}
+    %% Check if ranch_sup is running before trying to start listener
+    case whereis(ranch_sup) of
+        undefined ->
+            lager:warning("Ranch supervisor not running, skipping srun listener"),
+            {error, ranch_not_running};
+        _ ->
+            TransportOpts = #{
+                socket_opts => [
+                    {port, Port},
+                    {reuseaddr, true}
+                ],
+                num_acceptors => 10
+            },
+            ProtocolOpts = #{},
+            try ranch:start_listener(
+                ?SRUN_LISTENER_NAME,
+                ranch_tcp,
+                TransportOpts,
+                flurm_srun_acceptor,
+                ProtocolOpts
+            ) of
+                {ok, Pid} ->
+                    lager:info("srun listener started on port ~p (pid=~p)", [Port, Pid]),
+                    {ok, Pid};
+                {error, {already_started, Pid}} ->
+                    lager:info("srun listener already running on port ~p (pid=~p)", [Port, Pid]),
+                    {ok, Pid};
+                {error, Reason} ->
+                    lager:error("Failed to start srun listener on port ~p: ~p", [Port, Reason]),
+                    {error, Reason}
+            catch
+                exit:{noproc, _} ->
+                    lager:warning("Ranch not available, skipping srun listener"),
+                    {error, ranch_not_running};
+                Class:Error ->
+                    lager:error("Unexpected error starting srun listener: ~p:~p", [Class, Error]),
+                    {error, {Class, Error}}
+            end
     end.

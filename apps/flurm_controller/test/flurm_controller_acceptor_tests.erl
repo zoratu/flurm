@@ -31,6 +31,14 @@ setup() ->
     application:ensure_all_started(lager),
     meck:new(ranch, [passthrough, unstick]),
     meck:new(ranch_tcp, [passthrough, unstick]),
+    %% Mock inet for peername calls with fake sockets
+    meck:new(inet, [passthrough, unstick]),
+    meck:expect(inet, peername, fun(_Socket) -> {ok, {{127, 0, 0, 1}, 12345}} end),
+    %% Mock connection limiter
+    meck:new(flurm_connection_limiter, [passthrough, non_strict]),
+    meck:expect(flurm_connection_limiter, connection_allowed, fun(_) -> true end),
+    meck:expect(flurm_connection_limiter, connection_opened, fun(_) -> ok end),
+    meck:expect(flurm_connection_limiter, connection_closed, fun(_) -> ok end),
     %% Use passthrough to preserve coverage instrumentation
     meck:new(flurm_protocol_codec, [passthrough, non_strict]),
     meck:new(flurm_controller_handler, [passthrough, non_strict]),
@@ -39,6 +47,8 @@ setup() ->
 cleanup(_) ->
     catch meck:unload(ranch),
     catch meck:unload(ranch_tcp),
+    catch meck:unload(inet),
+    catch meck:unload(flurm_connection_limiter),
     catch meck:unload(flurm_protocol_codec),
     catch meck:unload(flurm_controller_handler),
     ok.

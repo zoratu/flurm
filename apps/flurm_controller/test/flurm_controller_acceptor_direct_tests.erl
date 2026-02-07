@@ -28,12 +28,22 @@ setup() ->
     meck:new(ranch, [passthrough, non_strict]),
     meck:new(flurm_protocol_codec, [passthrough, non_strict]),
     meck:new(flurm_controller_handler, [passthrough, non_strict]),
+    %% Mock inet for peername calls with fake sockets
+    meck:new(inet, [passthrough, unstick]),
+    meck:expect(inet, peername, fun(_Socket) -> {ok, {{127, 0, 0, 1}, 12345}} end),
+    %% Mock connection limiter
+    meck:new(flurm_connection_limiter, [passthrough, non_strict]),
+    meck:expect(flurm_connection_limiter, connection_allowed, fun(_) -> true end),
+    meck:expect(flurm_connection_limiter, connection_opened, fun(_) -> ok end),
+    meck:expect(flurm_connection_limiter, connection_closed, fun(_) -> ok end),
     ok.
 
 cleanup(_) ->
     meck:unload(ranch),
     meck:unload(flurm_protocol_codec),
     meck:unload(flurm_controller_handler),
+    catch meck:unload(inet),
+    catch meck:unload(flurm_connection_limiter),
     ok.
 
 %%====================================================================
@@ -307,6 +317,14 @@ integration_test_() ->
          meck:new(flurm_protocol_codec, [passthrough, non_strict]),
          meck:new(flurm_controller_handler, [passthrough, non_strict]),
          meck:new(mock_transport, [non_strict]),
+         %% Mock inet for peername calls with fake sockets
+         meck:new(inet, [passthrough, unstick]),
+         meck:expect(inet, peername, fun(_Socket) -> {ok, {{127, 0, 0, 1}, 12345}} end),
+         %% Mock connection limiter
+         meck:new(flurm_connection_limiter, [passthrough, non_strict]),
+         meck:expect(flurm_connection_limiter, connection_allowed, fun(_) -> true end),
+         meck:expect(flurm_connection_limiter, connection_opened, fun(_) -> ok end),
+         meck:expect(flurm_connection_limiter, connection_closed, fun(_) -> ok end),
 
          meck:expect(ranch, handshake, fun(_) -> {ok, make_ref()} end),
          meck:expect(mock_transport, setopts, fun(_, _) -> ok end),
@@ -351,6 +369,8 @@ integration_test_() ->
          meck:unload(ranch),
          meck:unload(flurm_protocol_codec),
          meck:unload(flurm_controller_handler),
+         catch meck:unload(inet),
+         catch meck:unload(flurm_connection_limiter),
          ok
      end,
      [

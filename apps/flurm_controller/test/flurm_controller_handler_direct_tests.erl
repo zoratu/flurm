@@ -55,11 +55,18 @@ setup() ->
     meck:new(flurm_burst_buffer, [passthrough, non_strict]),
     meck:new(flurm_step_manager, [passthrough, non_strict]),
     meck:new(flurm_scheduler, [passthrough, non_strict]),
+    meck:new(flurm_node_connection_manager, [passthrough, non_strict]),
 
     %% Default mocks - cluster disabled for simple testing
     meck:expect(flurm_controller_cluster, is_leader, fun() -> true end),
     meck:expect(flurm_config_server, get, fun(_, Default) -> Default end),
     meck:expect(flurm_scheduler, submit_job, fun(_) -> ok end),
+    %% Default mock for node manager - return empty list
+    meck:expect(flurm_node_manager_server, list_nodes, fun() -> [] end),
+    %% Default mock for node connection manager - return list of {Node, ok} tuples
+    meck:expect(flurm_node_connection_manager, send_to_nodes, fun(Nodes, _) ->
+        [{N, ok} || N <- Nodes]
+    end),
     ok.
 
 cleanup(_) ->
@@ -73,6 +80,7 @@ cleanup(_) ->
     meck:unload(flurm_burst_buffer),
     meck:unload(flurm_step_manager),
     meck:unload(flurm_scheduler),
+    catch meck:unload(flurm_node_connection_manager),
     ok.
 
 %%====================================================================
@@ -309,7 +317,8 @@ test_resource_allocation_success() ->
         partition = <<"default">>
     },
     Result = flurm_controller_handler:handle(Header, Body),
-    ?assertMatch({ok, ?RESPONSE_RESOURCE_ALLOCATION, #resource_allocation_response{job_id = 10}}, Result).
+    %% Handler returns 4-tuple with CallbackInfo on success
+    ?assertMatch({ok, ?RESPONSE_RESOURCE_ALLOCATION, #resource_allocation_response{job_id = 10}, _CallbackInfo}, Result).
 
 test_resource_allocation_failure() ->
     meck:expect(flurm_job_manager, submit_job, fun(_) -> {error, no_resources} end),
@@ -340,7 +349,13 @@ job_step_test_() ->
      ]}.
 
 test_step_create_success() ->
+    %% Mock the step manager to return success
     meck:expect(flurm_step_manager, create_step, fun(_, _) -> {ok, 0} end),
+    %% Mock get_job for get_job_cred_info which is called on success
+    Job = #job{id = 1, name = <<"test_job">>, user = <<"user1">>, partition = <<"default">>,
+               state = running, script = <<>>, num_nodes = 1, num_cpus = 4, memory_mb = 4096,
+               time_limit = 3600, priority = 100, submit_time = 0, allocated_nodes = [<<"node1">>]},
+    meck:expect(flurm_job_manager, get_job, fun(1) -> {ok, Job} end),
 
     Header = #slurm_header{msg_type = ?REQUEST_JOB_STEP_CREATE},
     Body = #job_step_create_request{job_id = 1, name = <<"step0">>, num_tasks = 4},
