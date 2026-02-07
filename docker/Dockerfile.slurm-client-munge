@@ -27,7 +27,9 @@ RUN mkdir -p /etc/slurm && \
     echo 'SlurmdDebug=info' >> /etc/slurm/slurm.conf && \
     echo 'SlurmctldDebug=info' >> /etc/slurm/slurm.conf && \
     echo 'SlurmdPort=6818' >> /etc/slurm/slurm.conf && \
-    echo 'NodeName=flurm-node1 CPUs=4 State=UNKNOWN' >> /etc/slurm/slurm.conf && \
+    echo 'NodeName=node001 NodeAddr=node001 CPUs=4 State=UNKNOWN' >> /etc/slurm/slurm.conf && \
+    echo 'NodeName=node002 NodeAddr=node002 CPUs=4 State=UNKNOWN' >> /etc/slurm/slurm.conf && \
+    echo 'NodeName=node003 NodeAddr=node003 CPUs=4 State=UNKNOWN' >> /etc/slurm/slurm.conf && \
     echo 'PartitionName=default Nodes=ALL Default=YES MaxTime=INFINITE State=UP' >> /etc/slurm/slurm.conf
 
 # Create munge directories (key will be mounted)

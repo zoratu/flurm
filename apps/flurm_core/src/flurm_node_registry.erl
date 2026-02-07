@@ -381,23 +381,35 @@ handle_call({register_direct, NodeInfo}, _From, State) ->
             MemoryMb = maps:get(memory_mb, NodeInfo, ExistingEntry#node_entry.memory_total),
             NewState = maps:get(state, NodeInfo, up),
             OldState = ExistingEntry#node_entry.state,
+            OldPid = ExistingEntry#node_entry.pid,
+            NewPid = self(),
 
-            %% Update entry with fresh state and reset available resources
+            %% Update entry with fresh state, pid, and reset available resources
+            %% Clear any stale job allocations on re-registration
             UpdatedEntry = ExistingEntry#node_entry{
+                pid = NewPid,
                 state = NewState,
                 cpus_total = Cpus,
                 cpus_avail = Cpus,
                 memory_total = MemoryMb,
-                memory_avail = MemoryMb
+                memory_avail = MemoryMb,
+                allocations = #{}  % Clear allocations on re-register
             },
             ets:insert(?NODES_BY_NAME, UpdatedEntry),
 
-            %% Update state index
-            ets:delete_object(?NODES_BY_STATE, {OldState, NodeName, ExistingEntry#node_entry.pid}),
-            ets:insert(?NODES_BY_STATE, {NewState, NodeName, self()}),
+            %% Clean up state index - remove ALL entries for this node first
+            %% This handles pid changes after gen_server restart
+            ets:match_delete(?NODES_BY_STATE, {OldState, NodeName, '_'}),
+            %% Also clean up any other state entries (in case state changed)
+            AllStates = [up, down, drain, maint],
+            lists:foreach(fun(S) ->
+                ets:match_delete(?NODES_BY_STATE, {S, NodeName, '_'})
+            end, AllStates -- [OldState]),
+            %% Insert fresh entry with new state and pid
+            ets:insert(?NODES_BY_STATE, {NewState, NodeName, NewPid}),
 
-            lager:info("Node ~s re-registered (state: ~p -> ~p, cpus=~p, mem=~p)",
-                      [NodeName, OldState, NewState, Cpus, MemoryMb]),
+            lager:info("Node ~s re-registered (state: ~p -> ~p, cpus=~p, mem=~p, pid: ~p -> ~p)",
+                      [NodeName, OldState, NewState, Cpus, MemoryMb, OldPid, NewPid]),
             {reply, ok, State};
         [] ->
             Cpus = maps:get(cpus, NodeInfo, 1),

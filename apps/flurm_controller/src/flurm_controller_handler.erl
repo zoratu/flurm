@@ -1880,6 +1880,36 @@ ensure_binary(List) when is_list(List) -> list_to_binary(List);
 ensure_binary(Atom) when is_atom(Atom) -> atom_to_binary(Atom, utf8);
 ensure_binary(_) -> <<>>.
 
+%% @doc Get first registered node name from node manager
+%% Returns the name of the first available node, or <<"unknown">> if none
+-spec get_first_registered_node() -> binary().
+get_first_registered_node() ->
+    try
+        case flurm_node_manager_server:list_nodes() of
+            Nodes when is_list(Nodes), length(Nodes) > 0 ->
+                %% Get the first node - nodes are records or maps
+                Node = hd(Nodes),
+                NodeName = case Node of
+                    N when is_map(N) -> maps:get(name, N, maps:get(node_name, N, <<"unknown">>));
+                    N when is_tuple(N) ->
+                        %% Assume it's a record with name as second element
+                        case element(2, N) of
+                            Name when is_binary(Name) -> Name;
+                            Name when is_atom(Name) -> atom_to_binary(Name, utf8);
+                            _ -> <<"unknown">>
+                        end;
+                    N when is_binary(N) -> N;
+                    N when is_atom(N) -> atom_to_binary(N, utf8);
+                    _ -> <<"unknown">>
+                end,
+                ensure_binary(NodeName);
+            _ ->
+                <<"unknown">>
+        end
+    catch
+        _:_ -> <<"unknown">>
+    end.
+
 %% @doc Get job credential info for step creation
 %% Returns {Uid, Gid, UserName, NodeList, Partition}
 -spec get_job_cred_info(non_neg_integer()) -> {non_neg_integer(), non_neg_integer(), binary(), binary(), binary()}.
@@ -1889,10 +1919,10 @@ get_job_cred_info(JobId) ->
             %% Job is a #job{} record from flurm_core.hrl
             UserName = Job#job.user,
             Partition = Job#job.partition,
-            %% Get allocated nodes or use default
+            %% Get allocated nodes or query node manager for available nodes
             NodeList = case Job#job.allocated_nodes of
-                [] -> <<"flurm-node1">>;
-                undefined -> <<"flurm-node1">>;
+                [] -> get_first_registered_node();
+                undefined -> get_first_registered_node();
                 [Node | _] when is_binary(Node) -> Node;
                 Nodes when is_list(Nodes) ->
                     NodeBins = [ensure_binary(N) || N <- Nodes],
@@ -1909,7 +1939,7 @@ get_job_cred_info(JobId) ->
             Gid = maps:get(group_id, Job, 0),
             UserName = maps:get(user_name, Job, maps:get(user, Job, <<"root">>)),
             NodeList = case maps:get(allocated_nodes, Job, []) of
-                [] -> <<"flurm-node1">>;
+                [] -> get_first_registered_node();
                 [Node | _] when is_binary(Node) -> Node;
                 Nodes when is_list(Nodes) ->
                     NodeBins = [ensure_binary(N) || N <- Nodes],
@@ -1918,9 +1948,9 @@ get_job_cred_info(JobId) ->
             Partition = maps:get(partition, Job, <<"default">>),
             {Uid, Gid, ensure_binary(UserName), ensure_binary(NodeList), ensure_binary(Partition)};
         {error, _} ->
-            %% Job not found, use defaults
+            %% Job not found, use defaults with actual node name
             lager:warning("Job ~p not found for credential info, using defaults", [JobId]),
-            {0, 0, <<"root">>, <<"flurm-node1">>, <<"default">>}
+            {0, 0, <<"root">>, get_first_registered_node(), <<"default">>}
     end.
 
 %% @doc Convert error reason to binary
