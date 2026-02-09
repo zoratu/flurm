@@ -1744,10 +1744,43 @@ extract_until_newline(Binary) ->
             binary:part(Binary, 0, min(20, byte_size(Binary)))
     end.
 
-parse_time_string(<<"00:", Rest/binary>>) ->
+parse_time_string(Binary) ->
+    %% Try D-HH:MM:SS format first (e.g., "1-00:00:00", "7-12:30:00")
+    case parse_day_time(Binary) of
+        0 -> parse_time_string_nodash(Binary);
+        Seconds -> Seconds
+    end.
+
+%% Parse D-HH:MM:SS format (days-hours:minutes:seconds)
+parse_day_time(Binary) ->
+    case binary:match(Binary, <<"-">>) of
+        {DashPos, 1} when DashPos > 0, DashPos =< 3 ->
+            <<DayPart:DashPos/binary, "-", Rest/binary>> = Binary,
+            Days = parse_plain_minutes(DayPart),  % reuse digit parser for day count
+            case Rest of
+                <<H1, H2, ":", M1, M2, ":", S1, S2, _/binary>>
+                  when H1 >= $0, H1 =< $9, H2 >= $0, H2 =< $9,
+                       M1 >= $0, M1 =< $9, M2 >= $0, M2 =< $9,
+                       S1 >= $0, S1 =< $9, S2 >= $0, S2 =< $9 ->
+                    Hours = (H1 - $0) * 10 + (H2 - $0),
+                    Minutes = (M1 - $0) * 10 + (M2 - $0),
+                    Seconds = (S1 - $0) * 10 + (S2 - $0),
+                    Days * 86400 + Hours * 3600 + Minutes * 60 + Seconds;
+                <<H1, H2, ":", M1, M2, _/binary>>
+                  when H1 >= $0, H1 =< $9, H2 >= $0, H2 =< $9,
+                       M1 >= $0, M1 =< $9, M2 >= $0, M2 =< $9 ->
+                    Hours = (H1 - $0) * 10 + (H2 - $0),
+                    Minutes = (M1 - $0) * 10 + (M2 - $0),
+                    Days * 86400 + Hours * 3600 + Minutes * 60;
+                _ -> 0
+            end;
+        _ -> 0
+    end.
+
+parse_time_string_nodash(<<"00:", Rest/binary>>) ->
     %% HH:MM:SS format with 00 hours
     parse_minutes_seconds(Rest);
-parse_time_string(<<H1, H2, ":", M1, M2, ":", S1, S2, _/binary>>)
+parse_time_string_nodash(<<H1, H2, ":", M1, M2, ":", S1, S2, _/binary>>)
   when H1 >= $0, H1 =< $9, H2 >= $0, H2 =< $9,
        M1 >= $0, M1 =< $9, M2 >= $0, M2 =< $9,
        S1 >= $0, S1 =< $9, S2 >= $0, S2 =< $9 ->
@@ -1755,13 +1788,13 @@ parse_time_string(<<H1, H2, ":", M1, M2, ":", S1, S2, _/binary>>)
     Minutes = (M1 - $0) * 10 + (M2 - $0),
     Seconds = (S1 - $0) * 10 + (S2 - $0),
     Hours * 3600 + Minutes * 60 + Seconds;
-parse_time_string(<<M1, M2, ":", S1, S2, _/binary>>)
+parse_time_string_nodash(<<M1, M2, ":", S1, S2, _/binary>>)
   when M1 >= $0, M1 =< $9, M2 >= $0, M2 =< $9,
        S1 >= $0, S1 =< $9, S2 >= $0, S2 =< $9 ->
     Minutes = (M1 - $0) * 10 + (M2 - $0),
     Seconds = (S1 - $0) * 10 + (S2 - $0),
     Minutes * 60 + Seconds;
-parse_time_string(Binary) ->
+parse_time_string_nodash(Binary) ->
     %% Try to parse as plain minutes (e.g., "60", "1", "120")
     case parse_plain_minutes(Binary) of
         0 -> 300;  % Default 5 minutes

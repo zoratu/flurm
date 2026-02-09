@@ -141,6 +141,8 @@ store_job_ra(Job) ->
         script = Job#job.script,
         num_nodes = Job#job.num_nodes,
         num_cpus = Job#job.num_cpus,
+        num_tasks = Job#job.num_tasks,
+        cpus_per_task = Job#job.cpus_per_task,
         memory_mb = Job#job.memory_mb,
         time_limit = Job#job.time_limit,
         priority = Job#job.priority
@@ -228,6 +230,8 @@ ra_job_to_job(#ra_job{} = R) ->
         script = R#ra_job.script,
         num_nodes = R#ra_job.num_nodes,
         num_cpus = R#ra_job.num_cpus,
+        num_tasks = R#ra_job.num_tasks,
+        cpus_per_task = R#ra_job.cpus_per_task,
         memory_mb = R#ra_job.memory_mb,
         time_limit = R#ra_job.time_limit,
         priority = R#ra_job.priority,
