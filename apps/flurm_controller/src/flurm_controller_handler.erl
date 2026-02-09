@@ -42,8 +42,8 @@
     %% Job ID parsing
     parse_job_id_str/1,
     safe_binary_to_integer/1,
-    build_job_updates/3,
-    execute_job_update/4,
+    build_field_updates/2,
+    execute_job_update/5,
     %% State conversions
     job_state_to_slurm/1,
     node_state_to_slurm/1,
@@ -92,7 +92,14 @@ handle(#slurm_header{msg_type = ?REQUEST_SUBMIT_BATCH_JOB},
        #batch_job_request{} = Request) ->
     lager:info("Handling batch job submission: ~s", [Request#batch_job_request.name]),
     JobSpec = batch_request_to_job_spec(Request),
-    Result = submit_job_with_federation(JobSpec),
+    %% Validate partition exists before submitting
+    PartitionName = maps:get(partition, JobSpec),
+    Result = case validate_partition(PartitionName) of
+        ok ->
+            submit_job_with_federation(JobSpec);
+        {error, _} = PartErr ->
+            PartErr
+    end,
     case Result of
         {ok, JobId} ->
             lager:info("Job ~p submitted successfully", [JobId]),
@@ -320,12 +327,6 @@ handle(#slurm_header{msg_type = ?REQUEST_JOB_INFO},
                 {error, not_found} -> []
             end
     end,
-    lager:info("Found ~p jobs to return", [length(Jobs)]),
-    %% Log job details for debugging
-    lists:foreach(fun(J) ->
-        lager:info("Job record: id=~p, name=~p, state=~p",
-                   [element(2, J), element(3, J), element(6, J)])
-    end, Jobs),
     %% Convert internal jobs to job_info records
     JobInfos = [job_to_job_info(J) || J <- Jobs],
     Response = #job_info_response{
@@ -342,14 +343,13 @@ handle(#slurm_header{msg_type = ?REQUEST_JOB_INFO_SINGLE}, Body) ->
 
 %% REQUEST_JOB_USER_INFO (2021) - Used by scontrol show job in newer SLURM
 handle(#slurm_header{msg_type = ?REQUEST_JOB_USER_INFO}, Body) ->
-    lager:info("Handling job user info request (2021), body size=~p", [byte_size(Body)]),
+    lager:debug("Handling job user info request (2021), body size=~p", [byte_size(Body)]),
     %% Body is raw binary, parse job_id from it
     %% Format: job_id:32/big, ...
     JobId = case Body of
         <<JId:32/big, _/binary>> when JId > 0 -> JId;
         _ -> 0  % Return all jobs
     end,
-    lager:info("Parsed job_id=~p from request", [JobId]),
     %% Call job info handler directly
     Jobs = case JobId of
         0 ->
@@ -360,7 +360,6 @@ handle(#slurm_header{msg_type = ?REQUEST_JOB_USER_INFO}, Body) ->
                 {error, not_found} -> []
             end
     end,
-    lager:info("Found ~p jobs for 2021 request", [length(Jobs)]),
     JobInfos = [job_to_job_info(J) || J <- Jobs],
     Response = #job_info_response{
         last_update = erlang:system_time(second),
@@ -873,6 +872,7 @@ handle(#slurm_header{msg_type = ?REQUEST_UPDATE_JOB},
     Priority = Request#update_job_request.priority,
     TimeLimit = Request#update_job_request.time_limit,
     Requeue = Request#update_job_request.requeue,
+    Name = Request#update_job_request.name,
 
     %% Route to appropriate job manager function for proper side effects
     %% Priority=0 means hold, Priority=non-zero+non-NO_VAL means release (restore priority)
@@ -880,16 +880,16 @@ handle(#slurm_header{msg_type = ?REQUEST_UPDATE_JOB},
     Result = case is_cluster_enabled() of
         true ->
             case flurm_controller_cluster:is_leader() of
-                true -> execute_job_update(JobId, Priority, TimeLimit, Requeue);
+                true -> execute_job_update(JobId, Priority, TimeLimit, Requeue, Name);
                 false ->
-                    case flurm_controller_cluster:forward_to_leader(update_job_ext, {JobId, Priority, TimeLimit, Requeue}) of
+                    case flurm_controller_cluster:forward_to_leader(update_job_ext, {JobId, Priority, TimeLimit, Requeue, Name}) of
                         {ok, UpdateResult} -> UpdateResult;
                         {error, no_leader} -> {error, controller_not_found};
                         {error, Reason} -> {error, Reason}
                     end
             end;
         false ->
-            execute_job_update(JobId, Priority, TimeLimit, Requeue)
+            execute_job_update(JobId, Priority, TimeLimit, Requeue, Name)
     end,
     case Result of
         ok ->
@@ -1587,14 +1587,25 @@ default_work_dir(WorkDir) -> WorkDir.
 default_partition(<<>>) -> <<"default">>;
 default_partition(Partition) -> Partition.
 
+%% @doc Validate that the requested partition exists
+-spec validate_partition(binary()) -> ok | {error, term()}.
+validate_partition(PartitionName) ->
+    case catch flurm_partition_manager:get_partition(PartitionName) of
+        {ok, _} -> ok;
+        {error, not_found} -> {error, {invalid_partition, PartitionName}};
+        {'EXIT', _} -> ok  % Partition manager not running, allow submission
+    end.
+
 %% @doc Provide default time limit if not specified (1 hour in seconds)
 -spec default_time_limit(non_neg_integer()) -> pos_integer().
 default_time_limit(0) -> 3600;
 default_time_limit(TimeLimit) -> TimeLimit.
 
-%% @doc Provide default priority if not specified
+%% @doc Provide default priority if not specified.
+%% NO_VAL (0xFFFFFFFE) means not specified -> use default 100.
+%% 0 means hold -> pass through as 0.
 -spec default_priority(non_neg_integer()) -> non_neg_integer().
-default_priority(0) -> 100;
+default_priority(16#FFFFFFFE) -> 100;
 default_priority(Priority) -> Priority.
 
 %%====================================================================
@@ -2195,8 +2206,8 @@ execute_suspend(JobId, false) ->
 %% @doc Execute job update with proper routing to job manager functions
 %% Routes to hold_job/release_job/requeue_job for correct side effects
 %% Priority=0 -> hold, Priority=non-NO_VAL and job held -> release, Requeue=1 -> requeue
--spec execute_job_update(non_neg_integer(), non_neg_integer(), non_neg_integer(), non_neg_integer()) -> ok | {error, term()}.
-execute_job_update(JobId, Priority, TimeLimit, Requeue) ->
+-spec execute_job_update(non_neg_integer(), non_neg_integer(), non_neg_integer(), non_neg_integer(), binary()) -> ok | {error, term()}.
+execute_job_update(JobId, Priority, TimeLimit, Requeue, Name) ->
     %% First handle requeue - it takes precedence
     case Requeue of
         1 ->
@@ -2204,18 +2215,32 @@ execute_job_update(JobId, Priority, TimeLimit, Requeue) ->
             lager:info("Requeue requested for job ~p", [JobId]),
             flurm_job_manager:requeue_job(JobId);
         _ ->
+            %% Build base updates from name and time_limit
+            BaseUpdates = build_field_updates(TimeLimit, Name),
+
             %% Handle hold/release/priority update
             case Priority of
                 0 ->
                     %% Priority 0 = hold the job
                     lager:info("Hold requested for job ~p", [JobId]),
+                    %% Apply name/timelimit first if any, then hold
+                    apply_base_updates(JobId, BaseUpdates),
                     flurm_job_manager:hold_job(JobId);
                 16#FFFFFFFE ->
-                    %% NO_VAL - no priority change, just apply time_limit if set
-                    case TimeLimit of
-                        16#FFFFFFFE -> ok;  % Nothing to update
-                        T ->
-                            flurm_job_manager:update_job(JobId, #{time_limit => T})
+                    %% NO_VAL/INFINITE - check if job is held (scontrol release sends
+                    %% priority=INFINITE which is the same as NO_VAL in SLURM 22.05)
+                    case flurm_job_manager:get_job(JobId) of
+                        {ok, Job} when Job#job.state =:= held ->
+                            %% Release the held job, restore default priority
+                            lager:info("Release requested for job ~p (priority=NO_VAL, job was held)", [JobId]),
+                            apply_base_updates(JobId, BaseUpdates),
+                            flurm_job_manager:release_job(JobId);
+                        _ ->
+                            %% Not held, just apply base updates if any
+                            case maps:size(BaseUpdates) of
+                                0 -> ok;
+                                _ -> flurm_job_manager:update_job(JobId, BaseUpdates)
+                            end
                     end;
                 P when P > 0 ->
                     %% Non-zero priority - check if job is held and release it
@@ -2224,40 +2249,38 @@ execute_job_update(JobId, Priority, TimeLimit, Requeue) ->
                         {ok, Job} when Job#job.state =:= held ->
                             %% Release the held job
                             lager:info("Release requested for job ~p (priority ~p)", [JobId, P]),
+                            apply_base_updates(JobId, BaseUpdates),
                             case flurm_job_manager:release_job(JobId) of
                                 ok when P =/= 100 ->
-                                    %% Also update priority if not default
                                     flurm_job_manager:update_job(JobId, #{priority => P});
                                 Result -> Result
                             end;
                         {ok, _Job} ->
-                            %% Not held, just update priority
-                            Updates = build_job_updates(Priority, TimeLimit, 16#FFFFFFFE),
+                            %% Not held, just update priority and other fields
+                            Updates = maps:merge(BaseUpdates, #{priority => P}),
                             flurm_job_manager:update_job(JobId, Updates);
                         {error, _} = Error -> Error
                     end
             end
     end.
 
-%% @doc Build job updates map from update request fields
-%% SLURM_NO_VAL = 0xFFFFFFFE indicates field not set
--spec build_job_updates(non_neg_integer(), non_neg_integer(), non_neg_integer()) -> map().
-build_job_updates(Priority, TimeLimit, Requeue) ->
-    Updates0 = #{},
-    Updates1 = case Priority of
-        16#FFFFFFFE -> Updates0;
-        0 -> maps:put(state, held, Updates0);  % Priority 0 = hold
-        P -> maps:put(priority, P, Updates0)
+%% Build updates map from time_limit and name fields
+%% SLURM sends time_limit in minutes; internally we store seconds
+build_field_updates(TimeLimit, Name) ->
+    U0 = #{},
+    U1 = case TimeLimit of
+        16#FFFFFFFE -> U0;
+        T -> maps:put(time_limit, T * 60, U0)  % minutes -> seconds
     end,
-    Updates2 = case TimeLimit of
-        16#FFFFFFFE -> Updates1;
-        T -> maps:put(time_limit, T, Updates1)
-    end,
-    case Requeue of
-        16#FFFFFFFE -> Updates2;
-        1 -> maps:put(state, pending, Updates2);  % Requeue = put back in pending
-        _ -> Updates2
+    case Name of
+        <<>> -> U1;
+        _ -> maps:put(name, Name, U1)
     end.
+
+%% Apply base updates if any exist (used before hold/release operations)
+apply_base_updates(_JobId, Updates) when map_size(Updates) =:= 0 -> ok;
+apply_base_updates(JobId, Updates) ->
+    flurm_job_manager:update_job(JobId, Updates).
 
 %%====================================================================
 %% Internal Functions - Cluster Helpers

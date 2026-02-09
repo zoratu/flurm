@@ -384,7 +384,7 @@ schedule_cycle(State) ->
     RunningCount = sets:size(State#scheduler_state.running_jobs),
     case PendingCount > 0 of
         true ->
-            lager:info("Schedule cycle: ~p pending, ~p running",
+            lager:debug("Schedule cycle: ~p pending, ~p running",
                        [PendingCount, RunningCount]);
         false ->
             ok
@@ -419,7 +419,7 @@ schedule_pending_jobs_batch(State, MaxJobs, Scheduled) ->
                 {wait, Reason} ->
                     %% Job cannot be scheduled (insufficient resources)
                     %% Try backfill: schedule smaller jobs that can fit
-                    lager:info("Job ~p waiting for scheduling: ~p", [JobId, Reason]),
+                    lager:debug("Job ~p waiting for scheduling: ~p", [JobId, Reason]),
                     BackfillState = try_backfill_jobs(RestQueue, State),
                     %% Keep original job at front of queue
                     BackfillState;
@@ -581,11 +581,11 @@ remove_jobs_from_queue(JobsToRemove, Queue) ->
 %% Now includes resource limits checking via flurm_limits module
 %% Also checks job dependencies via flurm_job_deps before scheduling
 try_schedule_job(JobId, State) ->
-    lager:info("Trying to schedule job ~p", [JobId]),
+    lager:debug("Trying to schedule job ~p", [JobId]),
     case flurm_job_manager:get_job(JobId) of
         {ok, Job} ->
             JobState = flurm_core:job_state(Job),
-            lager:info("Job ~p found with state: ~p", [JobId, JobState]),
+            lager:debug("Job ~p found with state: ~p", [JobId, JobState]),
             case JobState of
                 pending ->
                     %% Check job dependencies before scheduling
@@ -613,7 +613,6 @@ try_schedule_job(JobId, State) ->
             end;
         {error, not_found} ->
             lager:warning("Job ~p not found in job_manager", [JobId]),
-            io:format("*** SCHED: Job ~p NOT FOUND in job_manager!~n", [JobId]),
             {error, job_not_found}
     end.
 

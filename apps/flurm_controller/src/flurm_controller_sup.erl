@@ -303,6 +303,15 @@ init([]) ->
             type => worker,
             modules => [flurm_job_manager]
         },
+        %% Job Dependency Tracker - tracks inter-job dependencies
+        #{
+            id => flurm_job_deps,
+            start => {flurm_job_deps, start_link, []},
+            restart => permanent,
+            shutdown => 5000,
+            type => worker,
+            modules => [flurm_job_deps]
+        },
         %% Step Manager - handles job steps within jobs
         #{
             id => flurm_step_manager,

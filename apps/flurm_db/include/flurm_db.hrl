@@ -35,7 +35,7 @@
     user            :: binary(),
     group           :: binary(),
     partition       :: partition_name(),
-    state           :: pending | configuring | running | completing |
+    state           :: pending | held | configuring | running | completing |
                        completed | cancelled | failed | timeout | node_fail,
     script          :: binary(),
     num_nodes       :: pos_integer(),
@@ -149,7 +149,8 @@
     {update_node_state, node_name(), atom()} |
     {unregister_node, node_name()} |
     {create_partition, #ra_partition_spec{}} |
-    {delete_partition, partition_name()}.
+    {delete_partition, partition_name()} |
+    {update_job_fields, job_id(), map()}.
 
 %%====================================================================
 %% Ra Queries (local read)

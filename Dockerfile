@@ -11,8 +11,10 @@ WORKDIR /build
 # Copy source
 COPY . .
 
-# Get dependencies and compile
-RUN rebar3 as prod release
+# Get dependencies and compile all releases
+RUN rebar3 as prod release -n flurmctld && \
+    rebar3 as prod release -n flurmnd && \
+    rebar3 as prod release -n flurmbd
 
 # Stage 2: Controller image
 FROM erlang:26-alpine AS flurmctld

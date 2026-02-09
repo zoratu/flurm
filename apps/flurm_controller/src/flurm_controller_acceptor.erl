@@ -347,21 +347,8 @@ send_response(Socket, Transport, MsgType, Body) ->
     EncodeResult = flurm_protocol_codec:encode_response(MsgType, Body),
     case EncodeResult of
         {ok, ResponseBin} ->
-            lager:info("Sending response type=~p (~s) size=~p hex=~s",
-                       [MsgType, flurm_protocol_codec:message_type_name(MsgType),
-                        byte_size(ResponseBin), binary_to_hex(ResponseBin)]),
-            %% DEBUG: Parse our own message to verify format
-            <<OuterLen:32/big, Ver:16/big, Flags:16/big, MT:16/big, BodyLen:32/big, _Rest/binary>> = ResponseBin,
-            lager:info("DEBUG VERIFY: outer_len=~p ver=~.16B flags=~p msg_type=~p body_len=~p",
-                       [OuterLen, Ver, Flags, MT, BodyLen]),
-            lager:info("DEBUG VERIFY: header_size=16, check: ~p + 16 = ~p <= ~p ? ~p",
-                       [BodyLen, BodyLen + 16, OuterLen, (BodyLen + 16) =< OuterLen]),
-            %% DEBUG: Log exactly what's being sent
-            lager:info("SOCKET SEND: ~p bytes starting with ~s",
-                       [byte_size(ResponseBin), binary_to_hex(binary:part(ResponseBin, 0, min(byte_size(ResponseBin), 40)))]),
             case Transport:send(Socket, ResponseBin) of
                 ok ->
-                    lager:info("Response sent successfully"),
                     ok;
                 {error, Reason} ->
                     lager:warning("Failed to send response: ~p", [Reason]),

@@ -184,6 +184,13 @@ handle_ra_remaining_updates(JobId, Updates) ->
         error ->
             ok
     end,
+    %% Handle field updates (time_limit, name, priority)
+    FieldKeys = [time_limit, name, priority],
+    Fields = maps:with(FieldKeys, Updates),
+    case maps:size(Fields) of
+        0 -> ok;
+        _ -> flurm_db_ra:update_job_fields(JobId, Fields)
+    end,
     ok.
 
 get_job_ra(JobId) ->

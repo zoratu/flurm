@@ -32,6 +32,7 @@
     delete_partition/1,
     allocate_job/2,
     set_job_exit_code/2,
+    update_job_fields/2,
     allocate_job_id/0
 ]).
 
@@ -205,6 +206,19 @@ apply(_Meta, {set_job_exit_code, JobId, ExitCode}, State) ->
             {State, {error, not_found}, []}
     end;
 
+%% Update arbitrary job fields (time_limit, name, priority)
+apply(_Meta, {update_job_fields, JobId, Fields}, State) ->
+    case maps:find(JobId, State#ra_state.jobs) of
+        {ok, Job} ->
+            UpdatedJob = apply_ra_job_fields(Job, Fields),
+            NewState = State#ra_state{
+                jobs = maps:put(JobId, UpdatedJob, State#ra_state.jobs)
+            },
+            {NewState, ok, []};
+        error ->
+            {State, {error, not_found}, []}
+    end;
+
 %% Register a node
 apply(_Meta, {register_node, #ra_node_spec{} = NodeSpec}, State) ->
     NodeName = NodeSpec#ra_node_spec.name,
@@ -366,6 +380,11 @@ allocate_job(JobId, Nodes) when is_integer(JobId), is_list(Nodes) ->
 -spec set_job_exit_code(job_id(), integer()) -> ok | {error, term()}.
 set_job_exit_code(JobId, ExitCode) when is_integer(JobId), is_integer(ExitCode) ->
     ra_command({set_job_exit_code, JobId, ExitCode}).
+
+%% @doc Update arbitrary fields on a job (time_limit, name, priority).
+-spec update_job_fields(job_id(), map()) -> ok | {error, term()}.
+update_job_fields(JobId, Fields) when is_integer(JobId), is_map(Fields) ->
+    ra_command({update_job_fields, JobId, Fields}).
 
 %% @doc Register a compute node.
 -spec register_node(#ra_node_spec{}) -> {ok, registered | updated} | {error, term()}.
@@ -616,6 +635,16 @@ make_partition_record(#ra_partition_spec{} = Spec) ->
         max_nodes = Spec#ra_partition_spec.max_nodes,
         priority = Spec#ra_partition_spec.priority
     }.
+
+%% @private
+%% Apply a map of field updates to an ra_job record.
+apply_ra_job_fields(Job, Fields) ->
+    maps:fold(fun
+        (time_limit, V, J) -> J#ra_job{time_limit = V};
+        (name, V, J) -> J#ra_job{name = V};
+        (priority, V, J) -> J#ra_job{priority = V};
+        (_, _, J) -> J
+    end, Job, Fields).
 
 %% @private
 %% Update a job record with a new state.

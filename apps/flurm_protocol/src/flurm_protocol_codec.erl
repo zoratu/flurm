@@ -1343,11 +1343,22 @@ decode_batch_job_request(Binary) ->
 
 %% Pattern-based decoder that scans for key fields in the message
 decode_batch_job_request_scan(Binary) ->
-    %% Find job name - it's a length-prefixed string typically around offset 58-70
-    Name = find_job_name(Binary),
+    %% Find job name - try protocol binary first, then SBATCH directive, then env var
+    ProtoName = find_job_name(Binary),
 
     %% Find the script by looking for "#!/" shebang
     Script = find_script(Binary),
+
+    %% Try to extract job name from #SBATCH --job-name directive in script
+    ScriptName = extract_job_name_from_script(Script),
+    %% Also try SBATCH_JOB_NAME environment variable in the binary
+    EnvName = extract_env_str(Binary, <<"SBATCH_JOB_NAME=">>),
+    %% Priority: protocol binary name (most reliable) > env var > script directive
+    Name = case ProtoName of
+        <<>> -> first_nonempty([EnvName, ScriptName, <<"unknown">>]);
+        <<"unknown">> -> first_nonempty([EnvName, ScriptName, ProtoName]);
+        _ -> ProtoName
+    end,
 
     %% Debug: Log extracted script info
     ScriptLen = byte_size(Script),
@@ -1453,7 +1464,8 @@ decode_batch_job_request_scan(Binary) ->
         num_tasks = NumTasks,
         cpus_per_task = max(1, CpusPerTask),
         time_limit = TimeLimit,
-        priority = 0,
+        priority = extract_priority_from_binary(Binary),
+        dependency = extract_dependency_from_binary(Binary),
         user_id = UserId,
         group_id = GroupId,
         std_out = StdOut,
@@ -1549,6 +1561,77 @@ extract_path(Binary, Pos) when Pos < byte_size(Binary) ->
 extract_path(Binary, Pos) ->
     <<Path:Pos/binary, _/binary>> = Binary,
     Path.
+
+%% Extract priority from the SLURM job_desc_msg_t binary.
+%% Walks the packed structure to skip variable-length strings, then reads
+%% priority at a fixed offset (51 bytes) after the name field.
+%%
+%% Field order: site_factor:32, batch_features:str, cluster_features:str,
+%%   clusters:str, contiguous:16, container:str, core_spec:16, task_dist:32,
+%%   kill_on_node_fail:16, features:str, fed_siblings_active:64,
+%%   fed_siblings_viable:64, job_id:32, job_id_str:str, name:str,
+%%   [51 bytes of fixed fields], priority:32
+extract_priority_from_binary(Binary) when byte_size(Binary) >= 200 ->
+    try
+        %% Walk to end of name field (same as update decoder)
+        <<_SiteFactor:32/big, R0/binary>> = Binary,
+        {R1, _} = skip_packstr(R0),   % batch_features
+        {R2, _} = skip_packstr(R1),   % cluster_features
+        {R3, _} = skip_packstr(R2),   % clusters
+        <<_Contiguous:16/big, R4/binary>> = R3,
+        {R5, _} = skip_packstr(R4),   % container
+        <<_CoreSpec:16/big, _TaskDist:32/big, _KillOnFail:16/big, R6/binary>> = R5,
+        {R7, _} = skip_packstr(R6),   % features
+        <<_FedActive:64/big, _FedViable:64/big, R8/binary>> = R7,
+        <<_JobId:32/big, R9/binary>> = R8,
+        {R10, _} = skip_packstr(R9),  % job_id_str
+        {R11, _} = skip_packstr(R10), % name
+        %% After name: 51 bytes of fixed fields, then priority:32
+        case R11 of
+            <<_FixedFields:51/binary, Priority:32/big, _/binary>> ->
+                Priority;
+            _ ->
+                ?SLURM_NO_VAL
+        end
+    catch
+        _:_ -> ?SLURM_NO_VAL
+    end;
+extract_priority_from_binary(_) ->
+    ?SLURM_NO_VAL.
+
+%% Extract dependency string from the SLURM job_desc_msg_t binary.
+%% Scans for known dependency prefixes (afterok:, afterany:, afternotok:,
+%% aftercorr:, singleton) as packed strings in the binary.
+extract_dependency_from_binary(Binary) ->
+    %% Try to find dependency patterns in the binary
+    %% Dependencies are packstr (4-byte length + content) containing text like
+    %% "afterok:1", "afterany:2", "singleton", "afterok:1,afternotok:2"
+    Patterns = [<<"afterok:">>, <<"afterany:">>, <<"afternotok:">>,
+                <<"aftercorr:">>, <<"singleton">>],
+    extract_dependency_scan(Binary, Patterns).
+
+extract_dependency_scan(_Binary, []) -> <<>>;
+extract_dependency_scan(Binary, [Pattern | Rest]) ->
+    case binary:match(Binary, Pattern) of
+        {Start, _} when Start >= 4 ->
+            %% Check if this is a packstr by reading the 4-byte length prefix
+            LenOffset = Start - 4,
+            <<_:LenOffset/binary, Len:32/big, StrStart/binary>> = Binary,
+            if
+                Len > 0, Len < 256, byte_size(StrStart) >= Len ->
+                    <<DepStr:Len/binary, _/binary>> = StrStart,
+                    %% Validate it looks like a dependency string
+                    Cleaned = strip_null(DepStr),
+                    case Cleaned of
+                        <<>> -> extract_dependency_scan(Binary, Rest);
+                        _ -> Cleaned
+                    end;
+                true ->
+                    extract_dependency_scan(Binary, Rest)
+            end;
+        _ ->
+            extract_dependency_scan(Binary, Rest)
+    end.
 
 %% Extract UID/GID from the message - these are typically near the end in fixed positions
 extract_uid_gid(Binary) when byte_size(Binary) > 100 ->
@@ -2170,6 +2253,59 @@ parse_env_int_value(<<D, Rest/binary>>, Acc) when D >= $0, D =< $9 ->
     parse_env_int_value(Rest, Acc * 10 + (D - $0));
 parse_env_int_value(_, Acc) ->
     Acc.
+
+%% Extract a string value from an environment variable in the binary.
+extract_env_str(Binary, Pattern) ->
+    case binary:match(Binary, Pattern) of
+        {Start, PLen} ->
+            <<_:Start/binary, _:PLen/binary, Rest/binary>> = Binary,
+            parse_env_str_value(Rest);
+        nomatch ->
+            <<>>
+    end.
+
+%% Parse a string from the start of a binary, stopping at null, newline, or non-printable.
+parse_env_str_value(Binary) ->
+    parse_env_str_value(Binary, <<>>).
+
+parse_env_str_value(<<>>, Acc) -> Acc;
+parse_env_str_value(<<0, _/binary>>, Acc) -> Acc;
+parse_env_str_value(<<$\n, _/binary>>, Acc) -> Acc;
+parse_env_str_value(<<C, Rest/binary>>, Acc) when C >= 32, C < 127 ->
+    parse_env_str_value(Rest, <<Acc/binary, C>>);
+parse_env_str_value(_, Acc) -> Acc.
+
+%% Extract --job-name from #SBATCH directives in script
+extract_job_name_from_script(Script) ->
+    case binary:match(Script, <<"--job-name=">>) of
+        {Start, 11} ->
+            <<_:Start/binary, "--job-name=", Rest/binary>> = Script,
+            extract_until_whitespace(Rest);
+        nomatch ->
+            case binary:match(Script, <<"-J ">>) of
+                {Start2, 3} ->
+                    <<_:Start2/binary, "-J ", Rest2/binary>> = Script,
+                    extract_until_whitespace(Rest2);
+                nomatch ->
+                    <<>>
+            end
+    end.
+
+%% Extract text until whitespace or newline
+extract_until_whitespace(Binary) ->
+    extract_until_whitespace(Binary, <<>>).
+
+extract_until_whitespace(<<>>, Acc) -> Acc;
+extract_until_whitespace(<<C, _/binary>>, Acc)
+  when C =:= $\n; C =:= $\r; C =:= $\s; C =:= $\t; C =:= 0 -> Acc;
+extract_until_whitespace(<<C, Rest/binary>>, Acc) ->
+    extract_until_whitespace(Rest, <<Acc/binary, C>>).
+
+%% Return first non-empty binary from list
+first_nonempty([]) -> <<>>;
+first_nonempty([<<>> | Rest]) -> first_nonempty(Rest);
+first_nonempty([V | _]) when is_binary(V), byte_size(V) > 0 -> V;
+first_nonempty([_ | Rest]) -> first_nonempty(Rest).
 
 %% Extract resources from #SBATCH directives
 %% Returns {Nodes, Tasks, Cpus, MemoryMb} - 0 means not specified in script
@@ -3766,14 +3902,12 @@ decode_launch_tasks_request(Binary) ->
         %% Strategy: Search for the env array, which starts with a reasonable count (20-60)
         %% followed by packstr entries starting with "HOME=" or "SLURM_"
 
-        lager:info("Rest17 first 40 bytes hex: ~s", [binary_to_hex(binary:part(Rest17, 0, min(40, byte_size(Rest17))))]),
-
         %% Find env vars position in the ENTIRE binary, not just Rest17
         %% The REQUEST_LAUNCH_TASKS format is complex and our field-by-field parsing
         %% may get misaligned. Search the original body for env vars.
         case find_env_vars_position(Binary) of
             {ok, EnvOffset} ->
-                lager:info("Found env at offset ~p in full binary", [EnvOffset]),
+                lager:debug("Found env at offset ~p in full binary", [EnvOffset]),
                 <<_Skip:EnvOffset/binary, RestFromEnv/binary>> = Binary,
 
                 %% Parse env array
@@ -4666,38 +4800,133 @@ extract_name_from_binary(Binary) ->
 %%====================================================================
 
 %% Decode REQUEST_UPDATE_JOB (4014) - scontrol update job
+%% scontrol update sends a full job_desc_msg_t packed via _pack_job_desc_msg.
+%% We decode the fields we care about using known field positions from the
+%% SLURM 22.05 wire format.
+%%
+%% The SLURM 22.05 pack order starts with:
+%%   site_factor:32, batch_features:str, cluster_features:str, clusters:str,
+%%   contiguous:16, container:str, core_spec:16, task_dist:32,
+%%   kill_on_node_fail:16, features:str, fed_siblings_active:64,
+%%   fed_siblings_viable:64, job_id:32, job_id_str:str, name:str, ...
+%%
+%% Priority is at offset (binary_size - 358) from start.
+%% TimeLimit is at offset (binary_size - 179) from start.
+%% These offsets from end are stable because all fields after the variable-
+%% length strings near the beginning have fixed sizes.
 decode_update_job_request(Binary) ->
     try
-        case Binary of
-            <<JobId:32/big, Rest/binary>> when JobId > 0 ->
-                Priority = extract_update_field(Rest, priority),
-                TimeLimit = extract_update_field(Rest, time_limit),
-                Requeue = extract_update_field(Rest, requeue),
-                {ok, #update_job_request{
-                    job_id = JobId,
-                    priority = Priority,
-                    time_limit = TimeLimit,
-                    requeue = Requeue
-                }};
-            _ ->
-                case flurm_protocol_pack:unpack_string(Binary) of
-                    {ok, JobIdStr, _Rest} when byte_size(JobIdStr) > 0 ->
-                        JobId = parse_job_id(JobIdStr),
-                        {ok, #update_job_request{
-                            job_id = JobId,
-                            job_id_str = ensure_binary(JobIdStr)
-                        }};
-                    _ ->
-                        {ok, #update_job_request{}}
-                end
-        end
+        decode_update_job_request_walk(Binary)
     catch
         _:Reason ->
+            lager:error("update_job decode failed: ~p", [Reason]),
             {error, {update_job_decode_failed, Reason}}
     end.
 
-extract_update_field(_Binary, _Field) ->
-    ?SLURM_NO_VAL.
+decode_update_job_request_walk(Binary) when byte_size(Binary) < 64 ->
+    %% Too small to be a valid job_desc_msg_t, try string-based fallback
+    case flurm_protocol_pack:unpack_string(Binary) of
+        {ok, JobIdStr, _Rest} when byte_size(JobIdStr) > 0 ->
+            JobId = parse_job_id(JobIdStr),
+            {ok, #update_job_request{
+                job_id = JobId,
+                job_id_str = ensure_binary(JobIdStr)
+            }};
+        _ ->
+            {ok, #update_job_request{}}
+    end;
+decode_update_job_request_walk(Binary) ->
+    Size = byte_size(Binary),
+
+    %% Walk the beginning of the packed structure to extract
+    %% job_id_str and name (variable-length string fields)
+    %%
+    %% Field order: site_factor:32, batch_features:str,
+    %%   cluster_features:str, clusters:str, contiguous:16,
+    %%   container:str, core_spec:16, task_dist:32,
+    %%   kill_on_node_fail:16, features:str,
+    %%   fed_siblings_active:64, fed_siblings_viable:64,
+    %%   job_id:32, job_id_str:str, name:str
+
+    %% Skip: site_factor(4) = 4 bytes
+    <<_SiteFactor:32/big, Rest0/binary>> = Binary,
+
+    %% Skip: batch_features(str), cluster_features(str), clusters(str)
+    {Rest1, _} = skip_packstr(Rest0),
+    {Rest2, _} = skip_packstr(Rest1),
+    {Rest3, _} = skip_packstr(Rest2),
+
+    %% Skip: contiguous(2)
+    <<_Contiguous:16/big, Rest4/binary>> = Rest3,
+
+    %% Skip: container(str)
+    {Rest5, _} = skip_packstr(Rest4),
+
+    %% Skip: core_spec(2), task_dist(4), kill_on_node_fail(2)
+    <<_CoreSpec:16/big, _TaskDist:32/big, _KillOnFail:16/big, Rest6/binary>> = Rest5,
+
+    %% Skip: features(str)
+    {Rest7, _} = skip_packstr(Rest6),
+
+    %% Skip: fed_siblings_active(8), fed_siblings_viable(8)
+    <<_FedActive:64/big, _FedViable:64/big, Rest8/binary>> = Rest7,
+
+    %% Read: job_id(4)
+    <<PackedJobId:32/big, Rest9/binary>> = Rest8,
+
+    %% Read: job_id_str(str)
+    {Rest10, JobIdStr} = skip_packstr(Rest9),
+
+    %% Read: name(str)
+    {_Rest11, Name} = skip_packstr(Rest10),
+
+    %% Determine actual job_id
+    JobId = case PackedJobId of
+        16#FFFFFFFE ->
+            %% NO_VAL - get from job_id_str
+            case JobIdStr of
+                <<>> -> 0;
+                _ -> parse_job_id(JobIdStr)
+            end;
+        _ -> PackedJobId
+    end,
+
+    %% Extract priority and time_limit from fixed offsets from end
+    %% These are stable because all fields after the variable-length
+    %% strings at the beginning have fixed total size.
+    PriorityOffset = Size - 358,
+    TimeLimitOffset = Size - 179,
+
+    Priority = case PriorityOffset >= 0 andalso PriorityOffset + 4 =< Size of
+        true ->
+            <<_:PriorityOffset/binary, P:32/big, _/binary>> = Binary,
+            P;
+        false -> ?SLURM_NO_VAL
+    end,
+
+    TimeLimit = case TimeLimitOffset >= 0 andalso TimeLimitOffset + 4 =< Size of
+        true ->
+            <<_:TimeLimitOffset/binary, T:32/big, _/binary>> = Binary,
+            T;
+        false -> ?SLURM_NO_VAL
+    end,
+
+    %% Strip null terminators from strings
+    CleanName = strip_null(Name),
+    CleanJobIdStr = strip_null(JobIdStr),
+
+    lager:info("UPDATE_JOB decoded: job_id=~p, job_id_str=~s, name=~s, "
+               "priority=~p, time_limit=~p",
+               [JobId, CleanJobIdStr, CleanName, Priority, TimeLimit]),
+
+    {ok, #update_job_request{
+        job_id = JobId,
+        job_id_str = CleanJobIdStr,
+        priority = Priority,
+        time_limit = TimeLimit,
+        name = CleanName
+    }}.
+
 
 %% Decode REQUEST_JOB_WILL_RUN (4012) - sbatch --test-only
 decode_job_will_run_request(Binary) ->

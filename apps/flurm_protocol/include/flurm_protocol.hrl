@@ -651,6 +651,7 @@
 -record(update_job_request, {
     job_id = 0 :: non_neg_integer(),
     job_id_str = <<>> :: binary(),
+    name = <<>> :: binary(),
     priority = ?SLURM_NO_VAL :: non_neg_integer(),  % 0 = hold, other = release
     time_limit = ?SLURM_NO_VAL :: non_neg_integer(),
     partition = <<>> :: binary(),

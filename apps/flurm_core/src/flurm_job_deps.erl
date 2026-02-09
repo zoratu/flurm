@@ -448,8 +448,10 @@ do_add_dependencies(JobId, Deps) ->
             Results = [do_add_dependency(JobId, Type, Target) || {Type, Target} <- Deps],
             case lists:all(fun(R) -> R =:= ok end, Results) of
                 true ->
-                    %% After adding dependencies, check if job should be held
-                    hold_for_dependencies(JobId),
+                    %% Note: The caller (job manager) is responsible for holding
+                    %% the job if needed. We do NOT call hold_for_dependencies
+                    %% here to avoid gen_server self-call deadlock when called
+                    %% from within flurm_job_manager:handle_call.
                     ok;
                 false ->
                     %% Find first error

@@ -324,11 +324,11 @@ handle_call({hold_job, JobId}, _From, #state{jobs = Jobs} = State) ->
 handle_call({release_job, JobId}, _From, #state{jobs = Jobs} = State) ->
     case maps:find(JobId, Jobs) of
         {ok, #job{state = held} = Job} ->
-            %% Release held job back to pending
-            UpdatedJob = Job#job{state = pending},
+            %% Release held job back to pending, restore default priority
+            UpdatedJob = Job#job{state = pending, priority = 100},
             NewJobs = maps:put(JobId, UpdatedJob, Jobs),
-            lager:info("Job ~p released", [JobId]),
-            persist_job_update(JobId, #{state => pending}),
+            lager:info("Job ~p released (priority restored to 100)", [JobId]),
+            persist_job_update(JobId, #{state => pending, priority => 100}),
             %% Notify scheduler about released job
             flurm_scheduler:submit_job(JobId),
             {reply, ok, State#state{jobs = NewJobs}};
@@ -526,6 +526,39 @@ handle_info(check_message_queue, State) ->
     TimerRef = erlang:send_after(?QUEUE_CHECK_INTERVAL, self(), check_message_queue),
     {noreply, State#state{queue_check_timer = TimerRef}};
 
+handle_info({register_deps_async, JobId, DepSpec}, State) ->
+    %% Spawn a separate process to register dependencies.
+    %% This MUST run in a spawned process because flurm_job_deps:add_dependencies
+    %% calls get_job_state which calls flurm_job_manager:get_job - deadlock
+    %% if done from within the job_manager process (even from handle_info).
+    spawn(fun() ->
+        case catch flurm_job_deps:add_dependencies(JobId, DepSpec) of
+            ok ->
+                %% Check if deps are already satisfied (target job already completed)
+                case catch flurm_job_deps:check_dependencies(JobId) of
+                    {ok, []} ->
+                        %% All deps already satisfied, release the job
+                        lager:info("Job ~p deps already satisfied, releasing", [JobId]),
+                        catch flurm_job_manager:release_job(JobId);
+                    {waiting, Deps} ->
+                        lager:info("Job ~p waiting on ~p dependencies", [JobId, length(Deps)]);
+                    {'EXIT', _} ->
+                        ok
+                end;
+            {error, Reason} ->
+                lager:warning("Failed to register deps for job ~p: ~p", [JobId, Reason]),
+                %% Release the job if dep registration failed
+                catch flurm_job_manager:release_job(JobId);
+            {'EXIT', {noproc, _}} ->
+                lager:warning("flurm_job_deps not running, releasing job ~p", [JobId]),
+                catch flurm_job_manager:release_job(JobId);
+            {'EXIT', Reason} ->
+                lager:warning("Error registering deps for job ~p: ~p", [JobId, Reason]),
+                catch flurm_job_manager:release_job(JobId)
+        end
+    end),
+    {noreply, State};
+
 handle_info(_Info, State) ->
     {noreply, State}.
 
@@ -586,7 +619,7 @@ submit_regular_job(JobSpec, Jobs, Counter, State) ->
                 ok ->
                     %% Check for dependency specification and validate before creating job
                     DepSpec = maps:get(dependency, JobSpec, <<>>),
-                    case validate_dependencies(Counter, DepSpec) of
+                    case validate_dependencies(Counter, DepSpec, Jobs) of
                         ok ->
                             %% Dependencies valid, create the job with the next available ID
                             JobSpecWithLicenses = JobSpec#{licenses => Licenses},
@@ -609,10 +642,12 @@ submit_regular_job(JobSpec, Jobs, Counter, State) ->
 
                             %% Check if this is an interactive job (srun)
                             IsInteractive = maps:get(interactive, JobSpec, false),
+                            %% Check if job submitted with --hold (priority=0)
+                            IsHeld = Job#job.state =:= held,
 
-                            %% Notify scheduler about new job (unless interactive or held for dependencies)
-                            FinalJobs = case {IsInteractive, HasDeps} of
-                                {true, _} ->
+                            %% Notify scheduler about new job (unless interactive, held, or held for dependencies)
+                            FinalJobs = case {IsInteractive, IsHeld, HasDeps} of
+                                {true, _, _} ->
                                     %% Interactive job (srun) - immediately allocate and start
                                     %% srun expects the job to be RUNNING with allocated nodes
                                     Now = erlang:system_time(second),
@@ -638,15 +673,20 @@ submit_regular_job(JobSpec, Jobs, Counter, State) ->
                                     %% Persist the updated job
                                     persist_job(RunningJob),
                                     maps:put(JobId, RunningJob, Jobs);
-                                {false, true} ->
-                                    %% Job has dependencies - it will be held
-                                    %% and released when deps are satisfied
-                                    lager:info("Job ~p has dependencies, held pending", [JobId]),
-                                    %% Still submit to scheduler queue but it will be skipped
-                                    %% until dependencies are satisfied
-                                    flurm_scheduler:submit_job(JobId),
+                                {false, true, _} ->
+                                    %% Job submitted with --hold (priority=0)
+                                    %% Keep in held state, do not submit to scheduler
+                                    lager:info("Job ~p submitted with --hold, state=held", [JobId]),
+                                    persist_job_update(JobId, #{state => held}),
                                     NewJobs;
-                                {false, false} ->
+                                {false, false, true} ->
+                                    %% Job has dependencies - hold it until deps are satisfied
+                                    %% flurm_job_deps will call release_job when ready
+                                    lager:info("Job ~p has dependencies, holding pending deps", [JobId]),
+                                    HeldJob = Job#job{state = held},
+                                    persist_job_update(JobId, #{state => held}),
+                                    maps:put(JobId, HeldJob, Jobs);
+                                {false, false, false} ->
                                     %% No dependencies, submit to scheduler immediately
                                     flurm_scheduler:submit_job(JobId),
                                     NewJobs
@@ -788,12 +828,18 @@ create_job(JobId, JobSpec) ->
         <<>> -> DefaultOut;
         Path -> Path
     end,
+    %% Priority=0 means job was submitted with --hold flag
+    Priority = maps:get(priority, JobSpec, 100),
+    InitialState = case Priority of
+        0 -> held;
+        _ -> pending
+    end,
     #job{
         id = JobId,
         name = maps:get(name, JobSpec, <<"unnamed">>),
         user = maps:get(user, JobSpec, <<"unknown">>),
         partition = maps:get(partition, JobSpec, <<"default">>),
-        state = pending,
+        state = InitialState,
         script = maps:get(script, JobSpec, <<>>),
         num_nodes = maps:get(num_nodes, JobSpec, 1),
         num_cpus = maps:get(num_cpus, JobSpec, 1),
@@ -851,6 +897,7 @@ apply_job_updates(Job, Updates) ->
         (exit_code, Value, J) -> J#job{exit_code = Value};
         (priority, Value, J) -> J#job{priority = Value};
         (time_limit, Value, J) -> J#job{time_limit = Value};
+        (name, Value, J) -> J#job{name = Value};
         (prolog_status, Value, J) -> J#job{prolog_status = Value};
         (epilog_status, Value, J) -> J#job{epilog_status = Value};
         (_, _, J) -> J
@@ -877,16 +924,16 @@ build_limit_check_spec(JobSpec) ->
 %% Validate dependencies before job submission
 %% Checks for circular dependencies and that target jobs exist (for non-singleton deps)
 %% Returns ok if valid, {error, Reason} if invalid
--spec validate_dependencies(job_id(), binary()) -> ok | {error, term()}.
-validate_dependencies(_JobId, <<>>) ->
+-spec validate_dependencies(job_id(), binary(), map()) -> ok | {error, term()}.
+validate_dependencies(_JobId, <<>>, _Jobs) ->
     ok;
-validate_dependencies(JobId, DepSpec) when is_binary(DepSpec) ->
+validate_dependencies(JobId, DepSpec, Jobs) when is_binary(DepSpec) ->
     case catch flurm_job_deps:parse_dependency_spec(DepSpec) of
         {ok, []} ->
             ok;
         {ok, Deps} ->
             %% Check each dependency
-            validate_dependency_list(JobId, Deps);
+            validate_dependency_list(JobId, Deps, Jobs);
         {error, ParseError} ->
             {error, {parse_error, ParseError}};
         {'EXIT', {noproc, _}} ->
@@ -898,12 +945,12 @@ validate_dependencies(JobId, DepSpec) when is_binary(DepSpec) ->
 
 %% @private
 %% Validate a list of parsed dependencies
-validate_dependency_list(_JobId, []) ->
+validate_dependency_list(_JobId, [], _Jobs) ->
     ok;
-validate_dependency_list(JobId, [{DepType, Target} | Rest]) ->
-    case validate_single_dependency(JobId, DepType, Target) of
+validate_dependency_list(JobId, [{DepType, Target} | Rest], Jobs) ->
+    case validate_single_dependency(JobId, DepType, Target, Jobs) of
         ok ->
-            validate_dependency_list(JobId, Rest);
+            validate_dependency_list(JobId, Rest, Jobs);
         {error, _} = Error ->
             Error
     end.
@@ -911,12 +958,13 @@ validate_dependency_list(JobId, [{DepType, Target} | Rest]) ->
 %% @private
 %% Validate a single dependency
 %% Checks for circular dependencies and that target job exists
-validate_single_dependency(_JobId, singleton, _Name) ->
+%% Uses the in-memory Jobs map to avoid gen_server self-call deadlock
+validate_single_dependency(_JobId, singleton, _Name, _Jobs) ->
     %% Singleton dependencies are always valid at submission time
     ok;
-validate_single_dependency(JobId, _DepType, TargetJobId) when is_integer(TargetJobId) ->
-    %% Check that target job exists
-    case get_job(TargetJobId) of
+validate_single_dependency(JobId, _DepType, TargetJobId, Jobs) when is_integer(TargetJobId) ->
+    %% Check that target job exists using in-memory map (not gen_server call)
+    case maps:find(TargetJobId, Jobs) of
         {ok, _Job} ->
             %% Target exists, check for circular dependency
             case catch flurm_job_deps:has_circular_dependency(JobId, TargetJobId) of
@@ -928,13 +976,17 @@ validate_single_dependency(JobId, _DepType, TargetJobId) when is_integer(TargetJ
                     %% flurm_job_deps not available, skip cycle check
                     ok
             end;
-        {error, not_found} ->
-            %% Target job doesn't exist
-            {error, {dependency_not_found, TargetJobId}}
+        error ->
+            %% Target job doesn't exist - but it may be in Ra persistence
+            %% Try a direct DB lookup as fallback
+            case catch flurm_db_persist:get_job(TargetJobId) of
+                {ok, _} -> ok;
+                _ -> {error, {dependency_not_found, TargetJobId}}
+            end
     end;
-validate_single_dependency(JobId, DepType, Targets) when is_list(Targets) ->
+validate_single_dependency(JobId, DepType, Targets, Jobs) when is_list(Targets) ->
     %% Multiple targets (job+job+job syntax)
-    Results = [validate_single_dependency(JobId, DepType, T) || T <- Targets],
+    Results = [validate_single_dependency(JobId, DepType, T, Jobs) || T <- Targets],
     case lists:filter(fun(R) -> R =/= ok end, Results) of
         [] -> ok;
         [Error | _] -> Error
@@ -947,31 +999,12 @@ validate_single_dependency(JobId, DepType, Targets) when is_list(Targets) ->
 register_job_dependencies(_JobId, <<>>) ->
     false;
 register_job_dependencies(JobId, DepSpec) when is_binary(DepSpec) ->
-    case catch flurm_job_deps:add_dependencies(JobId, DepSpec) of
-        ok ->
-            %% Check if there are unsatisfied dependencies
-            case catch flurm_job_deps:check_dependencies(JobId) of
-                {ok, []} ->
-                    %% All dependencies already satisfied
-                    lager:info("Job ~p dependencies already satisfied", [JobId]),
-                    false;
-                {waiting, Deps} ->
-                    lager:info("Job ~p waiting on ~p dependencies", [JobId, length(Deps)]),
-                    true;
-                {'EXIT', _} ->
-                    false
-            end;
-        {error, Reason} ->
-            lager:warning("Failed to register dependencies for job ~p: ~p", [JobId, Reason]),
-            false;
-        {'EXIT', {noproc, _}} ->
-            %% flurm_job_deps not running
-            lager:warning("flurm_job_deps not running, ignoring dependencies for job ~p", [JobId]),
-            false;
-        {'EXIT', Reason} ->
-            lager:warning("Error registering dependencies for job ~p: ~p", [JobId, Reason]),
-            false
-    end.
+    %% Schedule async registration to avoid gen_server self-call deadlock.
+    %% flurm_job_deps:add_dependencies calls get_job_state which calls
+    %% flurm_job_manager:get_job - deadlock if called from within handle_call.
+    %% The caller (submit_regular_job) will hold the job if we return true.
+    self() ! {register_deps_async, JobId, DepSpec},
+    true.
 
 %% @private
 %% Notify flurm_job_deps about a job state change
@@ -994,16 +1027,18 @@ notify_job_deps_state_change(JobId, NewState) ->
 %% Removes all dependencies this job had on other jobs
 -spec cleanup_job_dependencies(job_id()) -> ok.
 cleanup_job_dependencies(JobId) ->
-    case catch flurm_job_deps:remove_all_dependencies(JobId) of
-        ok -> ok;
-        {'EXIT', {noproc, _}} ->
-            %% flurm_job_deps not running, ignore
-            ok;
-        {'EXIT', Reason} ->
-            lager:warning("Failed to cleanup dependencies for job ~p: ~p",
-                         [JobId, Reason]),
-            ok
-    end.
+    %% Use cast to avoid potential deadlock when called from handle_call
+    spawn(fun() ->
+        case catch flurm_job_deps:remove_all_dependencies(JobId) of
+            ok -> ok;
+            {'EXIT', {noproc, _}} -> ok;
+            {'EXIT', Reason} ->
+                lager:warning("Failed to cleanup dependencies for job ~p: ~p",
+                             [JobId, Reason]),
+                ok
+        end
+    end),
+    ok.
 
 %% @private
 %% Release resources back to nodes when a job completes/fails/times out

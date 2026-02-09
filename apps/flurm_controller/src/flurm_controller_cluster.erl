@@ -575,8 +575,8 @@ handle_local_operation(list_jobs, _Args) ->
 handle_local_operation(update_job, {JobId, Updates}) ->
     flurm_job_manager:update_job(JobId, Updates);
 
-handle_local_operation(update_job_ext, {JobId, Priority, TimeLimit, Requeue}) ->
-    flurm_controller_handler:execute_job_update(JobId, Priority, TimeLimit, Requeue);
+handle_local_operation(update_job_ext, {JobId, Priority, TimeLimit, Requeue, Name}) ->
+    flurm_controller_handler:execute_job_update(JobId, Priority, TimeLimit, Requeue, Name);
 
 handle_local_operation(hold_job, JobId) ->
     flurm_job_manager:hold_job(JobId);
