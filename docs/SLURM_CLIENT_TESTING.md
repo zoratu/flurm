@@ -126,6 +126,18 @@ Body: 12 bytes
 | 4006 | REQUEST_CANCEL_JOB | Cancel job (scancel) |
 | 8001 | RESPONSE_SLURM_RC | Generic return code |
 
+## Automated Compatibility Test Suite
+
+FLURM now includes an automated SLURM compatibility test suite with **105/108 tests passing** (3 expected skips). The tests are derived from the [SchedMD SLURM testsuite](https://github.com/SchedMD/slurm/tree/master/testsuite) and cover sinfo, sbatch, squeue, scontrol, and scancel.
+
+```bash
+# Run in Docker
+cd docker && docker compose up -d
+./slurm_compat_tests.sh
+```
+
+See [SLURM Compatibility Testing](SLURM_COMPAT_TESTING.md) for full details.
+
 ## Known Compatibility Issues
 
 1. **Authentication**: Real SLURM clients expect Munge authentication by default. Use `AuthType=auth/none` for testing.

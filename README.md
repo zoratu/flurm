@@ -8,6 +8,7 @@ An Erlang-based, SLURM-compatible job scheduler designed for high availability, 
 [![Erlang/OTP](https://img.shields.io/badge/Erlang%2FOTP-28-red.svg)](https://www.erlang.org/)
 [![Tests](https://img.shields.io/badge/Tests-2400%2B%20passing-brightgreen.svg)](docs/COVERAGE.md)
 [![Integration](https://img.shields.io/badge/Integration-22%2F22%20passing-brightgreen.svg)](docs/COVERAGE.md)
+[![SLURM Compat](https://img.shields.io/badge/SLURM%20Compat-105%2F108%20passing-brightgreen.svg)](docs/SLURM_COMPAT_TESTING.md)
 [![Made with Claude](https://img.shields.io/badge/Made%20with-Claude%20AI-blueviolet.svg)](https://claude.ai)
 
 > **Note**: This project was developed with the assistance of generative AI (Claude by Anthropic). The architecture, code, documentation, and TLA+ specifications were created through AI-assisted development.
@@ -18,6 +19,7 @@ An Erlang-based, SLURM-compatible job scheduler designed for high availability, 
 |-----------|--------|
 | Unit Tests | 2400+ passing |
 | Integration Tests | 22/22 passing |
+| SLURM Compatibility | 105/108 passing (3 expected skips) |
 | Protocol Fuzzing | 33K+ property tests |
 | TLA+ Verification | All specs pass |
 | Performance | Benchmarked (see docs/BENCHMARKS.md) |
@@ -192,6 +194,7 @@ flowchart TB
 
 ### Testing & Performance
 - [Testing Guide](docs/testing.md) - How to test FLURM
+- [SLURM Compatibility Testing](docs/SLURM_COMPAT_TESTING.md) - **105/108 SLURM-native tests passing**
 - [SLURM Client Testing](docs/SLURM_CLIENT_TESTING.md) - Testing with real SLURM clients
 - [Benchmarks](docs/BENCHMARKS.md) - Performance benchmarks and results
 - [Code Coverage](docs/COVERAGE.md) - Coverage strategy and targets
@@ -219,6 +222,7 @@ FLURM is currently in **active development** (February 2026). Phase 7-8 implemen
 
 ### Testing & Verification
 - [x] Unit test suite (2400+ tests)
+- [x] SLURM compatibility test suite (105/108 tests passing, 3 expected skips)
 - [x] Protocol fuzzing (33K+ PropEr property tests)
 - [x] Deterministic simulation framework (FoundationDB-style)
 - [x] Performance benchmarks (3M+ ops/sec job submission)
@@ -241,6 +245,31 @@ FLURM is currently in **active development** (February 2026). Phase 7-8 implemen
 - [ ] Kubernetes operator deployment
 - [ ] SPANK plugin compatibility layer
 - [ ] Integration test coverage for core modules
+
+## SLURM Compatibility Test Results
+
+FLURM passes **105 out of 108** SLURM-native compatibility tests derived from the [SchedMD SLURM testsuite](https://github.com/SchedMD/slurm/tree/master/testsuite). Tests cover all major SLURM CLI tools using real SLURM clients against a FLURM Docker cluster:
+
+| Test Category | Tests | Status |
+|---------------|-------|--------|
+| sinfo output and formatting | 10 | All pass |
+| sbatch submission and options | 16 | All pass |
+| squeue output and filtering | 16 | All pass |
+| scontrol show job/partition/node | 13 | 11 pass, 2 skip |
+| scancel job cancellation | 7 | All pass |
+| Job lifecycle (pending/running/completed) | 6 | All pass |
+| Resource scheduling (CPU/memory) | 6 | All pass |
+| Stress tests (concurrent submissions) | 5 | All pass |
+| Node resource tracking | 5 | All pass |
+| Edge cases (empty queues, invalid jobs) | 10 | All pass |
+| SBATCH directives (#SBATCH parsing) | 4 | All pass |
+| Time limit formats (HH:MM:SS, D-HH:MM:SS) | 4 | All pass |
+| Node detail tracking | 4 | 3 pass, 1 skip |
+| Mixed workload | 2 | All pass |
+
+**3 expected skips**: `--output` path display, `scontrol hold`, and `scontrol update JobName` (not yet implemented).
+
+The test suite runs automatically in the pre-commit hook when Docker containers are running. See [SLURM Compatibility Testing](docs/SLURM_COMPAT_TESTING.md) for details.
 
 ## Known Limitations
 

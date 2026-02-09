@@ -17,8 +17,9 @@ This comprehensive guide covers all aspects of testing FLURM, from running basic
 
 | Metric | Value |
 |--------|-------|
-| **EUnit Tests** | 2300+ |
+| **EUnit Tests** | 2400+ |
 | **Integration Tests (CT)** | 52 (50 pass, 2 expected skips) |
+| **SLURM Compatibility Tests** | 105/108 passing (3 expected skips) |
 | **Test Pass Rate** | 100% (of runnable tests) |
 | **Coverage** | 6% overall (see [COVERAGE.md](COVERAGE.md) for details) |
 
@@ -394,6 +395,22 @@ flurm_cluster_tests:test_controller_failover().
 flurm_cluster_tests:test_job_distribution().
 flurm_cluster_tests:test_node_failure_recovery().
 ```
+
+## SLURM Compatibility Tests
+
+FLURM includes a 108-test compatibility suite derived from the [SchedMD SLURM testsuite](https://github.com/SchedMD/slurm/tree/master/testsuite). These tests use real SLURM CLI clients against a FLURM Docker cluster to verify behavioral compatibility with sinfo, sbatch, squeue, scontrol, and scancel.
+
+```bash
+# Start Docker cluster
+cd docker && docker compose up -d
+
+# Run the full SLURM compatibility suite
+./slurm_compat_tests.sh
+```
+
+**Results**: 105/108 passing, 0 failing, 3 expected skips (features not yet implemented).
+
+See [SLURM Compatibility Testing](SLURM_COMPAT_TESTING.md) for full details.
 
 ## Docker-Based Integration Tests
 
