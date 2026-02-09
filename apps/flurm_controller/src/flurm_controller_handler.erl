@@ -1442,6 +1442,8 @@ batch_request_to_job_spec(#batch_job_request{} = Req) ->
         partition => default_partition(Req#batch_job_request.partition),
         num_nodes => max(1, Req#batch_job_request.min_nodes),
         num_cpus => max(1, Req#batch_job_request.min_cpus),
+        num_tasks => max(1, Req#batch_job_request.num_tasks),
+        cpus_per_task => max(1, Req#batch_job_request.cpus_per_task),
         memory_mb => case Req#batch_job_request.min_mem_per_node of
             M when M > 0 -> M;
             _ -> 256  % Default 256 MB for container compatibility
@@ -1620,8 +1622,8 @@ job_to_job_info(#job{} = Job) ->
         partition = ensure_binary(Job#job.partition),
         num_nodes = max(1, Job#job.num_nodes),
         num_cpus = max(1, Job#job.num_cpus),
-        num_tasks = 1,
-        time_limit = Job#job.time_limit,
+        num_tasks = max(1, Job#job.num_tasks),
+        time_limit = max(1, Job#job.time_limit div 60),  % Internal seconds -> protocol minutes
         priority = Job#job.priority,
         submit_time = Job#job.submit_time,
         start_time = default_time(Job#job.start_time),
@@ -1637,7 +1639,7 @@ job_to_job_info(#job{} = Job) ->
         min_cpus = max(1, Job#job.num_cpus),
         max_cpus = max(1, Job#job.num_cpus),
         max_nodes = max(1, Job#job.num_nodes),
-        cpus_per_task = 1,
+        cpus_per_task = max(1, Job#job.cpus_per_task),
         pn_min_cpus = 1,
         %% Default/empty values for remaining fields (MUST be present for protocol)
         account = Job#job.account,
@@ -1739,6 +1741,14 @@ job_to_job_info(#job{} = Job) ->
 %% @doc Convert internal node record to SLURM node_info record
 -spec node_to_node_info(#node{}) -> #node_info{}.
 node_to_node_info(#node{} = Node) ->
+    %% Calculate allocated CPUs and memory from the allocations map
+    Allocs = case Node#node.allocations of
+        M when is_map(M) -> M;
+        _ -> #{}
+    end,
+    {AllocCpus, AllocMem} = maps:fold(
+        fun(_JobId, {Cpus, Mem}, {AccC, AccM}) -> {AccC + Cpus, AccM + Mem} end,
+        {0, 0}, Allocs),
     #node_info{
         name = Node#node.hostname,
         node_hostname = Node#node.hostname,
@@ -1747,7 +1757,9 @@ node_to_node_info(#node{} = Node) ->
         node_state = node_state_to_slurm(Node#node.state),
         cpus = Node#node.cpus,
         real_memory = Node#node.memory_mb,
-        free_mem = Node#node.free_memory_mb,
+        free_mem = max(0, Node#node.memory_mb - AllocMem),
+        alloc_cpus = AllocCpus,
+        alloc_memory = AllocMem,
         cpu_load = trunc(Node#node.load_avg * 100),
         features = format_features(Node#node.features),
         partitions = format_partitions(Node#node.partitions),

@@ -48,6 +48,8 @@
     script :: binary(),
     num_nodes :: pos_integer(),
     num_cpus :: pos_integer(),
+    num_tasks = 1 :: pos_integer(),        % Number of tasks (-n/--ntasks)
+    cpus_per_task = 1 :: pos_integer(),    % CPUs per task (-c/--cpus-per-task)
     memory_mb :: pos_integer(),
     time_limit :: pos_integer(),       % seconds
     priority :: non_neg_integer(),

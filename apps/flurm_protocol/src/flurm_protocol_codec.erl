@@ -1364,42 +1364,70 @@ decode_batch_job_request_scan(Binary) ->
     %% Extract user/group IDs from known offset patterns
     {UserId, GroupId} = extract_uid_gid(Binary),
 
-    %% Extract time limit from #SBATCH directive in script if present
-    TimeLimit = extract_time_limit(Script),
+    %% Extract time limit from #SBATCH directive in script if present,
+    %% then try embedded command line for --time= or -t flags
+    ScriptTimeLimit = extract_time_limit(Script),
+    TimeLimit = case ScriptTimeLimit of
+        300 ->
+            %% Default value - try to find it in the embedded command line
+            CmdLineTimeLimit = extract_time_limit_from_cmdline(Binary),
+            case CmdLineTimeLimit of
+                0 -> 300;
+                _ -> CmdLineTimeLimit
+            end;
+        _ -> ScriptTimeLimit
+    end,
 
     %% Extract node/task/cpu/memory counts from script SBATCH directives (most reliable)
     {ScriptNodes, ScriptTasks, ScriptCpus, ScriptMemMb} = extract_resources(Script),
 
-    %% Prefer script values - they are explicitly set by user and reliably parsed.
-    %% Protocol binary scanning can misidentify values (e.g., 256 from buffer size as CPU count).
-    %% Default to 1 node and 1 CPU if not specified.
-    MinNodes = case ScriptNodes of
-        N when N > 0 -> N;
-        _ -> 1
-    end,
+    %% Also extract from SLURM environment variables in the protocol binary.
+    %% When users pass flags on the command line (e.g., sbatch --cpus-per-task=16 --wrap),
+    %% the values are NOT in the script but ARE in SLURM_* env vars within the binary.
+    {EnvNodes, EnvTasks, EnvCpus, EnvMemMb} = extract_resources_from_env(Binary),
 
-    %% For CPUs: prefer script value, then fallback to protocol scanning, then default to 1
-    MinCpus = case ScriptCpus of
-        C when C > 0 -> C;
-        _ ->
-            %% Try protocol binary as last resort (unreliable)
-            {_ProtoNodes, ProtoCpus} = extract_resources_from_protocol(Binary),
+    %% Prefer script values, then env values, then protocol scanning, then defaults.
+    %% Protocol binary scanning (last resort, unreliable)
+    {ProtoNodes, ProtoCpus} = extract_resources_from_protocol(Binary),
+
+    %% Also search the embedded command line for resource flags
+    {CmdNodes, CmdTasks, CmdCpus, CmdMemMb} = extract_resources_from_cmdline(Binary),
+    lager:debug("Resource resolution: script={~p,~p,~p,~p} env={~p,~p,~p,~p} cmd={~p,~p,~p,~p} proto={~p,~p}",
+               [ScriptNodes, ScriptTasks, ScriptCpus, ScriptMemMb,
+                EnvNodes, EnvTasks, EnvCpus, EnvMemMb,
+                CmdNodes, CmdTasks, CmdCpus, CmdMemMb,
+                ProtoNodes, ProtoCpus]),
+
+    MinNodes = first_nonzero([ScriptNodes, EnvNodes, CmdNodes, 1]),
+
+    %% CpusPerTask from explicit --cpus-per-task / -c flags
+    CpusPerTask = first_nonzero([ScriptCpus, EnvCpus, CmdCpus]),
+    NumTasks = first_nonzero([ScriptTasks, EnvTasks, CmdTasks, 1]),
+
+    %% Calculate total CPUs needed:
+    %% - If explicit --cpus-per-task given: total = num_tasks * cpus_per_task
+    %% - If only --ntasks given: total = num_tasks (1 CPU per task default)
+    %% - If neither: fall back to protocol scanner (unreliable) or 1
+    MinCpus = case CpusPerTask of
+        0 when NumTasks > 1 ->
+            %% --ntasks specified but no --cpus-per-task: 1 CPU per task
+            NumTasks;
+        0 ->
+            %% Neither ntasks nor cpus-per-task specified: try protocol scanner
             case ProtoCpus of
-                PC when PC > 0, PC < 16#FFFFFFFE, PC =< 64 -> PC;  % Only accept small values
-                _ -> 1  % Default to 1 CPU
-            end
+                PC when PC > 0, PC < 16#FFFFFFFE, PC =< 64 -> PC;
+                _ -> 1
+            end;
+        _ ->
+            %% Explicit --cpus-per-task: total = tasks * cpus_per_task
+            max(NumTasks * CpusPerTask, CpusPerTask)
     end,
 
-    NumTasks = case ScriptTasks of
-        T when T > 0 -> T;
-        _ -> 1
-    end,
+    %% Memory: use script value if specified, then env/cmd, otherwise 0 (let handler set default)
+    MinMemPerNode = first_nonzero([ScriptMemMb, EnvMemMb, CmdMemMb]),
 
-    %% Memory: use script value if specified, otherwise 0 (let handler set default)
-    MinMemPerNode = case ScriptMemMb of
-        M when M > 0 -> M;
-        _ -> 0
-    end,
+    lager:debug("Final resource values: min_nodes=~p min_cpus=~p num_tasks=~p cpus_per_task=~p min_mem=~p",
+               [MinNodes, MinCpus, NumTasks, CpusPerTask, MinMemPerNode]),
 
     %% Find stdout/stderr paths from the protocol message or script
     StdOut = find_std_out(Binary, Script, WorkDir),
@@ -1423,7 +1451,7 @@ decode_batch_job_request_scan(Binary) ->
         min_cpus = MinCpus,
         min_mem_per_node = MinMemPerNode,
         num_tasks = NumTasks,
-        cpus_per_task = 1,
+        cpus_per_task = max(1, CpusPerTask),
         time_limit = TimeLimit,
         priority = 0,
         user_id = UserId,
@@ -1670,6 +1698,22 @@ scan_for_err_path(Binary, Offset) when Offset + 10 < byte_size(Binary) ->
 scan_for_err_path(_, _) ->
     <<>>.
 
+%% Extract time limit from embedded sbatch command line in the protocol binary
+extract_time_limit_from_cmdline(Binary) ->
+    case binary:matches(Binary, <<"sbatch ">>) of
+        [] -> 0;
+        Matches -> extract_time_from_cmdline_matches(Binary, Matches)
+    end.
+
+extract_time_from_cmdline_matches(_Binary, []) -> 0;
+extract_time_from_cmdline_matches(Binary, [{Start, _} | Rest]) ->
+    <<_:Start/binary, CmdRest/binary>> = Binary,
+    CmdLine = extract_until_null(CmdRest, 0),
+    case extract_time_limit(CmdLine) of
+        300 -> extract_time_from_cmdline_matches(Binary, Rest);  % Default = not found
+        Found -> Found
+    end.
+
 %% Extract time limit from #SBATCH --time directive
 extract_time_limit(Script) ->
     case binary:match(Script, <<"--time=">>) of
@@ -1717,8 +1761,19 @@ parse_time_string(<<M1, M2, ":", S1, S2, _/binary>>)
     Minutes = (M1 - $0) * 10 + (M2 - $0),
     Seconds = (S1 - $0) * 10 + (S2 - $0),
     Minutes * 60 + Seconds;
-parse_time_string(_) ->
-    300.  % Default 5 minutes
+parse_time_string(Binary) ->
+    %% Try to parse as plain minutes (e.g., "60", "1", "120")
+    case parse_plain_minutes(Binary) of
+        0 -> 300;  % Default 5 minutes
+        Minutes -> Minutes * 60
+    end.
+
+parse_plain_minutes(Binary) ->
+    parse_plain_minutes(Binary, 0).
+parse_plain_minutes(<<D, Rest/binary>>, Acc) when D >= $0, D =< $9 ->
+    parse_plain_minutes(Rest, Acc * 10 + (D - $0));
+parse_plain_minutes(_, Acc) ->
+    Acc.
 
 parse_minutes_seconds(<<M1, M2, ":", S1, S2, _/binary>>)
   when M1 >= $0, M1 =< $9, M2 >= $0, M2 =< $9,
@@ -1993,6 +2048,96 @@ extract_short_string(<<Len:32/big, Str:Len/binary, _/binary>>, MaxLen)
 extract_short_string(_, _) ->
     <<>>.
 
+%% Extract resources from SLURM environment variables in the protocol binary.
+%% When users pass flags on the command line (e.g., sbatch --cpus-per-task=16 --wrap "sleep 30"),
+%% the SLURM client sets environment variables like SLURM_CPUS_PER_TASK=16 in the job
+%% environment embedded in the protocol binary. This is more reliable than protocol binary
+%% scanning for command-line flags that don't appear in #SBATCH script directives.
+%% Returns {Nodes, Tasks, Cpus, MemoryMb} - 0 means not found.
+extract_resources_from_env(Binary) ->
+    %% Try multiple env var patterns that sbatch may set
+    Nodes = first_nonzero([
+        extract_env_int(Binary, <<"SLURM_NNODES=">>),
+        extract_env_int(Binary, <<"SLURM_JOB_NUM_NODES=">>),
+        extract_env_int(Binary, <<"SBATCH_NODES=">>)
+    ]),
+    Tasks = first_nonzero([
+        extract_env_int(Binary, <<"SLURM_NTASKS=">>),
+        extract_env_int(Binary, <<"SBATCH_NTASKS=">>)
+    ]),
+    Cpus = first_nonzero([
+        extract_env_int(Binary, <<"SLURM_CPUS_PER_TASK=">>),
+        extract_env_int(Binary, <<"SBATCH_CPUS_PER_TASK=">>),
+        extract_env_int(Binary, <<"SLURM_CPUS_ON_NODE=">>)
+    ]),
+    MemMb = first_nonzero([
+        extract_env_int(Binary, <<"SLURM_MEM_PER_NODE=">>),
+        extract_env_int(Binary, <<"SBATCH_MEM_PER_NODE=">>)
+    ]),
+    lager:debug("extract_resources_from_env: nodes=~p tasks=~p cpus=~p mem=~p",
+               [Nodes, Tasks, Cpus, MemMb]),
+    {Nodes, Tasks, Cpus, MemMb}.
+
+first_nonzero([]) -> 0;
+first_nonzero([V | _]) when V > 0 -> V;
+first_nonzero([_ | Rest]) -> first_nonzero(Rest).
+
+%% Extract resources from the embedded sbatch command line in the protocol binary.
+%% SLURM embeds the full command line (e.g., "sbatch -N3 --cpus-per-task=16 --wrap sleep 10")
+%% as a packstr in the batch job request binary.
+extract_resources_from_cmdline(Binary) ->
+    %% Find all occurrences of "sbatch " in the binary
+    case binary:matches(Binary, <<"sbatch ">>) of
+        [] ->
+            {0, 0, 0, 0};
+        Matches ->
+            %% Try each match, use the first one that contains resource flags
+            extract_resources_from_cmdline_matches(Binary, Matches)
+    end.
+
+extract_resources_from_cmdline_matches(_Binary, []) ->
+    {0, 0, 0, 0};
+extract_resources_from_cmdline_matches(Binary, [{Start, _} | Rest]) ->
+    <<_:Start/binary, CmdRest/binary>> = Binary,
+    CmdLine = extract_until_null(CmdRest, 0),
+    lager:debug("Checking sbatch command line at offset ~p: ~s", [Start, CmdLine]),
+    case extract_resources(CmdLine) of
+        {0, 0, 0, 0} ->
+            %% No resources found in this match, try next
+            extract_resources_from_cmdline_matches(Binary, Rest);
+        Result ->
+            Result
+    end.
+
+extract_until_null(Binary, Pos) when Pos < byte_size(Binary) ->
+    case binary:at(Binary, Pos) of
+        0 -> binary:part(Binary, 0, Pos);
+        _ -> extract_until_null(Binary, Pos + 1)
+    end;
+extract_until_null(Binary, _Pos) ->
+    Binary.
+
+%% Search for an environment variable pattern in binary and extract its integer value.
+extract_env_int(Binary, Pattern) ->
+    case binary:match(Binary, Pattern) of
+        {Start, PLen} ->
+            <<_:Start/binary, _:PLen/binary, Rest/binary>> = Binary,
+            parse_env_int_value(Rest);
+        nomatch ->
+            0
+    end.
+
+%% Parse an integer from the start of a binary, stopping at null or non-digit.
+parse_env_int_value(<<D, Rest/binary>>) when D >= $0, D =< $9 ->
+    parse_env_int_value(Rest, D - $0);
+parse_env_int_value(_) ->
+    0.
+
+parse_env_int_value(<<D, Rest/binary>>, Acc) when D >= $0, D =< $9 ->
+    parse_env_int_value(Rest, Acc * 10 + (D - $0));
+parse_env_int_value(_, Acc) ->
+    Acc.
+
 %% Extract resources from #SBATCH directives
 %% Returns {Nodes, Tasks, Cpus, MemoryMb} - 0 means not specified in script
 extract_resources(Script) ->
@@ -2007,7 +2152,14 @@ extract_resources(Script) ->
                     <<_:NStart2/binary, "-N ", NRest2/binary>> = Script,
                     parse_int_value(NRest2);
                 nomatch ->
-                    0  % Not specified
+                    %% Handle -N3 (no space) format
+                    case binary:match(Script, <<"-N">>) of
+                        {NStart3, 2} ->
+                            <<_:NStart3/binary, "-N", NRest3/binary>> = Script,
+                            parse_int_value(NRest3);
+                        nomatch ->
+                            0  % Not specified
+                    end
             end
     end,
     %% Try --ntasks= first, then -n
@@ -2021,7 +2173,19 @@ extract_resources(Script) ->
                     <<_:TStart2/binary, "-n ", TRest2/binary>> = Script,
                     parse_int_value(TRest2);
                 nomatch ->
-                    0  % Not specified
+                    %% Handle -n4 (no space) format
+                    case binary:match(Script, <<"-n">>) of
+                        {TStart3, 2} ->
+                            <<_:TStart3/binary, "-n", TRest3/binary>> = Script,
+                            case TRest3 of
+                                <<D, _/binary>> when D >= $0, D =< $9 ->
+                                    parse_int_value(TRest3);
+                                _ ->
+                                    0  % -n followed by non-digit (e.g., -name)
+                            end;
+                        nomatch ->
+                            0  % Not specified
+                    end
             end
     end,
     %% Try --cpus-per-task= first, then -c
@@ -3271,8 +3435,8 @@ encode_single_node_info(#node_info{} = N) ->
         %% Field 31: select_nodeinfo - plugin_id + cons_tres data
         <<?SELECT_PLUGIN_CONS_TRES:32/big>>,
         %% cons_tres packs: alloc_cpus(16) + alloc_memory(64) + tres_alloc_fmt_str + tres_alloc_weighted(double)
-        <<0:16/big>>,  % alloc_cpus
-        <<0:64/big>>,  % alloc_memory
+        <<(N#node_info.alloc_cpus):16/big>>,  % alloc_cpus
+        <<(N#node_info.alloc_memory):64/big>>,  % alloc_memory
         flurm_protocol_pack:pack_string(<<>>),  % tres_alloc_fmt_str
         flurm_protocol_pack:pack_double(0.0),   % tres_alloc_weighted
         %% Fields 32-41: arch, features, features_act, gres, gres_drain, gres_used, os, comment, extra, reason

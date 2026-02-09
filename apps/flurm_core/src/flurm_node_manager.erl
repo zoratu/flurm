@@ -75,9 +75,12 @@ get_available_nodes_with_gres(NumCpus, MemoryMb, Partition, GRESSpec) ->
 %% @doc Allocate resources on a node for a job.
 -spec allocate_resources(binary(), pos_integer(), pos_integer(), pos_integer()) -> ok | {error, term()}.
 allocate_resources(NodeName, JobId, Cpus, Memory) ->
-    %% Try direct registry allocation with job tracking
+    %% Allocate in both registry (ETS, used by scheduler) and
+    %% node_manager_server (gen_server, used by sinfo/scontrol responses)
     case flurm_node_registry:allocate_resources(NodeName, JobId, Cpus, Memory) of
         ok ->
+            %% Also update node_manager_server so sinfo/scontrol reflect the allocation
+            catch flurm_node_manager_server:allocate_resources(NodeName, JobId, Cpus, Memory),
             lager:info("Allocated ~p CPUs, ~p MB to job ~p on node ~s",
                       [Cpus, Memory, JobId, NodeName]),
             ok;
@@ -91,9 +94,11 @@ allocate_resources(NodeName, JobId, Cpus, Memory) ->
 %% Uses the tracked allocation to release the correct amount.
 -spec release_resources(binary(), pos_integer()) -> ok | {error, term()}.
 release_resources(NodeName, JobId) ->
-    %% Release via registry using tracked job allocation
+    %% Release from both registry (ETS) and node_manager_server (gen_server)
     case flurm_node_registry:release_resources(NodeName, JobId) of
         ok ->
+            %% Also update node_manager_server so sinfo/scontrol reflect the release
+            catch flurm_node_manager_server:release_resources(NodeName, JobId),
             lager:info("Released resources for job ~p on node ~s", [JobId, NodeName]),
             ok;
         {error, not_found} ->

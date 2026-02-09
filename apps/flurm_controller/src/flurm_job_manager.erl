@@ -797,6 +797,8 @@ create_job(JobId, JobSpec) ->
         script = maps:get(script, JobSpec, <<>>),
         num_nodes = maps:get(num_nodes, JobSpec, 1),
         num_cpus = maps:get(num_cpus, JobSpec, 1),
+        num_tasks = maps:get(num_tasks, JobSpec, 1),
+        cpus_per_task = maps:get(cpus_per_task, JobSpec, 1),
         memory_mb = maps:get(memory_mb, JobSpec, 1024),
         time_limit = maps:get(time_limit, JobSpec, 3600),
         priority = maps:get(priority, JobSpec, 100),
