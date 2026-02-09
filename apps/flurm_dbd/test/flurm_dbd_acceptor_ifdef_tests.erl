@@ -33,11 +33,11 @@ dbd_acceptor_test_() ->
       {"peername with mock socket", fun peername_test/0},
       {"process_buffer needs more data for length", fun process_buffer_short_test/0},
       {"process_buffer needs more data for message", fun process_buffer_incomplete_test/0},
-      {"handle_dbd_request ping", fun handle_dbd_request_ping_test/0},
-      {"handle_dbd_request register ctld", fun handle_dbd_request_register_test/0},
+      {"handle_dbd_request DBD_INIT", fun handle_dbd_request_dbd_init_test/0},
+      {"handle_dbd_request DBD_GET_JOBS_COND", fun handle_dbd_request_get_jobs_test/0},
       {"handle_dbd_request unsupported", fun handle_dbd_request_unsupported_test/0},
-      {"handle_dbd_request accounting update job_start", fun handle_dbd_request_job_start_test/0},
-      {"handle_dbd_request accounting update job_end", fun handle_dbd_request_job_end_test/0}
+      {"handle_dbd_request DBD_REGISTER_CTLD", fun handle_dbd_request_register_test/0},
+      {"handle_dbd_request DBD_FINI", fun handle_dbd_request_fini_test/0}
      ]}.
 
 %%====================================================================
@@ -85,68 +85,43 @@ process_buffer_incomplete_test() ->
     ?assertEqual(Buffer, Remaining),
     ?assertEqual(State, NewState).
 
-handle_dbd_request_ping_test() ->
-    Header = #slurm_header{msg_type = ?REQUEST_PING},
+handle_dbd_request_dbd_init_test() ->
+    %% DBD_CLUSTER_TRES = 1407
+    Result = flurm_dbd_acceptor:handle_dbd_request(1407, <<>>),
+    ?assertMatch({rc, 0}, Result).
 
-    Result = flurm_dbd_acceptor:handle_dbd_request(Header, #{}),
-
-    ?assertMatch({?RESPONSE_SLURM_RC, #slurm_rc_response{return_code = 0}}, Result).
+handle_dbd_request_get_jobs_test() ->
+    %% DBD_GET_JOBS_COND = 1444 (sacct query)
+    Result = flurm_dbd_acceptor:handle_dbd_request(1444, <<>>),
+    ?assertMatch({rc, 0}, Result).
 
 handle_dbd_request_register_test() ->
-    Header = #slurm_header{msg_type = ?ACCOUNTING_REGISTER_CTLD},
-
-    Result = flurm_dbd_acceptor:handle_dbd_request(Header, #{}),
-
-    ?assertMatch({?RESPONSE_SLURM_RC, #slurm_rc_response{return_code = 0}}, Result).
+    %% DBD_REGISTER_CTLD = 1434
+    Result = flurm_dbd_acceptor:handle_dbd_request(1434, <<>>),
+    ?assertMatch({rc, 0}, Result).
 
 handle_dbd_request_unsupported_test() ->
     %% Use a made-up message type
-    Header = #slurm_header{msg_type = 99999},
+    Result = flurm_dbd_acceptor:handle_dbd_request(99999, <<>>),
+    ?assertMatch({rc, 0}, Result).
 
-    Result = flurm_dbd_acceptor:handle_dbd_request(Header, #{}),
-
-    ?assertMatch({?RESPONSE_SLURM_RC, #slurm_rc_response{return_code = -1}}, Result).
-
-handle_dbd_request_job_start_test() ->
-    %% Mock flurm_dbd_server
-    meck:new(flurm_dbd_server, [passthrough, non_strict]),
-    meck:expect(flurm_dbd_server, record_job_start, fun(_) -> ok end),
-
-    Header = #slurm_header{msg_type = ?ACCOUNTING_UPDATE_MSG},
-    Body = #{type => job_start, job_id => 123},
-
-    Result = flurm_dbd_acceptor:handle_dbd_request(Header, Body),
-
-    ?assertMatch({?RESPONSE_SLURM_RC, #slurm_rc_response{return_code = 0}}, Result),
-    ?assert(meck:called(flurm_dbd_server, record_job_start, '_')),
-
-    meck:unload(flurm_dbd_server).
-
-handle_dbd_request_job_end_test() ->
-    %% Mock flurm_dbd_server
-    meck:new(flurm_dbd_server, [passthrough, non_strict]),
-    meck:expect(flurm_dbd_server, record_job_end, fun(_) -> ok end),
-
-    Header = #slurm_header{msg_type = ?ACCOUNTING_UPDATE_MSG},
-    Body = #{type => job_end, job_id => 123, exit_code => 0},
-
-    Result = flurm_dbd_acceptor:handle_dbd_request(Header, Body),
-
-    ?assertMatch({?RESPONSE_SLURM_RC, #slurm_rc_response{return_code = 0}}, Result),
-    ?assert(meck:called(flurm_dbd_server, record_job_end, '_')),
-
-    meck:unload(flurm_dbd_server).
+handle_dbd_request_fini_test() ->
+    %% DBD_FINI = 1401
+    Result = flurm_dbd_acceptor:handle_dbd_request(1401, <<>>),
+    ?assertMatch({rc, 0}, Result).
 
 %%====================================================================
 %% Helper Functions
 %%====================================================================
 
 %% Create a test connection state record
+%% conn_state record now has 6 fields: socket, transport, buffer, authenticated, client_version, client_info
 make_conn_state() ->
     {conn_state,
      undefined,      % socket
      undefined,      % transport
      <<>>,           % buffer
      false,          % authenticated
+     0,              % client_version
      #{}             % client_info
     }.

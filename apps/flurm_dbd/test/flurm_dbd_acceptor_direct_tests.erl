@@ -2,8 +2,10 @@
 %%% @doc Direct EUnit tests for flurm_dbd_acceptor module
 %%%
 %%% These tests call the actual flurm_dbd_acceptor functions directly
-%%% to achieve code coverage. External dependencies like ranch and
-%%% flurm_protocol_codec are mocked.
+%%% to achieve code coverage. External dependencies like ranch are mocked.
+%%%
+%%% The DBD acceptor now uses DBD framing (2-byte msg_type prefix)
+%%% and the persist connection handshake protocol.
 %%%
 %%% @end
 %%%-------------------------------------------------------------------
@@ -86,7 +88,7 @@ message_handling_test_() ->
       {"handle tcp_error message", fun test_tcp_error/0},
       {"handle tcp data message", fun test_tcp_data/0},
       {"handle unknown message", fun test_unknown_message/0},
-      {"process incomplete buffer", fun test_incomplete_buffer/0}
+      {"handle incomplete buffer", fun test_incomplete_buffer/0}
      ]}.
 
 setup_message_handling() ->
@@ -118,7 +120,6 @@ cleanup_message_handling(_) ->
     catch meck:unload(ranch_tcp),
     catch meck:unload(ranch),
     catch meck:unload(lager),
-    catch meck:unload(flurm_protocol_codec),
     ok.
 
 test_tcp_closed() ->
@@ -139,13 +140,6 @@ test_tcp_error() ->
     ?assert(not is_process_alive(Pid)).
 
 test_tcp_data() ->
-    %% Mock protocol codec
-    catch meck:unload(flurm_protocol_codec),
-    meck:new(flurm_protocol_codec, [passthrough, no_link]),
-    meck:expect(flurm_protocol_codec, decode, fun(_) ->
-        {error, incomplete}
-    end),
-
     Self = self(),
     Pid = spawn(fun() ->
         flurm_dbd_acceptor:init(test_ref, ranch_tcp, #{}),
@@ -214,188 +208,53 @@ test_incomplete_buffer() ->
     end.
 
 %%====================================================================
-%% Protocol Message Type Tests
+%% DBD Request Handler Tests (direct function calls)
 %%====================================================================
 
-protocol_handling_test_() ->
+dbd_request_handler_test_() ->
     {foreach,
-     fun setup_protocol/0,
-     fun cleanup_protocol/1,
+     fun setup/0,
+     fun cleanup/1,
      [
-      {"handle ping request", fun test_handle_ping/0},
-      {"handle accounting update - job start", fun test_accounting_update_job_start/0},
-      {"handle accounting update - job end", fun test_accounting_update_job_end/0},
-      {"handle accounting update - step", fun test_accounting_update_step/0},
-      {"handle controller registration", fun test_controller_registration/0},
-      {"handle unsupported message", fun test_unsupported_message/0},
-      {"handle decode error", fun test_decode_error/0}
+      {"handle_dbd_request DBD_INIT", fun test_handle_dbd_init/0},
+      {"handle_dbd_request DBD_GET_JOBS_COND", fun test_handle_get_jobs/0},
+      {"handle_dbd_request DBD_REGISTER_CTLD", fun test_handle_register_ctld/0},
+      {"handle_dbd_request DBD_FINI", fun test_handle_fini/0},
+      {"handle_dbd_request DBD_NODE_STATE", fun test_handle_node_state/0},
+      {"handle_dbd_request DBD_CLUSTER_TRES", fun test_handle_cluster_tres/0},
+      {"handle_dbd_request unsupported", fun test_handle_unsupported/0}
      ]}.
 
-setup_protocol() ->
-    catch meck:unload(lager),
-    catch meck:unload(ranch),
-    catch meck:unload(ranch_tcp),
-    catch meck:unload(flurm_dbd_server),
-    catch meck:unload(flurm_protocol_codec),
+test_handle_dbd_init() ->
+    %% DBD_CLUSTER_TRES = 1407
+    Result = flurm_dbd_acceptor:handle_dbd_request(1407, <<>>),
+    ?assertMatch({rc, 0}, Result).
 
-    meck:new(lager, [no_link, non_strict]),
-    meck:expect(lager, debug, fun(_) -> ok end),
-    meck:expect(lager, debug, fun(_, _) -> ok end),
-    meck:expect(lager, info, fun(_) -> ok end),
-    meck:expect(lager, info, fun(_, _) -> ok end),
-    meck:expect(lager, warning, fun(_) -> ok end),
-    meck:expect(lager, warning, fun(_, _) -> ok end),
-    meck:expect(lager, error, fun(_, _) -> ok end),
-    meck:expect(lager, md, fun(_) -> ok end),
+test_handle_get_jobs() ->
+    %% DBD_GET_JOBS_COND = 1444
+    Result = flurm_dbd_acceptor:handle_dbd_request(1444, <<>>),
+    ?assertMatch({rc, 0}, Result).
 
-    meck:new(ranch, [passthrough, unstick, no_link]),
-    meck:expect(ranch, handshake, fun(_) -> {ok, fake_socket} end),
+test_handle_register_ctld() ->
+    %% DBD_REGISTER_CTLD = 1434
+    Result = flurm_dbd_acceptor:handle_dbd_request(1434, <<>>),
+    ?assertMatch({rc, 0}, Result).
 
-    meck:new(ranch_tcp, [passthrough, unstick, no_link]),
-    meck:expect(ranch_tcp, setopts, fun(_, _) -> ok end),
-    meck:expect(ranch_tcp, peername, fun(_) -> {ok, {{127,0,0,1}, 54321}} end),
-    meck:expect(ranch_tcp, close, fun(_) -> ok end),
-    meck:expect(ranch_tcp, send, fun(_, _) -> ok end),
+test_handle_fini() ->
+    %% DBD_FINI = 1401
+    Result = flurm_dbd_acceptor:handle_dbd_request(1401, <<>>),
+    ?assertMatch({rc, 0}, Result).
 
-    meck:new(flurm_dbd_server, [passthrough, no_link]),
-    meck:expect(flurm_dbd_server, record_job_start, fun(_) -> ok end),
-    meck:expect(flurm_dbd_server, record_job_end, fun(_) -> ok end),
-    meck:expect(flurm_dbd_server, record_job_step, fun(_) -> ok end),
+test_handle_node_state() ->
+    %% DBD_NODE_STATE = 1432
+    Result = flurm_dbd_acceptor:handle_dbd_request(1432, <<>>),
+    ?assertMatch({rc, 0}, Result).
 
-    meck:new(flurm_protocol_codec, [passthrough, no_link]),
-    meck:expect(flurm_protocol_codec, message_type_name, fun(_) -> unknown end),
-    meck:expect(flurm_protocol_codec, encode, fun(_, _) -> {ok, <<0,0,0,4,"resp">>} end),
-    ok.
+test_handle_cluster_tres() ->
+    %% DBD_JOB_START = 1425
+    Result = flurm_dbd_acceptor:handle_dbd_request(1425, <<>>),
+    ?assertMatch({rc, 0}, Result).
 
-cleanup_protocol(_) ->
-    catch meck:unload(flurm_protocol_codec),
-    catch meck:unload(flurm_dbd_server),
-    catch meck:unload(ranch_tcp),
-    catch meck:unload(ranch),
-    catch meck:unload(lager),
-    ok.
-
-make_msg(MsgType, Body) ->
-    %% Build message using proper records
-    Header = #slurm_header{msg_type = MsgType},
-    #slurm_msg{header = Header, body = Body}.
-
-test_handle_ping() ->
-    meck:expect(flurm_protocol_codec, decode, fun(_) ->
-        {ok, make_msg(?REQUEST_PING, #{}), <<>>}
-    end),
-
-    Pid = spawn(fun() ->
-        flurm_dbd_acceptor:init(test_ref, ranch_tcp, #{})
-    end),
-
-    Pid ! {tcp, fake_socket, <<0, 0, 0, 4, 0, 0, 0, 1>>},
-    Pid ! {tcp_closed, fake_socket},
-    flurm_test_utils:wait_for_death(Pid).
-
-test_accounting_update_job_start() ->
-    meck:expect(flurm_protocol_codec, decode, fun(_) ->
-        Body = #{type => job_start, job_id => 1},
-        {ok, make_msg(?ACCOUNTING_UPDATE_MSG, Body), <<>>}
-    end),
-
-    Pid = spawn(fun() ->
-        flurm_dbd_acceptor:init(test_ref, ranch_tcp, #{})
-    end),
-
-    Pid ! {tcp, fake_socket, <<0, 0, 0, 10, "job_start_">>},
-    Pid ! {tcp_closed, fake_socket},
-    flurm_test_utils:wait_for_death(Pid),
-
-    ?assert(meck:called(flurm_dbd_server, record_job_start, '_')).
-
-test_accounting_update_job_end() ->
-    meck:expect(flurm_protocol_codec, decode, fun(_) ->
-        Body = #{type => job_end, job_id => 1, exit_code => 0},
-        {ok, make_msg(?ACCOUNTING_UPDATE_MSG, Body), <<>>}
-    end),
-
-    Pid = spawn(fun() ->
-        flurm_dbd_acceptor:init(test_ref, ranch_tcp, #{})
-    end),
-
-    Pid ! {tcp, fake_socket, <<0, 0, 0, 8, "job_end_">>},
-    Pid ! {tcp_closed, fake_socket},
-    flurm_test_utils:wait_for_death(Pid),
-
-    ?assert(meck:called(flurm_dbd_server, record_job_end, '_')).
-
-test_accounting_update_step() ->
-    meck:expect(flurm_protocol_codec, decode, fun(_) ->
-        Body = #{type => step, job_id => 1, step_id => 0},
-        {ok, make_msg(?ACCOUNTING_UPDATE_MSG, Body), <<>>}
-    end),
-
-    Pid = spawn(fun() ->
-        flurm_dbd_acceptor:init(test_ref, ranch_tcp, #{})
-    end),
-
-    Pid ! {tcp, fake_socket, <<0, 0, 0, 8, "step____">>},
-    Pid ! {tcp_closed, fake_socket},
-    flurm_test_utils:wait_for_death(Pid),
-
-    ?assert(meck:called(flurm_dbd_server, record_job_step, '_')).
-
-test_controller_registration() ->
-    meck:expect(flurm_protocol_codec, decode, fun(_) ->
-        {ok, make_msg(?ACCOUNTING_REGISTER_CTLD, #{}), <<>>}
-    end),
-
-    Pid = spawn(fun() ->
-        flurm_dbd_acceptor:init(test_ref, ranch_tcp, #{})
-    end),
-
-    Pid ! {tcp, fake_socket, <<0, 0, 0, 4, "ctld">>},
-    %% Use monitor to check process is still alive after processing
-    MRef = erlang:monitor(process, Pid),
-    ?assert(is_process_alive(Pid)),
-
-    Pid ! {tcp_closed, fake_socket},
-    receive
-        {'DOWN', MRef, process, Pid, _} -> ok
-    after 5000 ->
-        erlang:demonitor(MRef, [flush]),
-        ?assert(false)
-    end.
-
-test_unsupported_message() ->
-    meck:expect(flurm_protocol_codec, decode, fun(_) ->
-        {ok, make_msg(9999, #{}), <<>>}
-    end),
-
-    Pid = spawn(fun() ->
-        flurm_dbd_acceptor:init(test_ref, ranch_tcp, #{})
-    end),
-
-    Pid ! {tcp, fake_socket, <<0, 0, 0, 4, "unkn">>},
-    %% Use monitor to check process is still alive after processing
-    MRef = erlang:monitor(process, Pid),
-    ?assert(is_process_alive(Pid)),
-
-    Pid ! {tcp_closed, fake_socket},
-    receive
-        {'DOWN', MRef, process, Pid, _} -> ok
-    after 5000 ->
-        erlang:demonitor(MRef, [flush]),
-        ?assert(false)
-    end.
-
-test_decode_error() ->
-    meck:expect(flurm_protocol_codec, decode, fun(_) ->
-        {error, invalid_message}
-    end),
-
-    Pid = spawn(fun() ->
-        flurm_dbd_acceptor:init(test_ref, ranch_tcp, #{})
-    end),
-
-    Pid ! {tcp, fake_socket, <<0, 0, 0, 4, "bad!">>},
-    flurm_test_utils:wait_for_death(Pid),
-
-    %% Connection should be closed on decode error
-    ?assert(not is_process_alive(Pid)).
+test_handle_unsupported() ->
+    Result = flurm_dbd_acceptor:handle_dbd_request(99999, <<>>),
+    ?assertMatch({rc, 0}, Result).

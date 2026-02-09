@@ -7,6 +7,7 @@ services:
     ports:
       - "6817:6817"
       - "6818:6818"
+      - "6819:6819"  # FLURM DBD (accounting daemon)
       - "9090:9090"  # Prometheus metrics
     volumes:
       - munge-key:/etc/munge

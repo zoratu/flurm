@@ -89,8 +89,11 @@
 -define(REQUEST_SET_FS_DAMPENING_FACTOR, 1019).
 -define(REQUEST_NODE_ALIAS_ADDRS, 1020).
 -define(RESPONSE_NODE_ALIAS_ADDRS, 1021).
--define(REQUEST_PERSIST_INIT, 1022).
--define(REQUEST_PERSIST_FINI, 1023).
+
+%%% Persist Connection Messages (1433, 6500-6501)
+-define(PERSIST_RC, 1433).                  %% Persist connection return code response
+-define(REQUEST_PERSIST_INIT, 6500).        %% Persist connection init handshake
+-define(REQUEST_PERSIST_INIT_TLS, 6501).    %% Persist connection init with TLS
 
 %%% Information Requests (2001-2058)
 -define(REQUEST_BUILD_INFO, 2001).

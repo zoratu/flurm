@@ -24,6 +24,9 @@ RUN mkdir -p /etc/slurm && \
     echo 'SchedulerType=sched/backfill' >> /etc/slurm/slurm.conf && \
     echo 'SelectType=select/cons_tres' >> /etc/slurm/slurm.conf && \
     echo 'SelectTypeParameters=CR_Core' >> /etc/slurm/slurm.conf && \
+    echo 'AccountingStorageType=accounting_storage/slurmdbd' >> /etc/slurm/slurm.conf && \
+    echo 'AccountingStorageHost=flurm-server' >> /etc/slurm/slurm.conf && \
+    echo 'AccountingStoragePort=6819' >> /etc/slurm/slurm.conf && \
     echo 'SlurmdDebug=info' >> /etc/slurm/slurm.conf && \
     echo 'SlurmctldDebug=info' >> /etc/slurm/slurm.conf && \
     echo 'SlurmdPort=6818' >> /etc/slurm/slurm.conf && \

@@ -60,6 +60,6 @@ RUN echo '#!/bin/bash' > /entrypoint.sh && \
     echo 'cd /flurm && escript escripts/start_controller.erl' >> /entrypoint.sh && \
     chmod +x /entrypoint.sh
 
-EXPOSE 6817 6818 6820 9090
+EXPOSE 6817 6818 6819 6820 9090
 
 CMD ["/entrypoint.sh"]
