@@ -6,10 +6,10 @@ FLURM includes a comprehensive SLURM compatibility test suite derived from the [
 
 | Metric | Value |
 |--------|-------|
-| **Total Tests** | 108 |
-| **Passing** | 105 |
+| **Total Tests** | 141 |
+| **Passing** | 132 |
 | **Failing** | 0 |
-| **Skipped** | 3 (expected) |
+| **Skipped** | 9 (expected) |
 
 ### Expected Skips
 
@@ -18,6 +18,8 @@ FLURM includes a comprehensive SLURM compatibility test suite derived from the [
 | test17.16 | `--output` path not shown in scontrol output |
 | test2.9 | `scontrol hold` not fully implemented |
 | test2.12 | `scontrol update JobName` not implemented |
+| test_sacct.3-5 | sacct job data queries (DBD connected but job records not yet stored) |
+| test_salloc.4-6 | salloc timing-dependent/environment tests |
 
 ## Test Categories
 
@@ -39,6 +41,14 @@ The test suite is organized by SLURM testsuite numbering conventions:
 | Time | Formats | 4 | MM:SS, HH:MM:SS, D-HH:MM:SS, minutes |
 | Node detail | Tracking | 4 | CPU/memory state through job lifecycle |
 | Mixed | Workload | 2 | Multi-job concurrent execution |
+| Python-suite | scancel filter | 4 | scancel --name, --state filtering (from SchedMD Python suite) |
+| Python-suite | sbatch env | 4 | --job-name, --ntasks, --export (from SchedMD Python suite) |
+| Python-suite | squeue format | 3 | squeue --format extended fields (from SchedMD Python suite) |
+| Python-suite | sinfo nodes | 3 | sinfo node state reporting (from SchedMD Python suite) |
+| Python-suite | job output | 4 | Job stdout/stderr capture (from SchedMD Python suite) |
+| Python-suite | scontrol ext | 4 | scontrol extended operations (from SchedMD Python suite) |
+| sacct | Accounting | 5 | sacct queries via SLURM DBD persist protocol |
+| salloc | Interactive | 6 | salloc resource allocation |
 
 ## Running the Tests
 
@@ -83,7 +93,7 @@ The test script (`docker/slurm_compat_tests.sh`) performs the following:
 
 1. **Environment check**: Verifies SLURM client connectivity to FLURM
 2. **Job cleanup**: Cancels any pre-existing jobs for a clean baseline
-3. **Test execution**: Runs 108 tests across 14 categories
+3. **Test execution**: Runs 141 tests across 22 categories
 4. **Result reporting**: Prints PASS/FAIL/SKIP counts with details on any failures
 
 Each test follows this pattern:
@@ -107,7 +117,7 @@ The original SLURM testsuite uses Expect/TCL and Python; our tests use bash for 
 ### Coverage vs. Full SLURM Testsuite
 
 The SchedMD testsuite contains 600+ Expect tests and 170+ Python tests covering advanced features like:
-- Accounting (sacct, sacctmgr, slurmdbd)
+- Accounting (sacct, sacctmgr, slurmdbd) - **basic sacct/salloc now tested**
 - Job arrays with complex syntax
 - Burst buffers
 - Federations
@@ -118,6 +128,10 @@ The SchedMD testsuite contains 600+ Expect tests and 170+ Python tests covering 
 - Topology-aware scheduling
 
 FLURM's test suite focuses on the core CLI compatibility that most users need. As FLURM implements more advanced features, additional tests from the SchedMD testsuite will be adapted.
+
+### Monitoring for SchedMD Testsuite Updates
+
+A monitoring script (`scripts/check-slurm-testsuite-updates.sh`) checks the SchedMD SLURM testsuite for new or modified tests. The reference commit SHA is stored in `.slurm-testsuite-ref`. Run periodically to identify new upstream tests that should be adapted for FLURM.
 
 ## Adding New Tests
 

@@ -8,7 +8,7 @@ An Erlang-based, SLURM-compatible job scheduler designed for high availability, 
 [![Erlang/OTP](https://img.shields.io/badge/Erlang%2FOTP-28-red.svg)](https://www.erlang.org/)
 [![Tests](https://img.shields.io/badge/Tests-2400%2B%20passing-brightgreen.svg)](docs/COVERAGE.md)
 [![Integration](https://img.shields.io/badge/Integration-22%2F22%20passing-brightgreen.svg)](docs/COVERAGE.md)
-[![SLURM Compat](https://img.shields.io/badge/SLURM%20Compat-105%2F108%20passing-brightgreen.svg)](docs/SLURM_COMPAT_TESTING.md)
+[![SLURM Compat](https://img.shields.io/badge/SLURM%20Compat-141%20tests%20(132%20pass)-brightgreen.svg)](docs/SLURM_COMPAT_TESTING.md)
 [![Made with Claude](https://img.shields.io/badge/Made%20with-Claude%20AI-blueviolet.svg)](https://claude.ai)
 
 > **Note**: This project was developed with the assistance of generative AI (Claude by Anthropic). The architecture, code, documentation, and TLA+ specifications were created through AI-assisted development.
@@ -19,7 +19,7 @@ An Erlang-based, SLURM-compatible job scheduler designed for high availability, 
 |-----------|--------|
 | Unit Tests | 2400+ passing |
 | Integration Tests | 22/22 passing |
-| SLURM Compatibility | 105/108 passing (3 expected skips) |
+| SLURM Compatibility | 141 tests (132 pass, 9 skip) |
 | Protocol Fuzzing | 33K+ property tests |
 | TLA+ Verification | All specs pass |
 | Performance | Benchmarked (see docs/BENCHMARKS.md) |
@@ -124,6 +124,8 @@ flowchart TB
         scancel
         sinfo
         scontrol
+        sacct
+        salloc
     end
 
     subgraph Controller["Controller Layer"]
@@ -194,7 +196,7 @@ flowchart TB
 
 ### Testing & Performance
 - [Testing Guide](docs/testing.md) - How to test FLURM
-- [SLURM Compatibility Testing](docs/SLURM_COMPAT_TESTING.md) - **105/108 SLURM-native tests passing**
+- [SLURM Compatibility Testing](docs/SLURM_COMPAT_TESTING.md) - **141 SLURM-native tests (132 pass, 9 skip)**
 - [SLURM Client Testing](docs/SLURM_CLIENT_TESTING.md) - Testing with real SLURM clients
 - [Benchmarks](docs/BENCHMARKS.md) - Performance benchmarks and results
 - [Code Coverage](docs/COVERAGE.md) - Coverage strategy and targets
@@ -222,7 +224,7 @@ FLURM is currently in **active development** (February 2026). Phase 7-8 implemen
 
 ### Testing & Verification
 - [x] Unit test suite (2400+ tests)
-- [x] SLURM compatibility test suite (105/108 tests passing, 3 expected skips)
+- [x] SLURM compatibility test suite (141 tests, 132 pass, 9 skip)
 - [x] Protocol fuzzing (33K+ PropEr property tests)
 - [x] Deterministic simulation framework (FoundationDB-style)
 - [x] Performance benchmarks (3M+ ops/sec job submission)
@@ -248,7 +250,7 @@ FLURM is currently in **active development** (February 2026). Phase 7-8 implemen
 
 ## SLURM Compatibility Test Results
 
-FLURM passes **105 out of 108** SLURM-native compatibility tests derived from the [SchedMD SLURM testsuite](https://github.com/SchedMD/slurm/tree/master/testsuite). Tests cover all major SLURM CLI tools using real SLURM clients against a FLURM Docker cluster:
+FLURM passes **132 out of 141** SLURM-native compatibility tests derived from the [SchedMD SLURM testsuite](https://github.com/SchedMD/slurm/tree/master/testsuite). Tests cover all major SLURM CLI tools (including sacct and salloc) using real SLURM clients against a FLURM Docker cluster:
 
 | Test Category | Tests | Status |
 |---------------|-------|--------|
@@ -266,8 +268,16 @@ FLURM passes **105 out of 108** SLURM-native compatibility tests derived from th
 | Time limit formats (HH:MM:SS, D-HH:MM:SS) | 4 | All pass |
 | Node detail tracking | 4 | 3 pass, 1 skip |
 | Mixed workload | 2 | All pass |
+| Python-suite scancel filtering | 4 | All pass |
+| Python-suite sbatch environment | 4 | All pass |
+| Python-suite squeue format | 3 | All pass |
+| Python-suite sinfo node states | 3 | All pass |
+| Python-suite job output | 4 | All pass |
+| Python-suite scontrol extended | 4 | All pass |
+| sacct accounting queries | 5 | 2 pass, 3 skip |
+| salloc interactive allocation | 6 | 3 pass, 3 skip |
 
-**3 expected skips**: `--output` path display, `scontrol hold`, and `scontrol update JobName` (not yet implemented).
+**9 skips**: 3 original (--output path display, scontrol hold, scontrol update JobName), 3 sacct job data queries (DBD connected but job records not yet stored), 3 salloc/timing-dependent tests.
 
 The test suite runs automatically in the pre-commit hook when Docker containers are running. See [SLURM Compatibility Testing](docs/SLURM_COMPAT_TESTING.md) for details.
 
@@ -284,7 +294,7 @@ The `srun` command for interactive jobs is **now working** with FLURM. The imple
 
 **Status**: srun is fully functional for basic interactive jobs. Commands like `srun hostname`, `srun echo "Hello World"`, and `srun <script>` work correctly.
 
-**Working CLI commands**: sbatch, squeue, scancel, sinfo, scontrol show job/partition/node, **srun**
+**Working CLI commands**: sbatch, squeue, scancel, sinfo, scontrol show job/partition/node, **srun**, **sacct**, **salloc**
 
 ## Contributing
 
