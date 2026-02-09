@@ -157,12 +157,16 @@ apply(_Meta, {allocate_job, JobId, Nodes}, State) when is_list(Nodes) ->
     case maps:find(JobId, State#ra_state.jobs) of
         {ok, Job} ->
             case Job#ra_job.state of
-                pending ->
+                S when S =:= pending; S =:= configuring ->
                     Now = erlang:system_time(second),
+                    StartTime = case Job#ra_job.start_time of
+                        undefined -> Now;
+                        Existing -> Existing
+                    end,
                     UpdatedJob = Job#ra_job{
                         state = configuring,
                         allocated_nodes = Nodes,
-                        start_time = Now
+                        start_time = StartTime
                     },
                     NewState = State#ra_state{
                         jobs = maps:put(JobId, UpdatedJob, State#ra_state.jobs)

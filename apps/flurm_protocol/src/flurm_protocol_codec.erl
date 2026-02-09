@@ -1367,8 +1367,8 @@ decode_batch_job_request_scan(Binary) ->
     %% Extract time limit from #SBATCH directive in script if present
     TimeLimit = extract_time_limit(Script),
 
-    %% Extract node/task/cpu counts from script SBATCH directives (most reliable)
-    {ScriptNodes, ScriptTasks, ScriptCpus} = extract_resources(Script),
+    %% Extract node/task/cpu/memory counts from script SBATCH directives (most reliable)
+    {ScriptNodes, ScriptTasks, ScriptCpus, ScriptMemMb} = extract_resources(Script),
 
     %% Prefer script values - they are explicitly set by user and reliably parsed.
     %% Protocol binary scanning can misidentify values (e.g., 256 from buffer size as CPU count).
@@ -1395,6 +1395,12 @@ decode_batch_job_request_scan(Binary) ->
         _ -> 1
     end,
 
+    %% Memory: use script value if specified, otherwise 0 (let handler set default)
+    MinMemPerNode = case ScriptMemMb of
+        M when M > 0 -> M;
+        _ -> 0
+    end,
+
     %% Find stdout/stderr paths from the protocol message or script
     StdOut = find_std_out(Binary, Script, WorkDir),
     StdErr = find_std_err(Binary, Script),
@@ -1415,6 +1421,7 @@ decode_batch_job_request_scan(Binary) ->
         min_nodes = MinNodes,
         max_nodes = MinNodes,
         min_cpus = MinCpus,
+        min_mem_per_node = MinMemPerNode,
         num_tasks = NumTasks,
         cpus_per_task = 1,
         time_limit = TimeLimit,
@@ -1987,7 +1994,7 @@ extract_short_string(_, _) ->
     <<>>.
 
 %% Extract resources from #SBATCH directives
-%% Returns {Nodes, Tasks, Cpus} - 0 means not specified in script
+%% Returns {Nodes, Tasks, Cpus, MemoryMb} - 0 means not specified in script
 extract_resources(Script) ->
     %% Try --nodes= first, then -N
     Nodes = case binary:match(Script, <<"--nodes=">>) of
@@ -2038,7 +2045,36 @@ extract_resources(Script) ->
                     end
             end
     end,
-    {Nodes, Tasks, Cpus}.
+    %% Try --mem= for memory (in MB, or with suffix G/M/K)
+    MemoryMb = case binary:match(Script, <<"--mem=">>) of
+        {MStart, 6} ->
+            <<_:MStart/binary, "--mem=", MRest/binary>> = Script,
+            parse_memory_value(MRest);
+        nomatch ->
+            0  % Not specified
+    end,
+    {Nodes, Tasks, Cpus, MemoryMb}.
+
+%% Parse memory value with optional suffix (G, M, K)
+%% Returns value in MB
+parse_memory_value(Bin) ->
+    RawVal = parse_int_value(Bin),
+    %% Check for suffix after the digits
+    Suffix = skip_digits(Bin),
+    case Suffix of
+        <<$G, _/binary>> -> RawVal * 1024;
+        <<$g, _/binary>> -> RawVal * 1024;
+        <<$K, _/binary>> -> max(1, RawVal div 1024);
+        <<$k, _/binary>> -> max(1, RawVal div 1024);
+        <<$M, _/binary>> -> RawVal;
+        <<$m, _/binary>> -> RawVal;
+        _ -> RawVal  % Default: MB
+    end.
+
+skip_digits(<<D, Rest/binary>>) when D >= $0, D =< $9 ->
+    skip_digits(Rest);
+skip_digits(Rest) ->
+    Rest.
 
 parse_int_value(<<D, Rest/binary>>) when D >= $0, D =< $9 ->
     parse_int_value(Rest, D - $0);
@@ -3134,6 +3170,22 @@ encode_job_resources_empty() ->
 encode_bitstring_empty() ->
     <<?SLURM_NO_VAL:32/big>>.
 
+%% Encode node_inx as a SLURM pack_bit_str_hex format.
+%% Wire format: uint32 bit_count (or NO_VAL for NULL), then packstr(hex_mask).
+%% The hex mask is a string like "0x07" representing which node indices are set.
+%% node_inx is a list of indices (0-based) into the global node list.
+encode_node_inx([]) ->
+    <<?SLURM_NO_VAL:32/big>>;
+encode_node_inx(Indices) when is_list(Indices) ->
+    %% Find the highest index to determine bitmap size
+    MaxIdx = lists:max(Indices),
+    BitCount = MaxIdx + 1,
+    %% Build a bitmap integer with bits set at each index
+    BitmapInt = lists:foldl(fun(Idx, Acc) -> Acc bor (1 bsl Idx) end, 0, Indices),
+    %% Convert to hex string (SLURM format: "0x" prefix, MSB left, LSB right)
+    HexStr = iolist_to_binary(io_lib:format("0x~.16B", [BitmapInt])),
+    [<<BitCount:32/big>>, flurm_protocol_pack:pack_string(HexStr)].
+
 %% Empty select_jobinfo structure
 %% From SLURM select.c: select_g_select_jobinfo_pack packs plugin_id first,
 %% then the plugin's data. For cons_tres (plugin_id=109), the data is empty.
@@ -3320,8 +3372,8 @@ encode_single_partition_info(#partition_info{} = P) ->
         flurm_protocol_pack:pack_string(<<>>),  % deny_qos
         flurm_protocol_pack:pack_string(P#partition_info.nodes),
         flurm_protocol_pack:pack_string(<<>>),  % nodesets
-        %% Field 34: node_inx (bitstring) - pack NO_VAL for empty
-        <<?SLURM_NO_VAL:32/big>>,
+        %% Field 34: node_inx (bitstring) - array of int32 range pairs
+        encode_node_inx(P#partition_info.node_inx),
         %% Fields 35-36: billing_weights_str, tres_fmt_str
         flurm_protocol_pack:pack_string(<<>>),  % billing_weights_str
         flurm_protocol_pack:pack_string(<<>>),  % tres_fmt_str

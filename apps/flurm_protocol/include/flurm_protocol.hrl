@@ -895,7 +895,8 @@
     state_up = 0 :: non_neg_integer(),
     total_cpus = 0 :: non_neg_integer(),
     total_nodes = 0 :: non_neg_integer(),
-    tres_fmt_str = <<>> :: binary()
+    tres_fmt_str = <<>> :: binary(),
+    node_inx = [] :: [integer()]  %% Node index ranges: [start1, end1, ..., -1]
 }).
 
 %% Partition info response (RESPONSE_PARTITION_INFO - 2010)

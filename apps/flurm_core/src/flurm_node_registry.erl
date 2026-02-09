@@ -371,7 +371,7 @@ handle_call({register, NodeName, Pid}, _From, State) ->
     end;
 
 %% Direct registration without a local pid (for remote node daemons)
-handle_call({register_direct, NodeInfo}, _From, State) ->
+handle_call({register_direct, NodeInfo}, {CallerPid, _Tag}, State) ->
     NodeName = maps:get(hostname, NodeInfo),
     case ets:lookup(?NODES_BY_NAME, NodeName) of
         [ExistingEntry] ->
@@ -382,7 +382,7 @@ handle_call({register_direct, NodeInfo}, _From, State) ->
             NewState = maps:get(state, NodeInfo, up),
             OldState = ExistingEntry#node_entry.state,
             OldPid = ExistingEntry#node_entry.pid,
-            NewPid = self(),
+            NewPid = CallerPid,  %% Use caller's pid, not gen_server's pid
 
             %% Update entry with fresh state, pid, and reset available resources
             %% Clear any stale job allocations on re-registration
@@ -408,9 +408,22 @@ handle_call({register_direct, NodeInfo}, _From, State) ->
             %% Insert fresh entry with new state and pid
             ets:insert(?NODES_BY_STATE, {NewState, NodeName, NewPid}),
 
+            %% Handle monitor update - demonitor old, monitor new
+            %% This prevents the old DOWN message from deleting the new entry
+            OldMonRef = find_monitor_ref(NodeName, State#state.monitors),
+            NewMonitors1 = case OldMonRef of
+                undefined -> State#state.monitors;
+                Ref ->
+                    erlang:demonitor(Ref, [flush]),
+                    maps:remove(Ref, State#state.monitors)
+            end,
+            %% Set up new monitor for the new pid
+            NewMonRef = erlang:monitor(process, NewPid),
+            NewMonitors = maps:put(NewMonRef, NodeName, NewMonitors1),
+
             lager:info("Node ~s re-registered (state: ~p -> ~p, cpus=~p, mem=~p, pid: ~p -> ~p)",
                       [NodeName, OldState, NewState, Cpus, MemoryMb, OldPid, NewPid]),
-            {reply, ok, State};
+            {reply, ok, State#state{monitors = NewMonitors}};
         [] ->
             Cpus = maps:get(cpus, NodeInfo, 1),
             MemoryMb = maps:get(memory_mb, NodeInfo, 1024),
@@ -420,7 +433,7 @@ handle_call({register_direct, NodeInfo}, _From, State) ->
             %% Create entry with available = total (node starts idle)
             Entry = #node_entry{
                 name = NodeName,
-                pid = self(),  %% Use calling process as placeholder
+                pid = CallerPid,  %% Use caller's pid for monitoring
                 hostname = NodeName,
                 state = NodeState,
                 partitions = Partitions,
@@ -436,19 +449,23 @@ handle_call({register_direct, NodeInfo}, _From, State) ->
             ets:insert(?NODES_BY_NAME, Entry),
 
             %% Insert into state index
-            ets:insert(?NODES_BY_STATE, {NodeState, NodeName, self()}),
+            ets:insert(?NODES_BY_STATE, {NodeState, NodeName, CallerPid}),
 
             %% Insert into partition indexes
             lists:foreach(
                 fun(Partition) ->
-                    ets:insert(?NODES_BY_PARTITION, {Partition, NodeName, self()})
+                    ets:insert(?NODES_BY_PARTITION, {Partition, NodeName, CallerPid})
                 end,
                 Partitions
             ),
 
-            lager:info("Node ~s registered directly (cpus=~p, mem=~p, state=~p)",
-                      [NodeName, Cpus, MemoryMb, NodeState]),
-            {reply, ok, State}
+            %% Set up monitor for the caller so we can detect node failures
+            MonRef = erlang:monitor(process, CallerPid),
+            NewMonitors = maps:put(MonRef, NodeName, State#state.monitors),
+
+            lager:info("Node ~s registered directly (cpus=~p, mem=~p, state=~p, pid=~p)",
+                      [NodeName, Cpus, MemoryMb, NodeState, CallerPid]),
+            {reply, ok, State#state{monitors = NewMonitors}}
     end;
 
 handle_call({unregister, NodeName}, _From, State) ->

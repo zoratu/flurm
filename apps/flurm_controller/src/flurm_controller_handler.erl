@@ -599,8 +599,11 @@ handle(#slurm_header{msg_type = ?REQUEST_NODE_INFO}, _Body) ->
 %% REQUEST_PARTITION_INFO (2009) -> RESPONSE_PARTITION_INFO
 handle(#slurm_header{msg_type = ?REQUEST_PARTITION_INFO}, _Body) ->
     lager:debug("Handling partition info request (sinfo)"),
+    %% Get global node list (same order as REQUEST_NODE_INFO response)
+    AllNodes = flurm_node_manager_server:list_nodes(),
+    AllNodeNames = [N#node.hostname || N <- AllNodes],
     Partitions = flurm_partition_manager:list_partitions(),
-    PartitionInfoList = [partition_to_partition_info(P) || P <- Partitions],
+    PartitionInfoList = [partition_to_partition_info(P, AllNodeNames) || P <- Partitions],
     Response = #partition_info_response{
         last_update = erlang:system_time(second),
         partition_count = length(PartitionInfoList),
@@ -1439,7 +1442,10 @@ batch_request_to_job_spec(#batch_job_request{} = Req) ->
         partition => default_partition(Req#batch_job_request.partition),
         num_nodes => max(1, Req#batch_job_request.min_nodes),
         num_cpus => max(1, Req#batch_job_request.min_cpus),
-        memory_mb => 256,  % Default 256 MB for container compatibility
+        memory_mb => case Req#batch_job_request.min_mem_per_node of
+            M when M > 0 -> M;
+            _ -> 256  % Default 256 MB for container compatibility
+        end,
         time_limit => default_time_limit(Req#batch_job_request.time_limit),
         priority => default_priority(Req#batch_job_request.priority),
         user_id => Req#batch_job_request.user_id,
@@ -1751,8 +1757,8 @@ node_to_node_info(#node{} = Node) ->
     }.
 
 %% @doc Convert internal partition record to SLURM partition_info record
--spec partition_to_partition_info(#partition{}) -> #partition_info{}.
-partition_to_partition_info(#partition{} = Part) ->
+-spec partition_to_partition_info(#partition{}, [binary()]) -> #partition_info{}.
+partition_to_partition_info(#partition{} = Part, AllNodeNames) ->
     %% Get nodes that belong to this partition
     %% We filter to only include nodes that:
     %% 1. Are actually registered (connected and up)
@@ -1773,6 +1779,10 @@ partition_to_partition_info(#partition{} = Part) ->
     NodesInPartition = [N || N <- AllRegisteredNodes,
                              lists:member(N#node.hostname, PartitionNodes)],
     TotalCpus = lists:sum([N#node.cpus || N <- NodesInPartition]),
+
+    %% Compute node_inx: indices into the global node list for this partition's nodes
+    NodeInx = compute_node_inx(PartitionNodes, AllNodeNames),
+
     #partition_info{
         name = Part#partition.name,
         state_up = partition_state_to_slurm(Part#partition.state),
@@ -1784,8 +1794,20 @@ partition_to_partition_info(#partition{} = Part) ->
         total_cpus = TotalCpus,
         nodes = format_node_list(PartitionNodes),
         priority_tier = Part#partition.priority,
-        priority_job_factor = 1
+        priority_job_factor = 1,
+        node_inx = NodeInx
     }.
+
+%% @doc Compute node_inx for a partition.
+%% Returns a list of 0-based indices into the global node list representing
+%% which nodes belong to this partition. Used to encode the SLURM node bitmap.
+-spec compute_node_inx([binary()], [binary()]) -> [non_neg_integer()].
+compute_node_inx([], _AllNodeNames) ->
+    [];
+compute_node_inx(PartitionNodeNames, AllNodeNames) ->
+    lists:sort([Idx || {Name, Idx} <- lists:zip(AllNodeNames,
+                                  lists:seq(0, length(AllNodeNames) - 1)),
+                       lists:member(Name, PartitionNodeNames)]).
 
 %% @doc Convert step manager map to SLURM job_step_info record
 -spec step_map_to_info(map()) -> #job_step_info{}.

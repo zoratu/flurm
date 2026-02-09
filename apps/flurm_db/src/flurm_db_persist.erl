@@ -151,28 +151,34 @@ store_job_ra(Job) ->
     end.
 
 update_job_ra(JobId, Updates) ->
+    %% Process allocated_nodes FIRST if present, because allocate_job
+    %% expects the job to be in pending state and transitions it to configuring.
+    %% If we update_job_state first, allocate_job would reject the call.
+    HasAllocNodes = maps:is_key(allocated_nodes, Updates),
+    case maps:find(allocated_nodes, Updates) of
+        {ok, Nodes} when Nodes =/= [] ->
+            flurm_db_ra:allocate_job(JobId, Nodes);
+        _ ->
+            ok
+    end,
     %% For state updates, use Ra's update_job_state
+    %% Skip if allocate_job already set the state to configuring
     case maps:find(state, Updates) of
+        {ok, configuring} when HasAllocNodes ->
+            ok;  % allocate_job already set state to configuring
         {ok, NewState} ->
             flurm_db_ra:update_job_state(JobId, NewState);
         error ->
-            %% For other updates, we need to handle them differently
-            %% Ra doesn't have a generic update, so we handle specific fields
-            handle_ra_updates(JobId, Updates)
-    end.
+            ok
+    end,
+    %% Handle remaining fields (exit_code, etc.)
+    handle_ra_remaining_updates(JobId, Updates).
 
-handle_ra_updates(JobId, Updates) ->
+handle_ra_remaining_updates(JobId, Updates) ->
     %% Handle exit_code updates
     case maps:find(exit_code, Updates) of
         {ok, ExitCode} ->
             flurm_db_ra:set_job_exit_code(JobId, ExitCode);
-        error ->
-            ok
-    end,
-    %% Handle allocated_nodes updates
-    case maps:find(allocated_nodes, Updates) of
-        {ok, Nodes} ->
-            flurm_db_ra:allocate_job(JobId, Nodes);
         error ->
             ok
     end,

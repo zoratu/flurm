@@ -263,20 +263,29 @@ handle_call({update_job, JobId, Updates}, _From, #state{jobs = Jobs} = State) ->
             case maps:get(state, Updates, undefined) of
                 completed ->
                     catch flurm_metrics:increment(flurm_jobs_completed_total),
+                    %% Release resources back to nodes
+                    release_job_resources(JobId, Job#job.allocated_nodes),
                     %% Notify dependencies module about completion
                     notify_job_deps_state_change(JobId, completed),
                     %% Clean up this job's own dependencies
                     cleanup_job_dependencies(JobId);
                 failed ->
                     catch flurm_metrics:increment(flurm_jobs_failed_total),
+                    %% Release resources back to nodes
+                    release_job_resources(JobId, Job#job.allocated_nodes),
                     %% Notify dependencies module about failure
                     notify_job_deps_state_change(JobId, failed),
                     %% Clean up this job's own dependencies
                     cleanup_job_dependencies(JobId);
                 timeout ->
+                    %% Release resources back to nodes
+                    release_job_resources(JobId, Job#job.allocated_nodes),
                     %% Timeout is similar to failure for dependency purposes
                     notify_job_deps_state_change(JobId, timeout),
                     cleanup_job_dependencies(JobId);
+                cancelled ->
+                    %% Release resources back to nodes
+                    release_job_resources(JobId, Job#job.allocated_nodes);
                 running ->
                     %% Job started running - satisfy 'after' dependencies
                     notify_job_deps_state_change(JobId, running);
@@ -993,3 +1002,30 @@ cleanup_job_dependencies(JobId) ->
                          [JobId, Reason]),
             ok
     end.
+
+%% @private
+%% Release resources back to nodes when a job completes/fails/times out
+-spec release_job_resources(job_id(), [binary()]) -> ok.
+release_job_resources(_JobId, []) ->
+    ok;
+release_job_resources(JobId, AllocatedNodes) when is_list(AllocatedNodes) ->
+    lists:foreach(
+        fun(NodeName) ->
+            %% Use flurm_node_manager which updates flurm_node_registry (used by scheduler)
+            case catch flurm_node_manager:release_resources(NodeName, JobId) of
+                ok ->
+                    lager:info("Released resources for job ~p on node ~s", [JobId, NodeName]);
+                {error, Reason} ->
+                    lager:warning("Failed to release resources for job ~p on node ~s: ~p",
+                                 [JobId, NodeName, Reason]);
+                {'EXIT', {noproc, _}} ->
+                    %% Node manager not running, ignore
+                    ok;
+                {'EXIT', Reason} ->
+                    lager:warning("Failed to release resources for job ~p on node ~s: ~p",
+                                 [JobId, NodeName, Reason])
+            end
+        end,
+        AllocatedNodes
+    ),
+    ok.
