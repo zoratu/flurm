@@ -23,6 +23,7 @@
 -export([
     start_cluster/1,
     submit_job/1,
+    store_job/2,
     cancel_job/1,
     update_job_state/2,
     register_node/1,
@@ -103,7 +104,7 @@ apply(_Meta, allocate_job_id, State) ->
     %% No effects - just return the allocated ID
     {NewState, {ok, JobId}, []};
 
-%% Submit a new job
+%% Submit a new job (Ra assigns ID from its own counter)
 apply(_Meta, {submit_job, #ra_job_spec{} = JobSpec}, State) ->
     JobId = State#ra_state.job_counter,
     Job = make_job_record(JobId, JobSpec),
@@ -114,6 +115,16 @@ apply(_Meta, {submit_job, #ra_job_spec{} = JobSpec}, State) ->
     %% Effect: notify job manager on leader that job was submitted
     Effects = [{mod_call, flurm_db_ra_effects, job_submitted, [Job]}],
     {NewState, {ok, JobId}, Effects};
+
+%% Store a job with a specific pre-assigned ID (from job manager)
+apply(_Meta, {store_job, JobId, #ra_job_spec{} = JobSpec}, State) ->
+    Job = make_job_record(JobId, JobSpec),
+    NewCounter = max(State#ra_state.job_counter, JobId + 1),
+    NewState = State#ra_state{
+        jobs = maps:put(JobId, Job, State#ra_state.jobs),
+        job_counter = NewCounter
+    },
+    {NewState, {ok, JobId}, []};
 
 %% Cancel a job
 apply(_Meta, {cancel_job, JobId}, State) ->
@@ -360,6 +371,11 @@ start_cluster(Nodes) when is_list(Nodes) ->
 -spec submit_job(#ra_job_spec{}) -> {ok, job_id()} | {error, term()}.
 submit_job(#ra_job_spec{} = JobSpec) ->
     ra_command({submit_job, JobSpec}).
+
+%% @doc Store a job with a specific pre-assigned ID.
+-spec store_job(job_id(), #ra_job_spec{}) -> {ok, job_id()} | {error, term()}.
+store_job(JobId, #ra_job_spec{} = JobSpec) when is_integer(JobId) ->
+    ra_command({store_job, JobId, JobSpec}).
 
 %% @doc Cancel a job.
 -spec cancel_job(job_id()) -> ok | {error, term()}.

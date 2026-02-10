@@ -132,7 +132,8 @@ persistence_mode() ->
 %%====================================================================
 
 store_job_ra(Job) ->
-    %% Convert #job to #ra_job_spec for Ra submission
+    %% Convert #job to #ra_job_spec and store with the same ID
+    %% as the local job manager to keep IDs consistent
     JobSpec = #ra_job_spec{
         name = Job#job.name,
         user = Job#job.user,
@@ -147,7 +148,7 @@ store_job_ra(Job) ->
         time_limit = Job#job.time_limit,
         priority = Job#job.priority
     },
-    case flurm_db_ra:submit_job(JobSpec) of
+    case flurm_db_ra:store_job(Job#job.id, JobSpec) of
         {ok, _JobId} -> ok;
         Error -> Error
     end.

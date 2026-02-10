@@ -190,14 +190,25 @@ handle_call({import_job, JobSpec}, _From, #state{jobs = Jobs, job_counter = Coun
             {reply, {ok, JobId}, State#state{jobs = NewJobs, job_counter = NewCounter}}
     end;
 
-handle_call({cancel_job, JobId}, _From, #state{jobs = Jobs} = State) ->
-    case maps:find(JobId, Jobs) of
-        {ok, Job} ->
+handle_call({cancel_job, JobId}, _From, #state{jobs = Jobs, persistence_mode = Mode} = State) ->
+    %% Look for job in local map first, then fall back to persistence store
+    FindResult = case maps:find(JobId, Jobs) of
+        {ok, Job} -> {ok, Job, local};
+        error when Mode =:= ra ->
+            %% Job not in local map but may exist in Ra (ID mismatch recovery)
+            case flurm_db_persist:get_job(JobId) of
+                {ok, RaJob} -> {ok, RaJob, ra_only};
+                _ -> error
+            end;
+        error -> error
+    end,
+    case FindResult of
+        {ok, FoundJob, _Source} ->
             %% Get allocated nodes before updating state
-            AllocatedNodes = Job#job.allocated_nodes,
+            AllocatedNodes = FoundJob#job.allocated_nodes,
 
             %% Update job state to cancelled
-            UpdatedJob = flurm_core:update_job_state(Job, cancelled),
+            UpdatedJob = flurm_core:update_job_state(FoundJob, cancelled),
             NewJobs = maps:put(JobId, UpdatedJob, Jobs),
             lager:debug("Job ~p cancelled", [JobId]),
 
