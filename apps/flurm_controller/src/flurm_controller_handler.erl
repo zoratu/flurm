@@ -1613,7 +1613,28 @@ default_priority(Priority) -> Priority.
 
 %% @doc Get jobs, expanding array tasks when a specific array parent is requested
 get_jobs_with_array_expansion(0) ->
-    flurm_job_manager:list_jobs();
+    %% For "show all jobs", include active + recently completed jobs.
+    %% Filter out jobs that have been in terminal state (cancelled/completed/failed)
+    %% for more than MinJobAge (300s) to match SLURM behavior and avoid
+    %% huge responses that can't be parsed by the client.
+    Now = erlang:system_time(second),
+    MinJobAge = 60,
+    lists:filter(fun(J) ->
+        case J#job.state of
+            running -> true;
+            pending -> true;
+            configuring -> true;
+            held -> true;
+            _ ->
+                %% Terminal state - check if recently ended
+                EndTime = case J#job.end_time of
+                    undefined -> Now;
+                    0 -> Now;
+                    T -> T
+                end,
+                (Now - EndTime) < MinJobAge
+        end
+    end, flurm_job_manager:list_jobs());
 get_jobs_with_array_expansion(JobId) ->
     case flurm_job_manager:get_job(JobId) of
         {ok, Job} ->

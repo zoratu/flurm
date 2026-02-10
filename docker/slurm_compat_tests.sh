@@ -1246,11 +1246,13 @@ else
 fi
 
 # test_edge.5 - scontrol show job with no argument (all jobs)
+cleanup_jobs
+sleep 1
 JOB1=$(submit_test_job "--job-name=show_all_1" "#!/bin/bash
 sleep 60")
 JOB2=$(submit_test_job "--job-name=show_all_2" "#!/bin/bash
 sleep 60")
-sleep 2
+sleep 3
 OUTPUT=$(scontrol show job 2>&1)
 if echo "$OUTPUT" | grep -q "$JOB1" && echo "$OUTPUT" | grep -q "$JOB2"; then
     pass "test_edge.5: scontrol show job (no arg) shows all jobs"
@@ -2006,6 +2008,10 @@ SECTION="salloc"
 echo ""
 echo -e "${CYAN}=== Section 22: salloc interactive allocation ===${NC}"
 
+# Aggressive cleanup: cancel ALL jobs (including interactive/salloc from previous runs)
+scancel -u root 2>/dev/null || true
+sleep 2
+scancel -u root 2>/dev/null || true
 cleanup_jobs
 
 # test_salloc.1: salloc help is available
@@ -2061,12 +2067,22 @@ else
     fi
 fi
 
-# Kill the salloc background process
+# Kill the salloc background process and all its children
 kill $SALLOC_PID 2>/dev/null || true
+kill -- -$SALLOC_PID 2>/dev/null || true
 wait $SALLOC_PID 2>/dev/null || true
-# Cancel any remaining salloc jobs to free resources
+# Cancel ALL jobs and wait for node to become IDLE
 scancel -u root 2>/dev/null || true
-sleep 2
+for i in $(seq 1 15); do
+    sleep 1
+    NODE_STATE=$(sinfo -h -o "%T" 2>/dev/null | head -1)
+    NJOBS=$(squeue -h 2>/dev/null | wc -l | tr -d ' ')
+    if [ "$NJOBS" = "0" ] && [ "$NODE_STATE" = "idle" ]; then
+        break
+    fi
+    # Keep trying to cancel
+    scancel -u root 2>/dev/null || true
+done
 
 # test_salloc.5: salloc with partition specification
 RESULT=$(timeout 10 salloc -p default -N1 hostname 2>&1 || true)
@@ -2092,6 +2108,9 @@ else
     pass "test_salloc.6: squeue has $REMAINING jobs after salloc exit"
 fi
 
+# Final salloc cleanup: ensure all interactive allocations are released
+scancel -u root 2>/dev/null || true
+sleep 2
 cleanup_jobs
 
 ###############################################################################
