@@ -796,8 +796,11 @@ complete_job_allocation(JobId, JobInfo, Nodes, NumCpus, MemoryMb, Licenses, Stat
                     UpdatedInfo = JobInfo#{allocated_nodes => NodeNames},
                     case flurm_job_dispatcher:dispatch_job(JobId, UpdatedInfo) of
                         ok ->
-                            %% Mark job as running
-                            flurm_job_manager:update_job(JobId, #{state => running}),
+                            %% Mark job as running with start time
+                            flurm_job_manager:update_job(JobId, #{
+                                state => running,
+                                start_time => erlang:system_time(second)
+                            }),
                             %% Notify limits module that job has started
                             LimitInfo = build_limit_info(JobInfo),
                             flurm_limits:enforce_limit(start, JobId, LimitInfo),
@@ -1154,8 +1157,11 @@ try_allocate_job_simple(JobId, JobInfo, State) ->
                                             UpdatedInfo = JobInfo#{allocated_nodes => NodeNames},
                                             case flurm_job_dispatcher:dispatch_job(JobId, UpdatedInfo) of
                                                 ok ->
-                                                    %% Mark job as running
-                                                    flurm_job_manager:update_job(JobId, #{state => running}),
+                                                    %% Mark job as running with start time
+                                                    flurm_job_manager:update_job(JobId, #{
+                                                        state => running,
+                                                        start_time => erlang:system_time(second)
+                                                    }),
                                                     %% Notify limits module that job has started (for usage tracking)
                                                     LimitInfo = build_limit_info(JobInfo),
                                                     flurm_limits:enforce_limit(start, JobId, LimitInfo),

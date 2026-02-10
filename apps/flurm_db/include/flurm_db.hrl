@@ -49,7 +49,9 @@
     start_time      :: non_neg_integer() | undefined,
     end_time        :: non_neg_integer() | undefined,
     allocated_nodes :: [node_name()],
-    exit_code       :: integer() | undefined
+    exit_code       :: integer() | undefined,
+    array_job_id = 0 :: non_neg_integer(),
+    array_task_id   :: non_neg_integer() | undefined
 }).
 
 %% Node record for Ra state

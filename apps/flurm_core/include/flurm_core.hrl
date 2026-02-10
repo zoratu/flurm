@@ -80,7 +80,10 @@
     prolog = <<>> :: binary(),          % Prolog script path (runs before job)
     epilog = <<>> :: binary(),          % Epilog script path (runs after job)
     prolog_status = pending :: pending | running | complete | failed,
-    epilog_status = pending :: pending | running | complete | failed
+    epilog_status = pending :: pending | running | complete | failed,
+    %% Array job fields
+    array_job_id = 0 :: non_neg_integer(),              % Parent array job ID (0 = not array)
+    array_task_id = undefined :: non_neg_integer() | undefined  % Task index within array
 }).
 
 %%====================================================================

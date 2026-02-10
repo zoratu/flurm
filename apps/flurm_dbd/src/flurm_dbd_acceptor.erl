@@ -32,6 +32,7 @@
 -endif.
 
 -include_lib("flurm_protocol/include/flurm_protocol.hrl").
+-include_lib("flurm_core/include/flurm_core.hrl").
 
 -record(conn_state, {
     socket :: ranch_transport:socket(),
@@ -291,6 +292,8 @@ handle_dbd_message(<<DbdMsgType:16/big, Body/binary>>, State) ->
             send_dbd_rc(RC, State);
         {rc, RC, Comment} ->
             send_dbd_rc(RC, Comment, State);
+        {jobs, Records} ->
+            send_dbd_job_list(Records, State);
         none ->
             {ok, State}
     end.
@@ -328,7 +331,22 @@ handle_dbd_request(1407, _Body) ->
 handle_dbd_request(1444, _Body) ->
     %% DBD_GET_JOBS_COND - sacct job query
     lager:info("DBD: received DBD_GET_JOBS_COND (sacct query)"),
-    {rc, 0};
+    %% First try the DBD server's job records (accounting DB)
+    DbdRecords = try flurm_dbd_server:list_job_records()
+                 catch _:_ -> []
+                 end,
+    %% If DBD has no records, fall back to querying job manager directly
+    Records = case DbdRecords of
+        [] ->
+            try
+                Jobs = flurm_job_manager:list_jobs(),
+                [job_to_sacct_record(J) || J <- Jobs]
+            catch _:_ -> []
+            end;
+        _ -> DbdRecords
+    end,
+    lager:info("DBD: returning ~p job records for sacct", [length(Records)]),
+    {jobs, Records};
 
 handle_dbd_request(1410, _Body) ->
     %% DBD_GET_ASSOCS - get associations
@@ -416,6 +434,218 @@ send_dbd_rc(ReturnCode, Comment,
         ok -> {ok, State};
         {error, _} = Error -> Error
     end.
+
+%% @doc Send a DBD_GOT_JOBS (1445) response with packed job records.
+%%
+%% Format:
+%%   [4 bytes: payload length]
+%%   [2 bytes: msg_type = 1445 (DBD_GOT_JOBS)]
+%%   [4 bytes: count of job records]
+%%   [for each record: slurmdb_pack_job_rec fields]
+send_dbd_job_list(Records, #conn_state{socket = Socket, transport = Transport} = State) ->
+    MsgType = 1421,  %% DBD_GOT_JOBS (not 1445 which is DBD_GET_TXN)
+    Count = length(Records),
+    PackedJobs = << <<(pack_slurmdb_job_rec(R))/binary>> || R <- Records >>,
+    ReturnCode = 0,  %% SLURM_SUCCESS
+    Body = <<Count:32/big, PackedJobs/binary, ReturnCode:32/big>>,
+    Payload = <<MsgType:16/big, Body/binary>>,
+    PayloadLen = byte_size(Payload),
+    Msg = <<PayloadLen:32/big, Payload/binary>>,
+    lager:info("DBD: sending DBD_GOT_JOBS with ~p records (~p bytes)", [Count, PayloadLen]),
+    case Transport:send(Socket, Msg) of
+        ok -> {ok, State};
+        {error, _} = Error -> Error
+    end.
+
+%% @doc Pack a single job record in SLURM 22.05 slurmdb_pack_job_rec format.
+%% Fields are packed in exact order matching SLURM 22.05's slurmdb_pack_job_rec()
+%% from src/common/slurmdb_pack.c (62 pack operations).
+%% Note: time_t fields use pack_time (64-bit signed big-endian int64).
+%% Note: slurmdb_stats sub-record was removed in 22.05; CPU time fields are inline.
+pack_slurmdb_job_rec(JobMap) ->
+    JobId = maps:get(job_id, JobMap, 0),
+    JobName = maps:get(job_name, JobMap, <<>>),
+    Account = maps:get(account, JobMap, <<>>),
+    Partition = maps:get(partition, JobMap, <<>>),
+    State = job_state_to_num(maps:get(state, JobMap, pending)),
+    ExitCode = maps:get(exit_code, JobMap, 0),
+    SubmitTime = maps:get(submit_time, JobMap, 0),
+    EligibleTime = maps:get(eligible_time, JobMap, maps:get(submit_time, JobMap, 0)),
+    StartTime = maps:get(start_time, JobMap, 0),
+    EndTime = maps:get(end_time, JobMap, 0),
+    Elapsed = maps:get(elapsed, JobMap, 0),
+    Uid = maps:get(user_id, JobMap, 0),
+    Gid = maps:get(group_id, JobMap, 0),
+    ReqCpus = maps:get(num_cpus, JobMap, 1),
+    ReqMem = maps:get(req_mem, JobMap, 0),
+    WorkDir = maps:get(work_dir, JobMap, <<"/tmp">>),
+    UserName = maps:get(user_name, JobMap, <<>>),
+    Cluster = maps:get(cluster, JobMap, <<"flurm">>),
+    Nodes = case maps:get(allocated_nodes, JobMap, undefined) of
+        undefined -> <<>>;
+        NodeList when is_list(NodeList) ->
+            iolist_to_binary(lists:join(<<",">>, NodeList));
+        N when is_binary(N) -> N;
+        _ -> <<>>
+    end,
+    TresAlloc = format_tres_str(maps:get(tres_alloc, JobMap, #{})),
+    TresReq = format_tres_str(maps:get(tres_req, JobMap, #{})),
+    Null = <<0:32/big>>,
+    %% Pack fields in exact SLURM 22.05 order (62 pack operations)
+    iolist_to_binary([
+        packstr(Account),              %  1. account (packstr)
+        Null,                           %  2. admin_comment (packstr)
+        <<0:32/big>>,                   %  3. alloc_nodes (pack32)
+        <<0:32/big>>,                   %  4. array_job_id (pack32)
+        <<0:32/big>>,                   %  5. array_max_tasks (pack32)
+        <<16#FFFFFFFE:32/big>>,         %  6. array_task_id (pack32, NO_VAL)
+        Null,                           %  7. array_task_str (packstr)
+        <<0:32/big>>,                   %  8. associd (pack32)
+        Null,                           %  9. blockid (packstr)
+        packstr(Cluster),               % 10. cluster (packstr)
+        Null,                           % 11. constraints (packstr)
+        Null,                           % 12. container (packstr)
+        <<0:64/big>>,                   % 13. db_index (pack64)
+        <<ExitCode:32/big>>,            % 14. derived_ec (pack32)
+        Null,                           % 15. derived_es (packstr)
+        <<Elapsed:32/big>>,             % 16. elapsed (pack32)
+        <<EligibleTime:64/big-signed>>, % 17. eligible (pack_time = int64)
+        <<EndTime:64/big-signed>>,      % 18. end (pack_time = int64)
+        Null,                           % 19. env (packstr)
+        <<ExitCode:32/big>>,            % 20. exitcode (pack32)
+        <<0:32/big>>,                   % 21. flags (pack32)
+        <<Gid:32/big>>,                 % 22. gid (pack32)
+        <<JobId:32/big>>,               % 23. jobid (pack32)
+        packstr(JobName),               % 24. jobname (packstr)
+        <<0:32/big>>,                   % 25. lft (pack32)
+        Null,                           % 26. mcs_label (packstr)
+        packstr(Nodes),                 % 27. nodes (packstr)
+        <<0:32/big>>,                   % 28. het_job_id (pack32)
+        <<16#FFFFFFFE:32/big>>,         % 29. het_job_offset (pack32, NO_VAL)
+        packstr(Partition),             % 30. partition (packstr)
+        <<0:32/big>>,                   % 31. priority (pack32)
+        <<0:32/big>>,                   % 32. qosid (pack32)
+        <<ReqCpus:32/big>>,             % 33. req_cpus (pack32)
+        <<ReqMem:64/big>>,              % 34. req_mem (pack64)
+        <<0:32/big>>,                   % 35. requid (pack32)
+        Null,                           % 36. resv_name (packstr)
+        <<0:32/big>>,                   % 37. resvid (pack32)
+        Null,                           % 38. script (packstr, NULL unless show_full)
+        <<1:32/big>>,                   % 39. show_full (pack32, must be non-zero for sacct to display)
+        <<StartTime:64/big-signed>>,    % 40. start (pack_time = int64)
+        <<State:32/big>>,               % 41. state (pack32)
+        <<0:32/big>>,                   % 42. state_reason_prev (pack32)
+        <<0:32/big>>,                   % 43. steps count (pack32, 0 = no steps)
+        %% 44. (no step data since count is 0)
+        <<SubmitTime:64/big-signed>>,   % 45. submit (pack_time = int64)
+        Null,                           % 46. submit_line (packstr)
+        <<0:32/big>>,                   % 47. suspended (pack32)
+        Null,                           % 48. system_comment (packstr)
+        <<0:64/big>>,                   % 49. sys_cpu_sec (pack64)
+        <<0:64/big>>,                   % 50. sys_cpu_usec (pack64)
+        <<0:32/big>>,                   % 51. timelimit (pack32)
+        <<0:64/big>>,                   % 52. tot_cpu_sec (pack64)
+        <<0:64/big>>,                   % 53. tot_cpu_usec (pack64)
+        packstr(TresAlloc),             % 54. tres_alloc_str (packstr)
+        packstr(TresReq),               % 55. tres_req_str (packstr)
+        <<Uid:32/big>>,                 % 56. uid (pack32)
+        packstr(UserName),              % 57. user (packstr)
+        <<0:64/big>>,                   % 58. user_cpu_sec (pack64)
+        <<0:64/big>>,                   % 59. user_cpu_usec (pack64)
+        packstr(<<>>),                  % 60. wckey (packstr)
+        <<0:32/big>>,                   % 61. wckeyid (pack32)
+        packstr(WorkDir)                % 62. work_dir (packstr)
+    ]).
+
+%% Pack a binary string in SLURM packstr format: u32 length (including null) + data + null
+packstr(<<>>) -> <<0:32/big>>;
+packstr(Bin) when is_binary(Bin) ->
+    WithNull = <<Bin/binary, 0>>,
+    <<(byte_size(WithNull)):32/big, WithNull/binary>>.
+
+%% Convert atom job state to SLURM numeric value
+job_state_to_num(pending) -> 0;
+job_state_to_num(running) -> 1;
+job_state_to_num(suspended) -> 2;
+job_state_to_num(completed) -> 3;
+job_state_to_num(cancelled) -> 4;
+job_state_to_num(failed) -> 5;
+job_state_to_num(timeout) -> 6;
+job_state_to_num(node_fail) -> 7;
+job_state_to_num(preempted) -> 8;
+job_state_to_num(boot_fail) -> 9;
+job_state_to_num(deadline) -> 10;
+job_state_to_num(oom) -> 11;
+job_state_to_num(configuring) -> 1;  % Show as running
+job_state_to_num(completing) -> 1;   % Show as running
+job_state_to_num(_) -> 0.
+
+%% Format TRES map to SLURM string format (e.g., "1=4,2=1024,4=1")
+format_tres_str(Map) when is_map(Map), map_size(Map) > 0 ->
+    Parts = maps:fold(fun(K, V, Acc) ->
+        TresId = tres_type_to_id(K),
+        [iolist_to_binary([integer_to_binary(TresId), <<"=">>,
+                           integer_to_binary(V)]) | Acc]
+    end, [], Map),
+    iolist_to_binary(lists:join(<<",">>, lists:sort(Parts)));
+format_tres_str(_) -> <<>>.
+
+tres_type_to_id(cpu) -> 1;
+tres_type_to_id(mem) -> 2;
+tres_type_to_id(energy) -> 3;
+tres_type_to_id(node) -> 4;
+tres_type_to_id(billing) -> 5;
+tres_type_to_id(_) -> 1.
+
+%% Convert a #job{} record from the job manager to a sacct record map
+job_to_sacct_record(Job) when is_record(Job, job) ->
+    #{
+        job_id => Job#job.id,
+        job_name => Job#job.name,
+        account => case Job#job.account of
+            <<>> -> <<"root">>;
+            undefined -> <<"root">>;
+            A -> A
+        end,
+        partition => Job#job.partition,
+        state => Job#job.state,
+        exit_code => case Job#job.exit_code of
+            undefined -> 0;
+            EC -> EC
+        end,
+        submit_time => case Job#job.submit_time of
+            undefined -> 0;
+            ST -> ST
+        end,
+        eligible_time => case Job#job.submit_time of
+            undefined -> 0;
+            ET -> ET
+        end,
+        start_time => case Job#job.start_time of
+            undefined -> 0;
+            StartT -> StartT
+        end,
+        end_time => case Job#job.end_time of
+            undefined -> 0;
+            EndT -> EndT
+        end,
+        elapsed => case {Job#job.start_time, Job#job.end_time} of
+            {undefined, _} -> 0;
+            {S, undefined} -> max(0, erlang:system_time(second) - S);
+            {S, E} -> max(0, E - S)
+        end,
+        user_id => 0,
+        group_id => 0,
+        user_name => Job#job.user,
+        num_cpus => Job#job.num_cpus,
+        req_mem => Job#job.memory_mb,
+        work_dir => <<"/tmp">>,
+        cluster => <<"flurm">>,
+        allocated_nodes => Job#job.allocated_nodes,
+        tres_alloc => #{cpu => Job#job.num_cpus, node => Job#job.num_nodes},
+        tres_req => #{cpu => Job#job.num_cpus, mem => Job#job.memory_mb}
+    };
+job_to_sacct_record(_) -> #{}.
 
 peername(Socket, Transport) ->
     case Transport:peername(Socket) of

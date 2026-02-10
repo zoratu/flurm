@@ -235,34 +235,39 @@ handle_call({cancel_job, JobId}, _From, #state{jobs = Jobs, persistence_mode = M
             %% Notify scheduler to release resources
             flurm_scheduler:job_failed(JobId),
 
-            {reply, ok, State#state{jobs = NewJobs}};
+            %% Also cancel array task children if this is an array parent
+            FinalJobs = cancel_array_children(JobId, NewJobs),
+
+            {reply, ok, State#state{jobs = FinalJobs}};
         error ->
-            {reply, {error, not_found}, State}
+            %% Job ID not found directly - check if it's an array parent
+            %% Array parent may not exist as a job itself, only its tasks do
+            ArrayChildren = [J || J <- maps:values(Jobs),
+                             J#job.array_job_id =:= JobId],
+            case ArrayChildren of
+                [] ->
+                    {reply, {error, not_found}, State};
+                _ ->
+                    %% Cancel all array task children
+                    NewJobs = cancel_array_children(JobId, Jobs),
+                    {reply, ok, State#state{jobs = NewJobs}}
+            end
     end;
 
-handle_call({get_job, JobId}, _From, #state{jobs = Jobs, persistence_mode = Mode} = State) ->
-    %% In Ra mode, query the distributed state to ensure consistency
-    Result = case Mode of
-        ra ->
-            flurm_db_persist:get_job(JobId);
-        _ ->
-            case maps:find(JobId, Jobs) of
-                {ok, Job} -> {ok, Job};
-                error -> {error, not_found}
-            end
+handle_call({get_job, JobId}, _From, #state{jobs = Jobs} = State) ->
+    %% Always use local in-memory map - it's the authoritative source with all fields.
+    %% Ra persistence is used for recovery only; #ra_job{} doesn't carry all fields
+    %% (e.g. std_out, std_err, work_dir, account, qos, licenses).
+    Result = case maps:find(JobId, Jobs) of
+        {ok, Job} -> {ok, Job};
+        error -> {error, not_found}
     end,
     {reply, Result, State};
 
-handle_call(list_jobs, _From, #state{jobs = Jobs, persistence_mode = Mode} = State) ->
-    %% In Ra mode, query the distributed state to ensure consistency
-    %% across all controller nodes. In ETS mode, use local cache.
-    Result = case Mode of
-        ra ->
-            flurm_db_persist:list_jobs();
-        _ ->
-            maps:values(Jobs)
-    end,
-    {reply, Result, State};
+handle_call(list_jobs, _From, #state{jobs = Jobs} = State) ->
+    %% Always use local in-memory map - it's the authoritative source with all fields.
+    %% Ra persistence is used for recovery only; #ra_job{} doesn't carry all fields.
+    {reply, maps:values(Jobs), State};
 
 handle_call({update_job, JobId, Updates}, _From, #state{jobs = Jobs} = State) ->
     case maps:find(JobId, Jobs) of
@@ -794,7 +799,9 @@ create_array_task_jobs(ArrayJobId, BaseJob, Tasks, Jobs, Counter) ->
             %% by the job dispatcher using flurm_job_array:get_task_env/2
             TaskJob = BaseJob#job{
                 id = AccCounter,
-                name = TaskName
+                name = TaskName,
+                array_job_id = ArrayJobId,
+                array_task_id = TaskId
             },
 
             %% Update task with the job ID (task remains pending until actually scheduled)
@@ -851,7 +858,8 @@ create_job(JobId, JobSpec) ->
     %% Default output file is slurm-<jobid>.out in work_dir
     DefaultOut = iolist_to_binary([WorkDir, <<"/slurm-">>,
                                    integer_to_binary(JobId), <<".out">>]),
-    StdOut = case maps:get(std_out, JobSpec, <<>>) of
+    RawStdOut = maps:get(std_out, JobSpec, <<>>),
+    StdOut = case RawStdOut of
         <<>> -> DefaultOut;
         Path -> Path
     end,
@@ -887,6 +895,25 @@ create_job(JobId, JobSpec) ->
         qos = maps:get(qos, JobSpec, <<"normal">>),
         licenses = maps:get(licenses, JobSpec, [])
     }.
+
+%% Cancel all array task children of a given parent job ID
+cancel_array_children(ParentJobId, Jobs) ->
+    maps:fold(fun(ChildId, ChildJob, AccJobs) ->
+        case ChildJob#job.array_job_id =:= ParentJobId andalso
+             ChildJob#job.state =/= cancelled of
+            true ->
+                CancelledChild = flurm_core:update_job_state(ChildJob, cancelled),
+                persist_job_update(ChildId, #{state => cancelled}),
+                case CancelledChild#job.allocated_nodes of
+                    [] -> ok;
+                    Nodes -> flurm_job_dispatcher_server:cancel_job(ChildId, Nodes)
+                end,
+                flurm_scheduler:job_failed(ChildId),
+                maps:put(ChildId, CancelledChild, AccJobs);
+            false ->
+                AccJobs
+        end
+    end, Jobs, Jobs).
 
 %% Persist a new job
 persist_job(Job) ->

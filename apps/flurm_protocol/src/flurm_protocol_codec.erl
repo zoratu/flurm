@@ -754,20 +754,7 @@ encode_body(?RESPONSE_SUBMIT_BATCH_JOB, Resp) ->
 
 %% RESPONSE_JOB_INFO (2004)
 encode_body(?RESPONSE_JOB_INFO, Resp) ->
-    Result = encode_job_info_response(Resp),
-    case Result of
-        {ok, Bin} ->
-            %% Log first 20 bytes of body for debugging
-            BodyPrefix = case byte_size(Bin) >= 20 of
-                true -> <<First20:20/binary, _/binary>> = Bin, First20;
-                false -> Bin
-            end,
-            HexBody = list_to_binary([[io_lib:format("~2.16.0B", [B]) || B <- binary_to_list(BodyPrefix)]]),
-            lager:info("RESPONSE_JOB_INFO: encoded ~p jobs, ~p bytes, body_hex=~s",
-                      [Resp#job_info_response.job_count, byte_size(Bin), HexBody]);
-        _ -> ok
-    end,
-    Result;
+    encode_job_info_response(Resp);
 
 %% REQUEST_NODE_INFO (2007)
 encode_body(?REQUEST_NODE_INFO, #node_info_request{} = Req) ->
@@ -1712,11 +1699,62 @@ find_std_out(Binary, Script, WorkDir) ->
     %% First check for --output= or -o in script directives
     case find_sbatch_output_directive(Script) of
         <<>> ->
-            %% Check for .out path pattern in binary message
-            find_output_path_in_binary(Binary, WorkDir);
+            %% Check for --output= in the binary message (command-line args)
+            case find_output_flag_in_binary(Binary) of
+                <<>> ->
+                    %% Fall back to scanning for .out path pattern in binary
+                    find_output_path_in_binary(Binary, WorkDir);
+                Path ->
+                    Path
+            end;
         Path ->
             Path
     end.
+
+%% Scan binary for std_out packstr field from job_desc_msg_t.
+%% The SLURM client packs the --output= path directly as the std_out field.
+%% It appears as a packstr: [u32 length][path bytes][null terminator].
+%% We look for packstr values containing the path (starting with / and ending
+%% with patterns like .out, %j.out, etc) that aren't the default slurm- pattern.
+find_output_flag_in_binary(Binary) ->
+    find_custom_out_path(Binary, 0).
+
+find_custom_out_path(Binary, Offset) when Offset + 8 < byte_size(Binary) ->
+    case Binary of
+        <<_:Offset/binary, Len:32/big, Rest/binary>>
+                when Len > 4, Len < 512, byte_size(Rest) >= Len ->
+            <<Str:Len/binary, _/binary>> = Rest,
+            %% Check if this looks like a user-specified output path
+            %% Must start with / and NOT be a default slurm- pattern
+            case Str of
+                <<$/, _/binary>> ->
+                    Cleaned = strip_null(Str),
+                    IsDefault = case binary:match(Cleaned, <<"slurm-">>) of
+                        {_, _} -> true;
+                        nomatch -> false
+                    end,
+                    case IsDefault of
+                        true ->
+                            find_custom_out_path(Binary, Offset + 1);
+                        false ->
+                            %% Check it looks like an output path (contains .out or %j)
+                            HasOut = binary:match(Cleaned, <<".out">>) =/= nomatch,
+                            HasPercent = binary:match(Cleaned, <<"%">>) =/= nomatch,
+                            if HasOut orelse HasPercent ->
+                                   Cleaned;
+                               true ->
+                                   find_custom_out_path(Binary, Offset + 1)
+                            end
+                    end;
+                _ ->
+                    find_custom_out_path(Binary, Offset + 1)
+            end;
+        _ ->
+            find_custom_out_path(Binary, Offset + 1)
+    end;
+find_custom_out_path(_, _) ->
+    <<>>.
+
 
 %% Find stderr path - check script directives
 find_std_err(Binary, Script) ->
@@ -3401,8 +3439,6 @@ encode_job_info_response(#job_info_response{
 %% Fields MUST be in exact order matching SLURM's _unpack_job_info_members()
 %% From src/common/slurm_protocol_pack.c
 encode_single_job_info(#job_info{} = J) ->
-    lager:info("Encoding job_info: job_id=~p, array_job_id=~p, array_task_id=~p, state=~p",
-               [J#job_info.job_id, J#job_info.array_job_id, J#job_info.array_task_id, J#job_info.job_state]),
     %% SLURM 22.05 unpacks ALL fields unconditionally - no conditional packing!
     [
         %% Fields 1-10: array_job_id, array_task_id, array_task_str, array_max_tasks,

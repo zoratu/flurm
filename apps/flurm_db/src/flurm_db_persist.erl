@@ -248,6 +248,8 @@ ra_job_to_job(#ra_job{} = R) ->
         end_time = R#ra_job.end_time,
         allocated_nodes = R#ra_job.allocated_nodes,
         exit_code = R#ra_job.exit_code,
+        array_job_id = R#ra_job.array_job_id,
+        array_task_id = R#ra_job.array_task_id,
         %% Account and QOS fields - default values since ra_job does not have these yet
         account = <<>>,
         qos = <<"normal">>

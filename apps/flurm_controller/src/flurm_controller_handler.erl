@@ -325,17 +325,7 @@ handle(#slurm_header{msg_type = ?REQUEST_KILL_TIMELIMIT}, Body) ->
 handle(#slurm_header{msg_type = ?REQUEST_JOB_INFO},
        #job_info_request{job_id = JobId}) ->
     lager:info("Handling job info request for job_id=~p", [JobId]),
-    Jobs = case JobId of
-        0 ->
-            %% Return all jobs
-            flurm_job_manager:list_jobs();
-        _ ->
-            %% Return specific job
-            case flurm_job_manager:get_job(JobId) of
-                {ok, Job} -> [Job];
-                {error, not_found} -> []
-            end
-    end,
+    Jobs = get_jobs_with_array_expansion(JobId),
     %% Convert internal jobs to job_info records
     JobInfos = [job_to_job_info(J) || J <- Jobs],
     Response = #job_info_response{
@@ -356,19 +346,10 @@ handle(#slurm_header{msg_type = ?REQUEST_JOB_USER_INFO}, Body) ->
     %% Body is raw binary, parse job_id from it
     %% Format: job_id:32/big, ...
     JobId = case Body of
-        <<JId:32/big, _/binary>> when JId > 0 -> JId;
+        <<JId:32/big, _/binary>> when JId > 0, JId =/= 16#FFFFFFFE -> JId;
         _ -> 0  % Return all jobs
     end,
-    %% Call job info handler directly
-    Jobs = case JobId of
-        0 ->
-            flurm_job_manager:list_jobs();
-        _ ->
-            case flurm_job_manager:get_job(JobId) of
-                {ok, Job} -> [Job];
-                {error, not_found} -> []
-            end
-    end,
+    Jobs = get_jobs_with_array_expansion(JobId),
     JobInfos = [job_to_job_info(J) || J <- Jobs],
     Response = #job_info_response{
         last_update = erlang:system_time(second),
@@ -1625,6 +1606,22 @@ default_priority(Priority) -> Priority.
 %% Internal Functions - Response Conversion
 %%====================================================================
 
+%% @doc Get jobs, expanding array tasks when a specific array parent is requested
+get_jobs_with_array_expansion(0) ->
+    flurm_job_manager:list_jobs();
+get_jobs_with_array_expansion(JobId) ->
+    case flurm_job_manager:get_job(JobId) of
+        {ok, Job} ->
+            %% Check if this job has array task children
+            ArrayTasks = [J || J <- flurm_job_manager:list_jobs(),
+                          J#job.array_job_id =:= JobId],
+            case ArrayTasks of
+                [] -> [Job];
+                _ -> ArrayTasks  % Return task jobs instead of parent
+            end;
+        {error, not_found} -> []
+    end.
+
 %% @doc Convert internal job record to SLURM job_info record
 %% Populates all 120+ fields required by SLURM protocol
 -spec job_to_job_info(#job{}) -> #job_info{}.
@@ -1671,9 +1668,15 @@ job_to_job_info(#job{} = Job) ->
         admin_comment = <<>>,
         alloc_node = <<>>,
         alloc_sid = 0,
-        array_job_id = 0,
+        array_job_id = case Job#job.array_job_id of
+            0 -> 0;
+            ArrId -> ArrId
+        end,
         array_max_tasks = 0,
-        array_task_id = 16#FFFFFFFE,  % NO_VAL for non-array jobs
+        array_task_id = case Job#job.array_task_id of
+            undefined -> 16#FFFFFFFE;  % NO_VAL for non-array jobs
+            ArrTaskId -> ArrTaskId
+        end,
         array_task_str = undefined,   % NULL - not an array job
         assoc_id = 0,
         billable_tres = 0.0,
@@ -1743,9 +1746,17 @@ job_to_job_info(#job{} = Job) ->
         sockets_per_node = 0,
         state_desc = undefined,
         state_reason = 0,
-        std_err = undefined,
+        std_err = case Job#job.std_err of
+            <<>> -> undefined;
+            undefined -> undefined;
+            ErrPath -> ErrPath
+        end,
         std_in = undefined,
-        std_out = undefined,
+        std_out = case Job#job.std_out of
+            <<>> -> undefined;
+            undefined -> undefined;
+            OutPath -> OutPath
+        end,
         suspend_time = 0,
         system_comment = undefined,
         threads_per_core = 0,
@@ -2051,7 +2062,9 @@ format_node_list(Nodes) ->
 %% @doc Format licenses list to SLURM format (name:count,name:count)
 -spec format_licenses([{binary(), non_neg_integer()}]) -> binary().
 format_licenses([]) -> <<>>;
-format_licenses(Licenses) ->
+format_licenses(<<>>) -> <<>>;
+format_licenses(Bin) when is_binary(Bin) -> Bin;
+format_licenses(Licenses) when is_list(Licenses) ->
     Formatted = lists:map(fun({Name, Count}) ->
         iolist_to_binary([Name, <<":">>, integer_to_binary(Count)])
     end, Licenses),
