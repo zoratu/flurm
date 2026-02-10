@@ -1957,46 +1957,56 @@ fi
 JOB_ID=$(sbatch --wrap="echo sacct_test_job" --job-name=sacct_test 2>&1 | grep -oP '\d+$')
 if [ -n "$JOB_ID" ]; then
     sleep 3
-    RESULT=$(sacct -j "$JOB_ID" 2>&1 || true)
-    if echo "$RESULT" | grep -q "$JOB_ID"; then
+    # Use temp files to avoid shell variable size issues with large job histories
+    SACCT_TMP="/tmp/sacct_test_$$"
+    sacct -j "$JOB_ID" >"$SACCT_TMP" 2>&1 || true
+    if grep -q "$JOB_ID" "$SACCT_TMP"; then
         pass "test_sacct.3: sacct -j $JOB_ID shows submitted job"
-    elif echo "$RESULT" | grep -qi "error\|slurm_persist"; then
-        skip "test_sacct.3: sacct query (accounting daemon not connected: ${RESULT:0:80})"
-    elif echo "$RESULT" | grep -q "^$\|jobacct_storage_p_get_jobs_cond"; then
+    elif grep -qi "error\|slurm_persist" "$SACCT_TMP"; then
+        skip "test_sacct.3: sacct query (accounting daemon not connected)"
+    elif [ ! -s "$SACCT_TMP" ]; then
         skip "test_sacct.3: sacct -j $JOB_ID (DBD connected but job records not yet stored)"
     else
+        RESULT=$(head -5 "$SACCT_TMP")
         fail "test_sacct.3: sacct -j $JOB_ID" "Job not found in output: ${RESULT:0:100}"
     fi
+    rm -f "$SACCT_TMP"
 else
     fail "test_sacct.3: submit job for sacct" "Failed to submit"
 fi
 
 # test_sacct.4: sacct format options
 if [ -n "$JOB_ID" ]; then
-    RESULT=$(sacct -j "$JOB_ID" --format=JobID,JobName,State,ExitCode -n 2>&1 || true)
-    if echo "$RESULT" | grep -q "$JOB_ID"; then
+    SACCT_TMP="/tmp/sacct_test_$$"
+    sacct -j "$JOB_ID" --format=JobID,JobName,State,ExitCode -n >"$SACCT_TMP" 2>&1 || true
+    if grep -q "$JOB_ID" "$SACCT_TMP"; then
         pass "test_sacct.4: sacct --format=JobID,JobName,State,ExitCode works"
-    elif echo "$RESULT" | grep -qi "error\|slurm_persist"; then
+    elif grep -qi "error\|slurm_persist" "$SACCT_TMP"; then
         skip "test_sacct.4: sacct format options (accounting daemon not connected)"
-    elif [ -z "$(echo "$RESULT" | tr -d '[:space:]')" ] || echo "$RESULT" | grep -q "jobacct_storage_p_get_jobs_cond"; then
+    elif [ ! -s "$SACCT_TMP" ]; then
         skip "test_sacct.4: sacct format (DBD connected but job records not yet stored)"
     else
+        RESULT=$(head -5 "$SACCT_TMP")
         fail "test_sacct.4: sacct format" "Got: ${RESULT:0:100}"
     fi
+    rm -f "$SACCT_TMP"
 fi
 
 # test_sacct.5: sacct parseable output
 if [ -n "$JOB_ID" ]; then
-    RESULT=$(sacct -j "$JOB_ID" -P --format=JobID,JobName,State -n 2>&1 || true)
-    if echo "$RESULT" | grep -q "|"; then
+    SACCT_TMP="/tmp/sacct_test_$$"
+    sacct -j "$JOB_ID" -P --format=JobID,JobName,State -n >"$SACCT_TMP" 2>&1 || true
+    if grep -q "|" "$SACCT_TMP"; then
         pass "test_sacct.5: sacct -P produces pipe-delimited output"
-    elif echo "$RESULT" | grep -qi "error\|slurm_persist"; then
+    elif grep -qi "error\|slurm_persist" "$SACCT_TMP"; then
         skip "test_sacct.5: sacct parseable (accounting daemon not connected)"
-    elif [ -z "$(echo "$RESULT" | tr -d '[:space:]')" ] || echo "$RESULT" | grep -q "jobacct_storage_p_get_jobs_cond"; then
+    elif [ ! -s "$SACCT_TMP" ]; then
         skip "test_sacct.5: sacct -P (DBD connected but job records not yet stored)"
     else
+        RESULT=$(head -5 "$SACCT_TMP")
         fail "test_sacct.5: sacct -P" "No pipe delimiter found: ${RESULT:0:100}"
     fi
+    rm -f "$SACCT_TMP"
 fi
 
 cleanup_jobs
