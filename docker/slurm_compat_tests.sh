@@ -1941,7 +1941,8 @@ else
 fi
 
 # test_sacct.2: sacct basic query returns header
-RESULT=$(sacct 2>&1 || true)
+# Only capture first 20 lines to avoid shell variable size issues with large job histories
+RESULT=$(sacct 2>&1 | head -20 || true)
 if echo "$RESULT" | grep -qi "JobID\|error\|accounting"; then
     if echo "$RESULT" | grep -qi "JobID"; then
         pass "test_sacct.2: sacct returns job listing with JobID header"
