@@ -323,7 +323,12 @@ handle(#slurm_header{msg_type = ?REQUEST_KILL_TIMELIMIT}, Body) ->
 
 %% REQUEST_JOB_INFO (2003) -> RESPONSE_JOB_INFO
 handle(#slurm_header{msg_type = ?REQUEST_JOB_INFO},
-       #job_info_request{job_id = JobId}) ->
+       #job_info_request{job_id = RawJobId}) ->
+    %% NO_VAL (0xFFFFFFFE) means "all jobs" - normalize to 0
+    JobId = case RawJobId of
+        16#FFFFFFFE -> 0;
+        _ -> RawJobId
+    end,
     lager:info("Handling job info request for job_id=~p", [JobId]),
     Jobs = get_jobs_with_array_expansion(JobId),
     %% Convert internal jobs to job_info records
@@ -1644,7 +1649,7 @@ job_to_job_info(#job{} = Job) ->
         num_nodes = max(1, Job#job.num_nodes),
         num_cpus = max(1, Job#job.num_cpus),
         num_tasks = max(1, Job#job.num_tasks),
-        time_limit = max(1, Job#job.time_limit div 60),  % Internal seconds -> protocol minutes
+        time_limit = max(1, (Job#job.time_limit + 59) div 60),  % Internal seconds -> protocol minutes (round up like SLURM)
         priority = Job#job.priority,
         submit_time = Job#job.submit_time,
         start_time = default_time(Job#job.start_time),
@@ -1716,14 +1721,14 @@ job_to_job_info(#job{} = Job) ->
         mcs_label = undefined,
         mem_per_tres = undefined,
         min_mem_per_cpu = 0,
-        min_mem_per_node = 0,
+        min_mem_per_node = Job#job.memory_mb,
         network = undefined,
         nice = 0,
         ntasks_per_core = 16#FFFF,
         ntasks_per_node = 16#FFFF,
         ntasks_per_socket = 16#FFFF,
         ntasks_per_tres = 16#FFFF,
-        pn_min_memory = 0,
+        pn_min_memory = Job#job.memory_mb,
         pn_min_tmp_disk = 0,
         power_flags = 0,
         preempt_time = 0,

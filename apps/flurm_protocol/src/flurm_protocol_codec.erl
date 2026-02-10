@@ -1340,12 +1340,11 @@ decode_batch_job_request_scan(Binary) ->
     ScriptName = extract_job_name_from_script(Script),
     %% Also try SBATCH_JOB_NAME environment variable in the binary
     EnvName = extract_env_str(Binary, <<"SBATCH_JOB_NAME=">>),
-    %% Priority: protocol binary name (most reliable) > env var > script directive
-    Name = case ProtoName of
-        <<>> -> first_nonempty([EnvName, ScriptName, <<"unknown">>]);
-        <<"unknown">> -> first_nonempty([EnvName, ScriptName, ProtoName]);
-        _ -> ProtoName
-    end,
+    %% Also try --job-name= in command line args embedded in binary
+    CmdLineName = extract_cmdline_str(Binary, <<"--job-name=">>),
+    %% Priority: env var > cmd line > script directive > protocol heuristic
+    %% (Protocol binary heuristic scanning is unreliable, use as last resort)
+    Name = first_nonempty([EnvName, CmdLineName, ScriptName, ProtoName, <<"unknown">>]),
 
     %% Debug: Log extracted script info
     ScriptLen = byte_size(Script),
@@ -1362,17 +1361,15 @@ decode_batch_job_request_scan(Binary) ->
     %% Extract user/group IDs from known offset patterns
     {UserId, GroupId} = extract_uid_gid(Binary),
 
-    %% Extract time limit from #SBATCH directive in script if present,
-    %% then try embedded command line for --time= or -t flags
+    %% Extract time limit: script directive > command line > env var > binary flag > default
     ScriptTimeLimit = extract_time_limit(Script),
     TimeLimit = case ScriptTimeLimit of
         300 ->
-            %% Default value - try to find it in the embedded command line
+            %% Default value - try other sources
             CmdLineTimeLimit = extract_time_limit_from_cmdline(Binary),
-            case CmdLineTimeLimit of
-                0 -> 300;
-                _ -> CmdLineTimeLimit
-            end;
+            EnvTimeLimit = extract_time_from_env(Binary),
+            DirectTimeLimit = extract_time_from_binary_flags(Binary),
+            first_nonzero([CmdLineTimeLimit, EnvTimeLimit, DirectTimeLimit, 300]);
         _ -> ScriptTimeLimit
     end,
 
@@ -1421,8 +1418,12 @@ decode_batch_job_request_scan(Binary) ->
             max(NumTasks * CpusPerTask, CpusPerTask)
     end,
 
-    %% Memory: use script value if specified, then env/cmd, otherwise 0 (let handler set default)
-    MinMemPerNode = first_nonzero([ScriptMemMb, EnvMemMb, CmdMemMb]),
+    %% Memory: use script value if specified, then env/cmd, then binary scan, otherwise 0
+    BinaryMemMb = case first_nonzero([ScriptMemMb, EnvMemMb, CmdMemMb]) of
+        0 -> extract_mem_from_binary_flags(Binary);
+        _ -> 0
+    end,
+    MinMemPerNode = first_nonzero([ScriptMemMb, EnvMemMb, CmdMemMb, BinaryMemMb]),
 
     lager:debug("Final resource values: min_nodes=~p min_cpus=~p num_tasks=~p cpus_per_task=~p min_mem=~p",
                [MinNodes, MinCpus, NumTasks, CpusPerTask, MinMemPerNode]),
@@ -1430,6 +1431,14 @@ decode_batch_job_request_scan(Binary) ->
     %% Find stdout/stderr paths from the protocol message or script
     StdOut = find_std_out(Binary, Script, WorkDir),
     StdErr = find_std_err(Binary, Script),
+
+    %% Extract partition from env var, script directive, or command line
+    Partition = first_nonempty([
+        extract_env_str(Binary, <<"SBATCH_PARTITION=">>),
+        extract_sbatch_directive_value(Script, <<"--partition=">>),
+        extract_sbatch_directive_value(Script, <<"-p ">>),
+        extract_cmdline_str(Binary, <<"--partition=">>)
+    ]),
 
     Req = #batch_job_request{
         account = <<>>,
@@ -1441,7 +1450,7 @@ decode_batch_job_request_scan(Binary) ->
         argc = 0,
         argv = [],
         name = Name,
-        partition = <<>>,
+        partition = Partition,
         script = Script,
         work_dir = WorkDir,
         min_nodes = MinNodes,
@@ -1636,24 +1645,32 @@ extract_array_spec(Binary, Script) ->
         Val -> Val
     end.
 
-%% Extract a value from #SBATCH directives in a script
+%% Extract a value from #SBATCH directives in a script.
+%% Parses line by line, stops at first non-comment/non-blank line.
+%% First directive wins (SLURM behavior).
 extract_sbatch_directive_value(Script, Flag) when byte_size(Script) > 0 ->
-    Pattern = <<"#SBATCH ", Flag/binary>>,
-    case binary:match(Script, Pattern) of
-        {Start, PLen} ->
-            <<_:Start/binary, _:PLen/binary, Rest/binary>> = Script,
-            extract_value_until_whitespace(Rest);
-        nomatch ->
-            %% Try with extra spaces: #SBATCH  --flag=
-            Pattern2 = <<"#SBATCH  ", Flag/binary>>,
-            case binary:match(Script, Pattern2) of
-                {Start2, PLen2} ->
-                    <<_:Start2/binary, _:PLen2/binary, Rest2/binary>> = Script,
-                    extract_value_until_whitespace(Rest2);
-                nomatch -> <<>>
-            end
-    end;
+    Lines = binary:split(Script, <<"\n">>, [global]),
+    extract_sbatch_directive_from_lines(Lines, Flag);
 extract_sbatch_directive_value(_, _) -> <<>>.
+
+extract_sbatch_directive_from_lines([], _Flag) -> <<>>;
+extract_sbatch_directive_from_lines([Line | Rest], Flag) ->
+    Trimmed = trim_leading_spaces(Line),
+    case Trimmed of
+        <<"#SBATCH ", Args/binary>> ->
+            TrimmedArgs = trim_leading_spaces(Args),
+            FlagLen = byte_size(Flag),
+            case TrimmedArgs of
+                <<Flag:FlagLen/binary, Val/binary>> ->
+                    extract_value_until_whitespace(Val);  % First match wins
+                _ ->
+                    extract_sbatch_directive_from_lines(Rest, Flag)
+            end;
+        <<"#!", _/binary>> -> extract_sbatch_directive_from_lines(Rest, Flag);
+        <<"#", _/binary>> -> extract_sbatch_directive_from_lines(Rest, Flag);
+        <<>> -> extract_sbatch_directive_from_lines(Rest, Flag);
+        _ -> <<>>  % Stop at first non-comment line
+    end.
 
 %% Extract a value from command-line flags in the binary (e.g., --array=0-3)
 extract_cmdline_flag_value(Binary, Flag) ->
@@ -1686,6 +1703,38 @@ is_valid_array_spec_chars(<<C, Rest/binary>>)
   when C >= $0, C =< $9; C =:= $-; C =:= $,; C =:= $%; C =:= $_ ->
     is_valid_array_spec_chars(Rest);
 is_valid_array_spec_chars(_) -> false.
+
+%% Extract a string value from command-line flags in the binary (e.g., --partition=gpu)
+extract_cmdline_str(Binary, Flag) ->
+    case binary:matches(Binary, Flag) of
+        [] -> <<>>;
+        Matches ->
+            %% Find a match that looks like a command-line arg (preceded by null or space)
+            %% rather than a script directive (preceded by #SBATCH)
+            extract_cmdline_str_from_matches(Binary, Flag, Matches)
+    end.
+
+extract_cmdline_str_from_matches(_Binary, _Flag, []) -> <<>>;
+extract_cmdline_str_from_matches(Binary, Flag, [{Start, PLen} | Rest]) ->
+    <<_:Start/binary, _:PLen/binary, ValRest/binary>> = Binary,
+    Value = extract_value_until_whitespace(ValRest),
+    %% Check if this match is inside a #SBATCH directive (skip those)
+    IsSbatchDirective = case Start >= 8 of
+        true ->
+            %% Look backwards for #SBATCH
+            CheckStart = max(0, Start - 20),
+            CheckLen = Start - CheckStart,
+            <<_:CheckStart/binary, Context:CheckLen/binary, _/binary>> = Binary,
+            case binary:match(Context, <<"#SBATCH">>) of
+                nomatch -> false;
+                _ -> true
+            end;
+        false -> false
+    end,
+    case IsSbatchDirective of
+        true -> extract_cmdline_str_from_matches(Binary, Flag, Rest);
+        false -> Value
+    end.
 
 %% Extract UID/GID from the message - these are typically near the end in fixed positions
 extract_uid_gid(Binary) when byte_size(Binary) > 100 ->
@@ -1897,26 +1946,104 @@ extract_time_from_cmdline_matches(_Binary, []) -> 0;
 extract_time_from_cmdline_matches(Binary, [{Start, _} | Rest]) ->
     <<_:Start/binary, CmdRest/binary>> = Binary,
     CmdLine = extract_until_null(CmdRest, 0),
-    case extract_time_limit(CmdLine) of
-        300 -> extract_time_from_cmdline_matches(Binary, Rest);  % Default = not found
+    case extract_time_from_cmdline_string(CmdLine) of
+        0 -> extract_time_from_cmdline_matches(Binary, Rest);
         Found -> Found
     end.
 
-%% Extract time limit from #SBATCH --time directive
-extract_time_limit(Script) ->
-    case binary:match(Script, <<"--time=">>) of
-        {Start, 7} ->
-            <<_:Start/binary, "--time=", TimeRest/binary>> = Script,
-            parse_time_value(TimeRest);
+%% Scan a command line string for --time= or -t flags
+extract_time_from_cmdline_string(CmdLine) ->
+    case binary:match(CmdLine, <<"--time=">>) of
+        {Pos, Len} ->
+            <<_:Pos/binary, _:Len/binary, TimeRest/binary>> = CmdLine,
+            TimeStr = extract_value_until_whitespace(TimeRest),
+            parse_time_string(TimeStr);
         nomatch ->
-            case binary:match(Script, <<"-t ">>) of
-                {Start2, 3} ->
-                    <<_:Start2/binary, "-t ", TimeRest2/binary>> = Script,
-                    parse_time_value(TimeRest2);
-                nomatch ->
-                    300  % Default 5 minutes
+            case binary:match(CmdLine, <<"-t ">>) of
+                {Pos2, Len2} ->
+                    <<_:Pos2/binary, _:Len2/binary, TimeRest2/binary>> = CmdLine,
+                    Trimmed = trim_leading_spaces(TimeRest2),
+                    TimeStr2 = extract_value_until_whitespace(Trimmed),
+                    parse_time_string(TimeStr2);
+                nomatch -> 0
             end
     end.
+
+%% Extract time limit from SBATCH_TIMELIMIT or SLURM_TIMELIMIT env vars
+extract_time_from_env(Binary) ->
+    case extract_env_str(Binary, <<"SBATCH_TIMELIMIT=">>) of
+        <<>> ->
+            case extract_env_str(Binary, <<"SLURM_TIMELIMIT=">>) of
+                <<>> -> 0;
+                Val -> parse_time_string(Val)
+            end;
+        Val -> parse_time_string(Val)
+    end.
+
+%% Scan the raw binary for --time= flag (null-terminated strings in protocol)
+extract_time_from_binary_flags(Binary) ->
+    case binary:match(Binary, <<"--time=">>) of
+        {Pos, Len} ->
+            <<_:Pos/binary, _:Len/binary, Rest/binary>> = Binary,
+            TimeStr = extract_value_until_null_or_whitespace(Rest),
+            case byte_size(TimeStr) of
+                0 -> 0;
+                _ -> parse_time_string(TimeStr)
+            end;
+        nomatch -> 0
+    end.
+
+%% Scan the raw binary for --mem= flag and extract memory value in MB.
+extract_mem_from_binary_flags(Binary) ->
+    case binary:match(Binary, <<"--mem=">>) of
+        {Pos, Len} ->
+            <<_:Pos/binary, _:Len/binary, Rest/binary>> = Binary,
+            MemStr = extract_value_until_null_or_whitespace(Rest),
+            case byte_size(MemStr) of
+                0 -> 0;
+                _ -> parse_memory_value(MemStr)
+            end;
+        nomatch -> 0
+    end.
+
+%% Extract value until null byte, whitespace, or end of string
+extract_value_until_null_or_whitespace(Binary) ->
+    extract_value_until_null_or_whitespace(Binary, <<>>).
+extract_value_until_null_or_whitespace(<<>>, Acc) -> Acc;
+extract_value_until_null_or_whitespace(<<0, _/binary>>, Acc) -> Acc;
+extract_value_until_null_or_whitespace(<<$\s, _/binary>>, Acc) -> Acc;
+extract_value_until_null_or_whitespace(<<$\t, _/binary>>, Acc) -> Acc;
+extract_value_until_null_or_whitespace(<<$\n, _/binary>>, Acc) -> Acc;
+extract_value_until_null_or_whitespace(<<C, Rest/binary>>, Acc) ->
+    extract_value_until_null_or_whitespace(Rest, <<Acc/binary, C>>).
+
+%% Extract time limit from #SBATCH --time directive.
+%% Parses line by line, stops at first non-comment/non-blank line.
+%% First directive wins (SLURM behavior).
+extract_time_limit(Script) ->
+    Lines = binary:split(Script, <<"\n">>, [global]),
+    extract_time_limit_from_lines(Lines).
+
+extract_time_limit_from_lines([]) -> 300;
+extract_time_limit_from_lines([Line | Rest]) ->
+    Trimmed = trim_leading_spaces(Line),
+    case Trimmed of
+        <<"#SBATCH ", Args/binary>> ->
+            case extract_time_from_sbatch_args(trim_leading_spaces(Args)) of
+                0 -> extract_time_limit_from_lines(Rest);
+                Time -> Time  % First occurrence wins
+            end;
+        <<"#!", _/binary>> -> extract_time_limit_from_lines(Rest);
+        <<"#", _/binary>> -> extract_time_limit_from_lines(Rest);
+        <<>> -> extract_time_limit_from_lines(Rest);
+        _ -> 300  % Stop at first non-comment line
+    end.
+
+extract_time_from_sbatch_args(<<"--time=", Rest/binary>>) ->
+    parse_time_value(Rest);
+extract_time_from_sbatch_args(<<"-t ", Rest/binary>>) ->
+    parse_time_value(trim_leading_spaces(Rest));
+extract_time_from_sbatch_args(_) -> 0.
 
 parse_time_value(Binary) ->
     %% Parse HH:MM:SS or MM:SS or just minutes
@@ -1976,7 +2103,21 @@ parse_time_string_nodash(<<H1, H2, ":", M1, M2, ":", S1, S2, _/binary>>)
     Minutes = (M1 - $0) * 10 + (M2 - $0),
     Seconds = (S1 - $0) * 10 + (S2 - $0),
     Hours * 3600 + Minutes * 60 + Seconds;
+parse_time_string_nodash(<<H1, H2, ":", M1, M2, ":", S1, S2>>)
+  when H1 >= $0, H1 =< $9, H2 >= $0, H2 =< $9,
+       M1 >= $0, M1 =< $9, M2 >= $0, M2 =< $9,
+       S1 >= $0, S1 =< $9, S2 >= $0, S2 =< $9 ->
+    Hours = (H1 - $0) * 10 + (H2 - $0),
+    Minutes = (M1 - $0) * 10 + (M2 - $0),
+    Seconds = (S1 - $0) * 10 + (S2 - $0),
+    Hours * 3600 + Minutes * 60 + Seconds;
 parse_time_string_nodash(<<M1, M2, ":", S1, S2, _/binary>>)
+  when M1 >= $0, M1 =< $9, M2 >= $0, M2 =< $9,
+       S1 >= $0, S1 =< $9, S2 >= $0, S2 =< $9 ->
+    Minutes = (M1 - $0) * 10 + (M2 - $0),
+    Seconds = (S1 - $0) * 10 + (S2 - $0),
+    Minutes * 60 + Seconds;
+parse_time_string_nodash(<<M1, M2, ":", S1, S2>>)
   when M1 >= $0, M1 =< $9, M2 >= $0, M2 =< $9,
        S1 >= $0, S1 =< $9, S2 >= $0, S2 =< $9 ->
     Minutes = (M1 - $0) * 10 + (M2 - $0),
@@ -1997,6 +2138,12 @@ parse_plain_minutes(_, Acc) ->
     Acc.
 
 parse_minutes_seconds(<<M1, M2, ":", S1, S2, _/binary>>)
+  when M1 >= $0, M1 =< $9, M2 >= $0, M2 =< $9,
+       S1 >= $0, S1 =< $9, S2 >= $0, S2 =< $9 ->
+    Minutes = (M1 - $0) * 10 + (M2 - $0),
+    Seconds = (S1 - $0) * 10 + (S2 - $0),
+    Minutes * 60 + Seconds;
+parse_minutes_seconds(<<M1, M2, ":", S1, S2>>)
   when M1 >= $0, M1 =< $9, M2 >= $0, M2 =< $9,
        S1 >= $0, S1 =< $9, S2 >= $0, S2 =< $9 ->
     Minutes = (M1 - $0) * 10 + (M2 - $0),
@@ -2322,13 +2469,73 @@ extract_resources_from_cmdline_matches(Binary, [{Start, _} | Rest]) ->
     <<_:Start/binary, CmdRest/binary>> = Binary,
     CmdLine = extract_until_null(CmdRest, 0),
     lager:debug("Checking sbatch command line at offset ~p: ~s", [Start, CmdLine]),
-    case extract_resources(CmdLine) of
+    %% First try #SBATCH directive parsing (for scripts embedded in cmdline)
+    Result1 = extract_resources(CmdLine),
+    %% Also try direct command-line flag parsing (for --mem=, --nodes=, etc.)
+    Result2 = extract_resources_from_cmdline_string(CmdLine),
+    %% Merge: prefer non-zero values from either source
+    Result = merge_resources(Result1, Result2),
+    case Result of
         {0, 0, 0, 0} ->
             %% No resources found in this match, try next
             extract_resources_from_cmdline_matches(Binary, Rest);
-        Result ->
+        _ ->
             Result
     end.
+
+%% Parse resource flags directly from a command line string (not #SBATCH directives).
+%% Handles: --mem=, --nodes=/-N, --ntasks=/-n, --cpus-per-task=/-c
+extract_resources_from_cmdline_string(CmdLine) ->
+    Nodes = case binary:match(CmdLine, <<"--nodes=">>) of
+        {NPos, NLen} ->
+            <<_:NPos/binary, _:NLen/binary, NRest/binary>> = CmdLine,
+            parse_int_value(NRest);
+        nomatch ->
+            case binary:match(CmdLine, <<"-N ">>) of
+                {NPos2, NLen2} ->
+                    <<_:NPos2/binary, _:NLen2/binary, NRest2/binary>> = CmdLine,
+                    parse_int_value(trim_leading_spaces(NRest2));
+                nomatch -> 0
+            end
+    end,
+    Tasks = case binary:match(CmdLine, <<"--ntasks=">>) of
+        {TPos, TLen} ->
+            <<_:TPos/binary, _:TLen/binary, TRest/binary>> = CmdLine,
+            parse_int_value(TRest);
+        nomatch ->
+            case binary:match(CmdLine, <<"-n ">>) of
+                {TPos2, TLen2} ->
+                    <<_:TPos2/binary, _:TLen2/binary, TRest2/binary>> = CmdLine,
+                    parse_int_value(trim_leading_spaces(TRest2));
+                nomatch -> 0
+            end
+    end,
+    Cpus = case binary:match(CmdLine, <<"--cpus-per-task=">>) of
+        {CPos, CLen} ->
+            <<_:CPos/binary, _:CLen/binary, CRest/binary>> = CmdLine,
+            parse_int_value(CRest);
+        nomatch ->
+            case binary:match(CmdLine, <<"-c ">>) of
+                {CPos2, CLen2} ->
+                    <<_:CPos2/binary, _:CLen2/binary, CRest2/binary>> = CmdLine,
+                    parse_int_value(trim_leading_spaces(CRest2));
+                nomatch -> 0
+            end
+    end,
+    MemMb = case binary:match(CmdLine, <<"--mem=">>) of
+        {MPos, MLen} ->
+            <<_:MPos/binary, _:MLen/binary, MRest/binary>> = CmdLine,
+            parse_memory_value(MRest);
+        nomatch -> 0
+    end,
+    {Nodes, Tasks, Cpus, MemMb}.
+
+%% Merge two resource tuples, preferring non-zero values from either.
+merge_resources({N1, T1, C1, M1}, {N2, T2, C2, M2}) ->
+    {first_nonzero([N1, N2]),
+     first_nonzero([T1, T2]),
+     first_nonzero([C1, C2]),
+     first_nonzero([M1, M2])}.
 
 extract_until_null(Binary, Pos) when Pos < byte_size(Binary) ->
     case binary:at(Binary, Pos) of
@@ -2380,21 +2587,49 @@ parse_env_str_value(<<C, Rest/binary>>, Acc) when C >= 32, C < 127 ->
     parse_env_str_value(Rest, <<Acc/binary, C>>);
 parse_env_str_value(_, Acc) -> Acc.
 
-%% Extract --job-name from #SBATCH directives in script
+%% Extract --job-name from #SBATCH directives in script.
+%% Parses line by line, stops at first non-comment/non-blank line (SLURM behavior).
+%% For duplicate directives, first one wins (SLURM behavior).
 extract_job_name_from_script(Script) ->
-    case binary:match(Script, <<"--job-name=">>) of
-        {Start, 11} ->
-            <<_:Start/binary, "--job-name=", Rest/binary>> = Script,
-            extract_until_whitespace(Rest);
-        nomatch ->
-            case binary:match(Script, <<"-J ">>) of
-                {Start2, 3} ->
-                    <<_:Start2/binary, "-J ", Rest2/binary>> = Script,
-                    extract_until_whitespace(Rest2);
-                nomatch ->
-                    <<>>
-            end
+    Lines = binary:split(Script, <<"\n">>, [global]),
+    extract_job_name_from_lines(Lines).
+
+extract_job_name_from_lines([]) -> <<>>;
+extract_job_name_from_lines([Line | Rest]) ->
+    Trimmed = trim_leading_spaces(Line),
+    case Trimmed of
+        <<"#SBATCH ", Args/binary>> ->
+            case extract_name_from_sbatch_args(Args) of
+                <<>> -> extract_job_name_from_lines(Rest);
+                Name -> Name  % First occurrence wins
+            end;
+        <<"#!", _/binary>> ->
+            %% Shebang line, continue
+            extract_job_name_from_lines(Rest);
+        <<"#", _/binary>> ->
+            %% Other comment, continue
+            extract_job_name_from_lines(Rest);
+        <<>> ->
+            %% Blank line, continue
+            extract_job_name_from_lines(Rest);
+        _ ->
+            %% Non-comment line: stop parsing directives
+            <<>>
     end.
+
+extract_name_from_sbatch_args(Args) ->
+    Trimmed = trim_leading_spaces(Args),
+    case Trimmed of
+        <<"--job-name=", Rest/binary>> ->
+            extract_until_whitespace(Rest);
+        <<"-J ", Rest/binary>> ->
+            extract_until_whitespace(trim_leading_spaces(Rest));
+        _ -> <<>>
+    end.
+
+trim_leading_spaces(<<$\s, Rest/binary>>) -> trim_leading_spaces(Rest);
+trim_leading_spaces(<<$\t, Rest/binary>>) -> trim_leading_spaces(Rest);
+trim_leading_spaces(Bin) -> Bin.
 
 %% Extract text until whitespace or newline
 extract_until_whitespace(Binary) ->
@@ -2413,85 +2648,72 @@ first_nonempty([V | _]) when is_binary(V), byte_size(V) > 0 -> V;
 first_nonempty([_ | Rest]) -> first_nonempty(Rest).
 
 %% Extract resources from #SBATCH directives
-%% Returns {Nodes, Tasks, Cpus, MemoryMb} - 0 means not specified in script
+%% Returns {Nodes, Tasks, Cpus, MemoryMb} - 0 means not specified in script.
+%% Parses line by line, stops at first non-comment/non-blank line (SLURM behavior).
+%% For duplicate directives, first one wins (SLURM behavior).
 extract_resources(Script) ->
-    %% Try --nodes= first, then -N
-    Nodes = case binary:match(Script, <<"--nodes=">>) of
-        {NStart, 8} ->
-            <<_:NStart/binary, "--nodes=", NRest/binary>> = Script,
-            parse_int_value(NRest);
-        nomatch ->
-            case binary:match(Script, <<"-N ">>) of
-                {NStart2, 3} ->
-                    <<_:NStart2/binary, "-N ", NRest2/binary>> = Script,
-                    parse_int_value(NRest2);
-                nomatch ->
-                    %% Handle -N3 (no space) format
-                    case binary:match(Script, <<"-N">>) of
-                        {NStart3, 2} ->
-                            <<_:NStart3/binary, "-N", NRest3/binary>> = Script,
-                            parse_int_value(NRest3);
-                        nomatch ->
-                            0  % Not specified
-                    end
-            end
-    end,
-    %% Try --ntasks= first, then -n
-    Tasks = case binary:match(Script, <<"--ntasks=">>) of
-        {TStart, 9} ->
-            <<_:TStart/binary, "--ntasks=", TRest/binary>> = Script,
-            parse_int_value(TRest);
-        nomatch ->
-            case binary:match(Script, <<"-n ">>) of
-                {TStart2, 3} ->
-                    <<_:TStart2/binary, "-n ", TRest2/binary>> = Script,
-                    parse_int_value(TRest2);
-                nomatch ->
-                    %% Handle -n4 (no space) format
-                    case binary:match(Script, <<"-n">>) of
-                        {TStart3, 2} ->
-                            <<_:TStart3/binary, "-n", TRest3/binary>> = Script,
-                            case TRest3 of
-                                <<D, _/binary>> when D >= $0, D =< $9 ->
-                                    parse_int_value(TRest3);
-                                _ ->
-                                    0  % -n followed by non-digit (e.g., -name)
-                            end;
-                        nomatch ->
-                            0  % Not specified
-                    end
-            end
-    end,
-    %% Try --cpus-per-task= first, then -c
-    Cpus = case binary:match(Script, <<"--cpus-per-task=">>) of
-        {CStart, 16} ->
-            <<_:CStart/binary, "--cpus-per-task=", CRest/binary>> = Script,
-            parse_int_value(CRest);
-        nomatch ->
-            case binary:match(Script, <<"-c ">>) of
-                {CStart2, 3} ->
-                    <<_:CStart2/binary, "-c ", CRest2/binary>> = Script,
-                    parse_int_value(CRest2);
-                nomatch ->
-                    case binary:match(Script, <<"-c">>) of
-                        {CStart3, 2} ->
-                            <<_:CStart3/binary, "-c", CRest3/binary>> = Script,
-                            %% Handle -c1 (no space) format
-                            parse_int_value(CRest3);
-                        nomatch ->
-                            0  % Not specified
-                    end
-            end
-    end,
-    %% Try --mem= for memory (in MB, or with suffix G/M/K)
-    MemoryMb = case binary:match(Script, <<"--mem=">>) of
-        {MStart, 6} ->
-            <<_:MStart/binary, "--mem=", MRest/binary>> = Script,
-            parse_memory_value(MRest);
-        nomatch ->
-            0  % Not specified
-    end,
-    {Nodes, Tasks, Cpus, MemoryMb}.
+    Lines = binary:split(Script, <<"\n">>, [global]),
+    extract_resources_from_lines(Lines, {0, 0, 0, 0}).
+
+extract_resources_from_lines([], Acc) -> Acc;
+extract_resources_from_lines([Line | Rest], {_Nodes, _Tasks, _Cpus, _Mem} = Acc) ->
+    Trimmed = trim_leading_spaces(Line),
+    case Trimmed of
+        <<"#SBATCH ", Args/binary>> ->
+            NewAcc = parse_resource_from_sbatch_args(trim_leading_spaces(Args), Acc),
+            extract_resources_from_lines(Rest, NewAcc);
+        <<"#!", _/binary>> ->
+            extract_resources_from_lines(Rest, Acc);
+        <<"#", _/binary>> ->
+            extract_resources_from_lines(Rest, Acc);
+        <<>> ->
+            extract_resources_from_lines(Rest, Acc);
+        _ ->
+            Acc  % Stop at first non-comment line
+    end.
+
+parse_resource_from_sbatch_args(Args, {Nodes, Tasks, Cpus, Mem}) ->
+    case Args of
+        <<"--nodes=", Rest/binary>> ->
+            V = parse_int_value(Rest),
+            {first_nonzero_val(Nodes, V), Tasks, Cpus, Mem};
+        <<"-N ", Rest/binary>> ->
+            V = parse_int_value(trim_leading_spaces(Rest)),
+            {first_nonzero_val(Nodes, V), Tasks, Cpus, Mem};
+        <<"-N", D, _/binary>> = Bin when D >= $0, D =< $9 ->
+            <<"-N", Rest/binary>> = Bin,
+            V = parse_int_value(Rest),
+            {first_nonzero_val(Nodes, V), Tasks, Cpus, Mem};
+        <<"--ntasks=", Rest/binary>> ->
+            V = parse_int_value(Rest),
+            {Nodes, first_nonzero_val(Tasks, V), Cpus, Mem};
+        <<"-n ", Rest/binary>> ->
+            V = parse_int_value(trim_leading_spaces(Rest)),
+            {Nodes, first_nonzero_val(Tasks, V), Cpus, Mem};
+        <<"-n", D, _/binary>> = Bin when D >= $0, D =< $9 ->
+            <<"-n", Rest/binary>> = Bin,
+            V = parse_int_value(Rest),
+            {Nodes, first_nonzero_val(Tasks, V), Cpus, Mem};
+        <<"--cpus-per-task=", Rest/binary>> ->
+            V = parse_int_value(Rest),
+            {Nodes, Tasks, first_nonzero_val(Cpus, V), Mem};
+        <<"-c ", Rest/binary>> ->
+            V = parse_int_value(trim_leading_spaces(Rest)),
+            {Nodes, Tasks, first_nonzero_val(Cpus, V), Mem};
+        <<"-c", D, _/binary>> = Bin when D >= $0, D =< $9 ->
+            <<"-c", Rest/binary>> = Bin,
+            V = parse_int_value(Rest),
+            {Nodes, Tasks, first_nonzero_val(Cpus, V), Mem};
+        <<"--mem=", Rest/binary>> ->
+            V = parse_memory_value(Rest),
+            {Nodes, Tasks, Cpus, first_nonzero_val(Mem, V)};
+        _ ->
+            {Nodes, Tasks, Cpus, Mem}
+    end.
+
+%% Keep existing value if already set (first wins); otherwise use new value
+first_nonzero_val(0, New) -> New;
+first_nonzero_val(Existing, _) -> Existing.
 
 %% Parse memory value with optional suffix (G, M, K)
 %% Returns value in MB

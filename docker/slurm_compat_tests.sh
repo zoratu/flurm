@@ -2064,9 +2064,12 @@ fi
 # Kill the salloc background process
 kill $SALLOC_PID 2>/dev/null || true
 wait $SALLOC_PID 2>/dev/null || true
+# Cancel any remaining salloc jobs to free resources
+scancel -u root 2>/dev/null || true
+sleep 2
 
 # test_salloc.5: salloc with partition specification
-RESULT=$(timeout 15 salloc -p default -N1 hostname 2>&1 || true)
+RESULT=$(timeout 10 salloc -p default -N1 hostname 2>&1 || true)
 if echo "$RESULT" | grep -qi "granted\|allocated\|flurm\|node\|hostname"; then
     pass "test_salloc.5: salloc -p default -N1 with partition"
 elif echo "$RESULT" | grep -qi "error\|invalid"; then
