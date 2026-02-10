@@ -304,12 +304,21 @@ handle_call({update_job, JobId, Updates}, _From, #state{jobs = Jobs} = State) ->
 handle_call({hold_job, JobId}, _From, #state{jobs = Jobs} = State) ->
     case maps:find(JobId, Jobs) of
         {ok, #job{state = pending} = Job} ->
-            %% Can only hold pending jobs
-            UpdatedJob = Job#job{state = held},
+            %% Pending -> held: change state and set priority to 0
+            UpdatedJob = Job#job{state = held, priority = 0},
             NewJobs = maps:put(JobId, UpdatedJob, Jobs),
-            lager:info("Job ~p held", [JobId]),
+            lager:info("Job ~p held (was pending)", [JobId]),
             catch flurm_metrics:increment(flurm_jobs_held_total),
-            persist_job_update(JobId, #{state => held}),
+            persist_job_update(JobId, #{state => held, priority => 0}),
+            {reply, ok, State#state{jobs = NewJobs}};
+        {ok, #job{state = running} = Job} ->
+            %% Running -> keep running but set priority to 0
+            %% In SLURM, holding a running job sets Priority=0
+            %% (prevents requeue scheduling, job continues running)
+            UpdatedJob = Job#job{priority = 0},
+            NewJobs = maps:put(JobId, UpdatedJob, Jobs),
+            lager:info("Job ~p held (running, priority set to 0)", [JobId]),
+            persist_job_update(JobId, #{priority => 0}),
             {reply, ok, State#state{jobs = NewJobs}};
         {ok, #job{state = held}} ->
             %% Already held
@@ -331,6 +340,13 @@ handle_call({release_job, JobId}, _From, #state{jobs = Jobs} = State) ->
             persist_job_update(JobId, #{state => pending, priority => 100}),
             %% Notify scheduler about released job
             flurm_scheduler:submit_job(JobId),
+            {reply, ok, State#state{jobs = NewJobs}};
+        {ok, #job{state = running, priority = 0} = Job} ->
+            %% Running job that was held (priority=0) -> restore priority
+            UpdatedJob = Job#job{priority = 100},
+            NewJobs = maps:put(JobId, UpdatedJob, Jobs),
+            lager:info("Job ~p released (running, priority restored to 100)", [JobId]),
+            persist_job_update(JobId, #{priority => 100}),
             {reply, ok, State#state{jobs = NewJobs}};
         {ok, #job{state = pending}} ->
             %% Already pending (not held)

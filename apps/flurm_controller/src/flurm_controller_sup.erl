@@ -294,6 +294,15 @@ init([]) ->
             type => worker,
             modules => [flurm_node_registry]
         },
+        %% Job Array Manager - tracks array job tasks (must start before job_manager)
+        #{
+            id => flurm_job_array,
+            start => {flurm_job_array, start_link, []},
+            restart => permanent,
+            shutdown => 5000,
+            type => worker,
+            modules => [flurm_job_array]
+        },
         %% Job Manager - handles job lifecycle
         #{
             id => flurm_job_manager,

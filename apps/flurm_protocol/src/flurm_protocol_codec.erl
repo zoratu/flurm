@@ -1466,6 +1466,7 @@ decode_batch_job_request_scan(Binary) ->
         time_limit = TimeLimit,
         priority = extract_priority_from_binary(Binary),
         dependency = extract_dependency_from_binary(Binary),
+        array_inx = extract_array_spec(Binary, Script),
         user_id = UserId,
         group_id = GroupId,
         std_out = StdOut,
@@ -1632,6 +1633,72 @@ extract_dependency_scan(Binary, [Pattern | Rest]) ->
         _ ->
             extract_dependency_scan(Binary, Rest)
     end.
+
+%% Extract array spec from script directives, command line, or env vars
+extract_array_spec(Binary, Script) ->
+    %% Try #SBATCH --array= directive in script
+    case extract_sbatch_directive_value(Script, <<"--array=">>) of
+        <<>> ->
+            %% Try --array= in the embedded command line within the binary
+            case extract_cmdline_flag_value(Binary, <<"--array=">>) of
+                <<>> ->
+                    %% Try SBATCH_ARRAY_INX= env var
+                    extract_env_str(Binary, <<"SBATCH_ARRAY_INX=">>);
+                Val -> Val
+            end;
+        Val -> Val
+    end.
+
+%% Extract a value from #SBATCH directives in a script
+extract_sbatch_directive_value(Script, Flag) when byte_size(Script) > 0 ->
+    Pattern = <<"#SBATCH ", Flag/binary>>,
+    case binary:match(Script, Pattern) of
+        {Start, PLen} ->
+            <<_:Start/binary, _:PLen/binary, Rest/binary>> = Script,
+            extract_value_until_whitespace(Rest);
+        nomatch ->
+            %% Try with extra spaces: #SBATCH  --flag=
+            Pattern2 = <<"#SBATCH  ", Flag/binary>>,
+            case binary:match(Script, Pattern2) of
+                {Start2, PLen2} ->
+                    <<_:Start2/binary, _:PLen2/binary, Rest2/binary>> = Script,
+                    extract_value_until_whitespace(Rest2);
+                nomatch -> <<>>
+            end
+    end;
+extract_sbatch_directive_value(_, _) -> <<>>.
+
+%% Extract a value from command-line flags in the binary (e.g., --array=0-3)
+extract_cmdline_flag_value(Binary, Flag) ->
+    case binary:match(Binary, Flag) of
+        {Start, PLen} ->
+            <<_:Start/binary, _:PLen/binary, Rest/binary>> = Binary,
+            Val = extract_value_until_whitespace(Rest),
+            %% Validate it looks like an array spec (digits, dashes, commas, percent)
+            case is_valid_array_spec(Val) of
+                true -> Val;
+                false -> <<>>
+            end;
+        nomatch -> <<>>
+    end.
+
+%% Extract characters until whitespace or null
+extract_value_until_whitespace(Binary) ->
+    extract_value_until_whitespace(Binary, <<>>).
+extract_value_until_whitespace(<<>>, Acc) -> Acc;
+extract_value_until_whitespace(<<C, _/binary>>, Acc)
+  when C =:= $\s; C =:= $\n; C =:= $\r; C =:= $\t; C =:= 0 -> Acc;
+extract_value_until_whitespace(<<C, Rest/binary>>, Acc) ->
+    extract_value_until_whitespace(Rest, <<Acc/binary, C>>).
+
+%% Validate array spec contains only digits, dashes, commas, percent, underscores
+is_valid_array_spec(<<>>) -> false;
+is_valid_array_spec(Bin) -> is_valid_array_spec_chars(Bin).
+is_valid_array_spec_chars(<<>>) -> true;
+is_valid_array_spec_chars(<<C, Rest/binary>>)
+  when C >= $0, C =< $9; C =:= $-; C =:= $,; C =:= $%; C =:= $_ ->
+    is_valid_array_spec_chars(Rest);
+is_valid_array_spec_chars(_) -> false.
 
 %% Extract UID/GID from the message - these are typically near the end in fixed positions
 extract_uid_gid(Binary) when byte_size(Binary) > 100 ->
@@ -5266,53 +5333,234 @@ encode_single_bb_pool(#burst_buffer_pool{} = P) ->
     ].
 
 %% Encode RESPONSE_BUILD_INFO (2002) - scontrol show config
-%% SLURM build info is a complex structure with many fields.
-%% For compatibility, we encode all required fields in order.
+%% Complete SLURM 22.05 _pack_slurm_ctl_conf_msg format.
+%% Fields must be in exact order matching the SLURM client's unpack function.
 encode_build_info_response(#build_info_response{} = R) ->
-    %% SLURM 22.05 _pack_slurm_ctl_conf_msg format (simplified)
+    S = fun flurm_protocol_pack:pack_string/1,
+    U16 = fun flurm_protocol_pack:pack_uint16/1,
+    U32 = fun flurm_protocol_pack:pack_uint32/1,
+    U64 = fun flurm_protocol_pack:pack_uint64/1,
+    T = fun flurm_protocol_pack:pack_time/1,
+    SA = fun flurm_protocol_pack:pack_string_array/1,
+    %% Empty key_pair_list / plugin_params_list / slurm_pack_list = count 0
+    EmptyList = <<0:32/big>>,
+    ControlMachine = R#build_info_response.control_machine,
     Parts = [
-        flurm_protocol_pack:pack_time(erlang:system_time(second)),  % last_update
-        flurm_protocol_pack:pack_uint16(0),                          % accounting_storage_enforce
-        flurm_protocol_pack:pack_string(R#build_info_response.accounting_storage_type),
-        flurm_protocol_pack:pack_string(<<>>),                       % accounting_storage_tres
-        flurm_protocol_pack:pack_string(<<>>),                       % accounting_storage_host
-        flurm_protocol_pack:pack_string(<<>>),                       % accounting_storage_backup_host
-        flurm_protocol_pack:pack_string(<<>>),                       % accounting_storage_loc
-        flurm_protocol_pack:pack_uint32(0),                          % accounting_storage_port
-        flurm_protocol_pack:pack_string(<<>>),                       % accounting_storage_user
-        flurm_protocol_pack:pack_string(<<>>),                       % acct_gather_energy_type
-        flurm_protocol_pack:pack_string(<<>>),                       % acct_gather_interconnect_type
-        flurm_protocol_pack:pack_string(<<>>),                       % acct_gather_filesystem_type
-        flurm_protocol_pack:pack_string(<<>>),                       % acct_gather_profile_type
-        flurm_protocol_pack:pack_string(R#build_info_response.auth_type),
-        flurm_protocol_pack:pack_string(<<>>),                       % authinfo
-        flurm_protocol_pack:pack_string(R#build_info_response.cluster_name),
-        flurm_protocol_pack:pack_string(<<>>),                       % comm_params
-        flurm_protocol_pack:pack_string(R#build_info_response.control_machine),
-        flurm_protocol_pack:pack_uint32(R#build_info_response.slurmctld_port),
-        flurm_protocol_pack:pack_string(<<>>),                       % cred_type
-        flurm_protocol_pack:pack_uint32(0),                          % debug_flags
-        flurm_protocol_pack:pack_string(R#build_info_response.job_comp_type),
-        flurm_protocol_pack:pack_string(<<>>),                       % job_comp_host
-        flurm_protocol_pack:pack_uint32(0),                          % job_comp_port
-        flurm_protocol_pack:pack_string(<<>>),                       % job_container_plugin
-        flurm_protocol_pack:pack_string(<<>>),                       % mcs_plugin
-        flurm_protocol_pack:pack_string(<<>>),                       % mcs_plugin_params
-        flurm_protocol_pack:pack_string(R#build_info_response.plugin_dir),
-        flurm_protocol_pack:pack_string(R#build_info_response.priority_type),
-        flurm_protocol_pack:pack_string(<<>>),                       % prep_plugins
-        flurm_protocol_pack:pack_string(R#build_info_response.scheduler_type),
-        flurm_protocol_pack:pack_string(R#build_info_response.select_type),
-        flurm_protocol_pack:pack_uint16(R#build_info_response.slurmd_port),
-        flurm_protocol_pack:pack_string(R#build_info_response.slurmd_user_name),
-        flurm_protocol_pack:pack_string(R#build_info_response.slurm_user_name),
-        flurm_protocol_pack:pack_string(R#build_info_response.slurmctld_host),
-        flurm_protocol_pack:pack_string(R#build_info_response.spool_dir),
-        flurm_protocol_pack:pack_string(R#build_info_response.state_save_location),
-        flurm_protocol_pack:pack_string(R#build_info_response.version),
-        %% Many more fields would be needed for full compatibility
-        %% Adding minimal set that allows clients to parse without error
-        <<0:32/big>>  % End marker / padding
+        T(erlang:system_time(second)),                  % last_update
+        U16(0),                                          % accounting_storage_enforce
+        S(<<>>),                                         % accounting_storage_backup_host
+        S(<<>>),                                         % accounting_storage_host
+        S(<<>>),                                         % accounting_storage_ext_host
+        S(<<>>),                                         % accounting_storage_params
+        U16(0),                                          % accounting_storage_port
+        S(<<>>),                                         % accounting_storage_tres
+        S(R#build_info_response.accounting_storage_type),% accounting_storage_type
+        S(<<>>),                                         % accounting_storage_user
+        EmptyList,                                       % acct_gather_conf (key_pair_list)
+        S(<<>>),                                         % acct_gather_energy_type
+        S(<<>>),                                         % acct_gather_filesystem_type
+        S(<<>>),                                         % acct_gather_interconnect_type
+        U16(0),                                          % acct_gather_node_freq
+        S(<<>>),                                         % acct_gather_profile_type
+        S(<<>>),                                         % authalttypes
+        S(<<>>),                                         % authalt_params
+        S(<<>>),                                         % authinfo
+        S(R#build_info_response.auth_type),              % authtype
+        U16(120),                                        % batch_start_timeout
+        T(erlang:system_time(second)),                   % boot_time
+        S(<<>>),                                         % bb_type
+        S(<<>>),                                         % bcast_exclude
+        S(<<>>),                                         % bcast_parameters
+        EmptyList,                                       % cgroup_conf (key_pair_list)
+        S(<<>>),                                         % cli_filter_plugins
+        S(R#build_info_response.cluster_name),           % cluster_name
+        S(<<>>),                                         % comm_params
+        U16(0),                                          % complete_wait
+        U32(0),                                          % conf_flags
+        SA([ControlMachine]),                            % control_addr (string array)
+        SA([ControlMachine]),                            % control_machine (string array)
+        S(<<>>),                                         % core_spec_plugin
+        U32(0),                                          % cpu_freq_def
+        U32(0),                                          % cpu_freq_govs
+        S(<<"cred/none">>),                              % cred_type
+        U64(0),                                          % def_mem_per_cpu
+        U64(0),                                          % debug_flags
+        S(<<>>),                                         % dependency_params
+        U16(0),                                          % eio_timeout
+        U16(0),                                          % enforce_part_limits
+        S(<<>>),                                         % epilog
+        U32(0),                                          % epilog_msg_time
+        S(<<>>),                                         % epilog_slurmctld
+        EmptyList,                                       % ext_sensors_conf (key_pair_list)
+        S(<<>>),                                         % ext_sensors_type
+        U16(0),                                          % ext_sensors_freq
+        S(<<>>),                                         % fed_params
+        U32(1),                                          % first_job_id
+        U16(1),                                          % fs_dampening_factor
+        U16(2),                                          % get_env_timeout
+        S(<<>>),                                         % gres_plugins
+        U16(600),                                        % group_time
+        U16(1),                                          % group_force
+        S(<<>>),                                         % gpu_freq_def
+        U32(0),                                          % hash_val
+        U16(0),                                          % health_check_interval
+        U16(0),                                          % health_check_node_state
+        S(<<>>),                                         % health_check_program
+        U16(0),                                          % inactive_limit
+        S(<<>>),                                         % interactive_step_opts
+        S(<<>>),                                         % job_acct_gather_freq
+        S(<<"jobacct_gather/none">>),                    % job_acct_gather_type
+        S(<<>>),                                         % job_acct_gather_params
+        S(<<>>),                                         % job_comp_host
+        S(<<>>),                                         % job_comp_loc
+        S(<<>>),                                         % job_comp_params
+        U32(0),                                          % job_comp_port
+        S(R#build_info_response.job_comp_type),          % job_comp_type
+        S(<<>>),                                         % job_comp_user
+        S(<<>>),                                         % job_container_plugin
+        S(<<>>),                                         % job_credential_private_key
+        S(<<>>),                                         % job_credential_public_certificate
+        EmptyList,                                       % job_defaults_list (slurm_pack_list)
+        U16(0),                                          % job_file_append
+        U16(1),                                          % job_requeue
+        S(<<>>),                                         % job_submit_plugins
+        U16(0),                                          % kill_on_bad_exit
+        U16(60),                                         % kill_wait
+        S(<<>>),                                         % launch_params
+        S(<<"launch/slurm">>),                           % launch_type
+        S(<<>>),                                         % licenses
+        U16(0),                                          % log_fmt
+        U32(1001),                                       % max_array_sz
+        U32(0),                                          % max_dbd_msgs
+        S(<<>>),                                         % mail_domain
+        S(<<"/bin/mail">>),                              % mail_prog
+        U32(10000),                                      % max_job_cnt
+        U32(16#03ffffff),                                % max_job_id
+        U64(0),                                          % max_mem_per_cpu
+        U32(65536),                                      % max_node_cnt
+        U32(40000),                                      % max_step_cnt
+        U16(512),                                        % max_tasks_per_node
+        S(<<>>),                                         % mcs_plugin
+        S(<<>>),                                         % mcs_plugin_params
+        U32(300),                                        % min_job_age
+        EmptyList,                                       % mpi_conf (key_pair_list)
+        S(<<"mpi/none">>),                               % mpi_default
+        S(<<>>),                                         % mpi_params
+        U16(10),                                         % msg_timeout
+        U32(1),                                          % next_job_id
+        EmptyList,                                       % node_features_conf (config_plugin_params_list)
+        S(<<>>),                                         % node_features_plugins
+        S(<<>>),                                         % node_prefix
+        U16(0),                                          % over_time_limit
+        S(R#build_info_response.plugin_dir),             % plugindir
+        S(<<>>),                                         % plugstack
+        S(<<>>),                                         % power_parameters
+        S(<<>>),                                         % power_plugin
+        U16(0),                                          % preempt_mode
+        S(<<"preempt/none">>),                           % preempt_type
+        U32(0),                                          % preempt_exempt_time
+        S(<<>>),                                         % prep_params
+        S(<<>>),                                         % prep_plugins
+        U32(0),                                          % priority_decay_hl
+        U32(300),                                        % priority_calc_period
+        U16(0),                                          % priority_favor_small
+        U16(0),                                          % priority_flags
+        U32(0),                                          % priority_max_age
+        S(<<>>),                                         % priority_params
+        U16(0),                                          % priority_reset_period
+        S(R#build_info_response.priority_type),          % priority_type
+        U32(0),                                          % priority_weight_age
+        U32(0),                                          % priority_weight_assoc
+        U32(0),                                          % priority_weight_fs
+        U32(0),                                          % priority_weight_js
+        U32(0),                                          % priority_weight_part
+        U32(0),                                          % priority_weight_qos
+        S(<<>>),                                         % priority_weight_tres
+        U16(0),                                          % private_data
+        S(<<"proctrack/linuxproc">>),                    % proctrack_type
+        S(<<>>),                                         % prolog
+        U16(0),                                          % prolog_epilog_timeout
+        S(<<>>),                                         % prolog_slurmctld
+        U16(0),                                          % prolog_flags
+        U16(0),                                          % propagate_prio_process
+        S(<<>>),                                         % propagate_rlimits
+        S(<<>>),                                         % propagate_rlimits_except
+        S(<<>>),                                         % reboot_program
+        U16(0),                                          % reconfig_flags
+        S(<<>>),                                         % requeue_exit
+        S(<<>>),                                         % requeue_exit_hold
+        S(<<>>),                                         % resume_fail_program
+        S(<<>>),                                         % resume_program
+        U16(300),                                        % resume_rate
+        U16(60),                                         % resume_timeout
+        S(<<>>),                                         % resv_epilog
+        U16(0),                                          % resv_over_run
+        S(<<>>),                                         % resv_prolog
+        U16(0),                                          % ret2service
+        S(<<>>),                                         % route_plugin
+        S(<<>>),                                         % sched_params
+        S(<<>>),                                         % sched_logfile
+        U16(0),                                          % sched_log_level
+        U16(30),                                         % sched_time_slice
+        S(R#build_info_response.scheduler_type),         % schedtype
+        S(<<>>),                                         % scron_params
+        S(R#build_info_response.select_type),            % select_type
+        EmptyList,                                       % select_conf_key_pairs (key_pair_list)
+        U16(0),                                          % select_type_param
+        S(<<"/etc/slurm/slurm.conf">>),                 % slurm_conf
+        U32(0),                                          % slurm_user_id
+        S(R#build_info_response.slurm_user_name),        % slurm_user_name
+        U32(0),                                          % slurmd_user_id
+        S(R#build_info_response.slurmd_user_name),       % slurmd_user_name
+        S(<<>>),                                         % slurmctld_addr
+        U16(7),                                          % slurmctld_debug
+        S(<<"/var/log/slurmctld.log">>),                 % slurmctld_logfile
+        S(<<>>),                                         % slurmctld_params
+        S(<<"/var/run/slurmctld.pid">>),                 % slurmctld_pidfile
+        S(<<>>),                                         % slurmctld_plugstack
+        EmptyList,                                       % slurmctld_plugstack_conf (config_plugin_params_list)
+        U32(R#build_info_response.slurmctld_port),       % slurmctld_port
+        U16(1),                                          % slurmctld_port_count
+        S(<<>>),                                         % slurmctld_primary_off_prog
+        S(<<>>),                                         % slurmctld_primary_on_prog
+        U16(0),                                          % slurmctld_syslog_debug
+        U16(120),                                        % slurmctld_timeout
+        U16(7),                                          % slurmd_debug
+        S(<<"/var/log/slurmd.log">>),                    % slurmd_logfile
+        S(<<>>),                                         % slurmd_params
+        S(<<"/var/run/slurmd.pid">>),                    % slurmd_pidfile
+        U32(R#build_info_response.slurmd_port),          % slurmd_port
+        S(R#build_info_response.spool_dir),              % slurmd_spooldir
+        U16(0),                                          % slurmd_syslog_debug
+        U16(300),                                        % slurmd_timeout
+        S(<<>>),                                         % srun_epilog
+        U16(0),                                          % srun_port_range[0]
+        U16(0),                                          % srun_port_range[1]
+        S(<<>>),                                         % srun_prolog
+        S(R#build_info_response.state_save_location),    % state_save_location
+        S(<<>>),                                         % suspend_exc_nodes
+        S(<<>>),                                         % suspend_exc_parts
+        S(<<>>),                                         % suspend_program
+        U16(0),                                          % suspend_rate
+        U32(0),                                          % suspend_time
+        U16(0),                                          % suspend_timeout
+        S(<<>>),                                         % switch_param
+        S(<<"switch/none">>),                            % switch_type
+        S(<<>>),                                         % task_epilog
+        S(<<>>),                                         % task_prolog
+        S(<<"task/none">>),                              % task_plugin
+        U32(0),                                          % task_plugin_param
+        U16(2),                                          % tcp_timeout
+        S(<<"/tmp">>),                                   % tmp_fs
+        S(<<>>),                                         % topology_param
+        S(<<"topology/none">>),                          % topology_plugin
+        U16(50),                                         % tree_width
+        S(<<>>),                                         % unkillable_program
+        U16(60),                                         % unkillable_timeout
+        S(R#build_info_response.version),                % version
+        U16(0),                                          % vsize_factor
+        U16(0),                                          % wait_time
+        S(<<>>)                                          % x11_params
     ],
     {ok, iolist_to_binary(Parts)};
 encode_build_info_response(_Response) ->

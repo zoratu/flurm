@@ -101,6 +101,15 @@ handle(#slurm_header{msg_type = ?REQUEST_SUBMIT_BATCH_JOB},
             PartErr
     end,
     case Result of
+        {ok, {array, ArrayJobId}} ->
+            lager:info("Job {array,~p} submitted successfully", [ArrayJobId]),
+            Response = #batch_job_response{
+                job_id = ArrayJobId,
+                step_id = 0,
+                error_code = 0,
+                job_submit_user_msg = <<"Job submitted successfully">>
+            },
+            {ok, ?RESPONSE_SUBMIT_BATCH_JOB, Response};
         {ok, JobId} ->
             lager:info("Job ~p submitted successfully", [JobId]),
             Response = #batch_job_response{
@@ -1457,7 +1466,11 @@ batch_request_to_job_spec(#batch_job_request{} = Req) ->
         std_err => Req#batch_job_request.std_err,
         account => Req#batch_job_request.account,
         licenses => Req#batch_job_request.licenses,
-        dependency => Req#batch_job_request.dependency
+        dependency => Req#batch_job_request.dependency,
+        array => case Req#batch_job_request.array_inx of
+            <<>> -> undefined;
+            ArrayStr -> ArrayStr
+        end
     }.
 
 %% @doc Submit job with federation routing support.
@@ -2227,12 +2240,13 @@ execute_job_update(JobId, Priority, TimeLimit, Requeue, Name) ->
                     apply_base_updates(JobId, BaseUpdates),
                     flurm_job_manager:hold_job(JobId);
                 16#FFFFFFFE ->
-                    %% NO_VAL/INFINITE - check if job is held (scontrol release sends
-                    %% priority=INFINITE which is the same as NO_VAL in SLURM 22.05)
+                    %% NO_VAL/INFINITE - check if job is held or running with priority=0
+                    %% (scontrol release sends priority=INFINITE = NO_VAL in SLURM 22.05)
                     case flurm_job_manager:get_job(JobId) of
-                        {ok, Job} when Job#job.state =:= held ->
-                            %% Release the held job, restore default priority
-                            lager:info("Release requested for job ~p (priority=NO_VAL, job was held)", [JobId]),
+                        {ok, Job} when Job#job.state =:= held;
+                                       (Job#job.state =:= running andalso Job#job.priority =:= 0) ->
+                            %% Release the held/priority-0 job
+                            lager:info("Release requested for job ~p (priority=NO_VAL, state=~p)", [JobId, Job#job.state]),
                             apply_base_updates(JobId, BaseUpdates),
                             flurm_job_manager:release_job(JobId);
                         _ ->
