@@ -1,0 +1,3 @@
+services:
+  flurm-server:
+    ports: !reset []

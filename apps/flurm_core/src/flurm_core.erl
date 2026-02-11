@@ -78,6 +78,10 @@ update_job_state(Job, NewState) ->
             Job#job{state = NewState, end_time = Now};
         cancelled ->
             Job#job{state = NewState, end_time = Now};
+        timeout ->
+            Job#job{state = NewState, end_time = Now};
+        node_fail ->
+            Job#job{state = NewState, end_time = Now};
         _ ->
             Job#job{state = NewState}
     end.

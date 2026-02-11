@@ -164,6 +164,8 @@ loop(#{socket := Socket, transport := Transport, buffer := Buffer} = State) ->
             end;
         {error, closed} ->
             lager:debug("Client connection closed normally"),
+            %% Cancel any interactive jobs allocated on this connection
+            cleanup_interactive_jobs(State),
             %% Decrement connection count for this peer
             case maps:get(peer_ip, State, undefined) of
                 undefined -> ok;
@@ -281,7 +283,10 @@ handle_message(MessageBin, #{socket := Socket, transport := Transport,
                         false ->
                             lager:info("No callback port specified, skipping callback")
                     end,
-                    {ok, State#{request_count => Count + 1}};
+                    %% Track the interactive job so we can cancel it on disconnect
+                    InteractiveJobs = maps:get(interactive_jobs, State, []),
+                    {ok, State#{request_count => Count + 1,
+                                interactive_jobs => [JobId | InteractiveJobs]}};
                 {error, Reason} ->
                     %% Send error response
                     ErrorResponse = #slurm_rc_response{return_code = -1},
@@ -759,6 +764,8 @@ close_connection(#{socket := Socket, transport := Transport,
     Duration = erlang:system_time(millisecond) - StartTime,
     lager:debug("Closing connection after ~p requests, duration: ~p ms",
                 [Count, Duration]),
+    %% Cancel any interactive jobs allocated on this connection
+    cleanup_interactive_jobs(State),
     %% Decrement connection count for this peer
     case maps:get(peer_ip, State, undefined) of
         undefined -> ok;
@@ -766,3 +773,16 @@ close_connection(#{socket := Socket, transport := Transport,
     end,
     Transport:close(Socket),
     ok.
+
+%% @doc Cancel interactive jobs (salloc/srun) when the client disconnects.
+%% This prevents zombie jobs left in 'running' state after salloc exits.
+-spec cleanup_interactive_jobs(map()) -> ok.
+cleanup_interactive_jobs(State) ->
+    case maps:get(interactive_jobs, State, []) of
+        [] -> ok;
+        JobIds ->
+            lists:foreach(fun(JobId) ->
+                lager:info("Cancelling interactive job ~p (client disconnected)", [JobId]),
+                catch flurm_job_manager:cancel_job(JobId)
+            end, JobIds)
+    end.
