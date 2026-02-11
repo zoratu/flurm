@@ -77,21 +77,21 @@ section() {
     echo -e "${CYAN}========================================${NC}"
 }
 
-# Cleanup helper - cancel all jobs
+# Cleanup helper - cancel all jobs and wait for queue to drain
 cleanup_jobs() {
     for jid in $(squeue -h -o "%i" 2>/dev/null); do
         scancel "$jid" 2>/dev/null
     done
-    sleep 1
+    wait_for_queue_empty 10
 }
 
-# Wait for job state with timeout
+# Wait for job state with timeout (fast polling)
 wait_for_state() {
     local job_id=$1
     local target_state=$2
     local timeout=${3:-30}
-    local elapsed=0
-    while [ $elapsed -lt $timeout ]; do
+    local deadline=$((SECONDS + timeout))
+    while [ $SECONDS -lt $deadline ]; do
         local state=$(squeue -j "$job_id" -h -o "%T" 2>/dev/null)
         if [ "$state" = "$target_state" ]; then
             return 0
@@ -100,8 +100,7 @@ wait_for_state() {
         if [ -z "$state" ] && [[ "$target_state" =~ ^(COMPLETED|CANCELLED|FAILED)$ ]]; then
             return 0
         fi
-        sleep 1
-        ((elapsed++))
+        sleep 0.3
     done
     return 1
 }
@@ -110,14 +109,105 @@ wait_for_state() {
 wait_for_completion() {
     local job_id=$1
     local timeout=${2:-30}
-    local elapsed=0
-    while [ $elapsed -lt $timeout ]; do
+    local deadline=$((SECONDS + timeout))
+    while [ $SECONDS -lt $deadline ]; do
         local state=$(squeue -j "$job_id" -h -o "%T" 2>/dev/null)
         if [ -z "$state" ]; then
             return 0
         fi
-        sleep 1
-        ((elapsed++))
+        sleep 0.3
+    done
+    return 1
+}
+
+# Wait for a scontrol field to have a non-empty value
+wait_for_job_field() {
+    local job_id=$1
+    local field_pattern=$2
+    local timeout=${3:-10}
+    local deadline=$((SECONDS + timeout))
+    while [ $SECONDS -lt $deadline ]; do
+        local val=$(scontrol show job "$job_id" 2>/dev/null | grep -oP "${field_pattern}")
+        if [ -n "$val" ]; then
+            echo "$val"
+            return 0
+        fi
+        sleep 0.2
+    done
+    return 1
+}
+
+# Wait for job to be visible in squeue
+wait_for_squeue_visible() {
+    local job_id=$1
+    local timeout=${2:-10}
+    local deadline=$((SECONDS + timeout))
+    while [ $SECONDS -lt $deadline ]; do
+        if squeue -j "$job_id" -h 2>/dev/null | grep -q "$job_id"; then
+            return 0
+        fi
+        sleep 0.2
+    done
+    return 1
+}
+
+# Wait for squeue to be empty (all jobs cancelled/completed)
+wait_for_queue_empty() {
+    local timeout=${1:-10}
+    local deadline=$((SECONDS + timeout))
+    while [ $SECONDS -lt $deadline ]; do
+        local count=$(squeue -h 2>/dev/null | wc -l | tr -d ' ')
+        if [ "$count" = "0" ]; then
+            return 0
+        fi
+        sleep 0.3
+    done
+    return 1
+}
+
+# Wait for squeue job count to reach at least N
+wait_for_squeue_count() {
+    local target=$1
+    local timeout=${2:-10}
+    local deadline=$((SECONDS + timeout))
+    while [ $SECONDS -lt $deadline ]; do
+        local count=$(squeue -h 2>/dev/null | wc -l | tr -d ' ')
+        if [ "$count" -ge "$target" ] 2>/dev/null; then
+            return 0
+        fi
+        sleep 0.3
+    done
+    return 1
+}
+
+# Wait for node to reach a target state
+wait_for_node_idle() {
+    local timeout=${1:-10}
+    local deadline=$((SECONDS + timeout))
+    while [ $SECONDS -lt $deadline ]; do
+        local state=$(sinfo -h -o "%T" 2>/dev/null | head -1)
+        if [[ "$state" =~ (idle|IDLE) ]]; then
+            return 0
+        fi
+        sleep 0.3
+    done
+    return 1
+}
+
+# Wait for node CPUAlloc to reach a target value
+wait_for_cpu_alloc() {
+    local target=$1
+    local timeout=${2:-10}
+    local deadline=$((SECONDS + timeout))
+    while [ $SECONDS -lt $deadline ]; do
+        local output=$(scontrol show node flurm-node1 2>&1)
+        [ -z "$output" ] && output=$(scontrol show node 2>&1)
+        local alloc=$(echo "$output" | grep -oP 'CPUAlloc=\K[0-9]+')
+        if [ "$alloc" = "$target" ]; then
+            echo "$output"
+            return 0
+        fi
+        sleep 0.3
     done
     return 1
 }
@@ -278,7 +368,7 @@ fi
 JOB_ID=$(submit_test_job "--ntasks=2" "#!/bin/bash
 sleep 30")
 if [ -n "$JOB_ID" ]; then
-    sleep 1
+    wait_for_squeue_visible "$JOB_ID"
     NCPUS=$(scontrol show job "$JOB_ID" 2>/dev/null | grep -oP 'NumCPUs=\K[0-9]+')
     NTASKS=$(scontrol show job "$JOB_ID" 2>/dev/null | grep -oP 'NumTasks=\K[0-9]+')
     if [ "$NCPUS" = "2" ] || [[ "$NCPUS" =~ ^2- ]]; then
@@ -295,7 +385,7 @@ fi
 JOB_ID=$(submit_test_job "--cpus-per-task=2" "#!/bin/bash
 sleep 30")
 if [ -n "$JOB_ID" ]; then
-    sleep 1
+    wait_for_squeue_visible "$JOB_ID"
     CPT=$(scontrol show job "$JOB_ID" 2>/dev/null | grep -oP 'CPUs/Task=\K[0-9]+')
     if [ "$CPT" = "2" ]; then
         pass "test17.5: sbatch --cpus-per-task=2 sets CPUs/Task=2"
@@ -311,7 +401,7 @@ fi
 JOB_ID=$(submit_test_job "--ntasks=2 --cpus-per-task=2" "#!/bin/bash
 sleep 30")
 if [ -n "$JOB_ID" ]; then
-    sleep 1
+    wait_for_squeue_visible "$JOB_ID"
     NCPUS=$(scontrol show job "$JOB_ID" 2>/dev/null | grep -oP 'NumCPUs=\K[0-9]+')
     if [ "$NCPUS" = "4" ] || [[ "$NCPUS" =~ ^4- ]]; then
         pass "test17.6: sbatch --ntasks=2 --cpus-per-task=2 → NumCPUs=4"
@@ -327,7 +417,7 @@ fi
 JOB_ID=$(submit_test_job "--time=10" "#!/bin/bash
 sleep 30")
 if [ -n "$JOB_ID" ]; then
-    sleep 1
+    wait_for_squeue_visible "$JOB_ID"
     TL=$(scontrol show job "$JOB_ID" 2>/dev/null | grep -oP 'TimeLimit=\K[^ ]+')
     if [ "$TL" = "00:10:00" ]; then
         pass "test17.7: sbatch --time=10 sets TimeLimit=00:10:00"
@@ -343,7 +433,7 @@ fi
 JOB_ID=$(submit_test_job "--time=01:30:00" "#!/bin/bash
 sleep 30")
 if [ -n "$JOB_ID" ]; then
-    sleep 1
+    wait_for_squeue_visible "$JOB_ID"
     TL=$(scontrol show job "$JOB_ID" 2>/dev/null | grep -oP 'TimeLimit=\K[^ ]+')
     if [ "$TL" = "01:30:00" ]; then
         pass "test17.8: sbatch --time=01:30:00 sets correct TimeLimit"
@@ -359,7 +449,7 @@ fi
 JOB_ID=$(submit_test_job "--time=1" "#!/bin/bash
 sleep 30")
 if [ -n "$JOB_ID" ]; then
-    sleep 1
+    wait_for_squeue_visible "$JOB_ID"
     TL=$(scontrol show job "$JOB_ID" 2>/dev/null | grep -oP 'TimeLimit=\K[^ ]+')
     if [ "$TL" = "00:01:00" ]; then
         pass "test17.9: sbatch --time=1 sets TimeLimit=00:01:00"
@@ -408,7 +498,7 @@ fi
 JOB_ID=$(submit_test_job "--mem=512" "#!/bin/bash
 sleep 30")
 if [ -n "$JOB_ID" ]; then
-    sleep 1
+    wait_for_squeue_visible "$JOB_ID"
     MEM=$(scontrol show job "$JOB_ID" 2>/dev/null | grep -oP 'MinMemoryNode=\K[0-9]+')
     if [ -n "$MEM" ]; then
         pass "test17.12: sbatch --mem=512 accepted (MinMemoryNode=$MEM)"
@@ -460,7 +550,7 @@ fi
 JOB_ID=$(submit_test_job "--output=/tmp/test_output_%j.out" "#!/bin/bash
 sleep 5")
 if [ -n "$JOB_ID" ]; then
-    sleep 1
+    wait_for_squeue_visible "$JOB_ID"
     STDOUT=$(scontrol show job "$JOB_ID" 2>/dev/null | grep -oP 'StdOut=\K[^ ]+')
     if echo "$STDOUT" | grep -q "test_output"; then
         pass "test17.16: sbatch --output sets StdOut path"
@@ -483,10 +573,10 @@ section "test5.x - squeue output and filtering"
 # Submit some jobs for squeue testing
 JOB_R=$(submit_test_job "--job-name=running_job" "#!/bin/bash
 sleep 120")
-sleep 2
+wait_for_state "$JOB_R" "RUNNING" 10
 JOB_P=$(submit_test_job "--job-name=pending_job -c 99" "#!/bin/bash
 sleep 120")
-sleep 1
+wait_for_squeue_visible "$JOB_P"
 
 # test5.1 - Basic squeue output
 OUTPUT=$(squeue 2>&1)
@@ -638,7 +728,7 @@ section "test2.x - scontrol operations"
 # test2.1 - scontrol show job
 JOB_ID=$(submit_test_job "" "#!/bin/bash
 sleep 60")
-sleep 2
+wait_for_state "$JOB_ID" "RUNNING" 10
 OUTPUT=$(scontrol show job "$JOB_ID" 2>&1)
 if echo "$OUTPUT" | grep -q "JobId=$JOB_ID"; then
     pass "test2.1: scontrol show job shows JobId"
@@ -719,7 +809,7 @@ fi
 
 # test2.9 - scontrol hold job
 HOLD_OUT=$(scontrol hold "$JOB_ID" 2>&1)
-sleep 1
+sleep 0.5
 PRIO=$(scontrol show job "$JOB_ID" 2>/dev/null | grep -oP 'Priority=\K[0-9]+')
 if [ "$PRIO" = "0" ]; then
     pass "test2.9: scontrol hold sets Priority=0"
@@ -729,7 +819,7 @@ fi
 
 # test2.10 - scontrol release job
 scontrol release "$JOB_ID" 2>/dev/null
-sleep 1
+sleep 0.5
 PRIO=$(scontrol show job "$JOB_ID" 2>/dev/null | grep -oP 'Priority=\K[0-9]+')
 if [ -n "$PRIO" ] && [ "$PRIO" -gt 0 ] 2>/dev/null; then
     pass "test2.10: scontrol release restores priority ($PRIO)"
@@ -747,7 +837,7 @@ fi
 
 # test2.12 - scontrol update job name
 scontrol update JobId="$JOB_ID" JobName=updated_name 2>/dev/null
-sleep 1
+sleep 0.5
 NAME=$(squeue -j "$JOB_ID" -h -o "%j" 2>/dev/null)
 if [ "$NAME" = "updated_name" ]; then
     pass "test2.12: scontrol update JobName works"
@@ -775,9 +865,9 @@ section "test6.x - scancel operations"
 # test6.1 - Basic scancel
 JOB_ID=$(submit_test_job "" "#!/bin/bash
 sleep 120")
-sleep 2
+wait_for_squeue_visible "$JOB_ID"
 scancel "$JOB_ID" 2>/dev/null
-sleep 2
+wait_for_completion "$JOB_ID" 10
 STATE=$(squeue -j "$JOB_ID" -h -o "%T" 2>/dev/null)
 if [ -z "$STATE" ] || [ "$STATE" = "CANCELLED" ]; then
     pass "test6.1: scancel removes job from queue"
@@ -788,11 +878,11 @@ fi
 # test6.2 - scancel pending job
 JOB_ID=$(submit_test_job "-c 99 --job-name=cancel_pending" "#!/bin/bash
 sleep 120")
-sleep 1
+wait_for_state "$JOB_ID" "PENDING" 10
 STATE=$(squeue -j "$JOB_ID" -h -o "%T" 2>/dev/null)
 if [ "$STATE" = "PENDING" ]; then
     scancel "$JOB_ID" 2>/dev/null
-    sleep 1
+    wait_for_completion "$JOB_ID" 10
     STATE2=$(squeue -j "$JOB_ID" -h -o "%T" 2>/dev/null)
     if [ -z "$STATE2" ]; then
         pass "test6.2: scancel removes PENDING job"
@@ -806,11 +896,11 @@ fi
 # test6.3 - scancel running job
 JOB_ID=$(submit_test_job "--job-name=cancel_running" "#!/bin/bash
 sleep 120")
-sleep 3
+wait_for_state "$JOB_ID" "RUNNING" 10
 STATE=$(squeue -j "$JOB_ID" -h -o "%T" 2>/dev/null)
 if [ "$STATE" = "RUNNING" ]; then
     scancel "$JOB_ID" 2>/dev/null
-    sleep 2
+    wait_for_completion "$JOB_ID" 10
     STATE2=$(squeue -j "$JOB_ID" -h -o "%T" 2>/dev/null)
     if [ -z "$STATE2" ]; then
         pass "test6.3: scancel removes RUNNING job"
@@ -834,9 +924,9 @@ JOB2=$(submit_test_job "--job-name=multi2" "#!/bin/bash
 sleep 120")
 JOB3=$(submit_test_job "--job-name=multi3" "#!/bin/bash
 sleep 120")
-sleep 2
+wait_for_squeue_count 3 10
 scancel "$JOB1" "$JOB2" "$JOB3" 2>/dev/null
-sleep 2
+wait_for_queue_empty 10
 REMAINING=$(squeue -h 2>/dev/null | wc -l)
 if [ "$REMAINING" -eq 0 ]; then
     pass "test6.5: scancel multiple jobs at once"
@@ -848,9 +938,9 @@ fi
 # test6.6 - scancel by name
 JOB_ID=$(submit_test_job "--job-name=cancel_by_name" "#!/bin/bash
 sleep 120")
-sleep 1
+wait_for_squeue_visible "$JOB_ID"
 scancel --name=cancel_by_name 2>/dev/null
-sleep 2
+wait_for_completion "$JOB_ID" 10
 STATE=$(squeue -j "$JOB_ID" -h -o "%T" 2>/dev/null)
 if [ -z "$STATE" ]; then
     pass "test6.6: scancel --name cancels by job name"
@@ -862,9 +952,9 @@ fi
 # test6.7 - scancel by user
 JOB_ID=$(submit_test_job "" "#!/bin/bash
 sleep 120")
-sleep 1
+wait_for_squeue_visible "$JOB_ID"
 scancel -u root 2>/dev/null
-sleep 2
+wait_for_completion "$JOB_ID" 10
 STATE=$(squeue -j "$JOB_ID" -h -o "%T" 2>/dev/null)
 if [ -z "$STATE" ]; then
     pass "test6.7: scancel -u cancels by user"
@@ -883,7 +973,7 @@ section "test1.x - Job lifecycle and state transitions"
 # test1.1 - Job transitions from PENDING to RUNNING
 JOB_ID=$(submit_test_job "" "#!/bin/bash
 sleep 60")
-sleep 1
+wait_for_squeue_visible "$JOB_ID"
 STATE1=$(squeue -j "$JOB_ID" -h -o "%T" 2>/dev/null)
 if [ "$STATE1" = "PENDING" ] || [ "$STATE1" = "RUNNING" ]; then
     if wait_for_state "$JOB_ID" "RUNNING" 15; then
@@ -900,7 +990,6 @@ scancel "$JOB_ID" 2>/dev/null
 # test1.2 - Job disappears after completion
 JOB_ID=$(submit_test_job "--time=1" "#!/bin/bash
 sleep 2")
-sleep 5
 if wait_for_completion "$JOB_ID" 30; then
     pass "test1.2: completed job disappears from squeue"
 else
@@ -912,7 +1001,7 @@ fi
 # test1.3 - Resource-starved job stays PENDING
 JOB_ID=$(submit_test_job "-c 99 --job-name=starved" "#!/bin/bash
 sleep 30")
-sleep 2
+wait_for_state "$JOB_ID" "PENDING" 10
 STATE=$(squeue -j "$JOB_ID" -h -o "%T" 2>/dev/null)
 if [ "$STATE" = "PENDING" ]; then
     pass "test1.3: resource-starved job stays PENDING"
@@ -924,7 +1013,7 @@ scancel "$JOB_ID" 2>/dev/null
 # test1.4 - Large memory job stays PENDING
 JOB_ID=$(submit_test_job "--mem=999999 --job-name=bigmem" "#!/bin/bash
 sleep 30")
-sleep 2
+wait_for_state "$JOB_ID" "PENDING" 10
 STATE=$(squeue -j "$JOB_ID" -h -o "%T" 2>/dev/null)
 if [ "$STATE" = "PENDING" ]; then
     pass "test1.4: large memory job stays PENDING"
@@ -936,14 +1025,14 @@ scancel "$JOB_ID" 2>/dev/null
 # test1.5 - Pending job starts when resources free up
 JOB1=$(submit_test_job "-c 3 --job-name=blocker" "#!/bin/bash
 sleep 120")
-sleep 3
+wait_for_state "$JOB1" "RUNNING" 10
 JOB2=$(submit_test_job "-c 3 --job-name=waiter" "#!/bin/bash
 sleep 120")
-sleep 2
+wait_for_state "$JOB2" "PENDING" 10
 STATE2=$(squeue -j "$JOB2" -h -o "%T" 2>/dev/null)
 if [ "$STATE2" = "PENDING" ]; then
     scancel "$JOB1" 2>/dev/null
-    sleep 5
+    wait_for_state "$JOB2" "RUNNING" 15
     STATE2=$(squeue -j "$JOB2" -h -o "%T" 2>/dev/null)
     if [ "$STATE2" = "RUNNING" ]; then
         pass "test1.5: pending job starts when resources free up"
@@ -959,9 +1048,9 @@ cleanup_jobs
 # test1.6 - Cancel sets job to disappear quickly
 JOB_ID=$(submit_test_job "" "#!/bin/bash
 sleep 120")
-sleep 3
+wait_for_state "$JOB_ID" "RUNNING" 10
 scancel "$JOB_ID" 2>/dev/null
-sleep 3
+wait_for_completion "$JOB_ID" 10
 STATE=$(squeue -j "$JOB_ID" -h -o "%T" 2>/dev/null)
 if [ -z "$STATE" ]; then
     pass "test1.6: cancelled job disappears within 3s"
@@ -982,7 +1071,8 @@ JOB1=$(submit_test_job "-c 2 --job-name=half1" "#!/bin/bash
 sleep 120")
 JOB2=$(submit_test_job "-c 2 --job-name=half2" "#!/bin/bash
 sleep 120")
-sleep 3
+wait_for_state "$JOB1" "RUNNING" 10
+wait_for_state "$JOB2" "RUNNING" 10
 STATE1=$(squeue -j "$JOB1" -h -o "%T" 2>/dev/null)
 STATE2=$(squeue -j "$JOB2" -h -o "%T" 2>/dev/null)
 if [ "$STATE1" = "RUNNING" ] && [ "$STATE2" = "RUNNING" ]; then
@@ -994,7 +1084,7 @@ fi
 # test_sched.2 - Third job pending when node full
 JOB3=$(submit_test_job "-c 1 --job-name=overflow" "#!/bin/bash
 sleep 120")
-sleep 2
+wait_for_state "$JOB3" "PENDING" 10
 STATE3=$(squeue -j "$JOB3" -h -o "%T" 2>/dev/null)
 if [ "$STATE3" = "PENDING" ]; then
     pass "test_sched.2: overflow job stays PENDING when node full"
@@ -1023,7 +1113,7 @@ fi
 
 # test_sched.5 - Cancel one frees resources
 scancel "$JOB1" 2>/dev/null
-sleep 5
+wait_for_state "$JOB3" "RUNNING" 15
 STATE3=$(squeue -j "$JOB3" -h -o "%T" 2>/dev/null)
 if [ "$STATE3" = "RUNNING" ]; then
     pass "test_sched.5: overflow job starts after resources freed"
@@ -1032,7 +1122,7 @@ else
 fi
 
 cleanup_jobs
-sleep 2
+wait_for_node_idle 10
 
 # test_sched.6 - sinfo back to idle after all jobs cancelled
 SINFO_STATE=$(sinfo -h -o "%T" 2>/dev/null | head -1)
@@ -1065,7 +1155,7 @@ if $SUBMIT_OK; then
 fi
 
 # test_stress.2 - All jobs visible in squeue
-sleep 2
+wait_for_squeue_count 10 10
 VISIBLE=$(squeue -h 2>/dev/null | wc -l)
 if [ "$VISIBLE" -ge 10 ]; then
     pass "test_stress.2: all 10 jobs visible in squeue ($VISIBLE)"
@@ -1077,7 +1167,7 @@ fi
 for jid in "${JOB_IDS[@]}"; do
     scancel "$jid" 2>/dev/null
 done
-sleep 3
+wait_for_queue_empty 10
 REMAINING=$(squeue -h 2>/dev/null | wc -l)
 if [ "$REMAINING" -eq 0 ]; then
     pass "test_stress.3: mass cancel cleared all 10 jobs"
@@ -1099,7 +1189,7 @@ sleep 120")
     scancel "$JID" 2>/dev/null
 done
 if $RAPID_OK; then
-    sleep 2
+    wait_for_queue_empty 10
     REMAINING=$(squeue -h 2>/dev/null | wc -l)
     if [ "$REMAINING" -eq 0 ]; then
         pass "test_stress.4: 10 submit-cancel cycles clean"
@@ -1116,7 +1206,7 @@ for i in $(seq 1 20); do
 sleep 120")
     JOB_IDS+=("$JID")
 done
-sleep 3
+wait_for_squeue_count 18 10
 RUNNING=$(squeue -t RUNNING -h 2>/dev/null | wc -l)
 PENDING=$(squeue -t PENDING -h 2>/dev/null | wc -l)
 TOTAL_Q=$(squeue -h 2>/dev/null | wc -l)
@@ -1133,7 +1223,7 @@ cleanup_jobs
 ###############################################################################
 section "Node resource tracking during jobs"
 
-sleep 2
+wait_for_node_idle 10
 
 # test_node.1 - scontrol show node CPUAlloc before jobs
 OUTPUT=$(scontrol show node flurm-node1 2>&1)
@@ -1150,10 +1240,11 @@ fi
 # test_node.2 - CPUAlloc increases when job runs
 JOB_ID=$(submit_test_job "-c 2 --job-name=alloc_test" "#!/bin/bash
 sleep 120")
-sleep 3
-OUTPUT=$(scontrol show node flurm-node1 2>&1)
+wait_for_state "$JOB_ID" "RUNNING" 10
+OUTPUT=$(wait_for_cpu_alloc 2 10)
 if [ -z "$OUTPUT" ]; then
-    OUTPUT=$(scontrol show node 2>&1)
+    OUTPUT=$(scontrol show node flurm-node1 2>&1)
+    [ -z "$OUTPUT" ] && OUTPUT=$(scontrol show node 2>&1)
 fi
 CPU_ALLOC=$(echo "$OUTPUT" | grep -oP 'CPUAlloc=\K[0-9]+')
 if [ "$CPU_ALLOC" = "2" ]; then
@@ -1172,10 +1263,10 @@ fi
 
 # test_node.4 - CPUAlloc returns to 0 after cancel
 scancel "$JOB_ID" 2>/dev/null
-sleep 3
-OUTPUT=$(scontrol show node flurm-node1 2>&1)
+OUTPUT=$(wait_for_cpu_alloc 0 10)
 if [ -z "$OUTPUT" ]; then
-    OUTPUT=$(scontrol show node 2>&1)
+    OUTPUT=$(scontrol show node flurm-node1 2>&1)
+    [ -z "$OUTPUT" ] && OUTPUT=$(scontrol show node 2>&1)
 fi
 CPU_ALLOC=$(echo "$OUTPUT" | grep -oP 'CPUAlloc=\K[0-9]+')
 if [ "$CPU_ALLOC" = "0" ]; then
@@ -1236,7 +1327,6 @@ fi
 
 # test_edge.4 - squeue with no jobs shows only header
 cleanup_jobs
-sleep 1
 OUTPUT=$(squeue 2>&1)
 LINES=$(echo "$OUTPUT" | wc -l)
 if [ "$LINES" -le 2 ]; then
@@ -1247,12 +1337,11 @@ fi
 
 # test_edge.5 - scontrol show job with no argument (all jobs)
 cleanup_jobs
-sleep 1
 JOB1=$(submit_test_job "--job-name=show_all_1" "#!/bin/bash
 sleep 60")
 JOB2=$(submit_test_job "--job-name=show_all_2" "#!/bin/bash
 sleep 60")
-sleep 3
+wait_for_squeue_count 2 10
 OUTPUT=$(scontrol show job 2>&1)
 if echo "$OUTPUT" | grep -q "$JOB1" && echo "$OUTPUT" | grep -q "$JOB2"; then
     pass "test_edge.5: scontrol show job (no arg) shows all jobs"
@@ -1333,7 +1422,7 @@ JOB_ID=$(submit_test_job "" "#!/bin/bash
 #SBATCH --time=15
 sleep 60")
 if [ -n "$JOB_ID" ]; then
-    sleep 1
+    wait_for_squeue_visible "$JOB_ID"
     NAME=$(squeue -j "$JOB_ID" -h -o "%j" 2>/dev/null)
     NCPUS=$(scontrol show job "$JOB_ID" 2>/dev/null | grep -oP 'NumCPUs=\K[0-9]+')
     TL=$(scontrol show job "$JOB_ID" 2>/dev/null | grep -oP 'TimeLimit=\K[^ ]+')
@@ -1362,7 +1451,7 @@ JOB_ID=$(submit_test_job "" "#!/bin/bash
 #SBATCH -c 2
 sleep 60")
 if [ -n "$JOB_ID" ]; then
-    sleep 1
+    wait_for_squeue_visible "$JOB_ID"
     CPT=$(scontrol show job "$JOB_ID" 2>/dev/null | grep -oP 'CPUs/Task=\K[0-9]+')
     if [ "$CPT" = "2" ]; then
         pass "test17.21: SBATCH -c 2 sets CPUs/Task=2"
@@ -1420,7 +1509,7 @@ section "Job time limit behavior"
 JOB_ID=$(submit_test_job "" "#!/bin/bash
 sleep 60")
 if [ -n "$JOB_ID" ]; then
-    sleep 1
+    wait_for_squeue_visible "$JOB_ID"
     TL=$(scontrol show job "$JOB_ID" 2>/dev/null | grep -oP 'TimeLimit=\K[^ ]+')
     if [ -n "$TL" ] && [ "$TL" != "UNLIMITED" ]; then
         pass "test_time.1: default time limit set ($TL)"
@@ -1436,7 +1525,7 @@ fi
 JOB_ID=$(submit_test_job "--time=05:00" "#!/bin/bash
 sleep 60")
 if [ -n "$JOB_ID" ]; then
-    sleep 1
+    wait_for_squeue_visible "$JOB_ID"
     TL=$(scontrol show job "$JOB_ID" 2>/dev/null | grep -oP 'TimeLimit=\K[^ ]+')
     if [ "$TL" = "00:05:00" ]; then
         pass "test_time.2: --time=05:00 → TimeLimit=00:05:00"
@@ -1453,7 +1542,7 @@ fi
 JOB_ID=$(submit_test_job "--time=02:00:00" "#!/bin/bash
 sleep 60")
 if [ -n "$JOB_ID" ]; then
-    sleep 1
+    wait_for_squeue_visible "$JOB_ID"
     TL=$(scontrol show job "$JOB_ID" 2>/dev/null | grep -oP 'TimeLimit=\K[^ ]+')
     if [ "$TL" = "02:00:00" ]; then
         pass "test_time.3: --time=02:00:00 → TimeLimit=02:00:00"
@@ -1469,7 +1558,7 @@ fi
 JOB_ID=$(submit_test_job "--time=1-00:00:00" "#!/bin/bash
 sleep 60")
 if [ -n "$JOB_ID" ]; then
-    sleep 1
+    wait_for_squeue_visible "$JOB_ID"
     TL=$(scontrol show job "$JOB_ID" 2>/dev/null | grep -oP 'TimeLimit=\K[^ ]+')
     if echo "$TL" | grep -qE "^(1-00:00:00|24:00:00)$"; then
         pass "test_time.4: --time=1-00:00:00 → TimeLimit=$TL"
@@ -1517,8 +1606,10 @@ JOB1=$(submit_test_job "-c 1 --job-name=alloc_a" "#!/bin/bash
 sleep 120")
 JOB2=$(submit_test_job "-c 1 --job-name=alloc_b" "#!/bin/bash
 sleep 120")
-sleep 3
-OUTPUT=$(scontrol show node 2>&1)
+wait_for_state "$JOB1" "RUNNING" 10
+wait_for_state "$JOB2" "RUNNING" 10
+OUTPUT=$(wait_for_cpu_alloc 2 10)
+[ -z "$OUTPUT" ] && OUTPUT=$(scontrol show node 2>&1)
 CPU_ALLOC=$(echo "$OUTPUT" | grep -oP 'CPUAlloc=\K[0-9]+')
 if [ "$CPU_ALLOC" = "2" ]; then
     pass "test_nodedetail.4: CPUAlloc=2 with two 1-CPU jobs"
@@ -1527,7 +1618,6 @@ else
 fi
 
 cleanup_jobs
-sleep 2
 
 ###############################################################################
 # SECTION 14: Mixed workload scenarios
@@ -1541,7 +1631,8 @@ JOB_2CPU=$(submit_test_job "-c 2 --job-name=two_cpu" "#!/bin/bash
 sleep 120")
 JOB_3CPU=$(submit_test_job "-c 3 --job-name=three_cpu" "#!/bin/bash
 sleep 120")
-sleep 5
+wait_for_squeue_count 3 10
+sleep 1
 
 S1=$(squeue -j "$JOB_1CPU" -h -o "%T" 2>/dev/null)
 S2=$(squeue -j "$JOB_2CPU" -h -o "%T" 2>/dev/null)
@@ -1560,14 +1651,15 @@ else
 fi
 
 cleanup_jobs
-sleep 2
+wait_for_node_idle 10
 
 # test_mixed.2 - ntasks jobs mixed with cpu jobs
 JOB_NT=$(submit_test_job "--ntasks=2 --job-name=tasks_job" "#!/bin/bash
 sleep 120")
 JOB_CPU=$(submit_test_job "-c 2 --job-name=cpu_job" "#!/bin/bash
 sleep 120")
-sleep 3
+wait_for_state "$JOB_NT" "RUNNING" 10
+wait_for_state "$JOB_CPU" "RUNNING" 10
 
 SNT=$(squeue -j "$JOB_NT" -h -o "%T" 2>/dev/null)
 SCPU=$(squeue -j "$JOB_CPU" -h -o "%T" 2>/dev/null)
@@ -1666,10 +1758,10 @@ cleanup_jobs
 # test_py.8: scancel by job name
 JOB1=$(sbatch --job-name=cancel_target --wrap="sleep 300" 2>&1 | grep -oP '\d+$')
 JOB2=$(sbatch --job-name=keep_alive --wrap="sleep 300" 2>&1 | grep -oP '\d+$')
-sleep 1
+wait_for_squeue_count 2 10
 
 scancel --name=cancel_target 2>/dev/null
-sleep 1
+wait_for_completion "$JOB1" 10
 
 S1=$(squeue -j "$JOB1" -h -o "%T" 2>/dev/null)
 S2=$(squeue -j "$JOB2" -h -o "%T" 2>/dev/null)
@@ -1687,9 +1779,9 @@ cleanup_jobs
 
 # test_py.9: scancel by partition
 JOB1=$(sbatch -p default --wrap="sleep 300" 2>&1 | grep -oP '\d+$')
-sleep 1
+wait_for_squeue_visible "$JOB1"
 scancel -p default 2>/dev/null
-sleep 1
+wait_for_completion "$JOB1" 10
 S1=$(squeue -j "$JOB1" -h -o "%T" 2>/dev/null)
 if [ -z "$S1" ] || [ "$S1" = "CANCELLED" ]; then
     pass "test_py.9: scancel -p default cancels jobs in partition"
@@ -1701,7 +1793,7 @@ cleanup_jobs
 # test_py.10: scancel by state (pending jobs only)
 JOB1=$(sbatch --wrap="sleep 300" -c 100 2>&1 | grep -oP '\d+$')  # likely pending (too many CPUs)
 JOB2=$(sbatch --wrap="sleep 300" 2>&1 | grep -oP '\d+$')
-sleep 2
+wait_for_squeue_count 2 10
 
 S1=$(squeue -j "$JOB1" -h -o "%T" 2>/dev/null)
 S2=$(squeue -j "$JOB2" -h -o "%T" 2>/dev/null)
@@ -1709,7 +1801,7 @@ S2=$(squeue -j "$JOB2" -h -o "%T" 2>/dev/null)
 # Only test if we actually got a pending job
 if [ "$S1" = "PENDING" ]; then
     scancel --state=PENDING 2>/dev/null
-    sleep 1
+    wait_for_completion "$JOB1" 10
     S1_AFTER=$(squeue -j "$JOB1" -h -o "%T" 2>/dev/null)
     S2_AFTER=$(squeue -j "$JOB2" -h -o "%T" 2>/dev/null)
     if [ -z "$S1_AFTER" ] || [ "$S1_AFTER" = "CANCELLED" ]; then
@@ -1744,7 +1836,7 @@ fi
 
 # test_py.12: squeue shows array tasks
 if [ -n "$JOB_ID" ]; then
-    sleep 1
+    wait_for_squeue_visible "$JOB_ID"
     ARRAY_TASKS=$(squeue -j "$JOB_ID" -h -r 2>/dev/null | wc -l)
     if [ "$ARRAY_TASKS" -ge 2 ]; then
         pass "test_py.12: squeue shows $ARRAY_TASKS array tasks"
@@ -1758,7 +1850,7 @@ fi
 # test_py.13: cancel entire job array
 if [ -n "$JOB_ID" ]; then
     scancel "$JOB_ID" 2>/dev/null
-    sleep 1
+    wait_for_queue_empty 10
     REMAINING=$(squeue -j "$JOB_ID" -h 2>/dev/null | grep -v "CANCEL" | wc -l)
     if [ "$REMAINING" -eq 0 ]; then
         pass "test_py.13: scancel cancels entire job array"
@@ -1784,7 +1876,7 @@ cleanup_jobs
 RESULT=$(SBATCH_PARTITION=default sbatch --wrap="echo env_part_test" 2>&1)
 JOB_ID=$(echo "$RESULT" | grep -oP '\d+$')
 if [ -n "$JOB_ID" ]; then
-    sleep 1
+    wait_for_squeue_visible "$JOB_ID"
     PART=$(scontrol show job "$JOB_ID" 2>/dev/null | grep -oP 'Partition=\K\S+')
     if [ "$PART" = "default" ]; then
         pass "test_py.14: SBATCH_PARTITION env var sets partition"
@@ -1799,7 +1891,7 @@ fi
 # test_py.15: --job-name option persists in scontrol
 JOB_ID=$(sbatch --job-name=pytest_name --wrap="sleep 60" 2>&1 | grep -oP '\d+$')
 if [ -n "$JOB_ID" ]; then
-    sleep 1
+    wait_for_squeue_visible "$JOB_ID"
     NAME=$(scontrol show job "$JOB_ID" 2>/dev/null | grep -oP 'JobName=\K\S+')
     if [ "$NAME" = "pytest_name" ]; then
         pass "test_py.15: --job-name persists in scontrol show job"
@@ -1814,7 +1906,7 @@ fi
 # test_py.16: --ntasks option in scontrol
 JOB_ID=$(sbatch --ntasks=3 --wrap="sleep 60" 2>&1 | grep -oP '\d+$')
 if [ -n "$JOB_ID" ]; then
-    sleep 1
+    wait_for_squeue_visible "$JOB_ID"
     NT=$(scontrol show job "$JOB_ID" 2>/dev/null | grep -oP 'NumTasks=\K\d+')
     if [ "$NT" = "3" ]; then
         pass "test_py.16: --ntasks=3 shown as NumTasks=3 in scontrol"
@@ -1829,7 +1921,7 @@ fi
 # test_py.17: --mem option in scontrol
 JOB_ID=$(sbatch --mem=512 --wrap="sleep 60" 2>&1 | grep -oP '\d+$')
 if [ -n "$JOB_ID" ]; then
-    sleep 1
+    wait_for_squeue_visible "$JOB_ID"
     MEM=$(scontrol show job "$JOB_ID" 2>/dev/null | grep -oP 'MinMemoryNode=\K\d+')
     if [ "$MEM" = "512" ]; then
         pass "test_py.17: --mem=512 shown as MinMemoryNode=512 in scontrol"
@@ -1846,7 +1938,7 @@ fi
 # test_py.18: --nodes option
 JOB_ID=$(sbatch --nodes=1 --wrap="sleep 60" 2>&1 | grep -oP '\d+$')
 if [ -n "$JOB_ID" ]; then
-    sleep 1
+    wait_for_squeue_visible "$JOB_ID"
     NODES=$(scontrol show job "$JOB_ID" 2>/dev/null | grep -oP 'NumNodes=\K\d+')
     if [ "$NODES" = "1" ]; then
         pass "test_py.18: --nodes=1 shown as NumNodes=1 in scontrol"
@@ -1902,7 +1994,7 @@ fi
 # test_py.22: scontrol show job with multiple fields
 JOB_ID=$(sbatch --job-name=detail_test --ntasks=2 --cpus-per-task=1 --mem=128 --wrap="sleep 60" 2>&1 | grep -oP '\d+$')
 if [ -n "$JOB_ID" ]; then
-    sleep 1
+    wait_for_squeue_visible "$JOB_ID"
     RESULT=$(scontrol show job "$JOB_ID" 2>&1)
     FIELDS_FOUND=0
     for FIELD in "JobId=" "JobName=" "Partition=" "NumCPUs=" "NumTasks=" "CPUs/Task="; do
@@ -2021,7 +2113,7 @@ echo -e "${CYAN}=== Section 22: salloc interactive allocation ===${NC}"
 
 # Aggressive cleanup: cancel ALL jobs (including interactive/salloc from previous runs)
 scancel -u root 2>/dev/null || true
-sleep 2
+wait_for_queue_empty 5
 scancel -u root 2>/dev/null || true
 cleanup_jobs
 
@@ -2063,7 +2155,7 @@ fi
 # Submit a long salloc in background, check squeue, then kill it
 timeout 15 salloc -N1 sleep 300 &
 SALLOC_PID=$!
-sleep 3
+wait_for_squeue_count 1 10
 
 SQUEUE_OUT=$(squeue -h -o "%T %j" 2>/dev/null)
 if echo "$SQUEUE_OUT" | grep -qi "RUNNING\|salloc\|interactive"; then
@@ -2110,7 +2202,7 @@ else
 fi
 
 # test_salloc.6: salloc job cleaned up after exit
-sleep 2
+wait_for_queue_empty 5 || true
 REMAINING=$(squeue -h 2>/dev/null | wc -l)
 if [ "$REMAINING" -eq 0 ]; then
     pass "test_salloc.6: salloc resources released after exit (queue empty)"
@@ -2121,7 +2213,7 @@ fi
 
 # Final salloc cleanup: ensure all interactive allocations are released
 scancel -u root 2>/dev/null || true
-sleep 2
+wait_for_queue_empty 5
 cleanup_jobs
 
 ###############################################################################
