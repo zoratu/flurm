@@ -1174,14 +1174,26 @@ handle(#slurm_header{msg_type = ?REQUEST_STATS_INFO}, _Body) ->
     lager:debug("Handling stats info request"),
     %% Collect statistics from various sources
     Jobs = try flurm_job_manager:list_jobs() catch _:_ -> [] end,
-    JobsPending = length([J || J <- Jobs, maps:get(state, J, undefined) =:= pending]),
-    JobsRunning = length([J || J <- Jobs, maps:get(state, J, undefined) =:= running]),
-    JobsCompleted = length([J || J <- Jobs, maps:get(state, J, undefined) =:= completed]),
-    JobsCanceled = length([J || J <- Jobs, maps:get(state, J, undefined) =:= cancelled]),
-    JobsFailed = length([J || J <- Jobs, maps:get(state, J, undefined) =:= failed]),
+    GetState = fun
+        (J) when is_record(J, job) -> J#job.state;
+        (J) when is_map(J) -> maps:get(state, J, undefined);
+        (_) -> undefined
+    end,
+    JobsPending = length([J || J <- Jobs, GetState(J) =:= pending]),
+    JobsRunning = length([J || J <- Jobs, GetState(J) =:= running]),
+    JobsCompleted = length([J || J <- Jobs, GetState(J) =:= completed]),
+    JobsCanceled = length([J || J <- Jobs, GetState(J) =:= cancelled]),
+    JobsFailed = length([J || J <- Jobs, GetState(J) =:= failed]),
 
     %% Get scheduler stats if available
-    SchedulerStats = try flurm_scheduler:get_stats() catch _:_ -> #{} end,
+    SchedulerStats = try
+        case flurm_scheduler:get_stats() of
+            {ok, Stats} when is_map(Stats) -> Stats;
+            Stats when is_map(Stats) -> Stats;
+            _ -> #{}
+        end
+    catch _:_ -> #{}
+    end,
 
     Response = #stats_info_response{
         parts_packed = 1,

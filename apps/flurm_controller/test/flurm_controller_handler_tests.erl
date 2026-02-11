@@ -58,6 +58,7 @@ setup() ->
     NodeManagerPid = start_or_get(flurm_node_manager_server, fun flurm_node_manager_server:start_link/0),
     PartitionManagerPid = start_or_get(flurm_partition_manager, fun flurm_partition_manager:start_link/0),
     AccountManagerPid = start_or_get(flurm_account_manager, fun flurm_account_manager:start_link/0),
+    SrunCallbackPid = start_or_get(flurm_srun_callback, fun flurm_srun_callback:start_link/0),
 
     #{
         job_registry => JobRegistryPid,
@@ -71,7 +72,8 @@ setup() ->
         step_manager => StepManagerPid,
         node_manager => NodeManagerPid,
         partition_manager => PartitionManagerPid,
-        account_manager => AccountManagerPid
+        account_manager => AccountManagerPid,
+        srun_callback => SrunCallbackPid
     }.
 
 %% Helper to start a process or return existing pid
@@ -491,3 +493,370 @@ test_unknown_message_type() ->
     ?assertEqual(?RESPONSE_SLURM_RC, MsgType),
     %% Unknown commands should return error code -1
     ?assertEqual(-1, Response#slurm_rc_response.return_code).
+
+%%====================================================================
+%% Extended Handler Tests - Covering Weakly Tested Handlers
+%%====================================================================
+
+extended_handler_test_() ->
+    {setup,
+     fun setup/0,
+     fun cleanup/1,
+     fun(_) ->
+         [
+          %% REQUEST_NODE_REGISTRATION_STATUS (1001)
+          {"Handle node registration status",
+           fun test_node_registration_status/0},
+          %% REQUEST_RECONFIGURE (1003)
+          {"Handle reconfigure request",
+           fun test_reconfigure/0},
+          %% REQUEST_JOB_READY (4019)
+          {"Handle job ready request",
+           fun test_job_ready/0},
+          {"Handle job ready - empty body",
+           fun test_job_ready_empty_body/0},
+          %% REQUEST_KILL_TIMELIMIT (6009)
+          {"Handle kill timelimit",
+           fun test_kill_timelimit/0},
+          %% REQUEST_SUSPEND (5014)
+          {"Handle suspend job",
+           fun test_suspend_job/0},
+          {"Handle resume job",
+           fun test_resume_job/0},
+          {"Handle suspend not found",
+           fun test_suspend_not_found/0},
+          %% REQUEST_SIGNAL_JOB (5018)
+          {"Handle signal job SIGTERM",
+           fun test_signal_job_sigterm/0},
+          {"Handle signal job not found",
+           fun test_signal_job_not_found/0},
+          %% REQUEST_COMPLETE_PROLOG (5019)
+          {"Handle complete prolog rc=0",
+           fun test_complete_prolog_success/0},
+          {"Handle complete prolog rc=1",
+           fun test_complete_prolog_failure/0},
+          %% MESSAGE_EPILOG_COMPLETE (6012)
+          {"Handle epilog complete rc=0",
+           fun test_epilog_complete_success/0},
+          {"Handle epilog complete rc=1",
+           fun test_epilog_complete_failure/0},
+          %% MESSAGE_TASK_EXIT (6003)
+          {"Handle task exit normal",
+           fun test_task_exit_normal/0},
+          {"Handle task exit failure code",
+           fun test_task_exit_failure/0},
+          %% REQUEST_UPDATE_JOB (3001)
+          {"Handle update job - hold",
+           fun test_update_job_hold/0},
+          {"Handle update job - release",
+           fun test_update_job_release/0},
+          {"Handle update job - time limit",
+           fun test_update_job_time_limit/0},
+          {"Handle update job - not found",
+           fun test_update_job_not_found/0},
+          {"Handle update job - raw binary",
+           fun test_update_job_raw_binary/0},
+          {"Handle update job - requeue",
+           fun test_update_job_requeue/0},
+          %% REQUEST_JOB_WILL_RUN (4012)
+          {"Handle job will run with record",
+           fun test_job_will_run_record/0},
+          {"Handle job will run raw body",
+           fun test_job_will_run_raw/0},
+          %% REQUEST_JOB_STEP_CREATE (5001)
+          {"Handle job step create for existing job",
+           fun test_step_create_existing_job/0},
+          {"Handle job step create for missing job",
+           fun test_step_create_missing_job/0},
+          %% REQUEST_JOB_STEP_INFO (5003)
+          {"Handle job step info all steps",
+           fun test_step_info_all/0},
+          {"Handle job step info specific step",
+           fun test_step_info_specific/0},
+          %% REQUEST_JOB_ALLOCATION_INFO (4014)
+          {"Handle job allocation info",
+           fun test_job_allocation_info/0},
+          %% Additional endpoints
+          {"Handle config info request",
+           fun test_config_info/0},
+          {"Handle stats info request",
+           fun test_stats_info/0},
+          {"Handle license info request",
+           fun test_license_info/0},
+          {"Handle topology info request",
+           fun test_topo_info/0},
+          {"Handle front end info request",
+           fun test_front_end_info/0}
+         ]
+     end}.
+
+%% Helper: submit a job and return its ID
+submit_test_job() ->
+    Header = make_header(?REQUEST_SUBMIT_BATCH_JOB),
+    Request = make_batch_job_request(),
+    {ok, _, SubmitResp} = flurm_controller_handler:handle(Header, Request),
+    SubmitResp#batch_job_response.job_id.
+
+test_node_registration_status() ->
+    Header = make_header(?REQUEST_NODE_REGISTRATION_STATUS),
+    Body = #node_registration_request{status_only = true},
+    {ok, MsgType, Response} = flurm_controller_handler:handle(Header, Body),
+    ?assertEqual(?RESPONSE_SLURM_RC, MsgType),
+    ?assertEqual(0, Response#slurm_rc_response.return_code).
+
+test_reconfigure() ->
+    Header = make_header(?REQUEST_RECONFIGURE),
+    %% Config server may not be running; handler doesn't catch noproc
+    case catch flurm_controller_handler:handle(Header, <<>>) of
+        {ok, MsgType, Response} ->
+            ?assertEqual(?RESPONSE_SLURM_RC, MsgType),
+            ?assert(is_integer(Response#slurm_rc_response.return_code));
+        {'EXIT', {noproc, _}} ->
+            %% flurm_config_server not started - expected in test env
+            ok
+    end.
+
+test_job_ready() ->
+    JobId = submit_test_job(),
+    Header = make_header(?REQUEST_JOB_READY),
+    Body = #{job_id => JobId},
+    {ok, MsgType, _Response} = flurm_controller_handler:handle(Header, Body),
+    ?assertEqual(?RESPONSE_JOB_READY, MsgType).
+
+test_job_ready_empty_body() ->
+    Header = make_header(?REQUEST_JOB_READY),
+    {ok, MsgType, _Response} = flurm_controller_handler:handle(Header, <<>>),
+    ?assertEqual(?RESPONSE_JOB_READY, MsgType).
+
+test_kill_timelimit() ->
+    JobId = submit_test_job(),
+    Header = make_header(?REQUEST_KILL_TIMELIMIT),
+    %% Handler expects raw binary: <<JobId:32/big, StepId:32/big>>
+    Body = <<JobId:32/big, 0:32/big>>,
+    {ok, MsgType, Response} = flurm_controller_handler:handle(Header, Body),
+    ?assertEqual(?RESPONSE_SLURM_RC, MsgType),
+    ?assertEqual(0, Response#slurm_rc_response.return_code).
+
+test_suspend_job() ->
+    JobId = submit_test_job(),
+    Header = make_header(?REQUEST_SUSPEND),
+    Request = #suspend_request{job_id = JobId, suspend = true},
+    {ok, MsgType, Response} = flurm_controller_handler:handle(Header, Request),
+    ?assertEqual(?RESPONSE_SLURM_RC, MsgType),
+    %% Job may not be in running state (no nodes allocated), so accept any RC
+    ?assert(is_integer(Response#slurm_rc_response.return_code)).
+
+test_resume_job() ->
+    JobId = submit_test_job(),
+    Header = make_header(?REQUEST_SUSPEND),
+    Request = #suspend_request{job_id = JobId, suspend = false},
+    {ok, MsgType, Response} = flurm_controller_handler:handle(Header, Request),
+    ?assertEqual(?RESPONSE_SLURM_RC, MsgType),
+    %% Job may not be suspended, so accept any RC
+    ?assert(is_integer(Response#slurm_rc_response.return_code)).
+
+test_suspend_not_found() ->
+    Header = make_header(?REQUEST_SUSPEND),
+    Request = #suspend_request{job_id = 999999, suspend = true},
+    {ok, MsgType, Response} = flurm_controller_handler:handle(Header, Request),
+    ?assertEqual(?RESPONSE_SLURM_RC, MsgType),
+    %% Not found should return error
+    ?assertNotEqual(0, Response#slurm_rc_response.return_code).
+
+test_signal_job_sigterm() ->
+    JobId = submit_test_job(),
+    Header = make_header(?REQUEST_SIGNAL_JOB),
+    Request = #signal_job_request{job_id = JobId, signal = 15},
+    {ok, MsgType, Response} = flurm_controller_handler:handle(Header, Request),
+    ?assertEqual(?RESPONSE_SLURM_RC, MsgType),
+    %% Job may not be in running state, so accept any RC
+    ?assert(is_integer(Response#slurm_rc_response.return_code)).
+
+test_signal_job_not_found() ->
+    Header = make_header(?REQUEST_SIGNAL_JOB),
+    Request = #signal_job_request{job_id = 999999, signal = 15},
+    {ok, MsgType, Response} = flurm_controller_handler:handle(Header, Request),
+    ?assertEqual(?RESPONSE_SLURM_RC, MsgType),
+    ?assertNotEqual(0, Response#slurm_rc_response.return_code).
+
+test_complete_prolog_success() ->
+    JobId = submit_test_job(),
+    Header = make_header(?REQUEST_COMPLETE_PROLOG),
+    Request = #complete_prolog_request{job_id = JobId, prolog_rc = 0, node_name = <<"node1">>},
+    {ok, MsgType, Response} = flurm_controller_handler:handle(Header, Request),
+    ?assertEqual(?RESPONSE_SLURM_RC, MsgType),
+    ?assertEqual(0, Response#slurm_rc_response.return_code).
+
+test_complete_prolog_failure() ->
+    JobId = submit_test_job(),
+    Header = make_header(?REQUEST_COMPLETE_PROLOG),
+    Request = #complete_prolog_request{job_id = JobId, prolog_rc = 1, node_name = <<"node1">>},
+    {ok, MsgType, Response} = flurm_controller_handler:handle(Header, Request),
+    ?assertEqual(?RESPONSE_SLURM_RC, MsgType),
+    ?assertEqual(0, Response#slurm_rc_response.return_code).
+
+test_epilog_complete_success() ->
+    JobId = submit_test_job(),
+    Header = make_header(?MESSAGE_EPILOG_COMPLETE),
+    Request = #epilog_complete_msg{job_id = JobId, epilog_rc = 0, node_name = <<"node1">>},
+    {ok, MsgType, Response} = flurm_controller_handler:handle(Header, Request),
+    ?assertEqual(?RESPONSE_SLURM_RC, MsgType),
+    ?assertEqual(0, Response#slurm_rc_response.return_code).
+
+test_epilog_complete_failure() ->
+    JobId = submit_test_job(),
+    Header = make_header(?MESSAGE_EPILOG_COMPLETE),
+    Request = #epilog_complete_msg{job_id = JobId, epilog_rc = 1, node_name = <<"node1">>},
+    {ok, MsgType, Response} = flurm_controller_handler:handle(Header, Request),
+    ?assertEqual(?RESPONSE_SLURM_RC, MsgType),
+    ?assertEqual(0, Response#slurm_rc_response.return_code).
+
+test_task_exit_normal() ->
+    JobId = submit_test_job(),
+    Header = make_header(?MESSAGE_TASK_EXIT),
+    Request = #task_exit_msg{job_id = JobId, step_id = 0, return_code = 0, node_name = <<"node1">>},
+    {ok, MsgType, Response} = flurm_controller_handler:handle(Header, Request),
+    ?assertEqual(?RESPONSE_SLURM_RC, MsgType),
+    ?assertEqual(0, Response#slurm_rc_response.return_code).
+
+test_task_exit_failure() ->
+    JobId = submit_test_job(),
+    Header = make_header(?MESSAGE_TASK_EXIT),
+    Request = #task_exit_msg{job_id = JobId, step_id = 0, return_code = 1, node_name = <<"node1">>},
+    {ok, MsgType, Response} = flurm_controller_handler:handle(Header, Request),
+    ?assertEqual(?RESPONSE_SLURM_RC, MsgType),
+    ?assertEqual(0, Response#slurm_rc_response.return_code).
+
+test_update_job_hold() ->
+    JobId = submit_test_job(),
+    Header = make_header(?REQUEST_UPDATE_JOB),
+    Request = #update_job_request{job_id = JobId, priority = 0},  %% 0 = hold
+    {ok, MsgType, Response} = flurm_controller_handler:handle(Header, Request),
+    ?assertEqual(?RESPONSE_SLURM_RC, MsgType),
+    ?assertEqual(0, Response#slurm_rc_response.return_code).
+
+test_update_job_release() ->
+    JobId = submit_test_job(),
+    %% First hold, then release
+    Header = make_header(?REQUEST_UPDATE_JOB),
+    _HoldReq = flurm_controller_handler:handle(Header, #update_job_request{job_id = JobId, priority = 0}),
+    Request = #update_job_request{job_id = JobId, priority = 100},
+    {ok, MsgType, Response} = flurm_controller_handler:handle(Header, Request),
+    ?assertEqual(?RESPONSE_SLURM_RC, MsgType),
+    ?assertEqual(0, Response#slurm_rc_response.return_code).
+
+test_update_job_time_limit() ->
+    JobId = submit_test_job(),
+    Header = make_header(?REQUEST_UPDATE_JOB),
+    Request = #update_job_request{job_id = JobId, time_limit = 7200},
+    {ok, MsgType, Response} = flurm_controller_handler:handle(Header, Request),
+    ?assertEqual(?RESPONSE_SLURM_RC, MsgType),
+    ?assertEqual(0, Response#slurm_rc_response.return_code).
+
+test_update_job_not_found() ->
+    Header = make_header(?REQUEST_UPDATE_JOB),
+    Request = #update_job_request{job_id = 999999, priority = 0},
+    {ok, MsgType, Response} = flurm_controller_handler:handle(Header, Request),
+    ?assertEqual(?RESPONSE_SLURM_RC, MsgType),
+    ?assertNotEqual(0, Response#slurm_rc_response.return_code).
+
+test_update_job_raw_binary() ->
+    Header = make_header(?REQUEST_UPDATE_JOB),
+    {ok, MsgType, Response} = flurm_controller_handler:handle(Header, <<0:32>>),
+    ?assertEqual(?RESPONSE_SLURM_RC, MsgType),
+    ?assert(is_record(Response, slurm_rc_response)).
+
+test_update_job_requeue() ->
+    JobId = submit_test_job(),
+    Header = make_header(?REQUEST_UPDATE_JOB),
+    Request = #update_job_request{job_id = JobId, requeue = 1},
+    {ok, MsgType, Response} = flurm_controller_handler:handle(Header, Request),
+    ?assertEqual(?RESPONSE_SLURM_RC, MsgType),
+    %% Requeue may fail if job isn't in a requeueable state
+    ?assert(is_integer(Response#slurm_rc_response.return_code)).
+
+test_job_will_run_record() ->
+    Header = make_header(?REQUEST_JOB_WILL_RUN),
+    Request = #job_will_run_request{
+        partition = <<"default">>,
+        min_nodes = 1,
+        min_cpus = 1,
+        time_limit = 3600
+    },
+    {ok, MsgType, _Response} = flurm_controller_handler:handle(Header, Request),
+    ?assertEqual(?RESPONSE_JOB_WILL_RUN, MsgType).
+
+test_job_will_run_raw() ->
+    Header = make_header(?REQUEST_JOB_WILL_RUN),
+    {ok, MsgType, _Response} = flurm_controller_handler:handle(Header, <<>>),
+    ?assertEqual(?RESPONSE_JOB_WILL_RUN, MsgType).
+
+test_step_create_existing_job() ->
+    JobId = submit_test_job(),
+    Header = make_header(?REQUEST_JOB_STEP_CREATE),
+    Request = #job_step_create_request{
+        job_id = JobId,
+        name = <<"test_step">>,
+        min_nodes = 1,
+        num_tasks = 1
+    },
+    {ok, MsgType, Response} = flurm_controller_handler:handle(Header, Request),
+    ?assertEqual(?RESPONSE_JOB_STEP_CREATE, MsgType),
+    ?assert(is_record(Response, job_step_create_response)).
+
+test_step_create_missing_job() ->
+    Header = make_header(?REQUEST_JOB_STEP_CREATE),
+    Request = #job_step_create_request{
+        job_id = 999999,
+        name = <<"test_step">>,
+        min_nodes = 1,
+        num_tasks = 1
+    },
+    {ok, MsgType, Response} = flurm_controller_handler:handle(Header, Request),
+    ?assertEqual(?RESPONSE_JOB_STEP_CREATE, MsgType),
+    ?assert(is_record(Response, job_step_create_response)).
+
+test_step_info_all() ->
+    Header = make_header(?REQUEST_JOB_STEP_INFO),
+    Request = #job_step_info_request{job_id = 0, step_id = ?SLURM_NO_VAL},
+    {ok, MsgType, _Response} = flurm_controller_handler:handle(Header, Request),
+    ?assertEqual(?RESPONSE_JOB_STEP_INFO, MsgType).
+
+test_step_info_specific() ->
+    JobId = submit_test_job(),
+    Header = make_header(?REQUEST_JOB_STEP_INFO),
+    Request = #job_step_info_request{job_id = JobId, step_id = 0},
+    {ok, MsgType, _Response} = flurm_controller_handler:handle(Header, Request),
+    ?assertEqual(?RESPONSE_JOB_STEP_INFO, MsgType).
+
+test_job_allocation_info() ->
+    JobId = submit_test_job(),
+    Header = make_header(?REQUEST_JOB_ALLOCATION_INFO),
+    Body = #{job_id => JobId},
+    {ok, MsgType, _Response} = flurm_controller_handler:handle(Header, Body),
+    ?assertEqual(?RESPONSE_JOB_ALLOCATION_INFO, MsgType).
+
+test_config_info() ->
+    Header = make_header(?REQUEST_CONFIG_INFO),
+    {ok, MsgType, _Response} = flurm_controller_handler:handle(Header, <<>>),
+    ?assertEqual(?RESPONSE_CONFIG_INFO, MsgType).
+
+test_stats_info() ->
+    Header = make_header(?REQUEST_STATS_INFO),
+    {ok, MsgType, _Response} = flurm_controller_handler:handle(Header, <<>>),
+    ?assertEqual(?RESPONSE_STATS_INFO, MsgType).
+
+test_license_info() ->
+    Header = make_header(?REQUEST_LICENSE_INFO),
+    {ok, MsgType, _Response} = flurm_controller_handler:handle(Header, <<>>),
+    ?assertEqual(?RESPONSE_LICENSE_INFO, MsgType).
+
+test_topo_info() ->
+    Header = make_header(?REQUEST_TOPO_INFO),
+    {ok, MsgType, _Response} = flurm_controller_handler:handle(Header, <<>>),
+    ?assertEqual(?RESPONSE_TOPO_INFO, MsgType).
+
+test_front_end_info() ->
+    Header = make_header(?REQUEST_FRONT_END_INFO),
+    {ok, MsgType, _Response} = flurm_controller_handler:handle(Header, <<>>),
+    ?assertEqual(?RESPONSE_FRONT_END_INFO, MsgType).

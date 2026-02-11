@@ -35,7 +35,7 @@
     {ok, pid(), string()} | {error, term()}.
 setup_pmi(JobId, StepId, Size, _NodeName) ->
     %% Check if PMI listener already running for this step
-    ListenerName = list_to_atom(io_lib:format("flurm_pmi_listener_~p_~p", [JobId, StepId])),
+    ListenerName = list_to_atom(lists:flatten(io_lib:format("flurm_pmi_listener_~p_~p", [JobId, StepId]))),
     case whereis(ListenerName) of
         undefined ->
             %% Start new PMI listener

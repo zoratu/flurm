@@ -183,7 +183,7 @@ terminate(_Reason, #state{socket_path = SocketPath, listen_socket = ListenSocket
 %%%===================================================================
 
 listener_name(JobId, StepId) ->
-    list_to_atom(io_lib:format("flurm_pmi_listener_~p_~p", [JobId, StepId])).
+    list_to_atom(lists:flatten(io_lib:format("flurm_pmi_listener_~p_~p", [JobId, StepId]))).
 
 send_response(Socket, Response) when is_binary(Response) ->
     gen_tcp:send(Socket, Response);
