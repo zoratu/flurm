@@ -60,6 +60,12 @@
 
 -include("flurm_protocol.hrl").
 
+-ifdef(TEST).
+-export([
+    extract_resources/1,
+    strip_auth_section/1
+]).
+-endif.
 
 %%%===================================================================
 %%% Main API

@@ -47,7 +47,10 @@
     setup_gpu_isolation_v2/2,
     setup_gpu_isolation_v1/2,
     allow_basic_devices/1,
-    allow_nvidia_devices/2
+    allow_nvidia_devices/2,
+    %% Path expansion and working directory
+    expand_output_path/2,
+    ensure_working_dir/2
 ]).
 -endif.
 

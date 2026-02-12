@@ -15,6 +15,8 @@
 %%%===================================================================
 
 setup() ->
+    %% Start lager so encode_response/2 and friends can log
+    application:ensure_all_started(lager),
     ok.
 
 cleanup(_) ->
@@ -56,7 +58,11 @@ flurm_protocol_codec_test_() ->
 
       %% Response encoding
       {"encode_response", fun encode_response_test/0},
+      {"encode_response_no_auth", fun encode_response_no_auth_test/0},
+      {"encode_response_proper_auth", fun encode_response_proper_auth_test/0},
       {"decode_response", fun decode_response_test/0},
+      {"decode_response happy path", fun decode_response_happy_path_test/0},
+      {"encode_response_no_auth roundtrip", fun encode_decode_response_roundtrip_test/0},
 
       %% Body encode/decode
       {"decode_body for various types", fun decode_body_various_test/0},
@@ -64,7 +70,21 @@ flurm_protocol_codec_test_() ->
 
       %% Resource extraction
       {"extract_resources_from_protocol", fun extract_resources_test/0},
-      {"extract_full_job_desc", fun extract_full_job_desc_test/0}
+      {"extract_full_job_desc", fun extract_full_job_desc_test/0},
+
+      %% Script resource extraction (SBATCH parsing)
+      {"extract_resources from SBATCH directives", fun extract_resources_sbatch_test/0},
+      {"extract_resources memory suffixes", fun extract_resources_memory_test/0},
+      {"extract_resources first wins", fun extract_resources_first_wins_test/0},
+      {"extract_resources stops at non-comment", fun extract_resources_stop_test/0},
+      {"extract_resources edge cases", fun extract_resources_edge_cases_test/0},
+
+      %% Auth section parsing
+      {"decode_with_extra non-MUNGE auth", fun decode_with_extra_non_munge_test/0},
+      {"strip_auth_section error cases", fun strip_auth_section_errors_test/0},
+
+      %% Passthrough message validation
+      {"encode/decode passthrough binary body", fun passthrough_binary_validation_test/0}
      ]}.
 
 %%%===================================================================
@@ -374,19 +394,85 @@ decode_with_extra_test() ->
     ok.
 
 encode_response_test() ->
-    %% Test encode_response/2 - the function uses lager for debug logging
-    %% which causes undef errors in test environment. Just verify it exists.
-    %% Skip this test as it requires lager to be running
+    %% Test encode_response/2 with lager running (started in setup)
+    %% Encode a RESPONSE_SLURM_RC message
+    Body = #slurm_rc_response{return_code = 0},
+    Result = flurm_protocol_codec:encode_response(?RESPONSE_SLURM_RC, Body),
+    ?assertMatch({ok, <<_:32/big, _/binary>>}, Result),
+    {ok, Encoded} = Result,
+    %% Verify wire format: <<OuterLength:32/big, Header, Auth, Body>>
+    <<OuterLength:32/big, Payload/binary>> = Encoded,
+    ?assertEqual(byte_size(Payload), OuterLength),
+    %% Must be larger than just header (22 bytes) since auth section is included
+    ?assert(OuterLength > 16),
+    ok.
+
+encode_response_no_auth_test() ->
+    %% Test encode_response_no_auth/2 - produces minimal wire format
+    Body = #slurm_rc_response{return_code = 42},
+    Result = flurm_protocol_codec:encode_response_no_auth(?RESPONSE_SLURM_RC, Body),
+    ?assertMatch({ok, <<_:32/big, _/binary>>}, Result),
+    {ok, Encoded} = Result,
+    <<OuterLength:32/big, Payload/binary>> = Encoded,
+    ?assertEqual(byte_size(Payload), OuterLength),
+    %% No auth section - should be header + body only
+    %% Parse header to verify SLURM_NO_AUTH_CRED flag is set
+    {ok, Header, BodyBin} = flurm_protocol_header:parse_header(Payload),
+    ?assertEqual(?SLURM_NO_AUTH_CRED, Header#slurm_header.flags band ?SLURM_NO_AUTH_CRED),
+    ?assertEqual(?RESPONSE_SLURM_RC, Header#slurm_header.msg_type),
+    %% Body should decode back to return_code = 42
+    {ok, DecodedBody} = flurm_protocol_codec:decode_body(?RESPONSE_SLURM_RC, BodyBin),
+    ?assertEqual(42, DecodedBody#slurm_rc_response.return_code),
+    ok.
+
+encode_response_proper_auth_test() ->
+    %% Test encode_response_proper_auth/2 - proper MUNGE auth format
+    Body = #slurm_rc_response{return_code = 0},
+    Result = flurm_protocol_codec:encode_response_proper_auth(?RESPONSE_SLURM_RC, Body),
+    ?assertMatch({ok, <<_:32/big, _/binary>>}, Result),
+    {ok, Encoded} = Result,
+    <<OuterLength:32/big, Payload/binary>> = Encoded,
+    ?assertEqual(byte_size(Payload), OuterLength),
+    %% Must include auth section (larger than no-auth version)
+    {ok, NoAuthEncoded} = flurm_protocol_codec:encode_response_no_auth(?RESPONSE_SLURM_RC, Body),
+    ?assert(byte_size(Encoded) > byte_size(NoAuthEncoded)),
     ok.
 
 decode_response_test() ->
-    %% Test decode_response/1 - just test that it handles errors properly
-    %% Test error cases
+    %% Test decode_response/1 - error cases
     ErrorResult1 = flurm_protocol_codec:decode_response(<<1, 2, 3>>),
     ?assertMatch({error, _}, ErrorResult1),
 
     ErrorResult2 = flurm_protocol_codec:decode_response(<<100:32/big, 1, 2>>),
     ?assertMatch({error, _}, ErrorResult2),
+
+    %% Empty binary
+    ErrorResult3 = flurm_protocol_codec:decode_response(<<>>),
+    ?assertMatch({error, _}, ErrorResult3),
+
+    %% Just length prefix, no data
+    ErrorResult4 = flurm_protocol_codec:decode_response(<<0:32/big>>),
+    ?assertMatch({error, _}, ErrorResult4),
+    ok.
+
+decode_response_happy_path_test() ->
+    %% Build a valid response message using encode_response_no_auth, then decode it
+    Body = #slurm_rc_response{return_code = 7},
+    {ok, Encoded} = flurm_protocol_codec:encode_response_no_auth(?RESPONSE_SLURM_RC, Body),
+    %% decode_response should parse it (no_auth has flag set, so auth stripping handles it)
+    Result = flurm_protocol_codec:decode_response(Encoded),
+    ?assertMatch({ok, #slurm_msg{}, <<>>}, Result),
+    {ok, Msg, <<>>} = Result,
+    ?assertEqual(?RESPONSE_SLURM_RC, Msg#slurm_msg.header#slurm_header.msg_type),
+    ok.
+
+encode_decode_response_roundtrip_test() ->
+    %% Full roundtrip: encode_response_no_auth -> decode_response -> verify body
+    Body = #batch_job_response{job_id = 999, step_id = 0, error_code = 0},
+    {ok, Encoded} = flurm_protocol_codec:encode_response_no_auth(?RESPONSE_SUBMIT_BATCH_JOB, Body),
+    {ok, Msg, <<>>} = flurm_protocol_codec:decode_response(Encoded),
+    ?assertEqual(?RESPONSE_SUBMIT_BATCH_JOB, Msg#slurm_msg.header#slurm_header.msg_type),
+    ?assertEqual(999, Msg#slurm_msg.body#batch_job_response.job_id),
     ok.
 
 %%%===================================================================
@@ -1235,3 +1321,187 @@ encode_body_fallback_test_() ->
         ?assertMatch({error, _}, Result)
       end}
     ].
+
+%%%===================================================================
+%%% Script Resource Extraction Tests (extract_resources/1)
+%%%===================================================================
+
+extract_resources_sbatch_test() ->
+    %% Test all SBATCH flag variants
+    Script1 = <<"#!/bin/bash\n#SBATCH --nodes=4\n#SBATCH --ntasks=16\n#SBATCH --cpus-per-task=2\n#SBATCH --mem=8G\necho hello">>,
+    {Nodes1, Tasks1, Cpus1, Mem1} = flurm_protocol_codec:extract_resources(Script1),
+    ?assertEqual(4, Nodes1),
+    ?assertEqual(16, Tasks1),
+    ?assertEqual(2, Cpus1),
+    ?assertEqual(8192, Mem1),  % 8G = 8*1024 MB
+
+    %% Short flag variants: -N, -n, -c
+    Script2 = <<"#!/bin/bash\n#SBATCH -N 2\n#SBATCH -n 8\n#SBATCH -c 4\nrun_job">>,
+    {Nodes2, Tasks2, Cpus2, _Mem2} = flurm_protocol_codec:extract_resources(Script2),
+    ?assertEqual(2, Nodes2),
+    ?assertEqual(8, Tasks2),
+    ?assertEqual(4, Cpus2),
+
+    %% Short flags without space: -N2, -n8, -c4
+    Script3 = <<"#!/bin/bash\n#SBATCH -N2\n#SBATCH -n8\n#SBATCH -c4\nrun_job">>,
+    {Nodes3, Tasks3, Cpus3, _} = flurm_protocol_codec:extract_resources(Script3),
+    ?assertEqual(2, Nodes3),
+    ?assertEqual(8, Tasks3),
+    ?assertEqual(4, Cpus3),
+    ok.
+
+extract_resources_memory_test() ->
+    %% Memory with G suffix
+    Script1 = <<"#!/bin/bash\n#SBATCH --mem=16G\nrun">>,
+    {_, _, _, Mem1} = flurm_protocol_codec:extract_resources(Script1),
+    ?assertEqual(16384, Mem1),  % 16*1024
+
+    %% Memory with lowercase g
+    Script2 = <<"#!/bin/bash\n#SBATCH --mem=4g\nrun">>,
+    {_, _, _, Mem2} = flurm_protocol_codec:extract_resources(Script2),
+    ?assertEqual(4096, Mem2),
+
+    %% Memory with M suffix (explicit MB)
+    Script3 = <<"#!/bin/bash\n#SBATCH --mem=512M\nrun">>,
+    {_, _, _, Mem3} = flurm_protocol_codec:extract_resources(Script3),
+    ?assertEqual(512, Mem3),
+
+    %% Memory with K suffix
+    Script4 = <<"#!/bin/bash\n#SBATCH --mem=2048K\nrun">>,
+    {_, _, _, Mem4} = flurm_protocol_codec:extract_resources(Script4),
+    ?assertEqual(2, Mem4),  % 2048/1024 = 2 MB
+
+    %% Memory without suffix (defaults to MB)
+    Script5 = <<"#!/bin/bash\n#SBATCH --mem=256\nrun">>,
+    {_, _, _, Mem5} = flurm_protocol_codec:extract_resources(Script5),
+    ?assertEqual(256, Mem5),
+    ok.
+
+extract_resources_first_wins_test() ->
+    %% First non-zero value wins for each resource type
+    Script = <<"#!/bin/bash\n#SBATCH --nodes=4\n#SBATCH --nodes=8\n#SBATCH --ntasks=2\n#SBATCH --ntasks=16\nrun">>,
+    {Nodes, Tasks, _, _} = flurm_protocol_codec:extract_resources(Script),
+    ?assertEqual(4, Nodes),  % First wins
+    ?assertEqual(2, Tasks),  % First wins
+    ok.
+
+extract_resources_stop_test() ->
+    %% Parsing stops at first non-comment, non-empty line
+    Script = <<"#!/bin/bash\n#SBATCH --nodes=2\necho hello\n#SBATCH --ntasks=16\nrun">>,
+    {Nodes, Tasks, _, _} = flurm_protocol_codec:extract_resources(Script),
+    ?assertEqual(2, Nodes),
+    ?assertEqual(0, Tasks),  % Never reached because parsing stopped at "echo hello"
+
+    %% Empty lines are skipped
+    Script2 = <<"#!/bin/bash\n\n#SBATCH --nodes=3\n\n#SBATCH --ntasks=5\nrun">>,
+    {Nodes2, Tasks2, _, _} = flurm_protocol_codec:extract_resources(Script2),
+    ?assertEqual(3, Nodes2),
+    ?assertEqual(5, Tasks2),  % Empty lines don't stop parsing
+
+    %% Comments are skipped
+    Script3 = <<"#!/bin/bash\n# This is a comment\n#SBATCH --nodes=1\nrun">>,
+    {Nodes3, _, _, _} = flurm_protocol_codec:extract_resources(Script3),
+    ?assertEqual(1, Nodes3),
+    ok.
+
+extract_resources_edge_cases_test() ->
+    %% Empty script
+    {N1, T1, C1, M1} = flurm_protocol_codec:extract_resources(<<>>),
+    ?assertEqual({0, 0, 0, 0}, {N1, T1, C1, M1}),
+
+    %% Script with no SBATCH directives
+    {N2, T2, C2, M2} = flurm_protocol_codec:extract_resources(<<"#!/bin/bash\necho hello\nrun">>),
+    ?assertEqual({0, 0, 0, 0}, {N2, T2, C2, M2}),
+
+    %% Unrecognized SBATCH flags are ignored
+    Script3 = <<"#!/bin/bash\n#SBATCH --job-name=test\n#SBATCH --nodes=1\nrun">>,
+    {N3, _, _, _} = flurm_protocol_codec:extract_resources(Script3),
+    ?assertEqual(1, N3),
+
+    %% Only shebang line
+    {N4, T4, C4, M4} = flurm_protocol_codec:extract_resources(<<"#!/bin/bash">>),
+    ?assertEqual({0, 0, 0, 0}, {N4, T4, C4, M4}),
+    ok.
+
+%%%===================================================================
+%%% Auth Section Parsing Tests
+%%%===================================================================
+
+decode_with_extra_non_munge_test() ->
+    %% Test with non-MUNGE plugin ID (unknown auth type)
+    Credential = <<"AUTH:some_cred">>,
+    CredLen = byte_size(Credential),
+    %% Plugin ID 999 = unknown auth
+    AuthSection = <<999:32/big, CredLen:32/big, Credential/binary>>,
+
+    BodyBin = <<0:32/signed-big>>,  % return_code = 0
+    Header = #slurm_header{
+        version = ?SLURM_PROTOCOL_VERSION,
+        flags = 0,
+        msg_type = ?RESPONSE_SLURM_RC,
+        body_length = byte_size(BodyBin)
+    },
+    {ok, HeaderBin} = flurm_protocol_header:encode_header(Header),
+
+    TotalPayload = <<HeaderBin/binary, AuthSection/binary, BodyBin/binary>>,
+    Length = byte_size(TotalPayload),
+    WireBin = <<Length:32/big, TotalPayload/binary>>,
+
+    Result = flurm_protocol_codec:decode_with_extra(WireBin),
+    ?assertMatch({ok, #slurm_msg{}, #{auth_type := unknown}, <<>>}, Result),
+    {ok, _, AuthInfo, _} = Result,
+    ?assertEqual(999, maps:get(plugin_id, AuthInfo)),
+    ?assertEqual(CredLen, maps:get(cred_len, AuthInfo)),
+    ok.
+
+strip_auth_section_errors_test() ->
+    %% Too short binary (< 8 bytes for plugin_id + cred_len)
+    Result1 = flurm_protocol_codec:strip_auth_section(<<1, 2, 3, 4, 5>>),
+    ?assertMatch({error, _}, Result1),
+
+    %% Exactly 8 bytes but cred_len claims more than available
+    Result2 = flurm_protocol_codec:strip_auth_section(<<101:32/big, 100:32/big>>),
+    ?assertMatch({error, _}, Result2),
+
+    %% Empty binary
+    Result3 = flurm_protocol_codec:strip_auth_section(<<>>),
+    ?assertMatch({error, _}, Result3),
+
+    %% Valid auth section with zero-length credential
+    Result4 = flurm_protocol_codec:strip_auth_section(<<101:32/big, 0:32/big, "body">>),
+    ?assertMatch({ok, <<"body">>, #{auth_type := munge}}, Result4),
+    ok.
+
+%%%===================================================================
+%%% Passthrough Message Validation Tests
+%%%===================================================================
+
+passthrough_binary_validation_test() ->
+    %% Encoding a raw binary for an unknown message type passes through
+    RawBody = <<"arbitrary binary data for unknown message type">>,
+    {ok, Encoded} = flurm_protocol_codec:encode_body(60000, RawBody),
+    ?assertEqual(RawBody, Encoded),
+
+    %% Encoding non-binary for unknown type returns error
+    Result = flurm_protocol_codec:encode_body(60000, {some, tuple}),
+    ?assertMatch({error, {unsupported_message_type, 60000, _}}, Result),
+
+    %% Full roundtrip: encode unknown type with binary body -> decode
+    %% The decoder should handle it as a raw binary body
+    Header = #slurm_header{
+        version = ?SLURM_PROTOCOL_VERSION,
+        flags = 0,
+        msg_type = 60000,
+        body_length = byte_size(RawBody)
+    },
+    {ok, HeaderBin} = flurm_protocol_header:encode_header(Header),
+    TotalPayload = <<HeaderBin/binary, RawBody/binary>>,
+    Length = byte_size(TotalPayload),
+    WireBin = <<Length:32/big, TotalPayload/binary>>,
+
+    DecodedResult = flurm_protocol_codec:decode(WireBin),
+    ?assertMatch({ok, #slurm_msg{}, <<>>}, DecodedResult),
+    {ok, DecodedMsg, <<>>} = DecodedResult,
+    %% Body should be the raw binary since type 60000 has no decoder
+    ?assertEqual(RawBody, DecodedMsg#slurm_msg.body),
+    ok.

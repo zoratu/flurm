@@ -609,3 +609,120 @@ test_unknown_msg_type() ->
     Body = <<>>,
     Result = flurm_controller_handler:handle(Header, Body),
     ?assertMatch({ok, ?RESPONSE_SLURM_RC, #slurm_rc_response{return_code = -1}}, Result).
+
+%%====================================================================
+%% Cluster Mode Routing Tests
+%%====================================================================
+
+cluster_routing_test_() ->
+    {setup,
+     fun cluster_setup/0,
+     fun cluster_cleanup/1,
+     [
+      {"leader handles kill job locally", fun test_leader_kill_job/0},
+      {"follower forwards kill job to leader", fun test_follower_kill_job_forward/0},
+      {"follower handles no_leader error", fun test_follower_no_leader/0},
+      {"leader handles suspend request", fun test_leader_suspend/0},
+      {"follower forwards batch submit to leader", fun test_follower_batch_submit_forward/0},
+      {"resource allocation 4-tuple includes callback info", fun test_resource_allocation_callback_info/0}
+     ]}.
+
+cluster_setup() ->
+    setup(),
+    %% Enable cluster mode by setting cluster_nodes app env
+    application:set_env(flurm_controller, cluster_nodes, [node1, node2]),
+    ok.
+
+cluster_cleanup(_) ->
+    application:unset_env(flurm_controller, cluster_nodes),
+    cleanup(ok).
+
+test_leader_kill_job() ->
+    %% When is_leader returns true, kill job locally
+    meck:expect(flurm_controller_cluster, is_leader, fun() -> true end),
+    meck:expect(flurm_job_manager, cancel_job, fun(100) -> ok end),
+
+    Header = #slurm_header{msg_type = ?REQUEST_KILL_JOB},
+    Body = #kill_job_request{job_id = 100, signal = 9},
+    Result = flurm_controller_handler:handle(Header, Body),
+    ?assertMatch({ok, ?RESPONSE_SLURM_RC, #slurm_rc_response{return_code = 0}}, Result).
+
+test_follower_kill_job_forward() ->
+    %% When is_leader returns false, forward to leader
+    meck:expect(flurm_controller_cluster, is_leader, fun() -> false end),
+    meck:expect(flurm_controller_cluster, forward_to_leader,
+        fun(cancel_job, 100) -> {ok, ok} end),
+
+    Header = #slurm_header{msg_type = ?REQUEST_KILL_JOB},
+    Body = #kill_job_request{job_id = 100, signal = 9},
+    Result = flurm_controller_handler:handle(Header, Body),
+    ?assertMatch({ok, ?RESPONSE_SLURM_RC, #slurm_rc_response{return_code = 0}}, Result).
+
+test_follower_no_leader() ->
+    %% When forward_to_leader fails with no_leader
+    meck:expect(flurm_controller_cluster, is_leader, fun() -> false end),
+    meck:expect(flurm_controller_cluster, forward_to_leader,
+        fun(cancel_job, _) -> {error, no_leader} end),
+
+    Header = #slurm_header{msg_type = ?REQUEST_KILL_JOB},
+    Body = #kill_job_request{job_id = 100, signal = 9},
+    Result = flurm_controller_handler:handle(Header, Body),
+    ?assertMatch({ok, ?RESPONSE_SLURM_RC, #slurm_rc_response{return_code = -1}}, Result).
+
+test_leader_suspend() ->
+    %% Leader handles suspend directly
+    meck:expect(flurm_controller_cluster, is_leader, fun() -> true end),
+    meck:expect(flurm_job_manager, get_job, fun(200) ->
+        {ok, #job{id = 200, name = <<"test">>, user = <<"u">>, partition = <<"p">>,
+                  state = running, script = <<>>, num_nodes = 1, num_cpus = 1,
+                  memory_mb = 256, time_limit = 60, priority = 100, submit_time = 0,
+                  allocated_nodes = []}}
+    end),
+    meck:expect(flurm_job_manager, update_job, fun(200, _) -> ok end),
+
+    Header = #slurm_header{msg_type = ?REQUEST_SUSPEND},
+    Body = #suspend_request{job_id = 200, suspend = true},
+    Result = flurm_controller_handler:handle(Header, Body),
+    ?assertMatch({ok, ?RESPONSE_SLURM_RC, #slurm_rc_response{}}, Result).
+
+test_follower_batch_submit_forward() ->
+    %% Follower forwards batch submit to leader
+    meck:expect(flurm_controller_cluster, is_leader, fun() -> false end),
+    meck:expect(flurm_controller_cluster, forward_to_leader,
+        fun(submit_job, _) -> {ok, {ok, 42}} end),
+
+    Header = #slurm_header{msg_type = ?REQUEST_SUBMIT_BATCH_JOB},
+    Body = #batch_job_request{
+        name = <<"forwarded_job">>,
+        script = <<"#!/bin/bash\necho hello">>,
+        partition = <<"default">>,
+        min_nodes = 1,
+        min_cpus = 1,
+        user_id = 1000,
+        group_id = 1000
+    },
+    Result = flurm_controller_handler:handle(Header, Body),
+    ?assertMatch({ok, ?RESPONSE_SUBMIT_BATCH_JOB, #batch_job_response{job_id = 42}}, Result).
+
+test_resource_allocation_callback_info() ->
+    %% Verify the 4-tuple return includes callback map with expected fields
+    meck:expect(flurm_controller_cluster, is_leader, fun() -> true end),
+    meck:expect(flurm_job_manager, submit_job, fun(_) -> {ok, 55} end),
+    %% Return a node with resolvable hostname to avoid DNS timeout
+    meck:expect(flurm_node_manager_server, list_nodes, fun() ->
+        [#node{hostname = <<"localhost">>, state = idle, cpus = 4, memory_mb = 8192,
+               partitions = [<<"default">>]}]
+    end),
+
+    Header = #slurm_header{msg_type = ?REQUEST_RESOURCE_ALLOCATION},
+    Body = #resource_allocation_request{
+        name = <<"srun_job">>, min_nodes = 1, min_cpus = 2, partition = <<"default">>
+    },
+    Result = flurm_controller_handler:handle(Header, Body),
+    ?assertMatch({ok, ?RESPONSE_RESOURCE_ALLOCATION, #resource_allocation_response{job_id = 55}, _}, Result),
+    {ok, _, _, CallbackInfo} = Result,
+    ?assert(is_map(CallbackInfo)),
+    ?assertEqual(55, maps:get(job_id, CallbackInfo)),
+    ?assert(maps:is_key(node_list, CallbackInfo)),
+    %% Restore default list_nodes mock
+    meck:expect(flurm_node_manager_server, list_nodes, fun() -> [] end).
