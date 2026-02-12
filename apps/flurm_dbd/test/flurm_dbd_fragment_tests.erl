@@ -718,6 +718,7 @@ setup_internal_mocks() ->
     meck:expect(lager, error, fun(_, _) -> ok end),
     meck:new(mnesia, [passthrough, unstick, no_link, non_strict]),
     meck:expect(mnesia, create_table, fun(_, _) -> {atomic, ok} end),
+    meck:expect(mnesia, system_info, fun(is_running) -> yes end),
     meck:expect(mnesia, transaction, fun(Fun) -> {atomic, Fun()} end),
     meck:expect(mnesia, write, fun(_, _, _) -> ok end),
     meck:expect(mnesia, change_table_copy_type, fun(_, _, _) -> {atomic, ok} end),
@@ -1058,3 +1059,213 @@ test_real_maintenance_callbacks() ->
 fragment_cover_suite_passthrough_test_() ->
     [flurm_dbd_fragment_cover_tests:pure_test_(),
      flurm_dbd_fragment_cover_tests:server_test_()].
+
+fragment_targeted_uncovered_test_() ->
+    {foreach,
+     fun setup_internal_mocks/0,
+     fun cleanup_internal_mocks/1,
+     [
+      {"insert aborted branch", fun test_insert_aborted_branch/0},
+      {"get_fragment_meta ok branch", fun test_get_fragment_meta_ok_branch/0},
+      {"query_jobs flatmap branch", fun test_query_jobs_flatmap_branch/0},
+      {"matches_filters remaining clauses", fun test_matches_filters_remaining_clauses/0},
+      {"delete/find mnesia read branches", fun test_delete_find_read_branches/0},
+      {"delete/find mnesia fun branches", fun test_delete_find_mnesia_fun_branches/0},
+      {"age_table unknown and no-op branches", fun test_age_table_unknown_and_noop/0},
+      {"age_table internal unreachable defensive branches", fun test_age_table_internal_defensive_branches/0},
+      {"init branch variants", fun test_init_branch_variants/0}
+     ]}.
+
+test_insert_aborted_branch() ->
+    {ok, Pid} = flurm_dbd_fragment:start_link(),
+    meck:expect(mnesia, transaction, fun(_Fun) -> {aborted, db_down} end),
+    try
+        ?assertEqual({error, db_down},
+                     flurm_dbd_fragment:insert_job(#{job_id => 50001, end_time => erlang:system_time(second)}))
+    after
+        catch gen_server:stop(Pid)
+    end.
+
+test_get_fragment_meta_ok_branch() ->
+    Period = <<"2026-02">>,
+    Table = flurm_dbd_fragment:period_to_table_name(Period, 0),
+    Meta = #fragment_meta{
+        table_name = Table,
+        base_period = Period,
+        fragment_id = 0,
+        record_count = 1,
+        size_bytes = 1,
+        created_at = 1,
+        status = hot
+    },
+    State = #state{
+        current_table = Table,
+        current_period = Period,
+        fragment_metas = #{Table => Meta},
+        check_timer = undefined
+    },
+    ?assertMatch({reply, {ok, _}, _},
+                 flurm_dbd_fragment:handle_call({get_fragment_meta, Table},
+                                                {self(), make_ref()}, State)).
+
+test_query_jobs_flatmap_branch() ->
+    Period = <<"2026-02">>,
+    Table = flurm_dbd_fragment:period_to_table_name(Period, 0),
+    Meta = #fragment_meta{
+        table_name = Table,
+        base_period = Period,
+        fragment_id = 0,
+        record_count = 1,
+        size_bytes = 1,
+        created_at = 1,
+        status = hot
+    },
+    State = #state{
+        current_table = Table,
+        current_period = Period,
+        fragment_metas = #{Table => Meta},
+        check_timer = undefined
+    },
+    meck:expect(mnesia, transaction, fun(Fun) -> {atomic, Fun()} end),
+    meck:expect(mnesia, foldl, fun(Fun, Acc, _Table) -> Fun(make_test_job_record(), Acc) end),
+    ?assertMatch({reply, {ok, [_]}, _},
+                 flurm_dbd_fragment:handle_call({query_jobs, #{}},
+                                                {self(), make_ref()}, State)).
+
+test_matches_filters_remaining_clauses() ->
+    R = make_test_job_record(),
+    ?assertEqual(true, flurm_dbd_fragment:matches_filters(R, #{account => <<"research">>})),
+    ?assertEqual(true, flurm_dbd_fragment:matches_filters(R, #{partition => <<"batch">>})),
+    ?assertEqual(true, flurm_dbd_fragment:matches_filters(R, #{state => completed})),
+    ?assertEqual(true, flurm_dbd_fragment:matches_filters(R, #{start_time => 1})),
+    ?assertEqual(true, flurm_dbd_fragment:matches_filters(R, #{end_time => 2000000})),
+    ?assertEqual(true, flurm_dbd_fragment:matches_filters(R, #{unknown_filter => ignored})).
+
+test_delete_find_read_branches() ->
+    meck:expect(mnesia, transaction, fun(Fun) ->
+        case erlang:get(tx_mode) of
+            read_found -> {atomic, [make_test_job_record()]};
+            read_missing -> {atomic, []};
+            delete_found -> {atomic, found};
+            _ -> {atomic, Fun()}
+        end
+    end),
+    erlang:put(tx_mode, read_found),
+    ?assertMatch({ok, _}, flurm_dbd_fragment:find_job_in_tables(12345, [job_records_2026_02])),
+    erlang:put(tx_mode, read_missing),
+    ?assertEqual({error, not_found}, flurm_dbd_fragment:find_job_in_tables(12345, [job_records_2026_02])),
+    erlang:put(tx_mode, delete_found),
+    ?assertEqual(ok, flurm_dbd_fragment:delete_job_from_tables(12345, [job_records_2026_02])),
+    erlang:erase(tx_mode).
+
+test_delete_find_mnesia_fun_branches() ->
+    meck:expect(mnesia, transaction, fun(Fun) -> {atomic, Fun()} end),
+    meck:expect(mnesia, read, fun(_Table, _JobId) ->
+        case erlang:get(read_mode) of
+            found -> [make_test_job_record()];
+            _ -> []
+        end
+    end),
+    meck:expect(mnesia, delete, fun(_Table, _JobId, write) ->
+        erlang:put(delete_called, true),
+        ok
+    end),
+    erlang:put(read_mode, found),
+    ?assertMatch({ok, _}, flurm_dbd_fragment:find_job_in_tables(12345, [job_records_2026_02])),
+    ?assertEqual(ok, flurm_dbd_fragment:delete_job_from_tables(12345, [job_records_2026_02])),
+    ?assertEqual(true, erlang:get(delete_called)),
+    erlang:put(read_mode, missing),
+    ?assertEqual({error, not_found}, flurm_dbd_fragment:find_job_in_tables(12345, [job_records_2026_02])),
+    ?assertEqual({error, not_found}, flurm_dbd_fragment:delete_job_from_tables(12345, [job_records_2026_02])),
+    erlang:erase(read_mode),
+    erlang:erase(delete_called).
+
+test_age_table_unknown_and_noop() ->
+    %% Exercise age_tables false path (no aging needed)
+    Period = flurm_dbd_fragment:current_month(),
+    Table = flurm_dbd_fragment:period_to_table_name(Period, 0),
+    Meta = #fragment_meta{
+        table_name = Table, base_period = Period, fragment_id = 0,
+        record_count = 0, size_bytes = 0, created_at = 1, status = hot
+    },
+    S = #state{current_table = Table, current_period = Period,
+               fragment_metas = #{Table => Meta}, check_timer = undefined},
+    ?assertMatch(#state{}, flurm_dbd_fragment:age_tables(S)).
+
+test_age_table_internal_defensive_branches() ->
+    Period = <<"2026-02">>,
+    Table = flurm_dbd_fragment:period_to_table_name(Period, 0),
+    Meta = #fragment_meta{
+        table_name = Table, base_period = Period, fragment_id = 0,
+        record_count = 0, size_bytes = 0, created_at = 1, status = warm
+    },
+    S = #state{current_table = Table, current_period = Period,
+               fragment_metas = #{Table => Meta}, check_timer = undefined},
+    %% Unknown table branch
+    ?assertEqual(S, flurm_dbd_fragment:age_table_internal(other_table, warm, S)),
+    %% No-op storage transition branch (warm -> warm)
+    ?assertMatch(#state{}, flurm_dbd_fragment:age_table_internal(Table, warm, S)).
+
+test_init_branch_variants() ->
+    application:set_env(mnesia, dir, "/tmp/flurm_dbd_fragment_targeted"),
+    meck:expect(mnesia, create_table, fun(flurm_fragment_meta, _Opts) ->
+        case erlang:get(init_mode) of
+            create_meta_error -> {aborted, boom};
+            _ -> {atomic, ok}
+        end;
+        (_, _Opts) ->
+            case erlang:get(init_mode) of
+                ensure_current_error -> {aborted, create_fail};
+                _ -> {atomic, ok}
+            end
+    end),
+    meck:expect(mnesia, transaction, fun(Fun) ->
+        case erlang:get(init_mode) of
+            load_aborted -> {aborted, fail};
+            load_via_fun -> {atomic, Fun()};
+            load_with_meta ->
+                M = #fragment_meta{
+                    table_name = job_records_2026_02,
+                    base_period = <<"2026-02">>,
+                    fragment_id = 0,
+                    record_count = 1,
+                    size_bytes = 1,
+                    created_at = 1,
+                    status = hot
+                },
+                {atomic, maps:put(M#fragment_meta.table_name, M, #{})};
+            ensure_exists -> {atomic, ok};
+            ensure_error -> {aborted, create_fail};
+            _ -> {atomic, Fun()}
+        end
+    end),
+    meck:expect(mnesia, foldl, fun(Fun, Acc, _Table) ->
+        case erlang:get(init_mode) of
+            load_via_fun ->
+                M = #fragment_meta{
+                    table_name = job_records_2026_02,
+                    base_period = <<"2026-02">>,
+                    fragment_id = 0,
+                    record_count = 2,
+                    size_bytes = 2,
+                    created_at = 1,
+                    status = hot
+                },
+                Fun(M, Acc);
+            _ ->
+                Acc
+        end
+    end),
+    erlang:put(init_mode, load_aborted),
+    ?assertMatch({ok, _}, flurm_dbd_fragment:init([])),
+    erlang:put(init_mode, load_via_fun),
+    ?assertMatch({ok, _}, flurm_dbd_fragment:init([])),
+    erlang:put(init_mode, load_with_meta),
+    ?assertMatch({ok, _}, flurm_dbd_fragment:init([])),
+    erlang:put(init_mode, create_meta_error),
+    ?assertMatch({ok, _}, flurm_dbd_fragment:init([])),
+    erlang:put(init_mode, ensure_current_error),
+    ?assertMatch({ok, _}, flurm_dbd_fragment:init([])),
+    erlang:put(init_mode, ensure_error),
+    ?assertMatch({ok, _}, flurm_dbd_fragment:init([])),
+    erlang:erase(init_mode).

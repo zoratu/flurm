@@ -863,3 +863,225 @@ handle_info_listener_test_() ->
              catch meck:unload(flurm_dbd_sup)
          end}
     ].
+
+%%====================================================================
+%% Targeted Uncovered Branch Tests
+%%====================================================================
+
+targeted_uncovered_branches_test_() ->
+    {setup,
+     fun setup/0,
+     fun cleanup/1,
+     fun(_Pid) ->
+         [
+          {"archive/purge non-matching branches", fun test_archive_purge_non_matching/0},
+          {"get_associations non-match fold branch", fun test_get_associations_non_match_fold_branch/0},
+          {"user/account/range matching fold branches", fun test_query_matching_fold_branches/0},
+          {"event end/cancel with zero start_time branch", fun test_event_end_cancel_zero_start/0},
+          {"cancel with nonzero start_time branch", fun test_cancel_nonzero_start_time_branch/0},
+          {"submit event integer timestamp branch", fun test_submit_event_integer_timestamp_branch/0},
+          {"update_job_record zero-time branch", fun test_update_job_record_zero_time_branch/0},
+          {"purge archived non-matching fold branch", fun test_purge_archived_non_matching_fold_branch/0},
+          {"usage helper matching branches", fun test_usage_helper_matching_branches/0},
+          {"usage update existing and insert branches", fun test_usage_update_existing_and_insert_branches/0},
+          {"tres usage helper matching branches", fun test_tres_usage_helper_matching_branches/0},
+          {"calculate_cluster_usage non-empty branch", fun test_cluster_usage_non_empty_branch/0}
+         ]
+     end
+    }.
+
+test_archive_purge_non_matching() ->
+    Now = erlang:system_time(second),
+    ok = flurm_dbd_server:record_job_start(#{
+        job_id => 12001,
+        user_name => <<"nm">>,
+        account => <<"nm">>,
+        state => running,
+        start_time => Now - 10,
+        end_time => 0
+    }),
+    _ = sys:get_state(flurm_dbd_server),
+    ?assertMatch({ok, _}, flurm_dbd_server:archive_old_records(1)),
+    ?assertMatch({ok, _}, flurm_dbd_server:purge_old_records(1)),
+    ?assertMatch({ok, _}, flurm_dbd_server:archive_old_jobs(1)),
+    ?assertMatch({ok, _}, flurm_dbd_server:purge_old_jobs(1)).
+
+test_get_associations_non_match_fold_branch() ->
+    {ok, _} = flurm_dbd_server:add_association(<<"cluster_a">>, <<"acct_a">>, <<"user_a">>),
+    {ok, _} = flurm_dbd_server:add_association(<<"cluster_b">>, <<"acct_b">>, <<"user_b">>),
+    Assocs = flurm_dbd_server:get_associations(<<"cluster_a">>),
+    ?assert(length(Assocs) >= 1).
+
+test_query_matching_fold_branches() ->
+    Now = erlang:system_time(second),
+    ok = flurm_dbd_server:record_job_start(#{
+        job_id => 12011,
+        user_name => <<"match_user">>,
+        account => <<"match_account">>,
+        partition => <<"p">>,
+        state => completed,
+        start_time => Now - 100,
+        end_time => Now - 10
+    }),
+    _ = sys:get_state(flurm_dbd_server),
+    ByUser = flurm_dbd_server:get_jobs_by_user(<<"match_user">>),
+    ByAccount = flurm_dbd_server:get_jobs_by_account(<<"match_account">>),
+    InRange = flurm_dbd_server:get_jobs_in_range(Now - 200, Now),
+    ?assert(length(ByUser) >= 1),
+    ?assert(length(ByAccount) >= 1),
+    ?assert(length(InRange) >= 1).
+
+test_event_end_cancel_zero_start() ->
+    %% start_time defaults to 0 via submit path
+    ok = flurm_dbd_server:record_job_submit(#{
+        job_id => 12002,
+        user_id => 1,
+        group_id => 1,
+        partition => <<"p">>,
+        num_nodes => 1,
+        num_cpus => 1
+    }),
+    _ = sys:get_state(flurm_dbd_server),
+    ok = flurm_dbd_server:record_job_end(12002, 1, failed),
+    _ = sys:get_state(flurm_dbd_server),
+    ok = flurm_dbd_server:record_job_cancelled(12002, user_cancelled),
+    _ = sys:get_state(flurm_dbd_server).
+
+test_cancel_nonzero_start_time_branch() ->
+    Now = erlang:system_time(second),
+    ok = flurm_dbd_server:record_job_start(#{
+        job_id => 12016,
+        user_name => <<"cancel_user">>,
+        account => <<"cancel_account">>,
+        partition => <<"p">>,
+        state => running,
+        start_time => Now - 10
+    }),
+    _ = sys:get_state(flurm_dbd_server),
+    ok = flurm_dbd_server:record_job_cancelled(12016, user_cancelled),
+    _ = sys:get_state(flurm_dbd_server).
+
+test_submit_event_integer_timestamp_branch() ->
+    TS = erlang:system_time(second) - 50,
+    ok = flurm_dbd_server:record_job_submit(#{
+        job_id => 12012,
+        user_id => 1,
+        group_id => 1,
+        partition => <<"p">>,
+        num_nodes => 1,
+        num_cpus => 1,
+        submit_time => TS
+    }),
+    _ = sys:get_state(flurm_dbd_server),
+    ?assertMatch({ok, #{submit_time := TS}}, flurm_dbd_server:get_job_record(12012)).
+
+test_update_job_record_zero_time_branch() ->
+    ok = flurm_dbd_server:record_job_start(#{
+        job_id => 12003,
+        user_name => <<"u0">>,
+        account => <<"a0">>,
+        partition => <<"p">>,
+        state => running,
+        start_time => 0
+    }),
+    _ = sys:get_state(flurm_dbd_server),
+    ok = flurm_dbd_server:record_job_end(#{
+        job_id => 12003,
+        state => completed,
+        exit_code => 0,
+        end_time => 0
+    }),
+    _ = sys:get_state(flurm_dbd_server).
+
+test_purge_archived_non_matching_fold_branch() ->
+    Now = erlang:system_time(second),
+    ok = flurm_dbd_server:record_job_start(#{
+        job_id => 12013,
+        user_name => <<"arch_user">>,
+        account => <<"arch_account">>,
+        state => completed,
+        start_time => Now - 60,
+        end_time => Now - 30
+    }),
+    _ = sys:get_state(flurm_dbd_server),
+    %% Archive recent completed job, then purge with an older cutoff so it is not deleted.
+    ?assertMatch({ok, _}, flurm_dbd_server:archive_old_jobs(0)),
+    ?assertMatch({ok, _}, flurm_dbd_server:purge_old_jobs(1)).
+
+test_usage_helper_matching_branches() ->
+    Now = erlang:system_time(second),
+    ok = flurm_dbd_server:record_job_start(#{
+        job_id => 12004,
+        user_name => <<"usage_u">>,
+        account => <<"usage_a">>,
+        partition => <<"p">>,
+        state => completed,
+        num_cpus => 2,
+        num_nodes => 3,
+        start_time => Now - 100,
+        end_time => Now,
+        elapsed => 100
+    }),
+    _ = sys:get_state(flurm_dbd_server),
+    U = flurm_dbd_server:get_user_usage(<<"usage_u">>),
+    A = flurm_dbd_server:get_account_usage(<<"usage_a">>),
+    ?assert(maps:get(job_count, U, 0) >= 1),
+    ?assert(maps:get(job_count, A, 0) >= 1).
+
+test_usage_update_existing_and_insert_branches() ->
+    ok = flurm_dbd_server:record_job_start(#{
+        job_id => 12014,
+        user_name => <<"usage2_u">>,
+        account => <<"usage2_a">>,
+        partition => <<"p">>,
+        state => running,
+        num_cpus => 1,
+        num_nodes => 1,
+        start_time => 0
+    }),
+    _ = sys:get_state(flurm_dbd_server),
+    ok = flurm_dbd_server:record_job_end(12014, 0, completed),
+    _ = sys:get_state(flurm_dbd_server),
+    ok = flurm_dbd_server:record_job_start(#{
+        job_id => 12015,
+        user_name => <<"usage2_u">>,
+        account => <<"usage2_a">>,
+        partition => <<"p">>,
+        state => running,
+        num_cpus => 2,
+        num_nodes => 1,
+        start_time => 0
+    }),
+    _ = sys:get_state(flurm_dbd_server),
+    ok = flurm_dbd_server:record_job_end(12015, 1, failed),
+    _ = sys:get_state(flurm_dbd_server),
+    U = flurm_dbd_server:get_user_usage(<<"usage2_u">>),
+    ?assert(maps:get(job_count, U, 0) >= 2).
+
+test_tres_usage_helper_matching_branches() ->
+    Now = erlang:system_time(second),
+    ok = flurm_dbd_server:record_job_start(#{
+        job_id => 12005,
+        user_name => <<"tres_u">>,
+        account => <<"tres_a">>,
+        partition => <<"p">>,
+        state => completed,
+        num_cpus => 4,
+        num_nodes => 2,
+        req_mem => 1024,
+        start_time => Now - 50,
+        end_time => Now,
+        elapsed => 50,
+        tres_alloc => #{gpu => 1}
+    }),
+    _ = sys:get_state(flurm_dbd_server),
+    UserTres = flurm_dbd_server:calculate_user_tres_usage(<<"tres_u">>),
+    AcctTres = flurm_dbd_server:calculate_account_tres_usage(<<"tres_a">>),
+    ClusterTres = flurm_dbd_server:calculate_cluster_tres_usage(),
+    ?assert(maps:get(elapsed_total, UserTres, 0) >= 1),
+    ?assert(maps:get(elapsed_total, AcctTres, 0) >= 1),
+    ?assert(maps:get(elapsed_total, ClusterTres, 0) >= 1).
+
+test_cluster_usage_non_empty_branch() ->
+    Usage = flurm_dbd_server:get_cluster_usage(),
+    ?assert(is_map(Usage)).

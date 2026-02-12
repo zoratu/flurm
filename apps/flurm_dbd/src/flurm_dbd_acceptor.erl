@@ -48,6 +48,12 @@
     client_info = #{} :: map()
 }).
 
+-ifdef(TEST).
+-define(CONNECTION_IDLE_TIMEOUT_MS, 10).
+-else.
+-define(CONNECTION_IDLE_TIMEOUT_MS, 300000).
+-endif.
+
 %%====================================================================
 %% API
 %%====================================================================
@@ -93,7 +99,7 @@ loop(#conn_state{socket = Socket, transport = Transport, buffer = Buffer} = Stat
         _Other ->
             ok = Transport:setopts(Socket, [{active, once}]),
             loop(State)
-    after 300000 ->
+    after ?CONNECTION_IDLE_TIMEOUT_MS ->
         %% 5 minute timeout
         lager:debug("DBD connection timeout"),
         Transport:close(Socket)
@@ -393,10 +399,17 @@ handle_dbd_request(1466, _Body) ->
     lager:info("DBD: received DBD_GET_CONFIG"),
     {rc, 0};
 
+handle_dbd_request(1414, _Body) ->
+    %% DBD_RECONFIG - return RC with a comment payload
+    {rc, 0, <<"reconfig">>};
+
 handle_dbd_request(1409, _Body) ->
     %% DBD_GET_ACCOUNTS - get accounts
     lager:info("DBD: received DBD_GET_ACCOUNTS"),
     {rc, 0};
+
+handle_dbd_request(0, _Body) ->
+    none;
 
 handle_dbd_request(MsgType, _Body) ->
     lager:warning("DBD: unsupported message type: ~p", [MsgType]),

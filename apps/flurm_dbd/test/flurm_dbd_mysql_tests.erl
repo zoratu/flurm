@@ -1083,6 +1083,107 @@ test_handle_info_connection_down() ->
     ConnPid ! stop.
 
 %%====================================================================
+%% Targeted Uncovered Branch Tests
+%%====================================================================
+
+targeted_uncovered_branches_test_() ->
+    {foreach,
+     fun setup/0,
+     fun cleanup/1,
+     [
+      {"sync_job_records not connected branch", fun test_sync_batch_not_connected_branch/0},
+      {"sync_job_records sync_error throw branch", fun test_sync_batch_sync_error_throw_branch/0},
+      {"sync_job_records aborted generic branch", fun test_sync_batch_aborted_generic_branch/0},
+      {"read_historical error branch", fun test_read_historical_error_branch/0},
+      {"schema compatibility warning branch", fun test_schema_warning_branch/0},
+      {"auto_connect success branch", fun test_auto_connect_success_branch/0},
+      {"format_tres unknown-only branch", fun test_format_tres_unknown_only_branch/0},
+      {"parse_tres unknown id branch", fun test_parse_tres_unknown_id_branch/0},
+      {"column_to_atom fallback via read", fun test_column_to_atom_fallback_branch/0},
+      {"tres_id mappings branch set", fun test_tres_id_mappings_branch_set/0}
+     ]}.
+
+test_sync_batch_not_connected_branch() ->
+    _ = flurm_dbd_mysql:disconnect(),
+    ?assertEqual({error, not_connected}, flurm_dbd_mysql:sync_job_records([sample_job_record(42)])).
+
+test_sync_batch_sync_error_throw_branch() ->
+    meck:expect(mysql, start_link, fun(_Opts) -> {ok, spawn(fun() -> receive stop -> ok end end)} end),
+    meck:expect(mysql, query, fun(_Conn, _Query, _Params) -> {error, write_failed} end),
+    ok = flurm_dbd_mysql:connect(#{host => "localhost", port => 3306, user => "test",
+                                   password => "test", database => "test_db"}),
+    ?assertEqual({error, write_failed}, flurm_dbd_mysql:sync_job_records([sample_job_record(76)])).
+
+test_sync_batch_aborted_generic_branch() ->
+    meck:expect(mysql, start_link, fun(_Opts) -> {ok, spawn(fun() -> receive stop -> ok end end)} end),
+    meck:expect(mysql, transaction, fun(_Conn, _Fun) -> {aborted, tx_abort} end),
+    ok = flurm_dbd_mysql:connect(#{host => "localhost", port => 3306, user => "test",
+                                   password => "test", database => "test_db"}),
+    ?assertEqual({error, tx_abort}, flurm_dbd_mysql:sync_job_records([sample_job_record(77)])).
+
+test_read_historical_error_branch() ->
+    meck:expect(mysql, start_link, fun(_Opts) -> {ok, spawn(fun() -> receive stop -> ok end end)} end),
+    meck:expect(mysql, query, fun(_Conn, _Query, _Params) -> {error, read_failed} end),
+    ok = flurm_dbd_mysql:connect(#{host => "localhost", port => 3306, user => "test",
+                                   password => "test", database => "test_db"}),
+    Now = erlang:system_time(second),
+    ?assertEqual({error, read_failed},
+                 flurm_dbd_mysql:read_historical_jobs(Now - 60, Now, #{})).
+
+test_schema_warning_branch() ->
+    meck:expect(mysql, start_link, fun(_Opts) -> {ok, spawn(fun() -> receive stop -> ok end end)} end),
+    meck:expect(mysql, query, fun(_Conn, _Query) -> {ok, [<<"version">>], [[99]]} end),
+    ok = flurm_dbd_mysql:connect(#{host => "localhost", port => 3306, user => "test",
+                                   password => "test", database => "test_db"}),
+    ?assertEqual({ok, 99}, flurm_dbd_mysql:check_schema_compatibility()).
+
+test_auto_connect_success_branch() ->
+    meck:expect(mysql, start_link, fun(_Opts) -> {ok, spawn(fun() -> receive stop -> ok end end)} end),
+    State = #state{
+        connection = undefined,
+        config = #{host => "localhost", port => 3306, user => "test", password => "test", database => "test_db"},
+        connected = false,
+        schema_version = undefined,
+        last_error = undefined,
+        stats = #{},
+        reconnect_attempts = 2,
+        current_reconnect_delay = 2000
+    },
+    {noreply, NewState} = flurm_dbd_mysql:handle_info(auto_connect, State),
+    ?assertEqual(true, NewState#state.connected),
+    ?assertEqual(0, NewState#state.reconnect_attempts).
+
+test_format_tres_unknown_only_branch() ->
+    ?assertEqual(<<>>, flurm_dbd_mysql:format_tres_string(#{mystery_tres => 1})).
+
+test_parse_tres_unknown_id_branch() ->
+    ?assertEqual(#{}, flurm_dbd_mysql:parse_tres_string(<<"999=1">>)).
+
+test_column_to_atom_fallback_branch() ->
+    meck:expect(mysql, start_link, fun(_Opts) -> {ok, spawn(fun() -> receive stop -> ok end end)} end),
+    meck:expect(mysql, query, fun(_Conn, _Query, _Params) ->
+        Columns = [<<"id_job">>, <<"custom_col">>],
+        Row = {1234, <<"x">>},
+        {ok, Columns, [Row]}
+    end),
+    ok = flurm_dbd_mysql:connect(#{host => "localhost", port => 3306, user => "test",
+                                   password => "test", database => "test_db"}),
+    Now = erlang:system_time(second),
+    ?assertMatch({ok, [_]}, flurm_dbd_mysql:read_historical_jobs(Now - 10, Now)).
+
+test_tres_id_mappings_branch_set() ->
+    Parsed = flurm_dbd_mysql:parse_tres_string(
+               <<"2=1,3=2,4=3,5=4,6=5,7=6,8=7,1001=8">>),
+    ?assertEqual(1, maps:get(mem, Parsed)),
+    ?assertEqual(2, maps:get(energy, Parsed)),
+    ?assertEqual(3, maps:get(node, Parsed)),
+    ?assertEqual(4, maps:get(billing, Parsed)),
+    ?assertEqual(5, maps:get(fs_disk, Parsed)),
+    ?assertEqual(6, maps:get(vmem, Parsed)),
+    ?assertEqual(7, maps:get(pages, Parsed)),
+    ?assertEqual(8, maps:get(gpu, Parsed)).
+
+%%====================================================================
 %% Helper Functions
 %%====================================================================
 

@@ -65,6 +65,7 @@
     get_tables_for_range/2,
     should_fragment/1,
     age_table/2,
+    age_table_internal/3,
     current_month/0,
     ensure_table_for_period/2,
     create_job_table/4,
@@ -551,10 +552,8 @@ get_tables_for_range(StartTime, EndTime, State) ->
     %% Get all tables (including burst fragments) for these periods
     AllTables = maps:keys(State#state.fragment_metas),
     lists:filter(fun(TableName) ->
-        case maps:get(TableName, State#state.fragment_metas, undefined) of
-            undefined -> false;
-            Meta -> lists:member(Meta#fragment_meta.base_period, Periods)
-        end
+        Meta = maps:get(TableName, State#state.fragment_metas),
+        lists:member(Meta#fragment_meta.base_period, Periods)
     end, AllTables).
 
 %% @private Find a job in tables.
@@ -930,4 +929,7 @@ age_table(TableName, NewStatus) ->
     %% Simplified version for testing
     lager:info("Would age ~p to ~p", [TableName, NewStatus]),
     ok.
+
+age_table_internal(TableName, NewStatus, State) ->
+    age_table(TableName, NewStatus, State).
 -endif.
