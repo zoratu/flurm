@@ -530,21 +530,267 @@ make_partition_record_test() ->
     ?assertEqual(2, length(Partition#ra_partition.nodes)).
 
 %%====================================================================
-%% Helper Functions
+%% Ra Machine apply/3 Unit Tests (no cluster needed)
 %%====================================================================
 
-%% These would be used for multi-node testing in a distributed environment
+%% Helper to create a state with one pending job at id=1
+state_with_job() ->
+    JobSpec = #ra_job_spec{
+        name = <<"test">>, user = <<"u">>, group = <<"g">>,
+        partition = <<"default">>, script = <<"s">>,
+        num_nodes = 1, num_cpus = 1, memory_mb = 256,
+        time_limit = 60, priority = 100
+    },
+    State = flurm_db_ra:init(#{}),
+    {NewState, {ok, 1}, _Effects} =
+        flurm_db_ra:apply(#{}, {submit_job, JobSpec}, State),
+    NewState.
 
-%% @doc Wait for a condition to become true.
-%% wait_until(Fun, Timeout) ->
-%%     wait_until(Fun, Timeout, 100).
-%%
-%% wait_until(_Fun, Timeout, _Interval) when Timeout =< 0 ->
-%%     {error, timeout};
-%% wait_until(Fun, Timeout, Interval) ->
-%%     case Fun() of
-%%         true -> ok;
-%%         false ->
-%%             timer:sleep(Interval),
-%%             wait_until(Fun, Timeout - Interval, Interval)
-%%     end.
+%% Test allocate_job_id command
+apply_allocate_job_id_test() ->
+    State = flurm_db_ra:init(#{}),
+    {State2, {ok, 1}, []} = flurm_db_ra:apply(#{}, allocate_job_id, State),
+    ?assertEqual(2, State2#ra_state.job_counter),
+    {State3, {ok, 2}, []} = flurm_db_ra:apply(#{}, allocate_job_id, State2),
+    ?assertEqual(3, State3#ra_state.job_counter).
+
+%% Test store_job command (pre-assigned ID)
+apply_store_job_test() ->
+    State = flurm_db_ra:init(#{}),
+    JobSpec = #ra_job_spec{
+        name = <<"stored">>, user = <<"u">>, group = <<"g">>,
+        partition = <<"default">>, script = <<"s">>,
+        num_nodes = 1, num_cpus = 2, memory_mb = 512,
+        time_limit = 120, priority = 50
+    },
+    {State2, {ok, 100}, []} = flurm_db_ra:apply(#{}, {store_job, 100, JobSpec}, State),
+    %% Counter should be bumped to max(1, 100+1) = 101
+    ?assertEqual(101, State2#ra_state.job_counter),
+    Job = maps:get(100, State2#ra_state.jobs),
+    ?assertEqual(100, Job#ra_job.id),
+    ?assertEqual(<<"stored">>, Job#ra_job.name),
+    ?assertEqual(pending, Job#ra_job.state).
+
+%% Test store_job with ID lower than counter doesn't decrease counter
+apply_store_job_low_id_test() ->
+    State0 = flurm_db_ra:init(#{}),
+    %% Bump counter to 50 by allocating IDs
+    State = State0#ra_state{job_counter = 50},
+    JobSpec = #ra_job_spec{
+        name = <<"low">>, user = <<"u">>, group = <<"g">>,
+        partition = <<"default">>, script = <<"s">>,
+        num_nodes = 1, num_cpus = 1, memory_mb = 128,
+        time_limit = 30, priority = 100
+    },
+    {State2, {ok, 10}, []} = flurm_db_ra:apply(#{}, {store_job, 10, JobSpec}, State),
+    %% Counter should stay at 50 (not decrease to 11)
+    ?assertEqual(50, State2#ra_state.job_counter).
+
+%% Test allocate_job command
+apply_allocate_job_test() ->
+    State = state_with_job(),
+    Nodes = [<<"n1">>, <<"n2">>],
+    {State2, ok, Effects} = flurm_db_ra:apply(#{}, {allocate_job, 1, Nodes}, State),
+    Job = maps:get(1, State2#ra_state.jobs),
+    ?assertEqual(configuring, Job#ra_job.state),
+    ?assertEqual(Nodes, Job#ra_job.allocated_nodes),
+    ?assertNotEqual(undefined, Job#ra_job.start_time),
+    ?assertMatch([{mod_call, flurm_db_ra_effects, job_allocated, _}], Effects).
+
+%% Test allocate_job not_found
+apply_allocate_job_not_found_test() ->
+    State = flurm_db_ra:init(#{}),
+    {State, {error, not_found}, []} =
+        flurm_db_ra:apply(#{}, {allocate_job, 999, [<<"n1">>]}, State).
+
+%% Test allocate_job invalid state (already running)
+apply_allocate_job_invalid_state_test() ->
+    State0 = state_with_job(),
+    %% Move job to running state
+    Job = maps:get(1, State0#ra_state.jobs),
+    RunningJob = Job#ra_job{state = running, start_time = 1000},
+    State = State0#ra_state{jobs = maps:put(1, RunningJob, State0#ra_state.jobs)},
+    {State, {error, {invalid_state, running}}, []} =
+        flurm_db_ra:apply(#{}, {allocate_job, 1, [<<"n1">>]}, State).
+
+%% Test set_job_exit_code with exit code 0 -> completed
+apply_set_exit_code_success_test() ->
+    State0 = state_with_job(),
+    Job = maps:get(1, State0#ra_state.jobs),
+    RunningJob = Job#ra_job{state = running, start_time = 1000},
+    State = State0#ra_state{jobs = maps:put(1, RunningJob, State0#ra_state.jobs)},
+    {State2, ok, Effects} = flurm_db_ra:apply(#{}, {set_job_exit_code, 1, 0}, State),
+    FinalJob = maps:get(1, State2#ra_state.jobs),
+    ?assertEqual(completed, FinalJob#ra_job.state),
+    ?assertEqual(0, FinalJob#ra_job.exit_code),
+    ?assertNotEqual(undefined, FinalJob#ra_job.end_time),
+    ?assertMatch([{mod_call, flurm_db_ra_effects, job_completed, _}], Effects).
+
+%% Test set_job_exit_code with non-zero exit code -> failed
+apply_set_exit_code_failure_test() ->
+    State0 = state_with_job(),
+    Job = maps:get(1, State0#ra_state.jobs),
+    RunningJob = Job#ra_job{state = running, start_time = 1000},
+    State = State0#ra_state{jobs = maps:put(1, RunningJob, State0#ra_state.jobs)},
+    {State2, ok, _Effects} = flurm_db_ra:apply(#{}, {set_job_exit_code, 1, 1}, State),
+    FinalJob = maps:get(1, State2#ra_state.jobs),
+    ?assertEqual(failed, FinalJob#ra_job.state),
+    ?assertEqual(1, FinalJob#ra_job.exit_code).
+
+%% Test set_job_exit_code not_found
+apply_set_exit_code_not_found_test() ->
+    State = flurm_db_ra:init(#{}),
+    {State, {error, not_found}, []} =
+        flurm_db_ra:apply(#{}, {set_job_exit_code, 999, 0}, State).
+
+%% Test update_job_fields
+apply_update_job_fields_test() ->
+    State = state_with_job(),
+    Fields = #{time_limit => 7200, name => <<"renamed">>, priority => 200},
+    {State2, ok, []} = flurm_db_ra:apply(#{}, {update_job_fields, 1, Fields}, State),
+    Job = maps:get(1, State2#ra_state.jobs),
+    ?assertEqual(7200, Job#ra_job.time_limit),
+    ?assertEqual(<<"renamed">>, Job#ra_job.name),
+    ?assertEqual(200, Job#ra_job.priority).
+
+%% Test update_job_fields ignores unknown fields
+apply_update_job_fields_unknown_test() ->
+    State = state_with_job(),
+    OrigJob = maps:get(1, State#ra_state.jobs),
+    Fields = #{unknown_field => <<"ignored">>, time_limit => 999},
+    {State2, ok, []} = flurm_db_ra:apply(#{}, {update_job_fields, 1, Fields}, State),
+    Job = maps:get(1, State2#ra_state.jobs),
+    ?assertEqual(999, Job#ra_job.time_limit),
+    %% Other fields unchanged
+    ?assertEqual(OrigJob#ra_job.name, Job#ra_job.name).
+
+%% Test update_job_fields not_found
+apply_update_job_fields_not_found_test() ->
+    State = flurm_db_ra:init(#{}),
+    {State, {error, not_found}, []} =
+        flurm_db_ra:apply(#{}, {update_job_fields, 999, #{name => <<"x">>}}, State).
+
+%% Test unknown command
+apply_unknown_command_test() ->
+    State = flurm_db_ra:init(#{}),
+    {State, {error, {unknown_command, some_weird_command}}, []} =
+        flurm_db_ra:apply(#{}, some_weird_command, State).
+
+%% Test state_enter callbacks
+state_enter_leader_test() ->
+    State = flurm_db_ra:init(#{}),
+    Effects = flurm_db_ra:state_enter(leader, State),
+    ?assertMatch([{mod_call, flurm_db_ra_effects, became_leader, _}], Effects).
+
+state_enter_follower_test() ->
+    State = flurm_db_ra:init(#{}),
+    Effects = flurm_db_ra:state_enter(follower, State),
+    ?assertMatch([{mod_call, flurm_db_ra_effects, became_follower, _}], Effects).
+
+state_enter_recover_test() ->
+    State = flurm_db_ra:init(#{}),
+    ?assertEqual([], flurm_db_ra:state_enter(recover, State)).
+
+state_enter_eol_test() ->
+    State = flurm_db_ra:init(#{}),
+    ?assertEqual([], flurm_db_ra:state_enter(eol, State)).
+
+state_enter_other_test() ->
+    State = flurm_db_ra:init(#{}),
+    ?assertEqual([], flurm_db_ra:state_enter(candidate, State)).
+
+%% Test snapshot_module
+snapshot_module_test() ->
+    ?assertEqual(ra_machine_simple, flurm_db_ra:snapshot_module()).
+
+%% Test update_job_state_record for terminal states
+update_job_state_record_terminal_test() ->
+    Job = #ra_job{
+        id = 1, name = <<"j">>, user = <<"u">>, group = <<"g">>,
+        partition = <<"p">>, state = running, script = <<"s">>,
+        num_nodes = 1, num_cpus = 1, memory_mb = 256,
+        time_limit = 60, priority = 100, submit_time = 1000,
+        start_time = 2000, allocated_nodes = []
+    },
+    %% Terminal states should set end_time
+    lists:foreach(fun(TermState) ->
+        Updated = flurm_db_ra:update_job_state_record(Job, TermState),
+        ?assertEqual(TermState, Updated#ra_job.state),
+        ?assertNotEqual(undefined, Updated#ra_job.end_time)
+    end, [completed, failed, cancelled, timeout, node_fail]).
+
+%% Test update_job_state_record running sets start_time
+update_job_state_record_running_test() ->
+    Job = #ra_job{
+        id = 1, name = <<"j">>, user = <<"u">>, group = <<"g">>,
+        partition = <<"p">>, state = pending, script = <<"s">>,
+        num_nodes = 1, num_cpus = 1, memory_mb = 256,
+        time_limit = 60, priority = 100, submit_time = 1000,
+        start_time = undefined, allocated_nodes = []
+    },
+    Updated = flurm_db_ra:update_job_state_record(Job, running),
+    ?assertEqual(running, Updated#ra_job.state),
+    ?assertNotEqual(undefined, Updated#ra_job.start_time).
+
+%% Test update_job_state_record running preserves existing start_time
+update_job_state_record_running_preserves_start_test() ->
+    Job = #ra_job{
+        id = 1, name = <<"j">>, user = <<"u">>, group = <<"g">>,
+        partition = <<"p">>, state = configuring, script = <<"s">>,
+        num_nodes = 1, num_cpus = 1, memory_mb = 256,
+        time_limit = 60, priority = 100, submit_time = 1000,
+        start_time = 5000, allocated_nodes = []
+    },
+    Updated = flurm_db_ra:update_job_state_record(Job, running),
+    ?assertEqual(running, Updated#ra_job.state),
+    ?assertEqual(5000, Updated#ra_job.start_time).
+
+%% Test update_job_state_record other state just sets state
+update_job_state_record_other_test() ->
+    Job = #ra_job{
+        id = 1, name = <<"j">>, user = <<"u">>, group = <<"g">>,
+        partition = <<"p">>, state = pending, script = <<"s">>,
+        num_nodes = 1, num_cpus = 1, memory_mb = 256,
+        time_limit = 60, priority = 100, submit_time = 1000,
+        start_time = undefined, end_time = undefined,
+        allocated_nodes = []
+    },
+    Updated = flurm_db_ra:update_job_state_record(Job, configuring),
+    ?assertEqual(configuring, Updated#ra_job.state),
+    ?assertEqual(undefined, Updated#ra_job.start_time),
+    ?assertEqual(undefined, Updated#ra_job.end_time).
+
+%% Test cancel already-terminal job states
+apply_cancel_terminal_states_test() ->
+    State0 = state_with_job(),
+    %% Set job to completed
+    Job = maps:get(1, State0#ra_state.jobs),
+    CompletedJob = Job#ra_job{state = completed, end_time = 1000},
+    State = State0#ra_state{jobs = maps:put(1, CompletedJob, State0#ra_state.jobs)},
+    {State, {error, already_terminal}, []} =
+        flurm_db_ra:apply(#{}, {cancel_job, 1}, State),
+    %% Same for failed
+    FailedJob = Job#ra_job{state = failed, end_time = 1000},
+    State2 = State0#ra_state{jobs = maps:put(1, FailedJob, State0#ra_state.jobs)},
+    {State2, {error, already_terminal}, []} =
+        flurm_db_ra:apply(#{}, {cancel_job, 1}, State2).
+
+%% Test cancel not_found
+apply_cancel_not_found_test() ->
+    State = flurm_db_ra:init(#{}),
+    {State, {error, not_found}, []} =
+        flurm_db_ra:apply(#{}, {cancel_job, 999}, State).
+
+%% Test allocate_job preserves existing start_time on configuring job
+apply_allocate_job_configuring_test() ->
+    State0 = state_with_job(),
+    %% First allocate (pending -> configuring, sets start_time)
+    {State1, ok, _} = flurm_db_ra:apply(#{}, {allocate_job, 1, [<<"n1">>]}, State0),
+    Job1 = maps:get(1, State1#ra_state.jobs),
+    StartTime = Job1#ra_job.start_time,
+    ?assertNotEqual(undefined, StartTime),
+    %% Allocate again (configuring -> configuring, preserves start_time)
+    {State2, ok, _} = flurm_db_ra:apply(#{}, {allocate_job, 1, [<<"n2">>]}, State1),
+    Job2 = maps:get(1, State2#ra_state.jobs),
+    ?assertEqual(StartTime, Job2#ra_job.start_time),
+    ?assertEqual([<<"n2">>], Job2#ra_job.allocated_nodes).
