@@ -27,7 +27,12 @@
     handle_dbd_request/2,
     send_persist_rc/3,
     send_dbd_rc/2,
-    peername/2
+    send_dbd_rc/3,
+    peername/2,
+    job_state_to_num/1,
+    format_tres_str/1,
+    tres_type_to_id/1,
+    job_to_sacct_record/1
 ]).
 -endif.
 

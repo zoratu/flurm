@@ -11,6 +11,16 @@
 -compile([nowarn_unused_vars, nowarn_unused_function]).
 
 -include_lib("eunit/include/eunit.hrl").
+-include_lib("flurm_core/include/flurm_core.hrl").
+
+-record(conn_state, {
+    socket,
+    transport,
+    buffer = <<>>,
+    authenticated = false,
+    client_version = 0,
+    client_info = #{}
+}).
 
 %%====================================================================
 %% Module Export Tests
@@ -433,3 +443,227 @@ socket_options_test_() ->
              ?assert(lists:member(binary, Options))
          end}
     ].
+
+%% Reuse the dedicated coverage suite in this app-runner path.
+acceptor_cover_suite_passthrough_test_() ->
+    flurm_dbd_acceptor_cover_tests:acceptor_test_().
+
+%%====================================================================
+%% Real Module Path Coverage
+%%====================================================================
+
+acceptor_real_paths_test_() ->
+    {foreach,
+     fun setup_reals/0,
+     fun cleanup_reals/1,
+     [
+      {"process_buffer short", fun test_real_process_buffer_short/0},
+      {"process_buffer complete auth message", fun test_real_process_buffer_complete/0},
+      {"process_buffer multiple messages", fun test_real_process_buffer_multi/0},
+      {"start_link + loop handles tcp_closed", fun test_real_start_link_tcp_closed/0},
+      {"start_link + loop handles tcp_error", fun test_real_start_link_tcp_error/0},
+      {"loop handles unknown message", fun test_real_loop_unknown_message/0},
+      {"loop handles tcp success path", fun test_real_loop_tcp_success_path/0},
+      {"loop handles tcp parse error path", fun test_real_loop_tcp_error_path/0},
+      {"handle_message short error", fun test_real_handle_message_short/0},
+      {"handle_message preauth persist init", fun test_real_handle_message_persist_init/0},
+      {"handle_message preauth wrong type", fun test_real_handle_message_wrong_type/0},
+      {"handle_dbd_request known message types", fun test_real_known_dbd_requests/0},
+      {"handle_dbd_message job query dispatch", fun test_real_dbd_jobs_dispatch/0},
+      {"send_persist_rc error branch", fun test_real_send_persist_rc_error/0},
+      {"send_dbd_rc comment and error branches", fun test_real_send_dbd_rc_branches/0},
+      {"dbd jobs fallback conversion branches", fun test_real_dbd_jobs_fallback_conversion/0},
+      {"helper branch coverage", fun test_real_helper_branch_coverage/0},
+      {"peername fallback", fun test_real_peername_fallback/0}
+     ]}.
+
+setup_reals() ->
+    application:ensure_all_started(lager),
+    meck:new(ranch, [non_strict, no_link]),
+    meck:expect(ranch, handshake, fun(_Ref) -> {ok, fake_socket} end),
+    meck:new(acceptor_transport, [non_strict, no_link]),
+    meck:expect(acceptor_transport, send, fun(_Socket, _Data) -> ok end),
+    meck:expect(acceptor_transport, setopts, fun(_Socket, _Opts) -> ok end),
+    meck:expect(acceptor_transport, close, fun(_Socket) -> ok end),
+    meck:expect(acceptor_transport, peername, fun(_Socket) -> {ok, {{127,0,0,1}, 6819}} end),
+    meck:new(flurm_dbd_server, [non_strict, no_link]),
+    meck:expect(flurm_dbd_server, list_job_records, fun() -> [] end),
+    meck:new(flurm_job_manager, [non_strict, no_link]),
+    meck:expect(flurm_job_manager, list_jobs, fun() -> [] end),
+    ok.
+
+cleanup_reals(_) ->
+    catch meck:unload(flurm_job_manager),
+    catch meck:unload(flurm_dbd_server),
+    catch meck:unload(acceptor_transport),
+    catch meck:unload(ranch),
+    ok.
+
+make_state(Authenticated) ->
+    #conn_state{
+        socket = fake_socket,
+        transport = acceptor_transport,
+        authenticated = Authenticated,
+        client_version = 16#2600
+    }.
+
+test_real_process_buffer_short() ->
+    S = make_state(false),
+    ?assertMatch({ok, <<1,2>>, _}, flurm_dbd_acceptor:process_buffer(<<1,2>>, S)).
+
+test_real_process_buffer_complete() ->
+    S = make_state(true),
+    Msg = <<1401:16/big>>,
+    Buf = <<(byte_size(Msg)):32/big, Msg/binary>>,
+    ?assertMatch({ok, <<>>, _}, flurm_dbd_acceptor:process_buffer(Buf, S)).
+
+test_real_process_buffer_multi() ->
+    S = make_state(true),
+    M1 = <<1401:16/big>>,
+    M2 = <<1410:16/big>>,
+    Buf = <<(byte_size(M1)):32/big, M1/binary, (byte_size(M2)):32/big, M2/binary>>,
+    ?assertMatch({ok, <<>>, _}, flurm_dbd_acceptor:process_buffer(Buf, S)).
+
+test_real_start_link_tcp_closed() ->
+    {ok, Pid} = flurm_dbd_acceptor:start_link(fake_ref, acceptor_transport, []),
+    ?assert(is_pid(Pid)),
+    Pid ! {tcp_closed, fake_socket},
+    timer:sleep(10),
+    ?assertEqual(false, is_process_alive(Pid)).
+
+test_real_start_link_tcp_error() ->
+    {ok, Pid} = flurm_dbd_acceptor:start_link(fake_ref, acceptor_transport, []),
+    ?assert(is_pid(Pid)),
+    Pid ! {tcp_error, fake_socket, econnreset},
+    timer:sleep(75),
+    ?assertEqual(false, is_process_alive(Pid)).
+
+test_real_loop_unknown_message() ->
+    {ok, Pid} = flurm_dbd_acceptor:start_link(fake_ref, acceptor_transport, []),
+    ?assert(is_pid(Pid)),
+    Pid ! something_unexpected,
+    timer:sleep(10),
+    ?assert(is_process_alive(Pid)),
+    Pid ! {tcp_closed, fake_socket},
+    timer:sleep(10),
+    ?assertEqual(false, is_process_alive(Pid)).
+
+test_real_loop_tcp_success_path() ->
+    %% Build valid pre-auth persist init framed with 4-byte length
+    Version = 16#2600,
+    Header = <<Version:16/big, 0:16/big, 6500:16/big, 0:32/big, 0:16/big, 0:16/big, 0:16/big>>,
+    MsgData = <<6500:16/big, Header/binary>>,
+    Packet = <<(byte_size(MsgData)):32/big, MsgData/binary>>,
+    {ok, Pid} = flurm_dbd_acceptor:start_link(fake_ref, acceptor_transport, []),
+    Pid ! {tcp, fake_socket, Packet},
+    timer:sleep(10),
+    ?assert(is_process_alive(Pid)),
+    Pid ! {tcp_closed, fake_socket},
+    timer:sleep(10),
+    ?assertEqual(false, is_process_alive(Pid)).
+
+test_real_loop_tcp_error_path() ->
+    %% Message body has size 1 (too short for DBD msg type)
+    Packet = <<1:32/big, 0>>,
+    {ok, Pid} = flurm_dbd_acceptor:start_link(fake_ref, acceptor_transport, []),
+    Pid ! {tcp, fake_socket, Packet},
+    timer:sleep(10),
+    ?assertEqual(false, is_process_alive(Pid)).
+
+test_real_handle_message_short() ->
+    ?assertEqual({error, message_too_short},
+                 flurm_dbd_acceptor:handle_message(<<1>>, make_state(false))).
+
+test_real_handle_message_persist_init() ->
+    Version = 16#2600,
+    Header = <<Version:16/big, 0:16/big, 6500:16/big, 0:32/big, 0:16/big, 0:16/big, 0:16/big>>,
+    Msg = <<6500:16/big, Header/binary>>,
+    {ok, NewState} = flurm_dbd_acceptor:handle_message(Msg, make_state(false)),
+    ?assertEqual(true, NewState#conn_state.authenticated).
+
+test_real_handle_message_wrong_type() ->
+    ?assertMatch({error, {expected_persist_init, 9999}},
+                 flurm_dbd_acceptor:handle_message(<<9999:16/big, 0, 0>>, make_state(false))).
+
+test_real_known_dbd_requests() ->
+    MsgTypes = [1401,1407,1410,1412,1415,1432,1434,1425,1424,1466,1409],
+    lists:foreach(
+      fun(Type) ->
+          ?assertEqual({rc, 0}, flurm_dbd_acceptor:handle_dbd_request(Type, <<>>))
+      end,
+      MsgTypes
+    ),
+    ?assertEqual({rc, 0}, flurm_dbd_acceptor:handle_dbd_request(9999, <<>>)).
+
+test_real_dbd_jobs_dispatch() ->
+    meck:expect(flurm_dbd_server, list_job_records, fun() ->
+        [#{job_id => 1, job_name => <<"job1">>, user_name => <<"u1">>,
+           account => <<"a1">>, partition => <<"p1">>, state => completed}]
+    end),
+    ?assertMatch({ok, _},
+                 flurm_dbd_acceptor:handle_dbd_message(<<1444:16/big>>, make_state(true))).
+
+test_real_send_persist_rc_error() ->
+    meck:expect(acceptor_transport, send, fun(_Socket, _Data) -> {error, closed} end),
+    ?assertEqual({error, closed},
+                 flurm_dbd_acceptor:send_persist_rc(0, 16#2600, make_state(false))).
+
+test_real_send_dbd_rc_branches() ->
+    ?assertMatch({ok, _}, flurm_dbd_acceptor:send_dbd_rc(0, make_state(true))),
+    ?assertMatch({ok, _}, flurm_dbd_acceptor:send_dbd_rc(0, <<"ok">>, make_state(true))),
+    meck:expect(acceptor_transport, send, fun(_Socket, _Data) -> {error, enotconn} end),
+    ?assertEqual({error, enotconn}, flurm_dbd_acceptor:send_dbd_rc(1, make_state(true))).
+
+test_real_dbd_jobs_fallback_conversion() ->
+    %% Force fallback to flurm_job_manager:list_jobs/0 path.
+    meck:expect(flurm_dbd_server, list_job_records, fun() -> [] end),
+    JobA = #job{
+        id = 101, name = <<"a">>, user = <<"u">>, partition = <<"p">>,
+        state = pending, script = <<>>, num_nodes = 1, num_cpus = 2,
+        memory_mb = 1024, time_limit = 60, priority = 1, submit_time = 100,
+        start_time = undefined, end_time = undefined, allocated_nodes = [<<"n1">>],
+        exit_code = undefined
+    },
+    JobB = #job{
+        id = 102, name = <<"b">>, user = <<"u2">>, partition = <<"p2">>,
+        state = oom, script = <<>>, num_nodes = 2, num_cpus = 8,
+        memory_mb = 2048, time_limit = 60, priority = 1, submit_time = 200,
+        start_time = 210, end_time = 240, allocated_nodes = <<"n2">>,
+        exit_code = 0, account = undefined
+    },
+    JobC = #job{
+        id = 103, name = <<"c">>, user = <<"u3">>, partition = <<"p3">>,
+        state = completing, script = <<>>, num_nodes = 1, num_cpus = 1,
+        memory_mb = 512, time_limit = 60, priority = 1, submit_time = 300,
+        start_time = 310, end_time = undefined, allocated_nodes = 42,
+        exit_code = 1, account = <<>>
+    },
+    meck:expect(flurm_job_manager, list_jobs, fun() -> [JobA, JobB, JobC, #{bad => record}] end),
+    ?assertMatch({ok, _},
+                 flurm_dbd_acceptor:handle_dbd_message(<<1444:16/big>>, make_state(true))).
+
+test_real_helper_branch_coverage() ->
+    ?assertEqual(1, flurm_dbd_acceptor:job_state_to_num(running)),
+    ?assertEqual(2, flurm_dbd_acceptor:job_state_to_num(suspended)),
+    ?assertEqual(4, flurm_dbd_acceptor:job_state_to_num(cancelled)),
+    ?assertEqual(5, flurm_dbd_acceptor:job_state_to_num(failed)),
+    ?assertEqual(6, flurm_dbd_acceptor:job_state_to_num(timeout)),
+    ?assertEqual(7, flurm_dbd_acceptor:job_state_to_num(node_fail)),
+    ?assertEqual(8, flurm_dbd_acceptor:job_state_to_num(preempted)),
+    ?assertEqual(9, flurm_dbd_acceptor:job_state_to_num(boot_fail)),
+    ?assertEqual(10, flurm_dbd_acceptor:job_state_to_num(deadline)),
+    ?assertEqual(11, flurm_dbd_acceptor:job_state_to_num(oom)),
+    ?assertEqual(1, flurm_dbd_acceptor:job_state_to_num(configuring)),
+    ?assertEqual(1, flurm_dbd_acceptor:job_state_to_num(completing)),
+    ?assertEqual(0, flurm_dbd_acceptor:job_state_to_num(other_state)),
+    ?assertEqual(3, flurm_dbd_acceptor:tres_type_to_id(energy)),
+    ?assertEqual(5, flurm_dbd_acceptor:tres_type_to_id(billing)),
+    ?assertEqual(1, flurm_dbd_acceptor:tres_type_to_id(unknown_tres)),
+    ?assertEqual(<<>>, flurm_dbd_acceptor:format_tres_str(undefined)),
+    Str = flurm_dbd_acceptor:format_tres_str(#{cpu => 2, mem => 1024, energy => 7, billing => 1}),
+    ?assert(is_binary(Str)),
+    ?assertEqual(#{}, flurm_dbd_acceptor:job_to_sacct_record(not_a_job_record)).
+
+test_real_peername_fallback() ->
+    meck:expect(acceptor_transport, peername, fun(_Socket) -> {error, enotconn} end),
+    ?assertEqual("unknown", flurm_dbd_acceptor:peername(fake_socket, acceptor_transport)).

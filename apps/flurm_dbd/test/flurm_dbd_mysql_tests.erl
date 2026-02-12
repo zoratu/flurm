@@ -20,6 +20,17 @@
 
 -include_lib("eunit/include/eunit.hrl").
 
+-record(state, {
+    connection,
+    config,
+    connected,
+    schema_version,
+    last_error,
+    stats,
+    reconnect_attempts = 0,
+    current_reconnect_delay = 1000
+}).
+
 %%====================================================================
 %% Test Setup/Teardown
 %%====================================================================
@@ -987,6 +998,89 @@ test_stats_connect_attempts() ->
     Status = flurm_dbd_mysql:get_connection_status(),
     Stats = maps:get(stats, Status),
     ?assert(maps:is_key(connect_attempts, Stats)).
+
+%%====================================================================
+%% API Wrapper and Callback Branch Tests
+%%====================================================================
+
+api_wrapper_and_callback_branches_test_() ->
+    {foreach,
+     fun setup/0,
+     fun cleanup/1,
+     [
+      {"start_link/0 reads config from app env", fun test_start_link_zero_arity/0},
+      {"read_historical_jobs/2 wrapper", fun test_read_historical_two_arity/0},
+      {"handle_info auto_connect max retries", fun test_handle_info_max_retries/0},
+      {"handle_info auto_connect empty config", fun test_handle_info_empty_config/0},
+      {"handle_info DOWN for current connection", fun test_handle_info_connection_down/0}
+     ]}.
+
+test_start_link_zero_arity() ->
+    catch gen_server:stop(flurm_dbd_mysql),
+    application:set_env(flurm_dbd, mysql_host, "localhost"),
+    application:set_env(flurm_dbd, mysql_port, 3306),
+    application:set_env(flurm_dbd, mysql_user, "test"),
+    application:set_env(flurm_dbd, mysql_password, "test"),
+    application:set_env(flurm_dbd, mysql_database, "test_db"),
+    {ok, Pid} = flurm_dbd_mysql:start_link(),
+    ?assert(is_pid(Pid)),
+    gen_server:stop(Pid).
+
+test_read_historical_two_arity() ->
+    meck:expect(mysql, start_link, fun(_Opts) -> {ok, spawn(fun() -> receive stop -> ok end end)} end),
+    meck:expect(mysql, query, fun(_Conn, _Query, _Params) -> {ok, [], []} end),
+    ok = flurm_dbd_mysql:connect(#{host => "localhost", port => 3306, user => "test",
+                                   password => "test", database => "test_db"}),
+    Now = erlang:system_time(second),
+    ?assertMatch({ok, _}, flurm_dbd_mysql:read_historical_jobs(Now - 60, Now)).
+
+test_handle_info_max_retries() ->
+    State = #state{
+        connection = undefined,
+        config = #{host => "localhost"},
+        connected = false,
+        schema_version = undefined,
+        last_error = undefined,
+        stats = #{},
+        reconnect_attempts = 10,
+        current_reconnect_delay = 1000
+    },
+    {noreply, NewState} = flurm_dbd_mysql:handle_info(auto_connect, State),
+    ?assertEqual(true, maps:get(reconnect_gave_up, NewState#state.stats)).
+
+test_handle_info_empty_config() ->
+    State = #state{
+        connection = undefined,
+        config = #{},
+        connected = false,
+        schema_version = undefined,
+        last_error = undefined,
+        stats = #{},
+        reconnect_attempts = 0,
+        current_reconnect_delay = 1000
+    },
+    ?assertMatch({noreply, _}, flurm_dbd_mysql:handle_info(auto_connect, State)).
+
+test_handle_info_connection_down() ->
+    ConnPid = spawn(fun() -> receive stop -> ok end end),
+    State = #state{
+        connection = ConnPid,
+        config = #{host => "localhost"},
+        connected = true,
+        schema_version = undefined,
+        last_error = undefined,
+        stats = #{},
+        reconnect_attempts = 4,
+        current_reconnect_delay = 32000
+    },
+    {noreply, NewState} =
+        flurm_dbd_mysql:handle_info({'DOWN', make_ref(), process, ConnPid, closed}, State),
+    ?assertEqual(undefined, NewState#state.connection),
+    ?assertEqual(false, NewState#state.connected),
+    ?assertEqual(closed, NewState#state.last_error),
+    ?assertEqual(0, NewState#state.reconnect_attempts),
+    ?assertEqual(1000, NewState#state.current_reconnect_delay),
+    ConnPid ! stop.
 
 %%====================================================================
 %% Helper Functions

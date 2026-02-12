@@ -306,6 +306,54 @@ sacct_query_test_() ->
     }.
 
 %%====================================================================
+%% Retention and Not Found Branch Tests
+%%====================================================================
+
+retention_and_not_found_test_() ->
+    {setup,
+     fun setup/0,
+     fun cleanup/1,
+     fun(_Pid) ->
+         [
+             {"get_job_record not found branch", fun() ->
+                 ?assertEqual({error, not_found}, flurm_dbd_server:get_job_record(999999))
+             end},
+             {"get_association not found branch", fun() ->
+                 ?assertEqual({error, not_found}, flurm_dbd_server:get_association(999999))
+             end},
+             {"archive and purge old records branches", fun() ->
+                 Old = erlang:system_time(second) - (3 * 86400),
+                 ok = flurm_dbd_server:record_job_start(#{
+                     job_id => 88001,
+                     user_name => <<"u">>,
+                     account => <<"a">>,
+                     state => completed,
+                     exit_code => 0,
+                     start_time => Old - 100,
+                     end_time => Old
+                 }),
+                 {ok, _ArchivedCount} = flurm_dbd_server:archive_old_records(1),
+                 {ok, _PurgedCount} = flurm_dbd_server:purge_old_records(1)
+             end},
+             {"archive and purge old jobs branches", fun() ->
+                 Old = erlang:system_time(second) - (4 * 86400),
+                 ok = flurm_dbd_server:record_job_start(#{
+                     job_id => 88002,
+                     user_name => <<"u">>,
+                     account => <<"a">>,
+                     state => completed,
+                     exit_code => 0,
+                     start_time => Old - 100,
+                     end_time => Old
+                 }),
+                 {ok, _} = flurm_dbd_server:archive_old_jobs(1),
+                 {ok, _} = flurm_dbd_server:purge_old_jobs(1)
+             end}
+         ]
+     end
+    }.
+
+%%====================================================================
 %% Association Tests
 %%====================================================================
 

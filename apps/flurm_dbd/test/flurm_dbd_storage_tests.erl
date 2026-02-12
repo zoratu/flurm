@@ -303,6 +303,75 @@ table_test_() ->
     }.
 
 %%====================================================================
+%% Mnesia Backend Branch Tests
+%%====================================================================
+
+mnesia_backend_test_() ->
+    {foreach,
+     fun setup_mnesia_branches/0,
+     fun cleanup_mnesia_branches/1,
+     [
+      {"init with mnesia backend", fun test_mnesia_init_branch/0},
+      {"mnesia handle_call branches", fun test_mnesia_handle_call_branches/0},
+      {"init_mnesia_tables handles already_exists", fun test_init_mnesia_already_exists/0},
+      {"init_mnesia_tables handles create error", fun test_init_mnesia_error/0}
+     ]}.
+
+setup_mnesia_branches() ->
+    catch meck:unload(mnesia),
+    catch meck:unload(lager),
+    meck:new(mnesia, [non_strict, no_link]),
+    meck:new(lager, [non_strict, no_link, passthrough]),
+    meck:expect(lager, md, fun() -> [] end),
+    meck:expect(lager, info, fun(_, _) -> ok end),
+    meck:expect(lager, error, fun(_, _) -> ok end),
+    ok.
+
+cleanup_mnesia_branches(_) ->
+    catch meck:unload(lager),
+    catch meck:unload(mnesia),
+    ok.
+
+test_mnesia_init_branch() ->
+    application:set_env(flurm_dbd, storage_backend, mnesia),
+    meck:expect(mnesia, create_table, fun(_Name, _Opts) -> {atomic, ok} end),
+    {ok, State} = flurm_dbd_storage:init([]),
+    ?assertEqual(mnesia, element(2, State)).
+
+test_mnesia_handle_call_branches() ->
+    application:set_env(flurm_dbd, storage_backend, mnesia),
+    meck:expect(mnesia, create_table, fun(_Name, _Opts) -> {atomic, ok} end),
+    {ok, State} = flurm_dbd_storage:init([]),
+    meck:expect(mnesia, dirty_write, fun(_T, _V) -> ok end),
+    meck:expect(mnesia, dirty_read, fun(_T, _K) -> [{dbd_jobs, k1, v1}] end),
+    meck:expect(mnesia, dirty_delete, fun(_T, _K) -> ok end),
+    meck:expect(mnesia, dirty_all_keys, fun(_T) -> [k1, k2] end),
+    meck:expect(mnesia, dirty_match_object, fun(_P) -> [{dbd_jobs, k1, v1}] end),
+    meck:expect(mnesia, sync_log, fun() -> ok end),
+    ?assertMatch({reply, ok, _},
+                 flurm_dbd_storage:handle_call({store, dbd_jobs, k1, v1}, {self(), make_ref()}, State)),
+    ?assertMatch({reply, {ok, v1}, _},
+                 flurm_dbd_storage:handle_call({fetch, dbd_jobs, k1}, {self(), make_ref()}, State)),
+    ?assertMatch({reply, ok, _},
+                 flurm_dbd_storage:handle_call({delete, dbd_jobs, k1}, {self(), make_ref()}, State)),
+    ?assertMatch({reply, [k1, k2], _},
+                 flurm_dbd_storage:handle_call({list, dbd_jobs}, {self(), make_ref()}, State)),
+    ?assertMatch({reply, [v1], _},
+                 flurm_dbd_storage:handle_call({list, dbd_jobs, k1}, {self(), make_ref()}, State)),
+    ?assertMatch({reply, ok, _},
+                 flurm_dbd_storage:handle_call(sync, {self(), make_ref()}, State)).
+
+test_init_mnesia_already_exists() ->
+    application:set_env(flurm_dbd, storage_backend, mnesia),
+    meck:expect(mnesia, create_table, fun(_Name, _Opts) -> {aborted, {already_exists, dbd_jobs}} end),
+    {ok, _} = flurm_dbd_storage:init([]).
+
+test_init_mnesia_error() ->
+    application:set_env(flurm_dbd, storage_backend, mnesia),
+    meck:expect(mnesia, create_table, fun(_Name, _Opts) -> {aborted, boom} end),
+    {ok, _} = flurm_dbd_storage:init([]).
+
+%%====================================================================
 %% Start Link Tests
 %%====================================================================
 
