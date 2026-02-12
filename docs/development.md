@@ -72,7 +72,7 @@ FLURM_PREPUSH_DOCKER=1 git push
 
 #### Consistency Commands
 
-Use these locally or in external CI systems (for example Jenkins/Buildkite/self-hosted):
+Use these locally or in external CI systems:
 
 ```bash
 # Quick (pre-commit class)
