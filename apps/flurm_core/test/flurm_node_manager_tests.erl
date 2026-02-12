@@ -387,10 +387,8 @@ test_allocate_resources_success() ->
     Result = flurm_node_manager:allocate_resources(<<"alloc-node1">>, 1, 4, 8192),
     ?assertEqual(ok, Result),
 
-    %% Verify allocation via node info
-    {ok, Info} = flurm_node:get_info(<<"alloc-node1">>),
-    ?assertEqual(4, maps:get(cpus_used, Info)),
-    ?assertEqual(8192, maps:get(memory_used, Info)),
+    %% Verify allocation tracked in registry (ETS)
+    {ok, {4, 8192}} = flurm_node_registry:get_job_allocation(<<"alloc-node1">>, 1),
     ok.
 
 test_allocate_resources_not_found() ->
