@@ -4,7 +4,7 @@
         proper eunit ct docs chaos-test \
         test-stress test-soak test-soak-short test-memory test-all diagnose \
         test-docker test-release release-check \
-        hooks-install check-quick check-prepush check-consistency
+        hooks-install check-quick check-prepush check-consistency check-coverage
 
 REBAR3 ?= rebar3
 
@@ -57,6 +57,10 @@ check-prepush:
 # Full deterministic checks for local/CI runners (non-GitHub Actions too).
 check-consistency:
 	./scripts/check-consistency.sh full
+
+# Coverage threshold gate for key DBD modules.
+check-coverage:
+	./scripts/check-coverage-threshold.sh
 
 # Generate coverage report
 cover:

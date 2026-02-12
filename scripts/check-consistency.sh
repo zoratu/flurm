@@ -15,11 +15,13 @@ case "$MODE" in
   prepush)
     echo "consistency: prepush"
     rebar3 as test eunit --app=flurm_dbd --cover
+    ./scripts/check-coverage-threshold.sh
     ;;
   full)
     echo "consistency: full"
     rebar3 compile
     rebar3 eunit --cover
+    ./scripts/check-coverage-threshold.sh
     rebar3 ct --cover
     if [ "${FLURM_CHECK_DOCKER:-0}" = "1" ]; then
       ./scripts/run-slurm-interop-tests.sh --quick

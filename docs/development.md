@@ -62,7 +62,7 @@ This configures `core.hooksPath=.githooks`.
 #### Hook Levels
 
 - `pre-commit` (`.githooks/pre-commit`): fast compile + critical unit tests
-- `pre-push` (`.githooks/pre-push`): medium checks (`flurm_dbd` app tests with coverage)
+- `pre-push` (`.githooks/pre-push`): medium checks (`flurm_dbd` app tests with coverage + coverage threshold gate)
 
 Optional Docker interop on push:
 
@@ -81,11 +81,20 @@ make check-quick
 # Medium (pre-push class)
 make check-prepush
 
+# Coverage threshold gate only
+make check-coverage
+
 # Full deterministic suite
 make check-consistency
 
 # Full suite + Docker interop checks
 FLURM_CHECK_DOCKER=1 make check-consistency
+```
+
+Set minimum coverage threshold for the DBD modules:
+
+```bash
+FLURM_COVER_MIN=92 make check-prepush
 ```
 
 ### IDE Configuration
