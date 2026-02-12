@@ -196,6 +196,7 @@ flowchart TB
 
 ### Testing & Performance
 - [Testing Guide](docs/testing.md) - How to test FLURM
+- [Jenkins Setup](docs/JENKINS.md) - Run repo checks in Dockerized Jenkins
 - [SLURM Compatibility Testing](docs/SLURM_COMPAT_TESTING.md) - **141 SLURM-native tests (132 pass, 9 skip)**
 - [SLURM Client Testing](docs/SLURM_CLIENT_TESTING.md) - Testing with real SLURM clients
 - [Benchmarks](docs/BENCHMARKS.md) - Performance benchmarks and results
