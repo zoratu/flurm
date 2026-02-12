@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT"
+
+echo "pre-push: medium checks"
+
+rebar3 as test eunit --app=flurm_dbd --cover
+
+if [ "${FLURM_PREPUSH_DOCKER:-0}" = "1" ]; then
+  echo "pre-push: docker compatibility checks enabled"
+  ./scripts/run-slurm-interop-tests.sh --quick
+fi
+
+echo "pre-push: OK"

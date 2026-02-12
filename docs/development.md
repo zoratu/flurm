@@ -49,40 +49,43 @@ rebar3 shell
 
 ### Git Hooks
 
-FLURM includes pre-commit hooks that run automatically before each commit to ensure code quality.
+FLURM includes versioned hooks and consistency scripts so checks are repeatable on any machine.
 
-#### Pre-commit Hook
-
-The pre-commit hook (`.git/hooks/pre-commit`) performs:
-
-1. **Erlang Compilation** - Ensures code compiles without errors
-2. **Unit Tests** - Runs critical protocol tests (`flurm_protocol_header`, `flurm_protocol_pack`)
-3. **CLI Tests** - If Docker containers are running, tests sbatch/squeue/srun compatibility
+#### Install Hooks
 
 ```bash
-# The hook runs automatically on git commit
-git commit -m "Your message"
-
-# To skip hooks (use sparingly)
-git commit --no-verify -m "Emergency fix"
-
-# To run checks manually
-rebar3 compile && rebar3 eunit
+make hooks-install
 ```
 
-#### Test Coverage
+This configures `core.hooksPath=.githooks`.
 
-Pre-commit runs a subset of tests for speed. Full test suite:
+#### Hook Levels
+
+- `pre-commit` (`.githooks/pre-commit`): fast compile + critical unit tests
+- `pre-push` (`.githooks/pre-push`): medium checks (`flurm_dbd` app tests with coverage)
+
+Optional Docker interop on push:
 
 ```bash
-# All unit tests (~150 tests)
-rebar3 eunit
+FLURM_PREPUSH_DOCKER=1 git push
+```
 
-# Integration tests (requires Docker)
-./test/run_integration_tests.sh
+#### Consistency Commands
 
-# Full CI-equivalent test suite
-rebar3 eunit && rebar3 ct
+Use these locally or in external CI systems (for example Jenkins/Buildkite/self-hosted):
+
+```bash
+# Quick (pre-commit class)
+make check-quick
+
+# Medium (pre-push class)
+make check-prepush
+
+# Full deterministic suite
+make check-consistency
+
+# Full suite + Docker interop checks
+FLURM_CHECK_DOCKER=1 make check-consistency
 ```
 
 ### IDE Configuration

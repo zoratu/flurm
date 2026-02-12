@@ -3,7 +3,8 @@
 .PHONY: all compile test clean dialyzer xref check release shell \
         proper eunit ct docs chaos-test \
         test-stress test-soak test-soak-short test-memory test-all diagnose \
-        test-docker test-release release-check
+        test-docker test-release release-check \
+        hooks-install check-quick check-prepush check-consistency
 
 REBAR3 ?= rebar3
 
@@ -13,6 +14,10 @@ all: compile
 # Compile all applications
 compile:
 	$(REBAR3) compile
+
+# Install versioned git hooks from .githooks
+hooks-install:
+	./scripts/install-hooks.sh
 
 # Run all tests
 test: eunit proper ct
@@ -40,6 +45,18 @@ xref:
 # Run all checks (compile, test, dialyzer, xref)
 check: compile test dialyzer xref
 	@echo "All checks passed!"
+
+# Fast local checks for pre-commit use.
+check-quick:
+	./scripts/check-consistency.sh quick
+
+# Medium checks for pre-push use.
+check-prepush:
+	./scripts/check-consistency.sh prepush
+
+# Full deterministic checks for local/CI runners (non-GitHub Actions too).
+check-consistency:
+	./scripts/check-consistency.sh full
 
 # Generate coverage report
 cover:

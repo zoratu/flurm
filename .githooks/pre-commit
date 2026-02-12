@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT"
+
+echo "pre-commit: quick checks"
+
+rebar3 compile >/dev/null
+rebar3 eunit --module=flurm_protocol_header,flurm_protocol_pack,flurm_job_executor_pure_tests,flurm_pmi_protocol_tests
+
+echo "pre-commit: OK"
