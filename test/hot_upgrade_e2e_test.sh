@@ -13,8 +13,14 @@ set -u
 set -o pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="${SCRIPT_DIR}/.."
+PROJECT_ROOT_REAL="${SCRIPT_DIR}/.."
+PROJECT_ROOT="${PROJECT_ROOT_REAL}"
+if [[ "$PROJECT_ROOT_REAL" == *" "* ]]; then
+    PROJECT_ROOT="/tmp/flurm_hot_upgrade_src"
+    ln -sfn "$PROJECT_ROOT_REAL" "$PROJECT_ROOT"
+fi
 BUILD_DIR="${PROJECT_ROOT}/_build/default/rel/flurmctld"
+RUNTIME_BUILD_DIR="${BUILD_DIR}"
 
 # Colors
 RED='\033[0;31m'
@@ -27,10 +33,74 @@ log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 log_test() { echo -e "${GREEN}[TEST]${NC} $1"; }
 
+ensure_runtime_build_dir() {
+    RUNTIME_BUILD_DIR="${BUILD_DIR}"
+    if [[ "$PROJECT_ROOT_REAL" == *" "* ]]; then
+        local runtime_copy="/tmp/flurm_hot_upgrade_rel"
+        rm -rf "$runtime_copy"
+        mkdir -p "$runtime_copy"
+        cp -R "${BUILD_DIR}/." "$runtime_copy/"
+        RUNTIME_BUILD_DIR="$runtime_copy"
+    fi
+
+    # relx scripts in this project enable pre/post start hooks by default.
+    # On some /bin/sh + set -e combinations, missing hook files abort startup.
+    mkdir -p "${RUNTIME_BUILD_DIR}/bin/hooks"
+    for hook in pre_start post_start; do
+        cat > "${RUNTIME_BUILD_DIR}/bin/hooks/${hook}" <<'EOF'
+#!/bin/sh
+:
+EOF
+        chmod +x "${RUNTIME_BUILD_DIR}/bin/hooks/${hook}"
+    done
+}
+
+configure_release_paths() {
+    ensure_runtime_build_dir
+
+    local release_cfg="${RUNTIME_BUILD_DIR}/releases/1.0.0/sys.config"
+    local release_vm_args="${RUNTIME_BUILD_DIR}/releases/1.0.0/vm.args"
+    local tmp_root="/tmp/flurm"
+    local tmp_log="${tmp_root}/log"
+    local tmp_data="${tmp_root}"
+    local tmp_etc="${tmp_root}/etc"
+    local tmp_cfg="${tmp_root}/sys.config"
+    local tmp_vm_args="${tmp_root}/vm.args"
+
+    mkdir -p "${tmp_log}" "${tmp_data}/ra" "${tmp_data}/db" "${tmp_etc}"
+    : > "${tmp_etc}/flurm.conf"
+
+    if [ ! -f "$release_cfg" ] || [ ! -f "$release_vm_args" ]; then
+        log_error "Release config files missing under ${RUNTIME_BUILD_DIR}/releases/1.0.0"
+        return 1
+    fi
+
+    cp "$release_cfg" "$tmp_cfg"
+    cp "$release_vm_args" "$tmp_vm_args"
+
+    sed -i.bak \
+        -e "s|/var/log/flurm|${tmp_log}|g" \
+        -e "s|/var/lib/flurm|${tmp_data}|g" \
+        -e "s|/etc/flurm/flurm.conf|${tmp_etc}/flurm.conf|g" \
+        "$tmp_cfg"
+    sed -i.bak \
+        -e "s|/var/log/flurm|${tmp_log}|g" \
+        -e "s|^+sbt db$|+sbt u|g" \
+        "$tmp_vm_args"
+
+    export FLURM_LOG_DIR="${tmp_log}"
+    export FLURM_DATA_DIR="${tmp_data}"
+    export RELX_CONFIG_PATH="${tmp_cfg}"
+    export VMARGS_PATH="${tmp_vm_args}"
+    return 0
+}
+
 cleanup() {
     log_info "Cleaning up..."
-    if [ -f "${BUILD_DIR}/bin/flurmctld" ]; then
-        "${BUILD_DIR}/bin/flurmctld" stop 2>/dev/null || true
+    if [ -f "${RUNTIME_BUILD_DIR}/bin/flurmctld" ]; then
+        if "${RUNTIME_BUILD_DIR}/bin/flurmctld" ping >/dev/null 2>&1; then
+            "${RUNTIME_BUILD_DIR}/bin/flurmctld" stop 2>/dev/null || true
+        fi
     fi
 }
 
@@ -43,8 +113,9 @@ test_build_release() {
 
     rebar3 compile
     rebar3 release -n flurmctld
+    ensure_runtime_build_dir
 
-    if [ ! -f "${BUILD_DIR}/bin/flurmctld" ]; then
+    if [ ! -f "${RUNTIME_BUILD_DIR}/bin/flurmctld" ]; then
         log_error "Release build failed - no binary found"
         return 1
     fi
@@ -57,27 +128,29 @@ test_build_release() {
 test_start_release() {
     log_test "Test 2: Starting release"
 
-    # Create required directories
-    sudo mkdir -p /var/log/flurm /var/lib/flurm/ra 2>/dev/null || \
-        mkdir -p /tmp/flurm/log /tmp/flurm/ra
-
-    # Update sys.config to use temp directories if needed
-    if [ ! -w /var/log/flurm ]; then
-        log_warn "Using /tmp for logs (no write access to /var/log/flurm)"
-        export FLURM_LOG_DIR=/tmp/flurm/log
-        export FLURM_DATA_DIR=/tmp/flurm/ra
+    # Release runtime paths are hardcoded in vm.args/sys.config, so rewrite
+    # them to /tmp for non-root test environments.
+    if ! configure_release_paths; then
+        log_error "Failed to configure release paths for test environment"
+        return 1
     fi
 
-    # Start in background
-    "${BUILD_DIR}/bin/flurmctld" daemon || true
+    # Start in background. Avoid the relx "daemon" command here because it can
+    # block forever waiting for is_alive when startup fails.
+    "${RUNTIME_BUILD_DIR}/bin/flurmctld" foreground >/tmp/flurm/hot_upgrade_node.log 2>&1 &
 
-    # Wait for startup
-    sleep 5
-
-    # Check if running
-    if ! "${BUILD_DIR}/bin/flurmctld" ping; then
+    # Wait for startup (release boot can take longer under load/CI).
+    local started=0
+    for _ in $(seq 1 60); do
+        if "${RUNTIME_BUILD_DIR}/bin/flurmctld" ping >/dev/null 2>&1; then
+            started=1
+            break
+        fi
+        sleep 1
+    done
+    if [ "$started" -ne 1 ]; then
         log_error "Release failed to start"
-        "${BUILD_DIR}/bin/flurmctld" stop 2>/dev/null || true
+        tail -n 80 /tmp/flurm/hot_upgrade_node.log 2>/dev/null || true
         return 1
     fi
 
@@ -90,7 +163,7 @@ test_hot_reload() {
     log_test "Test 3: Hot reload module"
 
     # Reload flurm_upgrade module
-    result=$("${BUILD_DIR}/bin/flurmctld" rpc flurm_upgrade reload_module flurm_upgrade)
+    result=$("${RUNTIME_BUILD_DIR}/bin/flurmctld" rpc flurm_upgrade reload_module '[flurm_upgrade]')
 
     if echo "$result" | grep -q "ok"; then
         log_info "Module hot reload successful"
@@ -106,20 +179,20 @@ test_state_preservation() {
     log_test "Test 4: State preservation during reload"
 
     # Set a config value
-    "${BUILD_DIR}/bin/flurmctld" rpc flurm_config_server set test_upgrade_key test_upgrade_value
+    "${RUNTIME_BUILD_DIR}/bin/flurmctld" rpc flurm_config_server set '[test_upgrade_key, test_upgrade_value]'
 
     # Verify it's set
-    value=$("${BUILD_DIR}/bin/flurmctld" rpc flurm_config_server get test_upgrade_key)
+    value=$("${RUNTIME_BUILD_DIR}/bin/flurmctld" rpc flurm_config_server get '[test_upgrade_key]')
     if ! echo "$value" | grep -q "test_upgrade_value"; then
         log_error "Config value not set properly: $value"
         return 1
     fi
 
     # Reload the module
-    "${BUILD_DIR}/bin/flurmctld" rpc flurm_upgrade reload_module flurm_config_server 2>/dev/null || true
+    "${RUNTIME_BUILD_DIR}/bin/flurmctld" rpc flurm_upgrade reload_module '[flurm_config_server]' 2>/dev/null || true
 
     # Verify state is preserved
-    value=$("${BUILD_DIR}/bin/flurmctld" rpc flurm_config_server get test_upgrade_key)
+    value=$("${RUNTIME_BUILD_DIR}/bin/flurmctld" rpc flurm_config_server get '[test_upgrade_key]')
     if echo "$value" | grep -q "test_upgrade_value"; then
         log_info "State preserved during reload"
         return 0
@@ -133,7 +206,7 @@ test_state_preservation() {
 test_upgrade_status() {
     log_test "Test 5: Upgrade status check"
 
-    status=$("${BUILD_DIR}/bin/flurmctld" rpc flurm_upgrade upgrade_status)
+    status=$("${RUNTIME_BUILD_DIR}/bin/flurmctld" rpc flurm_upgrade upgrade_status)
 
     if echo "$status" | grep -q "versions"; then
         log_info "Upgrade status available"
@@ -150,7 +223,7 @@ test_upgrade_check() {
     log_test "Test 6: Pre-upgrade validation"
 
     # Check for non-existent version (should fail gracefully)
-    result=$("${BUILD_DIR}/bin/flurmctld" rpc flurm_upgrade check_upgrade '"99.99.99"' 2>&1)
+    result=$("${RUNTIME_BUILD_DIR}/bin/flurmctld" rpc flurm_upgrade check_upgrade '["99.99.99"]' 2>&1)
 
     if echo "$result" | grep -q "error"; then
         log_info "Pre-upgrade check correctly rejects invalid version"
