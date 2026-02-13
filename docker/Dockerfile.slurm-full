@@ -18,6 +18,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     slurm-client \
     slurmd \
     slurmctld \
+    slurmdbd \
     munge \
     libmunge-dev \
     procps \
@@ -56,6 +57,7 @@ COPY config/cgroup.conf /etc/slurm/cgroup.conf
 # Copy startup scripts
 COPY scripts/start-slurm-controller.sh /usr/local/bin/start-slurm-controller.sh
 COPY scripts/start-slurm-node.sh /usr/local/bin/start-slurm-node.sh
+COPY scripts/start-slurmdbd.sh /usr/local/bin/start-slurmdbd.sh
 COPY scripts/submit-test-jobs.sh /usr/local/bin/submit-test-jobs.sh
 COPY scripts/create-munge-key.sh /usr/local/bin/create-munge-key.sh
 RUN chmod +x /usr/local/bin/*.sh

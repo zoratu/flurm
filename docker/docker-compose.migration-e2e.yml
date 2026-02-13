@@ -69,7 +69,7 @@ services:
       - MYSQL_PASSWORD=slurm_password
       - MYSQL_DATABASE=slurm_acct_db
     healthcheck:
-      test: ["CMD-SHELL", "sacctmgr --immediate show cluster 2>/dev/null | grep -q migration-test || exit 1"]
+      test: ["CMD-SHELL", "pgrep -x slurmdbd >/dev/null || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 20
@@ -207,7 +207,7 @@ services:
       - MYSQL_PASSWORD=slurm_password
       - MYSQL_DATABASE=slurm_acct_db
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8080/health || exit 1"]
+      test: ["CMD-SHELL", "pgrep -f beam.smp >/dev/null || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 15

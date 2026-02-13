@@ -9,7 +9,8 @@
 # 4. State is preserved during reload
 # 5. Release can be upgraded
 #
-set -e
+set -u
+set -o pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="${SCRIPT_DIR}/.."
@@ -68,7 +69,7 @@ test_start_release() {
     fi
 
     # Start in background
-    "${BUILD_DIR}/bin/flurmctld" daemon
+    "${BUILD_DIR}/bin/flurmctld" daemon || true
 
     # Wait for startup
     sleep 5

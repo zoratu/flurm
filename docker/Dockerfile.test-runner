@@ -11,6 +11,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # Install SLURM client and testing tools
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    erlang-base \
+    erlang-common-test \
     slurm-client \
     munge \
     curl \

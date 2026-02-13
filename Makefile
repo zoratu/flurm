@@ -4,7 +4,9 @@
         proper eunit ct docs chaos-test \
         test-stress test-soak test-soak-short test-memory test-all diagnose \
         test-docker test-release release-check test-dbd-fast test-quality \
-        test-branch-hardpaths ci-local coverage-full \
+        test-branch-hardpaths test-model-deterministic test-network-fault \
+        test-upgrade-replay test-soak-cadence-short test-soak-cadence \
+        test-soak-cadence-long ci-cadence ci-local coverage-full \
         hooks-install check-quick check-prepush check-consistency check-coverage
 
 REBAR3 ?= rebar3
@@ -77,6 +79,35 @@ test-quality:
 # Branch-heavy protocol/acceptor paths.
 test-branch-hardpaths:
 	$(REBAR3) eunit --module=flurm_protocol_codec_direct_tests,flurm_controller_acceptor_pure_tests,flurm_srun_acceptor_tests
+
+# Deterministic stateful lifecycle/model tests.
+test-model-deterministic:
+	./scripts/run-deterministic-model-tests.sh
+
+# Real network fault-injection/partition integration tests.
+test-network-fault:
+	./scripts/run-network-fault-injection-tests.sh
+
+# Upgrade/rollback compatibility replay tests on persisted migration state.
+test-upgrade-replay:
+	./scripts/run-upgrade-rollback-replay-tests.sh
+
+# Soak cadences.
+test-soak-cadence-short:
+	./scripts/run-soak-cadence.sh short
+
+test-soak-cadence:
+	./scripts/run-soak-cadence.sh standard
+
+test-soak-cadence-long:
+	./scripts/run-soak-cadence.sh long
+
+# Local CI cadence runner for non-GitHub environments.
+ci-cadence:
+	./scripts/run-deterministic-model-tests.sh
+	if [ "$${FLURM_RUN_NETWORK_FAULT:-0}" = "1" ]; then FLURM_NETWORK_FAULT_REQUIRED=1 ./scripts/run-network-fault-injection-tests.sh; else echo "ci-cadence: skip network fault (set FLURM_RUN_NETWORK_FAULT=1)"; fi
+	if [ "$${FLURM_RUN_UPGRADE_REPLAY:-0}" = "1" ]; then FLURM_UPGRADE_REPLAY_REQUIRED=1 ./scripts/run-upgrade-rollback-replay-tests.sh; else echo "ci-cadence: skip upgrade replay (set FLURM_RUN_UPGRADE_REPLAY=1)"; fi
+	if [ "$${FLURM_RUN_SOAK_CADENCE:-0}" = "1" ]; then ./scripts/run-soak-cadence.sh "$${FLURM_SOAK_CADENCE:-short}"; else echo "ci-cadence: skip soak cadence (set FLURM_RUN_SOAK_CADENCE=1)"; fi
 
 # Full local CI runner (works in any runner, not tied to GitHub Actions).
 ci-local:
@@ -373,5 +404,11 @@ help:
 	@echo "    make release-check   - Pre-release checklist (all checks)"
 	@echo ""
 	@echo "  Other:"
+	@echo "    make test-model-deterministic - Run deterministic lifecycle/model tests"
+	@echo "    make test-network-fault       - Run network fault-injection integration"
+	@echo "    make test-upgrade-replay      - Run upgrade/rollback replay tests"
+	@echo "    make test-soak-cadence-short  - Run short soak cadence gate"
+	@echo "    make ci-local                 - Local deterministic CI gate"
+	@echo "    make ci-cadence               - Extended non-GitHub CI cadence"
 	@echo "    make cover        - Generate coverage report"
 	@echo "    make docs         - Generate EDoc documentation"

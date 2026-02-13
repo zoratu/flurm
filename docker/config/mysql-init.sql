@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS job_table (
     batch_script LONGTEXT,
     cluster VARCHAR(255),
     constraints TEXT,
-    container VARCHAR(4096),
+    container TEXT,
     cpus_alloc INT UNSIGNED DEFAULT 0 NOT NULL,
     cpus_req INT UNSIGNED DEFAULT 0 NOT NULL,
     derived_ec INT UNSIGNED DEFAULT 0 NOT NULL,
@@ -59,9 +59,9 @@ CREATE TABLE IF NOT EXISTS job_table (
     start BIGINT UNSIGNED DEFAULT 0 NOT NULL,
     state INT UNSIGNED NOT NULL,
     state_reason_prev INT UNSIGNED DEFAULT 0 NOT NULL,
-    std_err VARCHAR(4096),
-    std_in VARCHAR(4096),
-    std_out VARCHAR(4096),
+    std_err TEXT,
+    std_in TEXT,
+    std_out TEXT,
     submit BIGINT UNSIGNED DEFAULT 0 NOT NULL,
     submit_line TEXT,
     suspended INT UNSIGNED DEFAULT 0 NOT NULL,
@@ -72,10 +72,10 @@ CREATE TABLE IF NOT EXISTS job_table (
     time_submit BIGINT UNSIGNED DEFAULT 0 NOT NULL,
     time_suspended INT UNSIGNED DEFAULT 0 NOT NULL,
     timelimit INT UNSIGNED DEFAULT 0 NOT NULL,
-    tres_alloc TEXT NOT NULL DEFAULT '',
-    tres_req TEXT NOT NULL DEFAULT '',
+    tres_alloc TEXT NOT NULL,
+    tres_req TEXT NOT NULL,
     wckey VARCHAR(200) NOT NULL DEFAULT '',
-    work_dir VARCHAR(4096) NOT NULL DEFAULT '',
+    work_dir TEXT,
     PRIMARY KEY (job_db_inx),
     KEY old_tuple (id_job, id_assoc, submit)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -116,6 +116,6 @@ INSERT INTO assoc_table (acct, user, `partition`, shares)
 VALUES ('default', '', '', 1)
 ON DUPLICATE KEY UPDATE shares=shares;
 
--- Grant permissions
-GRANT ALL PRIVILEGES ON flurm_acct.* TO 'flurm'@'%';
+-- Grant permissions (align with docker-compose defaults)
+GRANT ALL PRIVILEGES ON slurm_acct_db.* TO 'slurm'@'%';
 FLUSH PRIVILEGES;

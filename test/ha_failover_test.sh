@@ -41,12 +41,12 @@ log_info() {
 
 log_success() {
     echo -e "${GREEN}[PASS]${NC} $1"
-    ((TESTS_PASSED++))
+    ((++TESTS_PASSED))
 }
 
 log_failure() {
     echo -e "${RED}[FAIL]${NC} $1"
-    ((TESTS_FAILED++))
+    ((++TESTS_FAILED))
 }
 
 log_warning() {
@@ -88,7 +88,9 @@ stop_cluster() {
 submit_job() {
     local job_name="${1:-test_job}"
     cd "$DOCKER_DIR"
-    docker compose -f docker-compose.ha.yml exec -T slurm-client bash -c "
+    local out
+    out=$(docker compose -f docker-compose.ha.yml exec -T slurm-client bash -c "
+        sed -i 's/^SlurmctldHost=.*/SlurmctldHost=flurm-ctrl-1/' /etc/slurm/slurm.conf
         cat > /tmp/${job_name}.sh << 'EOF'
 #!/bin/bash
 echo \"Job $job_name starting\"
@@ -99,7 +101,8 @@ echo \"Job $job_name completed\"
 EOF
         chmod +x /tmp/${job_name}.sh
         sbatch /tmp/${job_name}.sh 2>&1
-    " | grep -oP 'Submitted batch job \K\d+' || echo ""
+    " 2>&1 || true)
+    echo "$out" | sed -n 's/.*Submitted batch job \([0-9][0-9]*\).*/\1/p' | head -n 1
 }
 
 # Get job status
@@ -162,7 +165,7 @@ heal_partition() {
 
 # Test 1: Basic cluster formation
 test_cluster_formation() {
-    ((TESTS_RUN++))
+    ((++TESTS_RUN))
     log_info "TEST: Cluster Formation"
 
     # Check all three controllers formed a cluster
@@ -179,7 +182,7 @@ test_cluster_formation() {
 
 # Test 2: Job submission works
 test_job_submission() {
-    ((TESTS_RUN++))
+    ((++TESTS_RUN))
     log_info "TEST: Job Submission"
 
     local job_id=$(submit_job "submission_test")
@@ -195,7 +198,7 @@ test_job_submission() {
 
 # Test 3: Leader failover
 test_leader_failover() {
-    ((TESTS_RUN++))
+    ((++TESTS_RUN))
     log_info "TEST: Leader Failover"
 
     # Submit a job before failover
@@ -225,7 +228,7 @@ test_leader_failover() {
 
 # Test 4: Network partition (minority isolation)
 test_minority_partition() {
-    ((TESTS_RUN++))
+    ((++TESTS_RUN))
     log_info "TEST: Minority Partition"
 
     # Submit job before partition
@@ -244,6 +247,7 @@ test_minority_partition() {
         log_success "Minority partition: job $job_id2 submitted during partition"
     else
         log_failure "Minority partition: could not submit job during partition"
+        return 1
     fi
 
     # Heal partition
@@ -253,7 +257,7 @@ test_minority_partition() {
 
 # Test 5: Rapid failover cycling
 test_rapid_failover() {
-    ((TESTS_RUN++))
+    ((++TESTS_RUN))
     log_info "TEST: Rapid Failover Cycling"
 
     local success_count=0
@@ -267,9 +271,9 @@ test_rapid_failover() {
         # Try to submit job
         local job_id=$(submit_job "rapid_${i}")
         if [ -n "$job_id" ] && [ "$job_id" -gt 0 ]; then
-            ((success_count++))
+            ((++success_count))
         else
-            ((fail_count++))
+            ((++fail_count))
         fi
 
         # Restart controller
@@ -286,7 +290,7 @@ test_rapid_failover() {
 
 # Test 6: Data consistency after recovery
 test_data_consistency() {
-    ((TESTS_RUN++))
+    ((++TESTS_RUN))
     log_info "TEST: Data Consistency After Recovery"
 
     # Submit several jobs
@@ -323,7 +327,7 @@ test_data_consistency() {
 
 # Test 7: Stress test with concurrent operations
 test_concurrent_stress() {
-    ((TESTS_RUN++))
+    ((++TESTS_RUN))
     log_info "TEST: Concurrent Stress Test"
 
     # Submit 20 jobs rapidly

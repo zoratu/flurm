@@ -635,7 +635,25 @@ open _build/test/cover/index.html
 
 ## Continuous Integration
 
-Example GitHub Actions workflow:
+Local/runner-agnostic CI entrypoints:
+
+```bash
+# Fast deterministic checks
+make ci-local
+
+# Extended cadence (non-GitHub runners):
+# deterministic model tests always, optional heavy gates by env
+make ci-cadence
+
+# Optional heavy gates
+FLURM_RUN_NETWORK_FAULT=1 make ci-cadence
+FLURM_RUN_UPGRADE_REPLAY=1 make ci-cadence
+FLURM_RUN_SOAK_CADENCE=1 FLURM_SOAK_CADENCE=long make ci-cadence
+```
+
+If you still need a hosted pipeline, the command set above can be reused in any CI system.
+
+Example GitHub Actions workflow (optional):
 
 ```yaml
 name: Test

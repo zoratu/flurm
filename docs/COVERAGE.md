@@ -148,10 +148,27 @@ make test-dbd-fast
 ```bash
 # Deterministic local CI workflow:
 # - prepush consistency checks
+# - deterministic lifecycle/model replay tests
 # - strict DBD 100% gate
 # - branch-heavy acceptor/protocol suites
 # - merged full coverage report
 make ci-local
+
+# Extended cadence for non-GitHub CI runners:
+# - deterministic model tests always
+# - optional network partition integration gate
+# - optional upgrade/rollback replay gate
+# - optional soak cadence gate
+make ci-cadence
+```
+
+Environment toggles for `make ci-cadence`:
+
+```bash
+FLURM_RUN_NETWORK_FAULT=1
+FLURM_RUN_UPGRADE_REPLAY=1
+FLURM_RUN_SOAK_CADENCE=1
+FLURM_SOAK_CADENCE=short   # short|standard|long
 ```
 
 ## Test File Locations

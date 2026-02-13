@@ -209,7 +209,9 @@ fi
 log_header "Starting Test Environment"
 
 log_info "Starting SLURM and FLURM clusters..."
-docker-compose -f "$COMPOSE_FILE" up -d
+# Always build before startup so container commands/scripts stay in sync
+# with Dockerfile/script changes during local development and CI gating.
+docker-compose -f "$COMPOSE_FILE" up -d --build
 
 # Wait for services to be healthy
 log_info "Waiting for services to be healthy..."
