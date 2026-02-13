@@ -3,7 +3,7 @@
 .PHONY: all compile test clean dialyzer xref check release shell \
         proper eunit ct docs chaos-test \
         test-stress test-soak test-soak-short test-memory test-all diagnose \
-        test-docker test-release release-check \
+        test-docker test-release release-check test-dbd-fast \
         hooks-install check-quick check-prepush check-consistency check-coverage
 
 REBAR3 ?= rebar3
@@ -61,6 +61,13 @@ check-consistency:
 # Coverage threshold gate for key DBD modules.
 check-coverage:
 	./scripts/check-coverage-threshold.sh
+
+# Fast deterministic DBD-only test loop:
+# - Runs only the flurm_dbd app tests with cover enabled
+# - Enforces 100% on the key DBD modules
+test-dbd-fast:
+	$(REBAR3) as test eunit --app=flurm_dbd --cover
+	./scripts/check-coverage-dbd-100.sh
 
 # Generate coverage report
 cover:
