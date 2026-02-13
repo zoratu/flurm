@@ -3,7 +3,8 @@
 .PHONY: all compile test clean dialyzer xref check release shell \
         proper eunit ct docs chaos-test \
         test-stress test-soak test-soak-short test-memory test-all diagnose \
-        test-docker test-release release-check test-dbd-fast \
+        test-docker test-release release-check test-dbd-fast test-quality \
+        test-branch-hardpaths ci-local coverage-full \
         hooks-install check-quick check-prepush check-consistency check-coverage
 
 REBAR3 ?= rebar3
@@ -68,6 +69,22 @@ check-coverage:
 test-dbd-fast:
 	$(REBAR3) as test eunit --app=flurm_dbd --cover
 	./scripts/check-coverage-dbd-100.sh
+
+# Targeted quality/fault suites for regression coverage beyond line coverage.
+test-quality:
+	$(REBAR3) eunit --module=flurm_quality_gap_tests,flurm_fault_injection_tests
+
+# Branch-heavy protocol/acceptor paths.
+test-branch-hardpaths:
+	$(REBAR3) eunit --module=flurm_protocol_codec_direct_tests,flurm_controller_acceptor_pure_tests,flurm_srun_acceptor_tests
+
+# Full local CI runner (works in any runner, not tied to GitHub Actions).
+ci-local:
+	./scripts/ci-local.sh
+
+# Merged full-project coverage report across umbrella apps.
+coverage-full:
+	./scripts/run_coverage.escript
 
 # Generate coverage report
 cover:

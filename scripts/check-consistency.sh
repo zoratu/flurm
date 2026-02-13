@@ -16,6 +16,8 @@ case "$MODE" in
     echo "consistency: prepush"
     rebar3 as test eunit --app=flurm_dbd --cover
     ./scripts/check-coverage-threshold.sh
+    rebar3 eunit --module=flurm_quality_gap_tests,flurm_fault_injection_tests
+    rebar3 proper -m flurm_property_tests -n "${FLURM_PREPUSH_PROPER_N:-25}"
     ;;
   full)
     echo "consistency: full"

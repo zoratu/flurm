@@ -48,6 +48,7 @@
     %% Protocol Codec Properties
     prop_fed_message_roundtrip/0,
     prop_fed_message_no_crash/0,
+    prop_protocol_short_prefix_contract/0,
 
     %% TRES Calculation Properties
     prop_tres_non_negative/0,
@@ -211,6 +212,18 @@ prop_fed_message_no_crash() ->
             case Result of
                 {crash, _Reason} -> false;
                 _ -> true
+            end
+        end).
+
+%% @doc Property: binaries shorter than the 4-byte length prefix must
+%% return incomplete_length_prefix and never crash.
+prop_protocol_short_prefix_contract() ->
+    ?FORALL(Bytes, ?SUCHTHAT(B, binary(), byte_size(B) < 4),
+        begin
+            case catch flurm_protocol_codec:decode(Bytes) of
+                {error, {incomplete_length_prefix, N}} when N < 4 -> true;
+                {'EXIT', _} -> false;
+                _ -> false
             end
         end).
 
@@ -571,6 +584,13 @@ fed_message_no_crash_test_() ->
             [{numtests, 500}, {to_file, user}]))
     end}.
 
+%% @doc Quick smoke test for protocol length-prefix contract.
+protocol_short_prefix_contract_test_() ->
+    {timeout, 30, fun() ->
+        ?assertEqual(true, proper:quickcheck(prop_protocol_short_prefix_contract(),
+            [{numtests, 200}, {to_file, user}]))
+    end}.
+
 %% @doc Quick smoke test for TRES non-negative property.
 tres_non_negative_test_() ->
     {timeout, 30, fun() ->
@@ -613,6 +633,11 @@ comprehensive_test_() ->
         fun() ->
             ?assertEqual(true, proper:quickcheck(prop_fed_message_no_crash(),
                 [{numtests, 1000}, {to_file, user}]))
+        end},
+       {"Protocol short-prefix contract (500 tests)",
+        fun() ->
+            ?assertEqual(true, proper:quickcheck(prop_protocol_short_prefix_contract(),
+                [{numtests, 500}, {to_file, user}]))
         end},
        {"TRES non-negative (500 tests)",
         fun() ->

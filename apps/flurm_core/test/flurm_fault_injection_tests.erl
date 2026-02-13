@@ -36,7 +36,9 @@ fault_injection_test_() ->
         {"scheduler resume after suspension",
          {timeout, 60, fun test_delay_message_resume/0}},
         {"concurrent ops under gc pressure",
-         {timeout, 60, fun test_concurrent_under_gc/0}}
+         {timeout, 60, fun test_concurrent_under_gc/0}},
+        {"scheduler restart under chaos",
+         {timeout, 60, fun test_scheduler_restart_under_chaos/0}}
      ]}.
 
 %%====================================================================
@@ -270,6 +272,31 @@ test_concurrent_under_gc() ->
     %% Verify invariants
     verify_all_jobs_valid(),
     ?assertNotEqual(undefined, whereis(flurm_job_manager)).
+
+test_scheduler_restart_under_chaos() ->
+    flurm_node_registry:register_node_direct(
+        #{hostname => <<"restart_node">>, cpus => 4, memory_mb => 8192, state => up,
+          partitions => [<<"default">>]}),
+
+    flurm_chaos:enable(),
+    flurm_chaos:set_scenario(trigger_gc, 0.15),
+    flurm_chaos:enable_scenario(trigger_gc),
+
+    safe_stop(flurm_scheduler),
+    start_if_not_running(flurm_scheduler, fun flurm_scheduler:start_link/0),
+
+    {ok, JobId} = flurm_job_manager:submit_job(#{
+        name => <<"chaos_restart_job">>,
+        script => <<"#!/bin/bash\necho restart">>,
+        num_cpus => 1, memory_mb => 64, time_limit => 3600
+    }),
+    ok = flurm_scheduler:trigger_schedule(),
+    timer:sleep(100),
+    ?assertMatch({ok, #job{id = JobId}}, flurm_job_manager:get_job(JobId)),
+
+    flurm_chaos:disable(),
+    flurm_chaos:disable_all_scenarios(),
+    ?assertNotEqual(undefined, whereis(flurm_scheduler)).
 
 %%====================================================================
 %% Helpers

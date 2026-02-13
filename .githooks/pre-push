@@ -6,8 +6,7 @@ cd "$ROOT"
 
 echo "pre-push: medium checks"
 
-rebar3 as test eunit --app=flurm_dbd --cover
-./scripts/check-coverage-threshold.sh
+./scripts/check-consistency.sh prepush
 
 if [ "${FLURM_PREPUSH_DOCKER:-0}" = "1" ]; then
   echo "pre-push: docker compatibility checks enabled"

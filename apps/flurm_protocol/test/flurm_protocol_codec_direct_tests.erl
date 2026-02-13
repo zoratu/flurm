@@ -82,6 +82,8 @@ flurm_protocol_codec_test_() ->
       %% Auth section parsing
       {"decode_with_extra non-MUNGE auth", fun decode_with_extra_non_munge_test/0},
       {"strip_auth_section error cases", fun strip_auth_section_errors_test/0},
+      {"decode_with_extra auth cred too short branch", fun decode_with_extra_auth_cred_too_short_test/0},
+      {"decode_response body too short branch", fun decode_response_body_too_short_test/0},
 
       %% Passthrough message validation
       {"encode/decode passthrough binary body", fun passthrough_binary_validation_test/0}
@@ -1471,6 +1473,32 @@ strip_auth_section_errors_test() ->
     Result4 = flurm_protocol_codec:strip_auth_section(<<101:32/big, 0:32/big, "body">>),
     ?assertMatch({ok, <<"body">>, #{auth_type := munge}}, Result4),
     ok.
+
+decode_with_extra_auth_cred_too_short_test() ->
+    Header = #slurm_header{
+        version = ?SLURM_PROTOCOL_VERSION,
+        flags = 0,
+        msg_type = ?REQUEST_PING,
+        body_length = 0
+    },
+    {ok, HeaderBin} = flurm_protocol_header:encode_header(Header),
+    BadAuth = <<101:32/big, 5:32/big, 1, 2>>,
+    Length = byte_size(HeaderBin) + byte_size(BadAuth),
+    Wire = <<Length:32/big, HeaderBin/binary, BadAuth/binary>>,
+    ?assertMatch({error, {auth_cred_too_short, 5}}, flurm_protocol_codec:decode_with_extra(Wire)).
+
+decode_response_body_too_short_test() ->
+    Header = #slurm_header{
+        version = ?SLURM_PROTOCOL_VERSION,
+        flags = 0,
+        msg_type = ?RESPONSE_SLURM_RC,
+        body_length = 10
+    },
+    {ok, HeaderBin} = flurm_protocol_header:encode_header(Header),
+    Payload = <<1, 2, 3>>,
+    Length = byte_size(HeaderBin) + byte_size(Payload),
+    Wire = <<Length:32/big, HeaderBin/binary, Payload/binary>>,
+    ?assertMatch({error, {body_too_short, 3, 10}}, flurm_protocol_codec:decode_response(Wire)).
 
 %%%===================================================================
 %%% Passthrough Message Validation Tests

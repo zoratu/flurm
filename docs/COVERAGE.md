@@ -109,11 +109,13 @@ These modules have low or zero coverage for valid reasons:
 ### Full Coverage Run
 
 ```bash
-# Run all tests with coverage
-rebar3 eunit --cover
+# Merged umbrella coverage across all FLURM apps (recommended)
+make coverage-full
 
-# Generate coverage report
-rebar3 cover --verbose
+# Outputs:
+#   coverage/full_coverage_report.txt
+#   coverage/full_coverage.csv
+#   coverage/full_coverage_under_100.txt
 ```
 
 ### View HTML Report
@@ -137,9 +139,19 @@ rebar3 eunit --cover --app=flurm_core
 ### Coverage for Specific Modules
 
 ```bash
-# Compile with coverage enabled for specific modules
-rebar3 as test compile
-rebar3 eunit --cover
+# Fast strict DBD gate (enforces 100% for key DBD modules)
+make test-dbd-fast
+```
+
+### Consistent Local CI (No GitHub Actions Required)
+
+```bash
+# Deterministic local CI workflow:
+# - prepush consistency checks
+# - strict DBD 100% gate
+# - branch-heavy acceptor/protocol suites
+# - merged full coverage report
+make ci-local
 ```
 
 ## Test File Locations
