@@ -132,6 +132,7 @@ mkdir -p "$RESULTS_DIR"
 # Start timestamp
 START_TIME=$(date +%s)
 RESULTS_FILE="$RESULTS_DIR/e2e-results-$(date +%Y%m%d-%H%M%S).log"
+SUMMARY_FILE="$RESULTS_DIR/migration-summary-$(date +%Y%m%d-%H%M%S).json"
 
 log_header "FLURM End-to-End Migration Tests"
 
@@ -284,17 +285,10 @@ fi
 # Execute tests inside the orchestrator container
 log_info "Executing tests..."
 
-TEST_CMD="cd /erlang-tests && "
-
-if [[ -n "$TEST_GROUPS" ]]; then
-    # Run specific groups
-    TEST_CMD+="ct_run -dir . -suite flurm_migration_e2e_SUITE -group $TEST_GROUPS"
-else
-    # Run all tests
-    TEST_CMD+="ct_run -dir . -suite flurm_migration_e2e_SUITE"
-fi
-
-TEST_CMD+=" -logdir /test-results -cover -cover_spec cover.spec 2>&1"
+TEST_CMD="MIGRATION_STAGE=${SPECIFIC_STAGE:-all} \
+MIGRATION_SUMMARY_FILE=/test-results/$(basename "$SUMMARY_FILE") \
+TEST_RESULTS_DIR=/test-results \
+/scripts/test-migration.sh 2>&1"
 
 # Run the tests
 docker-compose -f "$COMPOSE_FILE" exec -T test-orchestrator bash -c "$TEST_CMD" | tee "$RESULTS_FILE"
@@ -318,15 +312,26 @@ log_success "Logs collected in $RESULTS_DIR"
 log_header "Test Results Summary"
 
 if [[ -f "$RESULTS_FILE" ]]; then
-    # Extract test results
-    PASSED=$(grep -c "OK" "$RESULTS_FILE" 2>/dev/null || echo "0")
-    FAILED=$(grep -c "FAILED" "$RESULTS_FILE" 2>/dev/null || echo "0")
-    SKIPPED=$(grep -c "SKIPPED" "$RESULTS_FILE" 2>/dev/null || echo "0")
+    if [[ -f "$SUMMARY_FILE" ]]; then
+        PASSED=$(grep -oE '"tests_passed":[[:space:]]*[0-9]+' "$SUMMARY_FILE" | grep -oE '[0-9]+' | head -1)
+        FAILED=$(grep -oE '"tests_failed":[[:space:]]*[0-9]+' "$SUMMARY_FILE" | grep -oE '[0-9]+' | head -1)
+        SKIPPED=$(grep -oE '"tests_skipped":[[:space:]]*[0-9]+' "$SUMMARY_FILE" | grep -oE '[0-9]+' | head -1)
+    else
+        PASSED=0
+        FAILED=0
+        SKIPPED=0
+    fi
 
     log_info "Test Results:"
     log_info "  Passed:  $PASSED"
     log_info "  Failed:  $FAILED"
     log_info "  Skipped: $SKIPPED"
+
+    TOTAL_EXECUTED=$((PASSED + FAILED))
+    if [[ $TOTAL_EXECUTED -eq 0 ]]; then
+        log_error "No migration tests executed (0 passed, 0 failed)"
+        TEST_EXIT_CODE=1
+    fi
 fi
 
 # Final status

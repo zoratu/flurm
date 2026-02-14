@@ -37,7 +37,37 @@ fi
 
 echo "network-fault: running network partition observability check"
 if [ -x ./docker/e2e-tests/test-network-partition.sh ]; then
-  ./docker/e2e-tests/test-network-partition.sh || true
+  # The failover harness tears down the HA stack after completion.
+  # Bring up a fresh cluster for observability/strict checks.
+  if ! ./test/ha_failover_test.sh start; then
+    if [ "$REQUIRED" = "1" ]; then
+      echo "network-fault: failed to start HA cluster for partition observability" >&2
+      exit 1
+    fi
+    echo "network-fault: could not start HA cluster for observability (non-required mode)"
+  else
+    trap './test/ha_failover_test.sh stop >/dev/null 2>&1 || true' EXIT
+    if [ "$REQUIRED" = "1" ]; then
+      FLURM_NETWORK_PARTITION_STRICT=1 \
+      FLURM_CTRL_1=localhost FLURM_CTRL_2=localhost FLURM_CTRL_3=localhost \
+      FLURM_CTRL_PORT_1=9090 FLURM_CTRL_PORT_2=9091 FLURM_CTRL_PORT_3=9092 \
+      ./docker/e2e-tests/test-network-partition.sh
+    else
+      FLURM_CTRL_1=localhost FLURM_CTRL_2=localhost FLURM_CTRL_3=localhost \
+      FLURM_CTRL_PORT_1=9090 FLURM_CTRL_PORT_2=9091 FLURM_CTRL_PORT_3=9092 \
+      ./docker/e2e-tests/test-network-partition.sh
+    fi
+    if [ "${FLURM_RUN_PACKET_LOSS_FAULTS:-0}" = "1" ]; then
+      echo "network-fault: running packet loss/jitter/reconnect scenarios"
+      if [ "$REQUIRED" = "1" ]; then
+        FLURM_NETWORK_FAULT_REQUIRED=1 ./scripts/run-network-chaos-scenarios.sh
+      else
+        ./scripts/run-network-chaos-scenarios.sh
+      fi
+    fi
+    ./test/ha_failover_test.sh stop >/dev/null 2>&1 || true
+    trap - EXIT
+  fi
 fi
 
 echo "network-fault: OK"

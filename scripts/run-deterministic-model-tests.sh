@@ -6,6 +6,6 @@ cd "$ROOT"
 
 echo "deterministic-model: running reproducible lifecycle/model suites"
 
-rebar3 eunit --module=flurm_lifecycle_model_tests
+rebar3 eunit --module=flurm_lifecycle_model_tests,flurm_accounting_model_tests
 
 echo "deterministic-model: OK"

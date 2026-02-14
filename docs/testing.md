@@ -647,8 +647,19 @@ make ci-cadence
 
 # Optional heavy gates
 FLURM_RUN_NETWORK_FAULT=1 make ci-cadence
+FLURM_RUN_NETWORK_FAULT=1 FLURM_RUN_PACKET_LOSS_FAULTS=1 make ci-cadence
 FLURM_RUN_UPGRADE_REPLAY=1 make ci-cadence
+FLURM_RUN_UPGRADE_REPLAY=1 FLURM_RUN_UPGRADE_SNAPSHOT_REPLAY=1 make ci-cadence
 FLURM_RUN_SOAK_CADENCE=1 FLURM_SOAK_CADENCE=long make ci-cadence
+FLURM_RUN_MUTATION_SANITY=1 make ci-cadence
+FLURM_RUN_FLAKE_DETECTION=1 FLURM_FLAKE_RUNS=50 make ci-cadence
+
+# Standalone hardening gates
+make check-coverage-advanced
+make test-network-chaos
+make test-upgrade-snapshot-replay
+make test-mutation-sanity
+make test-flake-detection
 ```
 
 If you still need a hosted pipeline, the command set above can be reused in any CI system.

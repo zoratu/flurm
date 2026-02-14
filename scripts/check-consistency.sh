@@ -16,6 +16,7 @@ case "$MODE" in
     echo "consistency: prepush"
     rebar3 as test eunit --app=flurm_dbd --cover
     ./scripts/check-coverage-threshold.sh
+    FLURM_COVER_ADVANCED_SCOPE=dbd ./scripts/check-coverage-advanced.sh
     rebar3 eunit --module=flurm_quality_gap_tests,flurm_fault_injection_tests
     rebar3 proper -m flurm_property_tests -n "${FLURM_PREPUSH_PROPER_N:-25}"
     if [ "${FLURM_CHECK_MODEL_DETERMINISTIC:-0}" = "1" ]; then
@@ -27,6 +28,7 @@ case "$MODE" in
     rebar3 compile
     rebar3 eunit --cover
     ./scripts/check-coverage-threshold.sh
+    FLURM_COVER_ADVANCED_SCOPE=all ./scripts/check-coverage-advanced.sh
     rebar3 ct --cover
     if [ "${FLURM_CHECK_MODEL_DETERMINISTIC:-1}" = "1" ]; then
       ./scripts/run-deterministic-model-tests.sh
@@ -39,6 +41,12 @@ case "$MODE" in
     fi
     if [ "${FLURM_CHECK_SOAK_CADENCE:-0}" = "1" ]; then
       ./scripts/run-soak-cadence.sh "${FLURM_SOAK_CADENCE:-short}"
+    fi
+    if [ "${FLURM_CHECK_MUTATION_SANITY:-0}" = "1" ]; then
+      ./scripts/run-mutation-sanity.sh
+    fi
+    if [ "${FLURM_CHECK_FLAKE_DETECTION:-0}" = "1" ]; then
+      ./scripts/run-flake-detection.sh
     fi
     if [ "${FLURM_CHECK_DOCKER:-0}" = "1" ]; then
       ./scripts/run-slurm-interop-tests.sh --quick

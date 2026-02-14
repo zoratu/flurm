@@ -5,8 +5,10 @@
         test-stress test-soak test-soak-short test-memory test-all diagnose \
         test-docker test-release release-check test-dbd-fast test-quality \
         test-branch-hardpaths test-model-deterministic test-network-fault \
-        test-upgrade-replay test-soak-cadence-short test-soak-cadence \
-        test-soak-cadence-long ci-cadence ci-local coverage-full \
+        test-network-chaos test-upgrade-replay test-upgrade-snapshot-replay \
+        test-flake-detection test-mutation-sanity \
+        test-soak-cadence-short test-soak-cadence test-soak-cadence-long \
+        check-coverage-advanced ci-cadence ci-local coverage-full \
         hooks-install check-quick check-prepush check-consistency check-coverage
 
 REBAR3 ?= rebar3
@@ -65,6 +67,9 @@ check-consistency:
 check-coverage:
 	./scripts/check-coverage-threshold.sh
 
+check-coverage-advanced:
+	./scripts/check-coverage-advanced.sh
+
 # Fast deterministic DBD-only test loop:
 # - Runs only the flurm_dbd app tests with cover enabled
 # - Enforces 100% on the key DBD modules
@@ -88,9 +93,21 @@ test-model-deterministic:
 test-network-fault:
 	./scripts/run-network-fault-injection-tests.sh
 
+test-network-chaos:
+	./scripts/run-network-chaos-scenarios.sh
+
 # Upgrade/rollback compatibility replay tests on persisted migration state.
 test-upgrade-replay:
 	./scripts/run-upgrade-rollback-replay-tests.sh
+
+test-upgrade-snapshot-replay:
+	./scripts/run-upgrade-snapshot-replay.sh
+
+test-flake-detection:
+	./scripts/run-flake-detection.sh
+
+test-mutation-sanity:
+	./scripts/run-mutation-sanity.sh
 
 # Soak cadences.
 test-soak-cadence-short:
@@ -105,9 +122,11 @@ test-soak-cadence-long:
 # Local CI cadence runner for non-GitHub environments.
 ci-cadence:
 	./scripts/run-deterministic-model-tests.sh
-	if [ "$${FLURM_RUN_NETWORK_FAULT:-0}" = "1" ]; then FLURM_NETWORK_FAULT_REQUIRED=1 ./scripts/run-network-fault-injection-tests.sh; else echo "ci-cadence: skip network fault (set FLURM_RUN_NETWORK_FAULT=1)"; fi
+	if [ "$${FLURM_RUN_NETWORK_FAULT:-0}" = "1" ]; then FLURM_NETWORK_FAULT_REQUIRED=1 FLURM_RUN_PACKET_LOSS_FAULTS="$${FLURM_RUN_PACKET_LOSS_FAULTS:-1}" ./scripts/run-network-fault-injection-tests.sh; else echo "ci-cadence: skip network fault (set FLURM_RUN_NETWORK_FAULT=1)"; fi
 	if [ "$${FLURM_RUN_UPGRADE_REPLAY:-0}" = "1" ]; then FLURM_UPGRADE_REPLAY_REQUIRED=1 ./scripts/run-upgrade-rollback-replay-tests.sh; else echo "ci-cadence: skip upgrade replay (set FLURM_RUN_UPGRADE_REPLAY=1)"; fi
 	if [ "$${FLURM_RUN_SOAK_CADENCE:-0}" = "1" ]; then ./scripts/run-soak-cadence.sh "$${FLURM_SOAK_CADENCE:-short}"; else echo "ci-cadence: skip soak cadence (set FLURM_RUN_SOAK_CADENCE=1)"; fi
+	if [ "$${FLURM_RUN_MUTATION_SANITY:-0}" = "1" ]; then ./scripts/run-mutation-sanity.sh; else echo "ci-cadence: skip mutation sanity (set FLURM_RUN_MUTATION_SANITY=1)"; fi
+	if [ "$${FLURM_RUN_FLAKE_DETECTION:-0}" = "1" ]; then ./scripts/run-flake-detection.sh; else echo "ci-cadence: skip flake detection (set FLURM_RUN_FLAKE_DETECTION=1)"; fi
 
 # Full local CI runner (works in any runner, not tied to GitHub Actions).
 ci-local:
@@ -406,8 +425,13 @@ help:
 	@echo "  Other:"
 	@echo "    make test-model-deterministic - Run deterministic lifecycle/model tests"
 	@echo "    make test-network-fault       - Run network fault-injection integration"
+	@echo "    make test-network-chaos       - Run packet-loss/jitter/reconnect scenarios"
 	@echo "    make test-upgrade-replay      - Run upgrade/rollback replay tests"
+	@echo "    make test-upgrade-snapshot-replay - Replay persisted snapshots across versions"
 	@echo "    make test-soak-cadence-short  - Run short soak cadence gate"
+	@echo "    make test-flake-detection     - Repeat-run tests to detect flakes"
+	@echo "    make test-mutation-sanity     - Mutation sanity kill-rate gate"
+	@echo "    make check-coverage-advanced  - Enforce line + clause/function floors"
 	@echo "    make ci-local                 - Local deterministic CI gate"
 	@echo "    make ci-cadence               - Extended non-GitHub CI cadence"
 	@echo "    make cover        - Generate coverage report"

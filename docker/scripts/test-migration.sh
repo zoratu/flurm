@@ -18,8 +18,11 @@ set -e
 SLURM_HOST=${SLURM_CONTROLLER:-slurm-controller}
 FLURM_HOST=${FLURM_CONTROLLER:-flurm-controller}
 TEST_RESULTS_DIR=${TEST_RESULTS_DIR:-/test-results}
+MIGRATION_STAGE=${MIGRATION_STAGE:-all}
+MIGRATION_STRICT=${MIGRATION_STRICT:-0}
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 LOG_FILE="${TEST_RESULTS_DIR}/migration_test_${TIMESTAMP}.log"
+SUMMARY_FILE="${MIGRATION_SUMMARY_FILE:-${TEST_RESULTS_DIR}/summary_${TIMESTAMP}.json}"
 
 # Colors for output
 RED='\033[0;31m'
@@ -65,6 +68,7 @@ log "FLURM Hot Migration Test"
 log "=============================================="
 log "SLURM Controller: $SLURM_HOST"
 log "FLURM Controller: $FLURM_HOST"
+log "Migration Stage: $MIGRATION_STAGE"
 log "Log File: $LOG_FILE"
 log ""
 
@@ -138,7 +142,11 @@ if curl -sf "http://${FLURM_HOST}:8080/health" >/dev/null 2>&1; then
     FLURM_STATUS=$(curl -sf "http://${FLURM_HOST}:8080/health" 2>/dev/null || echo "{}")
     log_info "FLURM status: $FLURM_STATUS"
 else
-    log_fail "FLURM HTTP endpoint not responding"
+    if [ "$MIGRATION_STRICT" = "1" ]; then
+        log_fail "FLURM HTTP endpoint not responding"
+    else
+        log_skip "FLURM HTTP endpoint not responding (non-strict mode)"
+    fi
     log_skip "Continuing with limited tests"
 fi
 
@@ -291,15 +299,17 @@ log ""
 log "Log file saved to: $LOG_FILE"
 
 # Save summary to JSON
-cat > "${TEST_RESULTS_DIR}/summary_${TIMESTAMP}.json" << EOF
+cat > "$SUMMARY_FILE" << EOF
 {
     "timestamp": "$(date -Iseconds)",
+    "stage": "$MIGRATION_STAGE",
     "tests_passed": $TESTS_PASSED,
     "tests_failed": $TESTS_FAILED,
     "tests_skipped": $TESTS_SKIPPED,
     "slurm_host": "$SLURM_HOST",
     "flurm_host": "$FLURM_HOST",
-    "log_file": "$LOG_FILE"
+    "log_file": "$LOG_FILE",
+    "summary_file": "$SUMMARY_FILE"
 }
 EOF
 

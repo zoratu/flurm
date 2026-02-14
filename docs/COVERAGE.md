@@ -156,9 +156,10 @@ make ci-local
 
 # Extended cadence for non-GitHub CI runners:
 # - deterministic model tests always
-# - optional network partition integration gate
+# - optional network partition + packet-loss integration gate
 # - optional upgrade/rollback replay gate
 # - optional soak cadence gate
+# - optional mutation sanity and flake detectors
 make ci-cadence
 ```
 
@@ -166,9 +167,16 @@ Environment toggles for `make ci-cadence`:
 
 ```bash
 FLURM_RUN_NETWORK_FAULT=1
+FLURM_RUN_PACKET_LOSS_FAULTS=1
 FLURM_RUN_UPGRADE_REPLAY=1
+FLURM_RUN_UPGRADE_SNAPSHOT_REPLAY=1
 FLURM_RUN_SOAK_CADENCE=1
 FLURM_SOAK_CADENCE=short   # short|standard|long
+FLURM_RUN_MUTATION_SANITY=1
+FLURM_RUN_FLAKE_DETECTION=1
+
+# Advanced coverage floor (line + clause/function)
+make check-coverage-advanced
 ```
 
 ## Test File Locations

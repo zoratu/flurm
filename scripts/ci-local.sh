@@ -9,6 +9,7 @@ echo "ci-local: deterministic local CI run"
 ./scripts/check-consistency.sh prepush
 ./scripts/run-deterministic-model-tests.sh
 ./scripts/check-coverage-dbd-100.sh
+FLURM_COVER_ADVANCED_SCOPE=dbd ./scripts/check-coverage-advanced.sh
 rebar3 eunit --module=flurm_protocol_codec_direct_tests,flurm_controller_acceptor_pure_tests,flurm_srun_acceptor_tests
 if [ "${FLURM_CI_LOCAL_NETWORK_FAULT:-0}" = "1" ]; then
   FLURM_NETWORK_FAULT_REQUIRED=1 ./scripts/run-network-fault-injection-tests.sh
@@ -18,6 +19,12 @@ if [ "${FLURM_CI_LOCAL_UPGRADE_REPLAY:-0}" = "1" ]; then
 fi
 if [ "${FLURM_CI_LOCAL_SOAK:-0}" = "1" ]; then
   ./scripts/run-soak-cadence.sh "${FLURM_CI_LOCAL_SOAK_MODE:-short}"
+fi
+if [ "${FLURM_CI_LOCAL_MUTATION_SANITY:-0}" = "1" ]; then
+  ./scripts/run-mutation-sanity.sh
+fi
+if [ "${FLURM_CI_LOCAL_FLAKE_DETECTION:-0}" = "1" ]; then
+  ./scripts/run-flake-detection.sh
 fi
 ./scripts/run_coverage.escript
 

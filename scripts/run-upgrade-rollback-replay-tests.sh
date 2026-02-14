@@ -32,4 +32,9 @@ echo "upgrade-replay: running continuity replay on persisted migration state"
 echo "upgrade-replay: running hot upgrade/rollback e2e"
 ./test/hot_upgrade_e2e_test.sh all
 
+if [ "${FLURM_RUN_UPGRADE_SNAPSHOT_REPLAY:-0}" = "1" ]; then
+  echo "upgrade-replay: running persisted snapshot compatibility replay"
+  ./scripts/run-upgrade-snapshot-replay.sh
+fi
+
 echo "upgrade-replay: OK"

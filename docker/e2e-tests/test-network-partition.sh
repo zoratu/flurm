@@ -13,7 +13,7 @@
 # 3. Verifies split-brain prevention mechanisms
 # 4. Provides helper functions for manual partition testing
 
-set -e
+set -euo pipefail
 
 echo "=== Test: Network Partition Simulation ==="
 echo ""
@@ -32,6 +32,8 @@ PORT_3="${FLURM_CTRL_PORT_3:-9092}"
 # Erlang distribution port (typically 4369 for epmd, plus dynamic ports)
 EPMD_PORT=4369
 RA_PORT_RANGE="9100-9110"
+STRICT="${FLURM_NETWORK_PARTITION_STRICT:-0}"
+FAILED_CHECKS=0
 
 # Test 1: Check current network connectivity
 echo "Test 1: Verifying current network connectivity..."
@@ -65,6 +67,10 @@ done
 
 echo ""
 echo "  Network connectivity: $CONNECTED/$TOTAL controllers reachable"
+if [ "$STRICT" = "1" ] && [ "$CONNECTED" -eq 0 ]; then
+    echo "  [STRICT] no controllers reachable"
+    FAILED_CHECKS=$((FAILED_CHECKS + 1))
+fi
 
 sleep 2
 
@@ -72,8 +78,11 @@ sleep 2
 echo ""
 echo "Test 2: Checking split-brain prevention mechanisms..."
 
-# Query each controller for cluster state
-declare -A CLUSTER_STATES
+# Query each controller for cluster state.
+# Use indexed arrays for portability (macOS bash 3 does not support associative arrays).
+CLUSTER_STATES_1=""
+CLUSTER_STATES_2=""
+CLUSTER_STATES_3=""
 for i in 1 2 3; do
     eval "HOST=\$CTRL_$i"
     eval "PORT=\$PORT_$i"
@@ -85,14 +94,22 @@ for i in 1 2 3; do
         LEADER=$(echo "$METRICS" | grep -i "leader" | head -1 || echo "")
         TERM=$(echo "$METRICS" | grep -E "(term|epoch)" | head -1 || echo "")
 
-        CLUSTER_STATES[$i]="members:$MEMBERS leader:$LEADER term:$TERM"
+        case "$i" in
+            1) CLUSTER_STATES_1="members:$MEMBERS leader:$LEADER term:$TERM" ;;
+            2) CLUSTER_STATES_2="members:$MEMBERS leader:$LEADER term:$TERM" ;;
+            3) CLUSTER_STATES_3="members:$MEMBERS leader:$LEADER term:$TERM" ;;
+        esac
 
         echo "  Controller $i state:"
         [ -n "$MEMBERS" ] && echo "    Members: $MEMBERS"
         [ -n "$LEADER" ] && echo "    Leader: $LEADER"
         [ -n "$TERM" ] && echo "    Term/Epoch: $TERM"
     else
-        CLUSTER_STATES[$i]="UNREACHABLE"
+        case "$i" in
+            1) CLUSTER_STATES_1="UNREACHABLE" ;;
+            2) CLUSTER_STATES_2="UNREACHABLE" ;;
+            3) CLUSTER_STATES_3="UNREACHABLE" ;;
+        esac
         echo "  Controller $i: UNREACHABLE"
     fi
 done
@@ -102,7 +119,7 @@ echo ""
 echo "  Split-brain check:"
 # In a healthy cluster, all nodes should agree on the leader
 # This is a simplified check - real implementation would parse metrics properly
-UNIQUE_LEADERS=$(for state in "${CLUSTER_STATES[@]}"; do
+UNIQUE_LEADERS=$(for state in "$CLUSTER_STATES_1" "$CLUSTER_STATES_2" "$CLUSTER_STATES_3"; do
     echo "$state" | grep -oE "leader:[^ ]+" || true
 done | sort -u | wc -l)
 
@@ -110,6 +127,9 @@ if [ "$UNIQUE_LEADERS" -le 1 ]; then
     echo "    No split-brain detected (consistent leader view)"
 else
     echo "    WARNING: Multiple leader views detected - possible split-brain!"
+    if [ "$STRICT" = "1" ]; then
+        FAILED_CHECKS=$((FAILED_CHECKS + 1))
+    fi
 fi
 
 sleep 2
@@ -282,7 +302,24 @@ sleep 1
 # Test 6: Submit jobs to verify current cluster health
 echo ""
 echo "Test 6: Verifying cluster accepts operations..."
-OUTPUT=$(sbatch /jobs/batch/job_cpu_small.sh 2>&1 || echo "FAILED")
+submit_test_job() {
+    if command -v sbatch >/dev/null 2>&1; then
+        sbatch /jobs/batch/job_cpu_small.sh 2>&1
+        return 0
+    fi
+
+    # Fallback for host executions where sbatch is not installed locally.
+    if command -v docker >/dev/null 2>&1 && [ -f docker/docker-compose.ha.yml ]; then
+        docker compose -f docker/docker-compose.ha.yml exec -T slurm-client \
+            bash -lc "sed -i 's/^SlurmctldHost=.*/SlurmctldHost=flurm-ctrl-1/' /etc/slurm/slurm.conf && sbatch /jobs/test_job.sh" 2>&1
+        return 0
+    fi
+
+    echo "FAILED: sbatch unavailable locally and docker slurm-client fallback unavailable"
+    return 1
+}
+
+OUTPUT=$(submit_test_job 2>&1 || echo "FAILED")
 if echo "$OUTPUT" | grep -qi "submitted\|success"; then
     JOB_ID=$(echo "$OUTPUT" | grep -oE '[0-9]+' | head -1)
     echo "  Test job submitted: ID=$JOB_ID"
@@ -293,6 +330,9 @@ if echo "$OUTPUT" | grep -qi "submitted\|success"; then
     scancel "$JOB_ID" 2>/dev/null || true
 else
     echo "  Job submission: $OUTPUT"
+    if [ "$STRICT" = "1" ]; then
+        FAILED_CHECKS=$((FAILED_CHECKS + 1))
+    fi
 fi
 
 # Final summary
@@ -314,5 +354,10 @@ echo "  - Majority partition maintains quorum"
 echo "  - No split-brain (multiple leaders)"
 echo "  - Clean recovery when partition heals"
 echo ""
+
+if [ "$STRICT" = "1" ] && [ "$FAILED_CHECKS" -gt 0 ]; then
+    echo "=== Test: Network Partition Simulation FAILED ($FAILED_CHECKS strict checks) ==="
+    exit 1
+fi
 
 exit 0

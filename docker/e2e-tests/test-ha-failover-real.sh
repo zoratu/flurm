@@ -12,7 +12,7 @@
 # 3. Provides helper commands for manual testing
 # 4. Checks cluster state and quorum
 
-set -e
+set -euo pipefail
 
 echo "=== Test: Real HA Failover ==="
 echo ""
@@ -31,7 +31,9 @@ PORT_3="${FLURM_CTRL_PORT_3:-9092}"
 # Test 1: Check all 3 controllers are available
 echo "Test 1: Checking all 3 controllers availability..."
 AVAILABLE=0
-declare -A CTRL_STATUS
+CTRL_STATUS_1="DOWN"
+CTRL_STATUS_2="DOWN"
+CTRL_STATUS_3="DOWN"
 
 for i in 1 2 3; do
     eval "HOST=\$CTRL_$i"
@@ -43,11 +45,19 @@ for i in 1 2 3; do
 
     if [ "$RESPONSE" = "200" ]; then
         echo "  Controller $i (${HOST}:${PORT}): UP"
-        CTRL_STATUS[$i]="UP"
+        case "$i" in
+            1) CTRL_STATUS_1="UP" ;;
+            2) CTRL_STATUS_2="UP" ;;
+            3) CTRL_STATUS_3="UP" ;;
+        esac
         AVAILABLE=$((AVAILABLE + 1))
     else
         echo "  Controller $i (${HOST}:${PORT}): DOWN (HTTP $RESPONSE)"
-        CTRL_STATUS[$i]="DOWN"
+        case "$i" in
+            1) CTRL_STATUS_1="DOWN" ;;
+            2) CTRL_STATUS_2="DOWN" ;;
+            3) CTRL_STATUS_3="DOWN" ;;
+        esac
     fi
 done
 
@@ -68,7 +78,8 @@ sleep 2
 echo ""
 echo "Test 2: Querying cluster/consensus metrics..."
 for i in 1 2 3; do
-    if [ "${CTRL_STATUS[$i]}" = "UP" ]; then
+    eval "STATUS=\$CTRL_STATUS_$i"
+    if [ "$STATUS" = "UP" ]; then
         METRICS=$(cat /tmp/metrics_$i.txt 2>/dev/null || echo "")
 
         # Look for Ra/consensus-related metrics
@@ -110,7 +121,8 @@ done
 echo ""
 echo "Test 4: Querying jobs across controllers..."
 for i in 1 2 3; do
-    if [ "${CTRL_STATUS[$i]}" = "UP" ]; then
+    eval "STATUS=\$CTRL_STATUS_$i"
+    if [ "$STATUS" = "UP" ]; then
         eval "HOST=\$CTRL_$i"
         eval "PORT=\$PORT_$i"
 

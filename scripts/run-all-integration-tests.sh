@@ -91,13 +91,21 @@ check_prerequisites() {
     log_success "Prerequisites OK"
 }
 
-# Test suites configuration
-declare -A TEST_SUITES
-TEST_SUITES=(
-    ["slurm-interop"]="run-slurm-interop-tests.sh"
-    ["ha-failover"]="run-ha-failover-tests.sh"
-    ["migration-e2e"]="run-migration-e2e-tests.sh"
-)
+# Test suites configuration (portable for bash 3/macOS).
+TEST_SUITE_NAMES=("slurm-interop" "ha-failover" "migration-e2e")
+TEST_SUITE_SCRIPTS=("run-slurm-interop-tests.sh" "run-ha-failover-tests.sh" "run-migration-e2e-tests.sh")
+
+lookup_suite_script() {
+    local suite_name="$1"
+    local i
+    for i in "${!TEST_SUITE_NAMES[@]}"; do
+        if [[ "${TEST_SUITE_NAMES[$i]}" == "$suite_name" ]]; then
+            echo "${TEST_SUITE_SCRIPTS[$i]}"
+            return 0
+        fi
+    done
+    return 1
+}
 
 # Run unit tests first
 run_unit_tests() {
@@ -116,7 +124,8 @@ run_unit_tests() {
 # Run a single integration test suite
 run_suite() {
     local suite_name=$1
-    local script=${TEST_SUITES[$suite_name]}
+    local script
+    script="$(lookup_suite_script "$suite_name" || true)"
 
     if [[ -z "$script" ]]; then
         log_error "Unknown suite: $suite_name"
@@ -150,7 +159,7 @@ run_all_suites() {
     local failed_suites=()
     local passed_suites=()
 
-    for suite_name in "${!TEST_SUITES[@]}"; do
+    for suite_name in "${TEST_SUITE_NAMES[@]}"; do
         if run_suite "$suite_name"; then
             passed_suites+=("$suite_name")
         else
