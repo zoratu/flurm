@@ -9,6 +9,7 @@
         test-flake-detection test-mutation-sanity \
         test-soak-cadence-short test-soak-cadence test-soak-cadence-long \
         check-coverage-advanced ci-cadence ci-local coverage-full \
+        ci-nightly \
         hooks-install check-quick check-prepush check-consistency check-coverage
 
 REBAR3 ?= rebar3
@@ -125,8 +126,20 @@ ci-cadence:
 	if [ "$${FLURM_RUN_NETWORK_FAULT:-0}" = "1" ]; then FLURM_NETWORK_FAULT_REQUIRED=1 FLURM_RUN_PACKET_LOSS_FAULTS="$${FLURM_RUN_PACKET_LOSS_FAULTS:-1}" ./scripts/run-network-fault-injection-tests.sh; else echo "ci-cadence: skip network fault (set FLURM_RUN_NETWORK_FAULT=1)"; fi
 	if [ "$${FLURM_RUN_UPGRADE_REPLAY:-0}" = "1" ]; then FLURM_UPGRADE_REPLAY_REQUIRED=1 ./scripts/run-upgrade-rollback-replay-tests.sh; else echo "ci-cadence: skip upgrade replay (set FLURM_RUN_UPGRADE_REPLAY=1)"; fi
 	if [ "$${FLURM_RUN_SOAK_CADENCE:-0}" = "1" ]; then ./scripts/run-soak-cadence.sh "$${FLURM_SOAK_CADENCE:-short}"; else echo "ci-cadence: skip soak cadence (set FLURM_RUN_SOAK_CADENCE=1)"; fi
-	if [ "$${FLURM_RUN_MUTATION_SANITY:-0}" = "1" ]; then ./scripts/run-mutation-sanity.sh; else echo "ci-cadence: skip mutation sanity (set FLURM_RUN_MUTATION_SANITY=1)"; fi
-	if [ "$${FLURM_RUN_FLAKE_DETECTION:-0}" = "1" ]; then ./scripts/run-flake-detection.sh; else echo "ci-cadence: skip flake detection (set FLURM_RUN_FLAKE_DETECTION=1)"; fi
+	if [ "$${FLURM_RUN_MUTATION_SANITY:-1}" = "1" ]; then ./scripts/run-mutation-sanity.sh; else echo "ci-cadence: skip mutation sanity (set FLURM_RUN_MUTATION_SANITY=1)"; fi
+	if [ "$${FLURM_RUN_FLAKE_DETECTION:-1}" = "1" ]; then ./scripts/run-flake-detection.sh; else echo "ci-cadence: skip flake detection (set FLURM_RUN_FLAKE_DETECTION=1)"; fi
+
+# Nightly long-cadence gate (suitable for cron/Jenkins/Buildkite schedulers).
+ci-nightly:
+	FLURM_RUN_NETWORK_FAULT="$${FLURM_RUN_NETWORK_FAULT:-1}" \
+	FLURM_RUN_PACKET_LOSS_FAULTS="$${FLURM_RUN_PACKET_LOSS_FAULTS:-1}" \
+	FLURM_RUN_UPGRADE_REPLAY="$${FLURM_RUN_UPGRADE_REPLAY:-1}" \
+	FLURM_RUN_UPGRADE_SNAPSHOT_REPLAY="$${FLURM_RUN_UPGRADE_SNAPSHOT_REPLAY:-1}" \
+	FLURM_RUN_SOAK_CADENCE="$${FLURM_RUN_SOAK_CADENCE:-1}" \
+	FLURM_SOAK_CADENCE="$${FLURM_SOAK_CADENCE:-long}" \
+	FLURM_RUN_MUTATION_SANITY="$${FLURM_RUN_MUTATION_SANITY:-1}" \
+	FLURM_RUN_FLAKE_DETECTION="$${FLURM_RUN_FLAKE_DETECTION:-1}" \
+	$(MAKE) ci-cadence
 
 # Full local CI runner (works in any runner, not tied to GitHub Actions).
 ci-local:
@@ -433,6 +446,7 @@ help:
 	@echo "    make test-mutation-sanity     - Mutation sanity kill-rate gate"
 	@echo "    make check-coverage-advanced  - Enforce line + clause/function floors"
 	@echo "    make ci-local                 - Local deterministic CI gate"
-	@echo "    make ci-cadence               - Extended non-GitHub CI cadence"
+	@echo "    make ci-cadence               - Extended non-GitHub CI cadence (mutation+flake default on)"
+	@echo "    make ci-nightly               - Nightly long-cadence gate (long soak + heavy suites)"
 	@echo "    make cover        - Generate coverage report"
 	@echo "    make docs         - Generate EDoc documentation"

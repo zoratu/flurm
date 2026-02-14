@@ -20,10 +20,10 @@ fi
 if [ "${FLURM_CI_LOCAL_SOAK:-0}" = "1" ]; then
   ./scripts/run-soak-cadence.sh "${FLURM_CI_LOCAL_SOAK_MODE:-short}"
 fi
-if [ "${FLURM_CI_LOCAL_MUTATION_SANITY:-0}" = "1" ]; then
+if [ "${FLURM_CI_LOCAL_MUTATION_SANITY:-1}" = "1" ]; then
   ./scripts/run-mutation-sanity.sh
 fi
-if [ "${FLURM_CI_LOCAL_FLAKE_DETECTION:-0}" = "1" ]; then
+if [ "${FLURM_CI_LOCAL_FLAKE_DETECTION:-1}" = "1" ]; then
   ./scripts/run-flake-detection.sh
 fi
 ./scripts/run_coverage.escript

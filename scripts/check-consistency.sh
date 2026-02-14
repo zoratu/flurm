@@ -42,10 +42,10 @@ case "$MODE" in
     if [ "${FLURM_CHECK_SOAK_CADENCE:-0}" = "1" ]; then
       ./scripts/run-soak-cadence.sh "${FLURM_SOAK_CADENCE:-short}"
     fi
-    if [ "${FLURM_CHECK_MUTATION_SANITY:-0}" = "1" ]; then
+    if [ "${FLURM_CHECK_MUTATION_SANITY:-1}" = "1" ]; then
       ./scripts/run-mutation-sanity.sh
     fi
-    if [ "${FLURM_CHECK_FLAKE_DETECTION:-0}" = "1" ]; then
+    if [ "${FLURM_CHECK_FLAKE_DETECTION:-1}" = "1" ]; then
       ./scripts/run-flake-detection.sh
     fi
     if [ "${FLURM_CHECK_DOCKER:-0}" = "1" ]; then

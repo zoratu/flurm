@@ -159,8 +159,11 @@ make ci-local
 # - optional network partition + packet-loss integration gate
 # - optional upgrade/rollback replay gate
 # - optional soak cadence gate
-# - optional mutation sanity and flake detectors
+# - mutation sanity and flake detectors enabled by default
 make ci-cadence
+
+# Nightly heavy gate (long soak + all heavy checks enabled by default)
+make ci-nightly
 ```
 
 Environment toggles for `make ci-cadence`:
@@ -172,8 +175,8 @@ FLURM_RUN_UPGRADE_REPLAY=1
 FLURM_RUN_UPGRADE_SNAPSHOT_REPLAY=1
 FLURM_RUN_SOAK_CADENCE=1
 FLURM_SOAK_CADENCE=short   # short|standard|long
-FLURM_RUN_MUTATION_SANITY=1
-FLURM_RUN_FLAKE_DETECTION=1
+FLURM_RUN_MUTATION_SANITY=1   # default: 1
+FLURM_RUN_FLAKE_DETECTION=1   # default: 1
 
 # Advanced coverage floor (line + clause/function)
 make check-coverage-advanced

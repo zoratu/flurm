@@ -23,6 +23,8 @@ This comprehensive guide covers all aspects of testing FLURM, from running basic
 | **Test Pass Rate** | 100% (of runnable tests) |
 | **Coverage** | 6% overall (see [COVERAGE.md](COVERAGE.md) for details) |
 
+Note: strict DBD fast coverage gate currently enforces 100% for key DBD modules.
+
 ### Integration Test Suites
 
 | Suite | Tests | Status |
@@ -52,6 +54,12 @@ rebar3 eunit --module=flurm_protocol_codec_tests
 
 # View coverage report
 open _build/test/cover/index.html
+
+# Strict DBD 100% fast gate
+make test-dbd-fast
+
+# Nightly long-cadence gate (heavy suites + long soak)
+make ci-nightly
 ```
 
 ---
