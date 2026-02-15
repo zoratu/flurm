@@ -65,6 +65,8 @@ cloud_scaling_test_() ->
       {"Scale up with provider", fun test_scale_up_with_provider/0},
       {"Scale down without provider fails", fun test_scale_down_no_provider/0},
       {"Scale down at min capacity", fun test_scale_down_min_capacity/0},
+      {"Generic scale up webhook error path", fun test_generic_scale_up_webhook_error/0},
+      {"Generic scale down completion path", fun test_generic_scale_down_completion/0},
       {"Request nodes", fun test_request_nodes/0},
       {"Terminate nodes", fun test_terminate_nodes/0},
       {"List cloud instances", fun test_list_cloud_instances/0},
@@ -340,6 +342,56 @@ test_scale_down_min_capacity() ->
     %% With 0 current nodes and min_nodes = 0, scale down should fail
     Result = flurm_cloud_scaling:request_scale_down(1, #{}),
     ?assertEqual({error, at_min_capacity}, Result),
+    ok.
+
+test_generic_scale_up_webhook_error() ->
+    meck:new(httpc, [non_strict, no_link]),
+    meck:expect(httpc, request, fun(post, _Req, _Opts, _HttpOpts) ->
+        {error, timeout}
+    end),
+    try
+        ok = flurm_cloud_scaling:configure_provider(generic, #{
+            scale_up_webhook => <<"http://127.0.0.1/scale_up">>,
+            scale_down_webhook => <<"http://127.0.0.1/scale_down">>
+        }),
+        ok = flurm_cloud_scaling:enable(),
+        {ok, _ActionId} = flurm_cloud_scaling:request_scale_up(2, #{source => test}),
+        timer:sleep(80),
+        Stats = flurm_cloud_scaling:get_stats(),
+        ?assert(is_map(Stats)),
+        ?assert(maps:get(failed_actions, Stats) >= 1)
+    after
+        meck:unload(httpc)
+    end,
+    ok.
+
+test_generic_scale_down_completion() ->
+    %% Seed cloud nodes using GCP provider request_nodes path (offline/mock style).
+    ok = flurm_cloud_scaling:configure_provider(gcp, #{
+        project_id => <<"test-project">>,
+        zone => <<"us-central1-a">>,
+        credentials_file => <<"/path/to/creds.json">>
+    }),
+    {ok, _Ids} = flurm_cloud_scaling:request_nodes(#{count => 2}),
+
+    %% Switch to generic provider and trigger scale down.
+    ok = flurm_cloud_scaling:configure_provider(generic, #{
+        scale_up_webhook => <<"http://127.0.0.1/scale_up">>,
+        scale_down_webhook => <<"http://127.0.0.1/scale_down">>
+    }),
+    meck:new(httpc, [non_strict, no_link]),
+    meck:expect(httpc, request, fun(post, _Req, _Opts, _HttpOpts) ->
+        {error, econnrefused}
+    end),
+    try
+        {ok, _ActionId} = flurm_cloud_scaling:request_scale_down(1, #{source => test}),
+        timer:sleep(80),
+        Stats = flurm_cloud_scaling:get_stats(),
+        ?assert(is_map(Stats)),
+        ?assert(maps:get(failed_actions, Stats) >= 1)
+    after
+        meck:unload(httpc)
+    end,
     ok.
 
 %%====================================================================

@@ -46,7 +46,7 @@ job_manager_test_() ->
         {"Update non-existent job", fun test_update_nonexistent_job/0},
         {"Hold pending job", fun test_hold_pending_job/0},
         {"Hold already held job", fun test_hold_already_held_job/0},
-        {"Hold running job error", fun test_hold_running_job_error/0},
+        {"Hold running job sets priority", fun test_hold_running_job/0},
         {"Hold non-existent job", fun test_hold_nonexistent_job/0},
         {"Release held job", fun test_release_held_job/0},
         {"Release pending job", fun test_release_pending_job/0},
@@ -435,15 +435,20 @@ test_hold_already_held_job() ->
     ok = flurm_job_manager:hold_job(JobId),
     ok.
 
-test_hold_running_job_error() ->
+test_hold_running_job() ->
     JobSpec = make_job_spec(),
     {ok, JobId} = flurm_job_manager:submit_job(JobSpec),
 
     %% Update to running
     ok = flurm_job_manager:update_job(JobId, #{state => running}),
 
+    %% SLURM semantics: holding running job sets priority=0 (not an error)
     Result = flurm_job_manager:hold_job(JobId),
-    ?assertMatch({error, {invalid_state, running}}, Result),
+    ?assertEqual(ok, Result),
+    %% Verify job is still running but priority is 0
+    {ok, Job} = flurm_job_manager:get_job(JobId),
+    ?assertEqual(running, Job#job.state),
+    ?assertEqual(0, Job#job.priority),
     ok.
 
 test_hold_nonexistent_job() ->

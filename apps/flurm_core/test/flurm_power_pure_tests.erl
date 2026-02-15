@@ -2177,3 +2177,41 @@ power_timeout_nonexistent_node_test() ->
     erlang:cancel_timer(State#state.power_check_timer),
     erlang:cancel_timer(State#state.energy_sample_timer),
     cleanup(ok).
+
+%%====================================================================
+%% Additional Tests - TEST-exported helpers
+%%====================================================================
+
+validate_transition_normalization_test() ->
+    %% Directly exercise TEST-exported transition validator branches.
+    ?assertEqual(ok, flurm_power:validate_transition(powered_off, on)),
+    ?assertEqual(ok, flurm_power:validate_transition(powered_on, suspend)),
+    ?assertEqual(ok, flurm_power:validate_transition(powered_on, powered_on)),
+    ?assertMatch(
+        {error, {invalid_transition, powering_up, off}},
+        flurm_power:validate_transition(powering_up, off)
+    ).
+
+get_policy_settings_variants_test() ->
+    Agg = flurm_power:get_policy_settings(aggressive),
+    Bal = flurm_power:get_policy_settings(balanced),
+    Con = flurm_power:get_policy_settings(conservative),
+    ?assert(is_map(Agg)),
+    ?assert(is_map(Bal)),
+    ?assert(is_map(Con)),
+    ?assertEqual(60, maps:get(idle_timeout, Agg)),
+    ?assertEqual(300, maps:get(idle_timeout, Bal)),
+    ?assertEqual(900, maps:get(idle_timeout, Con)).
+
+parse_mac_address_formats_test() ->
+    ?assertEqual(<<16#AA,16#BB,16#CC,16#DD,16#EE,16#FF>>,
+                 flurm_power:parse_mac_address(<<"AA:BB:CC:DD:EE:FF">>)),
+    ?assertEqual(<<16#01,16#02,16#03,16#04,16#05,16#06>>,
+                 flurm_power:parse_mac_address(<<"01-02-03-04-05-06">>)).
+
+build_wol_packet_layout_test() ->
+    Packet = flurm_power:build_wol_packet(<<16#AA,16#BB,16#CC,16#DD,16#EE,16#FF>>),
+    ?assertEqual(102, byte_size(Packet)),
+    <<Header:6/binary, Body/binary>> = Packet,
+    ?assertEqual(binary:copy(<<255>>, 6), Header),
+    ?assertEqual(binary:copy(<<16#AA,16#BB,16#CC,16#DD,16#EE,16#FF>>, 16), Body).

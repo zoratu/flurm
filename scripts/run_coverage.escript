@@ -3,13 +3,10 @@
 %%! -pa _build/test/lib/*/ebin
 
 %% Merged full-project coverage report across umbrella apps.
-%% Runs per-app EUnit with cover, imports all coverdata, and writes:
+%% Runs full EUnit + Common Test with cover, imports all coverdata, and writes:
 %%   coverage/full_coverage_report.txt
 %%   coverage/full_coverage.csv
 %%   coverage/full_coverage_under_100.txt
-
--define(APPS, [flurm_protocol, flurm_config, flurm_core, flurm_db,
-               flurm_controller, flurm_node_daemon, flurm_dbd, flurm_pmi]).
 
 main(_Args) ->
     Root = cwd(),
@@ -20,10 +17,13 @@ main(_Args) ->
     ok = ensure_clean_tmp(TmpDir),
     ok = ensure_dir(filename:join(Root, "coverage/placeholder")),
 
-    Results = [run_app_coverage(Root, TmpDir, App) || App <- ?APPS],
-    print_app_results(Results),
+    EunitResult = run_eunit_coverage(Root, TmpDir),
+    print_run_result("EUnit run", EunitResult),
+    CtResult = run_ct_coverage(Root, TmpDir),
+    print_run_result("Common Test run", CtResult),
 
     cover:start(),
+    add_test_code_paths(Root),
     compile_all_source_modules(Root),
     import_all_coverdata(TmpDir),
 
@@ -53,20 +53,37 @@ ensure_clean_tmp(TmpDir) ->
 ensure_dir(Path) ->
     filelib:ensure_dir(Path).
 
-run_app_coverage(Root, TmpDir, App) ->
-    AppStr = atom_to_list(App),
-    CoverFile = filename:join(TmpDir, AppStr ++ ".coverdata"),
-    LogFile = filename:join(TmpDir, AppStr ++ ".log"),
+run_eunit_coverage(Root, TmpDir) ->
+    CoverFile = filename:join(TmpDir, "eunit.coverdata"),
+    LogFile = filename:join(TmpDir, "eunit.log"),
     Cmd = io_lib:format(
-            "cd ~s && rebar3 as test eunit --app=~s --cover > ~s 2>&1; "
+            "cd ~s && rebar3 as test eunit --cover > ~s 2>&1; "
             "status=$?; "
             "if [ -f _build/test/cover/eunit.coverdata ]; then "
             "cp _build/test/cover/eunit.coverdata ~s; fi; "
             "echo EXIT:$status",
-            [shell_escape(Root), AppStr, shell_escape(LogFile), shell_escape(CoverFile)]),
+            [shell_escape(Root), shell_escape(LogFile), shell_escape(CoverFile)]),
     Out = os:cmd(lists:flatten(Cmd)),
     Exit = parse_exit(Out),
-    {AppStr, Exit, LogFile, CoverFile}.
+    {"eunit", Exit, LogFile, CoverFile}.
+
+run_ct_coverage(Root, TmpDir) ->
+    CoverFile = filename:join(TmpDir, "ct.coverdata"),
+    LogFile = filename:join(TmpDir, "ct.log"),
+    Cmd = io_lib:format(
+            "cd ~s && rebar3 ct --cover > ~s 2>&1; "
+            "status=$?; "
+            "if [ -f _build/test/cover/ct.coverdata ]; then "
+            "cp _build/test/cover/ct.coverdata ~s; "
+            "elif [ -f _build/test/cover/eunit.coverdata ]; then "
+            "cp _build/test/cover/eunit.coverdata ~s; "
+            "fi; "
+            "echo EXIT:$status",
+            [shell_escape(Root), shell_escape(LogFile),
+             shell_escape(CoverFile), shell_escape(CoverFile)]),
+    Out = os:cmd(lists:flatten(Cmd)),
+    Exit = parse_exit(Out),
+    {"ct", Exit, LogFile, CoverFile}.
 
 parse_exit(Output) ->
     case string:find(Output, "EXIT:") of
@@ -80,17 +97,21 @@ parse_exit(Output) ->
             end
     end.
 
-print_app_results(Results) ->
-    io:format("Per-app test runs:~n"),
-    lists:foreach(fun({App, Exit, _Log, Cover}) ->
-        CoverExists = filelib:is_file(Cover),
-        Status = case {Exit, CoverExists} of
-            {0, true} -> "ok";
-            _ -> "fail"
-        end,
-        io:format("  ~-18s ~-4s (exit=~p, cover=~p)~n", [App, Status, Exit, CoverExists])
-    end, Results),
-    io:format("~n").
+print_run_result(Label, {_Tag, Exit, _Log, Cover}) ->
+    CoverExists = filelib:is_file(Cover),
+    Status = case {Exit, CoverExists} of
+        {0, true} -> "ok";
+        _ -> "fail"
+    end,
+    io:format("~s: ~-4s (exit=~p, cover=~p)~n~n",
+              [Label, Status, Exit, CoverExists]).
+
+add_test_code_paths(Root) ->
+    EbinDirs = filelib:wildcard(filename:join(Root, "_build/test/lib/*/ebin")),
+    lists:foreach(fun(Dir) ->
+        _ = code:add_patha(Dir),
+        ok
+    end, EbinDirs).
 
 compile_all_source_modules(Root) ->
     SrcFiles = filelib:wildcard(filename:join(Root, "apps/*/src/*.erl")),
