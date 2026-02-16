@@ -1115,8 +1115,11 @@ decode_body_kill_job_shorter_format_test() ->
     ?assertEqual(5, Req#kill_job_request.step_id).
 
 decode_body_update_job_with_job_id_test() ->
-    %% With numeric job_id
-    Binary = <<123:32/big, "rest">>,
+    %% The codec tries to unpack a string from small binaries
+    %% A packed string is: length:32, chars..., NUL
+    %% The string "123\0" has length 4
+    JobIdStr = <<"123", 0>>,
+    Binary = <<(byte_size(JobIdStr)):32/big, JobIdStr/binary>>,
     {ok, Req} = flurm_protocol_codec:decode_body(?REQUEST_UPDATE_JOB, Binary),
     ?assertEqual(123, Req#update_job_request.job_id).
 
