@@ -114,14 +114,18 @@ add_test_code_paths(Root) ->
     end, EbinDirs).
 
 compile_all_source_modules(Root) ->
-    SrcFiles = filelib:wildcard(filename:join(Root, "apps/*/src/*.erl")),
-    IncludeDirs = filelib:wildcard(filename:join(Root, "apps/*/include")) ++
-                  filelib:wildcard(filename:join(Root, "_build/test/lib/*/include")),
-    lists:foreach(fun(File) ->
-        Opts = [{i, Dir} || Dir <- IncludeDirs],
-        _ = cover:compile(File, Opts),
-        ok
-    end, SrcFiles).
+    %% Use cover:compile_beam on test-compiled beam files to match what was tested.
+    %% This ensures modules match the coverdata format.
+    BeamDirs = filelib:wildcard(filename:join(Root, "_build/test/lib/flurm_*/ebin")),
+    lists:foreach(fun(Dir) ->
+        BeamFiles = filelib:wildcard(filename:join(Dir, "*.beam")),
+        lists:foreach(fun(Beam) ->
+            case cover:compile_beam(Beam) of
+                {ok, _} -> ok;
+                {error, _} -> ok  %% Skip modules that fail (e.g., test modules)
+            end
+        end, BeamFiles)
+    end, BeamDirs).
 
 import_all_coverdata(TmpDir) ->
     Files = filelib:wildcard(filename:join(TmpDir, "*.coverdata")),

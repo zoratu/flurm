@@ -47,3 +47,4 @@ rebar3.crashdump
 # TLA+ generated files
 tla/states/
 tla/*.jar
+*.coverdata
