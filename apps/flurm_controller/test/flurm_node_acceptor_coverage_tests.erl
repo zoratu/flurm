@@ -330,3 +330,122 @@ test_fail_jobs_on_node() ->
         lists:member(<<"testnode">>, AllocatedNodes)
     end, Jobs),
     ?assertEqual(1, length(RunningOnNode)).
+
+%%====================================================================
+%% Pure Function Tests (no mocking required)
+%% These test the -ifdef(TEST) exported helper functions directly
+%%====================================================================
+
+%% build_node_spec Tests
+
+build_node_spec_minimal_test() ->
+    Payload = #{<<"hostname">> => <<"node1.example.com">>},
+    Result = flurm_node_acceptor:build_node_spec(Payload),
+    ?assert(is_map(Result)),
+    ?assertEqual(<<"node1.example.com">>, maps:get(hostname, Result)),
+    ?assertEqual(1, maps:get(cpus, Result)),
+    ?assertEqual(1024, maps:get(memory_mb, Result)),
+    ?assertEqual(idle, maps:get(state, Result)),
+    ?assertEqual([<<"default">>], maps:get(partitions, Result)).
+
+build_node_spec_full_test() ->
+    Payload = #{
+        <<"hostname">> => <<"compute01">>,
+        <<"cpus">> => 32,
+        <<"memory_mb">> => 131072
+    },
+    Result = flurm_node_acceptor:build_node_spec(Payload),
+    ?assertEqual(<<"compute01">>, maps:get(hostname, Result)),
+    ?assertEqual(32, maps:get(cpus, Result)),
+    ?assertEqual(131072, maps:get(memory_mb, Result)).
+
+%% build_heartbeat_data Tests
+
+build_heartbeat_data_minimal_test() ->
+    Payload = #{<<"hostname">> => <<"node1">>},
+    Result = flurm_node_acceptor:build_heartbeat_data(Payload),
+    ?assert(is_map(Result)),
+    ?assertEqual(<<"node1">>, maps:get(hostname, Result)),
+    ?assertEqual(0.0, maps:get(load_avg, Result)),
+    ?assertEqual(0, maps:get(free_memory_mb, Result)),
+    ?assertEqual([], maps:get(running_jobs, Result)).
+
+build_heartbeat_data_full_test() ->
+    Payload = #{
+        <<"hostname">> => <<"compute01">>,
+        <<"load_avg">> => 0.75,
+        <<"free_memory_mb">> => 64000,
+        <<"running_jobs">> => [1, 2, 3]
+    },
+    Result = flurm_node_acceptor:build_heartbeat_data(Payload),
+    ?assertEqual(0.75, maps:get(load_avg, Result)),
+    ?assertEqual(64000, maps:get(free_memory_mb, Result)),
+    ?assertEqual([1, 2, 3], maps:get(running_jobs, Result)).
+
+%% exit_code_to_state Tests
+
+exit_code_to_state_zero_test() ->
+    ?assertEqual(completed, flurm_node_acceptor:exit_code_to_state(0)).
+
+exit_code_to_state_nonzero_test() ->
+    ?assertEqual(failed, flurm_node_acceptor:exit_code_to_state(1)),
+    ?assertEqual(failed, flurm_node_acceptor:exit_code_to_state(-1)),
+    ?assertEqual(failed, flurm_node_acceptor:exit_code_to_state(137)).
+
+%% failure_reason_to_state Tests
+
+failure_reason_to_state_timeout_test() ->
+    ?assertEqual(timeout, flurm_node_acceptor:failure_reason_to_state(<<"timeout">>)).
+
+failure_reason_to_state_other_test() ->
+    ?assertEqual(failed, flurm_node_acceptor:failure_reason_to_state(<<"error">>)),
+    ?assertEqual(failed, flurm_node_acceptor:failure_reason_to_state(<<>>)),
+    ?assertEqual(failed, flurm_node_acceptor:failure_reason_to_state(<<"oom">>)).
+
+%% build_register_ack_payload Tests
+
+build_register_ack_payload_test() ->
+    Result = flurm_node_acceptor:build_register_ack_payload(<<"node1">>),
+    ?assertEqual(<<"node1">>, maps:get(<<"node_id">>, Result)),
+    ?assertEqual(<<"accepted">>, maps:get(<<"status">>, Result)).
+
+%% extract_message_from_buffer Tests
+
+extract_message_from_buffer_complete_test() ->
+    MsgData = <<"hello">>,
+    Len = byte_size(MsgData),
+    Buffer = <<Len:32, MsgData/binary>>,
+    Result = flurm_node_acceptor:extract_message_from_buffer(Buffer),
+    ?assertEqual({ok, MsgData, <<>>}, Result).
+
+extract_message_from_buffer_incomplete_test() ->
+    Buffer = <<100:32, "short">>,  % Claims 100 bytes but only 5
+    Result = flurm_node_acceptor:extract_message_from_buffer(Buffer),
+    ?assertEqual({incomplete, Buffer}, Result).
+
+extract_message_from_buffer_empty_test() ->
+    Result = flurm_node_acceptor:extract_message_from_buffer(<<>>),
+    ?assertEqual({incomplete, <<>>}, Result).
+
+%% frame_message Tests
+
+frame_message_test() ->
+    Msg = <<"hello">>,
+    Result = flurm_node_acceptor:frame_message(Msg),
+    <<Len:32, Data/binary>> = Result,
+    ?assertEqual(5, Len),
+    ?assertEqual(Msg, Data).
+
+frame_message_empty_test() ->
+    Result = flurm_node_acceptor:frame_message(<<>>),
+    <<Len:32, Data/binary>> = Result,
+    ?assertEqual(0, Len),
+    ?assertEqual(<<>>, Data).
+
+%% Roundtrip Tests
+
+frame_extract_roundtrip_test() ->
+    Msg = <<"test roundtrip">>,
+    Framed = flurm_node_acceptor:frame_message(Msg),
+    {ok, Extracted, <<>>} = flurm_node_acceptor:extract_message_from_buffer(Framed),
+    ?assertEqual(Msg, Extracted).

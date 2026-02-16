@@ -307,3 +307,25 @@ test_terminate() ->
     flurm_test_utils:wait_for_death(Pid),
 
     ?assertEqual(undefined, whereis(flurm_node_connection_manager)).
+
+%%====================================================================
+%% Pure Function Tests (-ifdef(TEST) exports)
+%%====================================================================
+
+log_debug_test() ->
+    %% Test log function with debug level
+    Result = flurm_node_connection_manager:log(debug, "Test ~s", ["message"]),
+    %% ok when lager running, {error, lager_not_running} otherwise
+    ?assert(Result =:= ok orelse Result =:= {error, lager_not_running}).
+
+log_info_test() ->
+    Result = flurm_node_connection_manager:log(info, "Info ~p", [data]),
+    ?assert(Result =:= ok orelse Result =:= {error, lager_not_running}).
+
+log_warning_test() ->
+    Result = flurm_node_connection_manager:log(warning, "Warning ~p", [reason]),
+    ?assert(Result =:= ok orelse Result =:= {error, lager_not_running}).
+
+log_error_test() ->
+    Result = flurm_node_connection_manager:log(error, "Error ~p", [error_data]),
+    ?assert(Result =:= ok orelse Result =:= {error, lager_not_running}).
