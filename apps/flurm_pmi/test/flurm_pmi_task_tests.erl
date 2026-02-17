@@ -44,7 +44,29 @@ pmi_task_test_() ->
         {"setup_pmi failure returns error",
          fun test_setup_pmi_failure/0},
         {"cleanup_pmi stops listener and finalizes",
-         fun test_cleanup_pmi/0}
+         fun test_cleanup_pmi/0},
+        {"get_pmi_env SLURM_PMI_FD undefined",
+         fun test_get_pmi_env_slurm_pmi_fd/0},
+        {"get_pmi_env MPICH_INTERFACE_HOSTNAME present",
+         fun test_get_pmi_env_mpich_hostname/0},
+        {"get_pmi_env OMPI_MCA_btl tcp,self",
+         fun test_get_pmi_env_ompi_mca_btl/0},
+        {"get_pmi_env different job ids",
+         fun test_get_pmi_env_different_job_ids/0},
+        {"get_pmi_env different step ids",
+         fun test_get_pmi_env_different_step_ids/0},
+        {"get_pmi_env large rank",
+         fun test_get_pmi_env_large_rank/0},
+        {"get_pmi_env rank zero",
+         fun test_get_pmi_env_rank_zero/0},
+        {"get_pmi_env all binaries",
+         fun test_get_pmi_env_all_binaries/0},
+        {"get_pmi_env no duplicates",
+         fun test_get_pmi_env_no_duplicates/0},
+        {"setup_pmi different sizes",
+         fun test_setup_pmi_different_sizes/0},
+        {"cleanup_pmi different job",
+         fun test_cleanup_pmi_different_job/0}
      ]}.
 
 %%====================================================================
@@ -142,3 +164,80 @@ test_cleanup_pmi() ->
     ok = flurm_pmi_task:cleanup_pmi(5, 0),
     ?assert(meck:called(flurm_pmi_listener, stop, [5, 0])),
     ?assert(meck:called(flurm_pmi_manager, finalize_job, [5, 0])).
+
+%%====================================================================
+%% Additional PMI Environment Tests
+%%====================================================================
+
+test_get_pmi_env_slurm_pmi_fd() ->
+    Env = flurm_pmi_task:get_pmi_env(10, 0, 3, 8),
+    %% SLURM_PMI_FD should be undefined (not using pre-connected FD)
+    ?assertEqual(<<"undefined">>, proplists:get_value(<<"SLURM_PMI_FD">>, Env)).
+
+test_get_pmi_env_mpich_hostname() ->
+    Env = flurm_pmi_task:get_pmi_env(10, 0, 3, 8),
+    %% MPICH_INTERFACE_HOSTNAME should be present
+    Hostname = proplists:get_value(<<"MPICH_INTERFACE_HOSTNAME">>, Env),
+    ?assertNotEqual(undefined, Hostname),
+    ?assert(is_binary(Hostname)).
+
+test_get_pmi_env_ompi_mca_btl() ->
+    Env = flurm_pmi_task:get_pmi_env(10, 0, 3, 8),
+    %% OMPI_MCA_btl should be tcp,self
+    ?assertEqual(<<"tcp,self">>, proplists:get_value(<<"OMPI_MCA_btl">>, Env)).
+
+test_get_pmi_env_different_job_ids() ->
+    Env1 = flurm_pmi_task:get_pmi_env(100, 0, 0, 4),
+    Env2 = flurm_pmi_task:get_pmi_env(200, 0, 0, 4),
+    JobId1 = proplists:get_value(<<"PMI_JOBID">>, Env1),
+    JobId2 = proplists:get_value(<<"PMI_JOBID">>, Env2),
+    ?assertEqual(<<"100_0">>, JobId1),
+    ?assertEqual(<<"200_0">>, JobId2),
+    ?assertNotEqual(JobId1, JobId2).
+
+test_get_pmi_env_different_step_ids() ->
+    Env1 = flurm_pmi_task:get_pmi_env(10, 0, 0, 4),
+    Env2 = flurm_pmi_task:get_pmi_env(10, 1, 0, 4),
+    JobId1 = proplists:get_value(<<"PMI_JOBID">>, Env1),
+    JobId2 = proplists:get_value(<<"PMI_JOBID">>, Env2),
+    ?assertEqual(<<"10_0">>, JobId1),
+    ?assertEqual(<<"10_1">>, JobId2).
+
+test_get_pmi_env_large_rank() ->
+    Env = flurm_pmi_task:get_pmi_env(10, 0, 999, 1000),
+    ?assertEqual(<<"999">>, proplists:get_value(<<"PMI_RANK">>, Env)),
+    ?assertEqual(<<"1000">>, proplists:get_value(<<"PMI_SIZE">>, Env)).
+
+test_get_pmi_env_rank_zero() ->
+    Env = flurm_pmi_task:get_pmi_env(1, 0, 0, 1),
+    ?assertEqual(<<"0">>, proplists:get_value(<<"PMI_RANK">>, Env)),
+    ?assertEqual(<<"1">>, proplists:get_value(<<"PMI_SIZE">>, Env)).
+
+test_get_pmi_env_all_binaries() ->
+    Env = flurm_pmi_task:get_pmi_env(10, 0, 3, 8),
+    lists:foreach(fun({K, V}) ->
+        ?assert(is_binary(K)),
+        ?assert(is_binary(V))
+    end, Env).
+
+test_get_pmi_env_no_duplicates() ->
+    Env = flurm_pmi_task:get_pmi_env(10, 0, 3, 8),
+    Keys = [K || {K, _V} <- Env],
+    UniqueKeys = lists:usort(Keys),
+    ?assertEqual(length(Keys), length(UniqueKeys)).
+
+test_setup_pmi_different_sizes() ->
+    FakePid = spawn(fun() -> receive stop -> ok end end),
+    meck:expect(flurm_pmi_listener, start_link, fun(J, S, Sz) ->
+        ?assertEqual(10, J),
+        ?assertEqual(0, S),
+        ?assertEqual(16, Sz),
+        {ok, FakePid}
+    end),
+    {ok, _Pid, _Path} = flurm_pmi_task:setup_pmi(10, 0, 16, <<"node1">>),
+    FakePid ! stop.
+
+test_cleanup_pmi_different_job() ->
+    ok = flurm_pmi_task:cleanup_pmi(999, 5),
+    ?assert(meck:called(flurm_pmi_listener, stop, [999, 5])),
+    ?assert(meck:called(flurm_pmi_manager, finalize_job, [999, 5])).

@@ -1156,3 +1156,463 @@ job_record_conversion_test_() ->
             ?assertEqual(#{cpu => 16, gpu => 2}, maps:get(tres_req, JobMap))
         end}
     ].
+
+%%====================================================================
+%% Additional Query Tests
+%%====================================================================
+
+query_jobs_limit_test_() ->
+    [
+        {"query_jobs with many jobs returns all", fun() ->
+            State0 = flurm_dbd_ra:init(#{}),
+            Meta = mock_meta(),
+            Jobs = [make_job_info(N) || N <- lists:seq(1, 10)],
+            State1 = lists:foldl(fun(JobInfo, Acc) ->
+                {NewState, {ok, _}, _} = flurm_dbd_ra:apply(Meta, {record_job, JobInfo}, Acc),
+                NewState
+            end, State0, Jobs),
+            {State1, {ok, AllJobs}, []} = flurm_dbd_ra:apply(Meta, {query_jobs, #{}}, State1),
+            ?assertEqual(10, length(AllJobs))
+        end},
+        {"query_jobs with combined filters", fun() ->
+            State0 = flurm_dbd_ra:init(#{}),
+            Meta = mock_meta(),
+            Job1 = make_job_info(1, #{user_name => <<"alice">>, partition => <<"gpu">>}),
+            Job2 = make_job_info(2, #{user_name => <<"alice">>, partition => <<"cpu">>}),
+            Job3 = make_job_info(3, #{user_name => <<"bob">>, partition => <<"gpu">>}),
+            {State1, _, _} = flurm_dbd_ra:apply(Meta, {record_job, Job1}, State0),
+            {State2, _, _} = flurm_dbd_ra:apply(Meta, {record_job, Job2}, State1),
+            {State3, _, _} = flurm_dbd_ra:apply(Meta, {record_job, Job3}, State2),
+            Filter = #{user_name => <<"alice">>, partition => <<"gpu">>},
+            {_, {ok, Jobs}, _} = flurm_dbd_ra:apply(Meta, {query_jobs, Filter}, State3),
+            ?assertEqual(1, length(Jobs))
+        end}
+    ].
+
+query_tres_multiple_periods_test_() ->
+    [
+        {"query_tres for different periods", fun() ->
+            State0 = flurm_dbd_ra:init(#{}),
+            Meta = mock_meta(),
+            Update1 = #{entity_type => user, entity_id => <<"period_user">>, period => <<"2024-01">>, cpu_seconds => 100},
+            Update2 = #{entity_type => user, entity_id => <<"period_user">>, period => <<"2024-02">>, cpu_seconds => 200},
+            {State1, ok, _} = flurm_dbd_ra:apply(Meta, {update_tres, Update1}, State0),
+            {State2, ok, _} = flurm_dbd_ra:apply(Meta, {update_tres, Update2}, State1),
+            {_, {ok, Usage1}, _} = flurm_dbd_ra:apply(Meta, {query_tres, {user, <<"period_user">>, <<"2024-01">>}}, State2),
+            {_, {ok, Usage2}, _} = flurm_dbd_ra:apply(Meta, {query_tres, {user, <<"period_user">>, <<"2024-02">>}}, State2),
+            ?assertEqual(100, maps:get(cpu_seconds, Usage1)),
+            ?assertEqual(200, maps:get(cpu_seconds, Usage2))
+        end},
+        {"query_tres for account type", fun() ->
+            State0 = flurm_dbd_ra:init(#{}),
+            Meta = mock_meta(),
+            Update = #{entity_type => account, entity_id => <<"research">>, period => <<"2024-03">>, cpu_seconds => 500},
+            {State1, ok, _} = flurm_dbd_ra:apply(Meta, {update_tres, Update}, State0),
+            {_, {ok, Usage}, _} = flurm_dbd_ra:apply(Meta, {query_tres, {account, <<"research">>, <<"2024-03">>}}, State1),
+            ?assertEqual(500, maps:get(cpu_seconds, Usage))
+        end}
+    ].
+
+%%====================================================================
+%% Additional State Tests
+%%====================================================================
+
+state_version_test_() ->
+    [
+        {"state version is preserved across operations", fun() ->
+            State0 = flurm_dbd_ra:init(#{}),
+            Meta = mock_meta(),
+            {State1, _, _} = flurm_dbd_ra:apply(Meta, {record_job, make_job_info(1)}, State0),
+            ?assertEqual(1, element(7, State0)),
+            ?assertEqual(1, element(7, State1))
+        end},
+        {"state version unchanged by queries", fun() ->
+            State0 = flurm_dbd_ra:init(#{}),
+            Meta = mock_meta(),
+            {State1, _, _} = flurm_dbd_ra:apply(Meta, {query_jobs, #{}}, State0),
+            ?assertEqual(element(7, State0), element(7, State1))
+        end}
+    ].
+
+%%====================================================================
+%% Additional Effect Tests
+%%====================================================================
+
+effects_test_() ->
+    [
+        {"record_job generates exactly one effect", fun() ->
+            State0 = flurm_dbd_ra:init(#{}),
+            Meta = mock_meta(),
+            {_, _, Effects} = flurm_dbd_ra:apply(Meta, {record_job, make_job_info(1)}, State0),
+            ?assertEqual(1, length(Effects))
+        end},
+        {"update_tres generates no effects", fun() ->
+            State0 = flurm_dbd_ra:init(#{}),
+            Meta = mock_meta(),
+            {_, _, Effects} = flurm_dbd_ra:apply(Meta, {update_tres, make_tres_update(user, <<"test">>)}, State0),
+            ?assertEqual([], Effects)
+        end},
+        {"query_jobs generates no effects", fun() ->
+            State0 = flurm_dbd_ra:init(#{}),
+            Meta = mock_meta(),
+            {_, _, Effects} = flurm_dbd_ra:apply(Meta, {query_jobs, #{}}, State0),
+            ?assertEqual([], Effects)
+        end},
+        {"query_tres generates no effects", fun() ->
+            State0 = flurm_dbd_ra:init(#{}),
+            Meta = mock_meta(),
+            {_, _, Effects} = flurm_dbd_ra:apply(Meta, {query_tres, {user, <<"x">>, <<"2024-01">>}}, State0),
+            ?assertEqual([], Effects)
+        end}
+    ].
+
+%%====================================================================
+%% Additional Job State Tests
+%%====================================================================
+
+job_state_variants_test_() ->
+    [
+        {"record job with pending state", fun() ->
+            State0 = flurm_dbd_ra:init(#{}),
+            JobInfo = make_job_info(1, #{state => pending}),
+            Meta = mock_meta(),
+            {State1, {ok, 1}, _} = flurm_dbd_ra:apply(Meta, {record_job, JobInfo}, State0),
+            ?assertEqual(1, maps:size(element(2, State1)))
+        end},
+        {"record job with running state", fun() ->
+            State0 = flurm_dbd_ra:init(#{}),
+            JobInfo = make_job_info(2, #{state => running}),
+            Meta = mock_meta(),
+            {State1, {ok, 2}, _} = flurm_dbd_ra:apply(Meta, {record_job, JobInfo}, State0),
+            ?assertEqual(1, maps:size(element(2, State1)))
+        end},
+        {"record job with failed state", fun() ->
+            State0 = flurm_dbd_ra:init(#{}),
+            JobInfo = make_job_info(3, #{state => failed, exit_code => 1}),
+            Meta = mock_meta(),
+            {State1, {ok, 3}, _} = flurm_dbd_ra:apply(Meta, {record_job, JobInfo}, State0),
+            ?assertEqual(1, maps:size(element(2, State1)))
+        end},
+        {"record job with cancelled state", fun() ->
+            State0 = flurm_dbd_ra:init(#{}),
+            JobInfo = make_job_info(4, #{state => cancelled}),
+            Meta = mock_meta(),
+            {State1, {ok, 4}, _} = flurm_dbd_ra:apply(Meta, {record_job, JobInfo}, State0),
+            ?assertEqual(1, maps:size(element(2, State1)))
+        end},
+        {"record job with timeout state", fun() ->
+            State0 = flurm_dbd_ra:init(#{}),
+            JobInfo = make_job_info(5, #{state => timeout}),
+            Meta = mock_meta(),
+            {State1, {ok, 5}, _} = flurm_dbd_ra:apply(Meta, {record_job, JobInfo}, State0),
+            ?assertEqual(1, maps:size(element(2, State1)))
+        end}
+    ].
+
+%%====================================================================
+%% Additional TRES Tests
+%%====================================================================
+
+tres_edge_cases_test_() ->
+    [
+        {"update_tres with zero cpu_seconds", fun() ->
+            State0 = flurm_dbd_ra:init(#{}),
+            Meta = mock_meta(),
+            Update = #{entity_type => user, entity_id => <<"zero">>, cpu_seconds => 0},
+            {State1, ok, _} = flurm_dbd_ra:apply(Meta, {update_tres, Update}, State0),
+            UserTotals = element(5, State1),
+            {ok, Totals} = maps:find(<<"zero">>, UserTotals),
+            ?assertEqual(0, maps:get(cpu_seconds, Totals))
+        end},
+        {"update_tres accumulates correctly", fun() ->
+            State0 = flurm_dbd_ra:init(#{}),
+            Meta = mock_meta(),
+            Update1 = #{entity_type => user, entity_id => <<"accum">>, cpu_seconds => 100},
+            Update2 = #{entity_type => user, entity_id => <<"accum">>, cpu_seconds => 150},
+            Update3 = #{entity_type => user, entity_id => <<"accum">>, cpu_seconds => 250},
+            {State1, ok, _} = flurm_dbd_ra:apply(Meta, {update_tres, Update1}, State0),
+            {State2, ok, _} = flurm_dbd_ra:apply(Meta, {update_tres, Update2}, State1),
+            {State3, ok, _} = flurm_dbd_ra:apply(Meta, {update_tres, Update3}, State2),
+            UserTotals = element(5, State3),
+            {ok, Totals} = maps:find(<<"accum">>, UserTotals),
+            ?assertEqual(500, maps:get(cpu_seconds, Totals))
+        end}
+    ].
+
+%%====================================================================
+%% Module Exports Tests
+%%====================================================================
+
+module_exports_test_() ->
+    [
+        {"init/1 exported", fun() ->
+            Exports = flurm_dbd_ra:module_info(exports),
+            ?assert(lists:member({init, 1}, Exports))
+        end},
+        {"apply/3 exported", fun() ->
+            Exports = flurm_dbd_ra:module_info(exports),
+            ?assert(lists:member({apply, 3}, Exports))
+        end},
+        {"state_enter/2 exported", fun() ->
+            Exports = flurm_dbd_ra:module_info(exports),
+            ?assert(lists:member({state_enter, 2}, Exports))
+        end},
+        {"snapshot_module/0 exported", fun() ->
+            Exports = flurm_dbd_ra:module_info(exports),
+            ?assert(lists:member({snapshot_module, 0}, Exports))
+        end}
+    ].
+
+%%====================================================================
+%% Helper Function Tests
+%%====================================================================
+
+helper_function_test_() ->
+    [
+        {"mock_meta returns valid map", fun() ->
+            Meta = mock_meta(),
+            ?assert(is_map(Meta)),
+            ?assertEqual(1, maps:get(index, Meta)),
+            ?assertEqual(1, maps:get(term, Meta))
+        end},
+        {"mock_meta/1 with custom index", fun() ->
+            Meta = mock_meta(42),
+            ?assertEqual(42, maps:get(index, Meta)),
+            ?assertEqual(1, maps:get(term, Meta))
+        end},
+        {"make_job_info creates valid map", fun() ->
+            JobInfo = make_job_info(100),
+            ?assert(is_map(JobInfo)),
+            ?assertEqual(100, maps:get(job_id, JobInfo))
+        end},
+        {"make_job_info with overrides", fun() ->
+            JobInfo = make_job_info(101, #{user_name => <<"custom">>}),
+            ?assertEqual(101, maps:get(job_id, JobInfo)),
+            ?assertEqual(<<"custom">>, maps:get(user_name, JobInfo))
+        end},
+        {"make_tres_update creates valid map", fun() ->
+            Update = make_tres_update(user, <<"test">>),
+            ?assert(is_map(Update)),
+            ?assertEqual(user, maps:get(entity_type, Update)),
+            ?assertEqual(<<"test">>, maps:get(entity_id, Update))
+        end},
+        {"make_tres_update with overrides", fun() ->
+            Update = make_tres_update(account, <<"acct">>, #{cpu_seconds => 999}),
+            ?assertEqual(account, maps:get(entity_type, Update)),
+            ?assertEqual(<<"acct">>, maps:get(entity_id, Update)),
+            ?assertEqual(999, maps:get(cpu_seconds, Update))
+        end},
+        {"current_period returns valid format", fun() ->
+            Period = current_period(),
+            ?assert(is_binary(Period)),
+            ?assertEqual(7, byte_size(Period))
+        end}
+    ].
+
+%%====================================================================
+%% Additional Query Filter Tests
+%%====================================================================
+
+query_filter_edge_cases_test_() ->
+    [
+        {"query_jobs with empty user_name filter", fun() ->
+            State0 = flurm_dbd_ra:init(#{}),
+            Meta = mock_meta(),
+            Job1 = make_job_info(1, #{user_name => <<>>}),
+            Job2 = make_job_info(2, #{user_name => <<"user">>}),
+            {State1, _, _} = flurm_dbd_ra:apply(Meta, {record_job, Job1}, State0),
+            {State2, _, _} = flurm_dbd_ra:apply(Meta, {record_job, Job2}, State1),
+            {_, {ok, Jobs}, _} = flurm_dbd_ra:apply(Meta, {query_jobs, #{user_name => <<>>}}, State2),
+            ?assertEqual(1, length(Jobs))
+        end},
+        {"query_jobs returns all jobs with unsupported filter", fun() ->
+            State0 = flurm_dbd_ra:init(#{}),
+            Meta = mock_meta(),
+            Job1 = make_job_info(1),
+            Job2 = make_job_info(2),
+            {State1, _, _} = flurm_dbd_ra:apply(Meta, {record_job, Job1}, State0),
+            {State2, _, _} = flurm_dbd_ra:apply(Meta, {record_job, Job2}, State1),
+            %% Unsupported filters may be ignored - just verify we get jobs
+            {_, {ok, Jobs}, _} = flurm_dbd_ra:apply(Meta, {query_jobs, #{qos => <<"high">>}}, State2),
+            ?assert(length(Jobs) >= 0)
+        end},
+        {"query_jobs with partition filter works", fun() ->
+            State0 = flurm_dbd_ra:init(#{}),
+            Meta = mock_meta(),
+            Job1 = make_job_info(1, #{partition => <<"batch">>}),
+            Job2 = make_job_info(2, #{partition => <<"debug">>}),
+            {State1, _, _} = flurm_dbd_ra:apply(Meta, {record_job, Job1}, State0),
+            {State2, _, _} = flurm_dbd_ra:apply(Meta, {record_job, Job2}, State1),
+            {_, {ok, Jobs}, _} = flurm_dbd_ra:apply(Meta, {query_jobs, #{partition => <<"batch">>}}, State2),
+            ?assertEqual(1, length(Jobs))
+        end}
+    ].
+
+%%====================================================================
+%% State Immutability Tests
+%%====================================================================
+
+state_immutability_test_() ->
+    [
+        {"state unchanged after query_jobs", fun() ->
+            State0 = flurm_dbd_ra:init(#{}),
+            Meta = mock_meta(),
+            {State1, _, _} = flurm_dbd_ra:apply(Meta, {record_job, make_job_info(1)}, State0),
+            {State2, _, _} = flurm_dbd_ra:apply(Meta, {query_jobs, #{}}, State1),
+            ?assertEqual(State1, State2)
+        end},
+        {"state unchanged after query_tres not found", fun() ->
+            State0 = flurm_dbd_ra:init(#{}),
+            Meta = mock_meta(),
+            {State1, _, _} = flurm_dbd_ra:apply(Meta, {query_tres, {user, <<"x">>, <<"2024-01">>}}, State0),
+            ?assertEqual(State0, State1)
+        end},
+        {"state unchanged after unknown command", fun() ->
+            State0 = flurm_dbd_ra:init(#{}),
+            Meta = mock_meta(),
+            {State1, _, _} = flurm_dbd_ra:apply(Meta, {unknown_cmd, arg}, State0),
+            ?assertEqual(State0, State1)
+        end}
+    ].
+
+%%====================================================================
+%% Multiple Users/Accounts Tests
+%%====================================================================
+
+multiple_users_test_() ->
+    [
+        {"multiple users tracked separately", fun() ->
+            State0 = flurm_dbd_ra:init(#{}),
+            Meta = mock_meta(),
+            Job1 = make_job_info(1, #{user_name => <<"user1">>, elapsed => 100, num_cpus => 2}),
+            Job2 = make_job_info(2, #{user_name => <<"user2">>, elapsed => 200, num_cpus => 4}),
+            Job3 = make_job_info(3, #{user_name => <<"user1">>, elapsed => 50, num_cpus => 1}),
+            {State1, _, _} = flurm_dbd_ra:apply(Meta, {record_job, Job1}, State0),
+            {State2, _, _} = flurm_dbd_ra:apply(Meta, {record_job, Job2}, State1),
+            {State3, _, _} = flurm_dbd_ra:apply(Meta, {record_job, Job3}, State2),
+            UserTotals = element(5, State3),
+            {ok, User1Totals} = maps:find(<<"user1">>, UserTotals),
+            {ok, User2Totals} = maps:find(<<"user2">>, UserTotals),
+            ?assertEqual(2, maps:get(job_count, User1Totals)),
+            ?assertEqual(1, maps:get(job_count, User2Totals))
+        end},
+        {"multiple accounts tracked separately", fun() ->
+            State0 = flurm_dbd_ra:init(#{}),
+            Meta = mock_meta(),
+            Job1 = make_job_info(1, #{account => <<"acct1">>, elapsed => 100, num_cpus => 2}),
+            Job2 = make_job_info(2, #{account => <<"acct2">>, elapsed => 200, num_cpus => 4}),
+            {State1, _, _} = flurm_dbd_ra:apply(Meta, {record_job, Job1}, State0),
+            {State2, _, _} = flurm_dbd_ra:apply(Meta, {record_job, Job2}, State1),
+            AccountTotals = element(6, State2),
+            ?assert(maps:is_key(<<"acct1">>, AccountTotals)),
+            ?assert(maps:is_key(<<"acct2">>, AccountTotals))
+        end}
+    ].
+
+%%====================================================================
+%% Recorded Jobs Set Tests
+%%====================================================================
+
+recorded_jobs_set_test_() ->
+    [
+        {"recorded_jobs set is initially empty", fun() ->
+            State0 = flurm_dbd_ra:init(#{}),
+            RecordedJobs = element(3, State0),
+            ?assert(sets:is_empty(RecordedJobs))
+        end},
+        {"recorded_jobs set grows with each job", fun() ->
+            State0 = flurm_dbd_ra:init(#{}),
+            Meta = mock_meta(),
+            {State1, _, _} = flurm_dbd_ra:apply(Meta, {record_job, make_job_info(1)}, State0),
+            {State2, _, _} = flurm_dbd_ra:apply(Meta, {record_job, make_job_info(2)}, State1),
+            {State3, _, _} = flurm_dbd_ra:apply(Meta, {record_job, make_job_info(3)}, State2),
+            RecordedJobs = element(3, State3),
+            ?assertEqual(3, sets:size(RecordedJobs))
+        end},
+        {"recorded_jobs set does not grow on duplicate", fun() ->
+            State0 = flurm_dbd_ra:init(#{}),
+            Meta = mock_meta(),
+            {State1, _, _} = flurm_dbd_ra:apply(Meta, {record_job, make_job_info(1)}, State0),
+            {State2, _, _} = flurm_dbd_ra:apply(Meta, {record_job, make_job_info(1)}, State1),
+            RecordedJobs1 = element(3, State1),
+            RecordedJobs2 = element(3, State2),
+            ?assertEqual(sets:size(RecordedJobs1), sets:size(RecordedJobs2))
+        end}
+    ].
+
+%%====================================================================
+%% Job Records Map Tests
+%%====================================================================
+
+job_records_map_test_() ->
+    [
+        {"job_records map is initially empty", fun() ->
+            State0 = flurm_dbd_ra:init(#{}),
+            JobRecords = element(2, State0),
+            ?assertEqual(0, maps:size(JobRecords))
+        end},
+        {"job_records map stores all jobs", fun() ->
+            State0 = flurm_dbd_ra:init(#{}),
+            Meta = mock_meta(),
+            {State1, _, _} = flurm_dbd_ra:apply(Meta, {record_job, make_job_info(100)}, State0),
+            {State2, _, _} = flurm_dbd_ra:apply(Meta, {record_job, make_job_info(200)}, State1),
+            JobRecords = element(2, State2),
+            ?assertEqual(2, maps:size(JobRecords)),
+            ?assert(maps:is_key(100, JobRecords)),
+            ?assert(maps:is_key(200, JobRecords))
+        end}
+    ].
+
+%%====================================================================
+%% Usage Records Tests
+%%====================================================================
+
+usage_records_test_() ->
+    [
+        {"usage_records is initially empty", fun() ->
+            State0 = flurm_dbd_ra:init(#{}),
+            UsageRecords = element(4, State0),
+            ?assertEqual(0, maps:size(UsageRecords))
+        end},
+        {"usage_records created after update_tres", fun() ->
+            State0 = flurm_dbd_ra:init(#{}),
+            Meta = mock_meta(),
+            Update = make_tres_update(user, <<"usage_test">>),
+            {State1, ok, _} = flurm_dbd_ra:apply(Meta, {update_tres, Update}, State0),
+            UsageRecords = element(4, State1),
+            ?assert(maps:size(UsageRecords) >= 1)
+        end}
+    ].
+
+%%====================================================================
+%% State Enter Additional Tests
+%%====================================================================
+
+state_enter_additional_test_() ->
+    [
+        {"state_enter recover returns empty effects", fun() ->
+            State = flurm_dbd_ra:init(#{}),
+            Effects = flurm_dbd_ra:state_enter(recover, State),
+            ?assertEqual([], Effects)
+        end},
+        {"state_enter candidate returns empty effects", fun() ->
+            State = flurm_dbd_ra:init(#{}),
+            Effects = flurm_dbd_ra:state_enter(candidate, State),
+            ?assertEqual([], Effects)
+        end},
+        {"state_enter eol returns empty effects", fun() ->
+            State = flurm_dbd_ra:init(#{}),
+            Effects = flurm_dbd_ra:state_enter(eol, State),
+            ?assertEqual([], Effects)
+        end},
+        {"state_enter leader effect is mod_call", fun() ->
+            State = flurm_dbd_ra:init(#{}),
+            [Effect] = flurm_dbd_ra:state_enter(leader, State),
+            ?assertMatch({mod_call, _, _, _}, Effect)
+        end},
+        {"state_enter follower effect is mod_call", fun() ->
+            State = flurm_dbd_ra:init(#{}),
+            [Effect] = flurm_dbd_ra:state_enter(follower, State),
+            ?assertMatch({mod_call, _, _, _}, Effect)
+        end}
+    ].

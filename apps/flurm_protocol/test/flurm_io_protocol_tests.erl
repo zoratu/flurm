@@ -56,7 +56,19 @@ io_protocol_test_() ->
         {"large data (64KB) correct header length",
          fun test_large_data/0},
         {"full roundtrip encode_stdout -> decode_io_hdr",
-         fun test_full_roundtrip/0}
+         fun test_full_roundtrip/0},
+        {"encode_io_hdr/4 zero length",
+         fun test_encode_io_hdr_zero_length/0},
+        {"encode_io_hdr/4 max taskids",
+         fun test_encode_io_hdr_max_taskids/0},
+        {"encode_stdout/3 empty data",
+         fun test_encode_stdout_empty_data/0},
+        {"encode_stderr/3 empty data",
+         fun test_encode_stderr_empty_data/0},
+        {"encode_io_init_msg/5 long key",
+         fun test_encode_init_msg_long_key/0},
+        {"decode_io_hdr/1 exact size",
+         fun test_decode_io_hdr_exact_size/0}
     ].
 
 %%====================================================================
@@ -205,3 +217,51 @@ test_full_roundtrip() ->
     ?assertEqual(1, Ltaskid),
     ?assertEqual(byte_size(Data), Length),
     ?assertEqual(Data, Payload).
+
+%%====================================================================
+%% Additional I/O Protocol Tests
+%%====================================================================
+
+test_encode_io_hdr_zero_length() ->
+    Hdr = flurm_io_protocol:encode_io_hdr(1, 0, 0, 0),
+    <<Type:16/big, Gtaskid:16/big, Ltaskid:16/big, Length:32/big>> = Hdr,
+    ?assertEqual(1, Type),
+    ?assertEqual(0, Gtaskid),
+    ?assertEqual(0, Ltaskid),
+    ?assertEqual(0, Length).
+
+test_encode_io_hdr_max_taskids() ->
+    Hdr = flurm_io_protocol:encode_io_hdr(1, 65535, 65535, 100),
+    <<_:16/big, Gtaskid:16/big, Ltaskid:16/big, _:32/big>> = Hdr,
+    ?assertEqual(65535, Gtaskid),
+    ?assertEqual(65535, Ltaskid).
+
+test_encode_stdout_empty_data() ->
+    Bin = flurm_io_protocol:encode_stdout(0, 0, <<>>),
+    ?assertEqual(10, byte_size(Bin)),
+    <<Type:16/big, _:16/big, _:16/big, Length:32/big>> = Bin,
+    ?assertEqual(?SLURM_IO_STDOUT, Type),
+    ?assertEqual(0, Length).
+
+test_encode_stderr_empty_data() ->
+    Bin = flurm_io_protocol:encode_stderr(0, 0, <<>>),
+    ?assertEqual(10, byte_size(Bin)),
+    <<Type:16/big, _:16/big, _:16/big, Length:32/big>> = Bin,
+    ?assertEqual(?SLURM_IO_STDERR, Type),
+    ?assertEqual(0, Length).
+
+test_encode_init_msg_long_key() ->
+    LongKey = binary:copy(<<"K">>, 256),
+    Bin = flurm_io_protocol:encode_io_init_msg(16#2600, 0, 1, 1, LongKey),
+    <<PayloadLen:32/big, _:16/big, _:32/big, _:32/big, _:32/big, IoKeyLen:32/big, _/binary>> = Bin,
+    ?assertEqual(256, IoKeyLen),
+    ?assertEqual(2 + 4 + 4 + 4 + 4 + 256, PayloadLen).
+
+test_decode_io_hdr_exact_size() ->
+    %% Exactly 10 bytes should decode successfully
+    Bin = <<1:16/big, 2:16/big, 3:16/big, 100:32/big>>,
+    {ok, Type, Gtaskid, Ltaskid, Length} = flurm_io_protocol:decode_io_hdr(Bin),
+    ?assertEqual(1, Type),
+    ?assertEqual(2, Gtaskid),
+    ?assertEqual(3, Ltaskid),
+    ?assertEqual(100, Length).

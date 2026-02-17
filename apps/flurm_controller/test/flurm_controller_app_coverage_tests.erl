@@ -353,3 +353,246 @@ create_mock_node(Hostname, State) ->
      #{},                 % extra
      6818                 % port
     }.
+
+%%====================================================================
+%% Boundary Value Tests
+%%====================================================================
+
+boundary_value_test_() ->
+    [
+        {"count_jobs with single element list", fun() ->
+            Job = create_mock_job(1, pending),
+            ?assertEqual(1, flurm_controller_app:count_jobs_by_state([Job], pending)),
+            ?assertEqual(0, flurm_controller_app:count_jobs_by_state([Job], running))
+        end},
+        {"count_nodes with single element list", fun() ->
+            Node = create_mock_node(<<"n1">>, idle),
+            ?assertEqual(1, flurm_controller_app:count_nodes_by_state([Node], idle)),
+            ?assertEqual(0, flurm_controller_app:count_nodes_by_state([Node], down))
+        end},
+        {"count with all same state", fun() ->
+            Jobs = [create_mock_job(I, running) || I <- lists:seq(1, 10)],
+            ?assertEqual(10, flurm_controller_app:count_jobs_by_state(Jobs, running)),
+            ?assertEqual(0, flurm_controller_app:count_jobs_by_state(Jobs, pending)),
+            ?assertEqual(0, flurm_controller_app:count_jobs_by_state(Jobs, completed))
+        end},
+        {"count with all different states", fun() ->
+            Jobs = [
+                create_mock_job(1, pending),
+                create_mock_job(2, running),
+                create_mock_job(3, completed),
+                create_mock_job(4, failed),
+                create_mock_job(5, cancelled)
+            ],
+            ?assertEqual(1, flurm_controller_app:count_jobs_by_state(Jobs, pending)),
+            ?assertEqual(1, flurm_controller_app:count_jobs_by_state(Jobs, running)),
+            ?assertEqual(1, flurm_controller_app:count_jobs_by_state(Jobs, completed)),
+            ?assertEqual(1, flurm_controller_app:count_jobs_by_state(Jobs, failed)),
+            ?assertEqual(1, flurm_controller_app:count_jobs_by_state(Jobs, cancelled))
+        end}
+    ].
+
+%%====================================================================
+%% Configuration Validation Tests
+%%====================================================================
+
+config_validation_test_() ->
+    [
+        {"valid listen_port range", fun() ->
+            application:set_env(flurm_controller, listen_port, 1),
+            ?assertEqual(1, flurm_controller_app:get_config(listen_port, 6817)),
+            application:set_env(flurm_controller, listen_port, 65535),
+            ?assertEqual(65535, flurm_controller_app:get_config(listen_port, 6817)),
+            application:unset_env(flurm_controller, listen_port)
+        end},
+        {"valid num_acceptors range", fun() ->
+            application:set_env(flurm_controller, num_acceptors, 1),
+            ?assertEqual(1, flurm_controller_app:get_config(num_acceptors, 10)),
+            application:set_env(flurm_controller, num_acceptors, 1000),
+            ?assertEqual(1000, flurm_controller_app:get_config(num_acceptors, 10)),
+            application:unset_env(flurm_controller, num_acceptors)
+        end},
+        {"valid max_connections range", fun() ->
+            application:set_env(flurm_controller, max_connections, 10),
+            ?assertEqual(10, flurm_controller_app:get_config(max_connections, 1000)),
+            application:set_env(flurm_controller, max_connections, 100000),
+            ?assertEqual(100000, flurm_controller_app:get_config(max_connections, 1000)),
+            application:unset_env(flurm_controller, max_connections)
+        end},
+        {"cluster_nodes with multiple nodes", fun() ->
+            Nodes = [node1@host1, node2@host2, node3@host3],
+            application:set_env(flurm_controller, cluster_nodes, Nodes),
+            ?assertEqual(Nodes, flurm_controller_app:get_config(cluster_nodes, [node()])),
+            application:unset_env(flurm_controller, cluster_nodes)
+        end},
+        {"custom ra_data_dir", fun() ->
+            Dir = "/custom/path/to/ra",
+            application:set_env(flurm_controller, ra_data_dir, Dir),
+            ?assertEqual(Dir, flurm_controller_app:get_config(ra_data_dir, "/var/lib/flurm/ra")),
+            application:unset_env(flurm_controller, ra_data_dir)
+        end}
+    ].
+
+%%====================================================================
+%% State Distribution Tests
+%%====================================================================
+
+state_distribution_test_() ->
+    [
+        {"count handles uniform distribution", fun() ->
+            %% Create 100 jobs evenly distributed across 5 states
+            Jobs = lists:flatten([
+                [create_mock_job(I*5+1, pending) || I <- lists:seq(0, 19)],
+                [create_mock_job(I*5+2, running) || I <- lists:seq(0, 19)],
+                [create_mock_job(I*5+3, completed) || I <- lists:seq(0, 19)],
+                [create_mock_job(I*5+4, failed) || I <- lists:seq(0, 19)],
+                [create_mock_job(I*5+5, cancelled) || I <- lists:seq(0, 19)]
+            ]),
+            ?assertEqual(20, flurm_controller_app:count_jobs_by_state(Jobs, pending)),
+            ?assertEqual(20, flurm_controller_app:count_jobs_by_state(Jobs, running)),
+            ?assertEqual(20, flurm_controller_app:count_jobs_by_state(Jobs, completed)),
+            ?assertEqual(20, flurm_controller_app:count_jobs_by_state(Jobs, failed)),
+            ?assertEqual(20, flurm_controller_app:count_jobs_by_state(Jobs, cancelled))
+        end},
+        {"count handles skewed distribution", fun() ->
+            %% Create heavily skewed distribution
+            Jobs = lists:flatten([
+                [create_mock_job(I, pending) || I <- lists:seq(1, 90)],
+                [create_mock_job(I + 90, running) || I <- lists:seq(1, 5)],
+                [create_mock_job(I + 95, completed) || I <- lists:seq(1, 3)],
+                [create_mock_job(I + 98, failed) || I <- lists:seq(1, 2)]
+            ]),
+            ?assertEqual(90, flurm_controller_app:count_jobs_by_state(Jobs, pending)),
+            ?assertEqual(5, flurm_controller_app:count_jobs_by_state(Jobs, running)),
+            ?assertEqual(3, flurm_controller_app:count_jobs_by_state(Jobs, completed)),
+            ?assertEqual(2, flurm_controller_app:count_jobs_by_state(Jobs, failed))
+        end},
+        {"node count handles uniform distribution", fun() ->
+            %% Create nodes evenly distributed across states
+            Nodes = lists:flatten([
+                [create_mock_node(integer_to_binary(I*4+1), idle) || I <- lists:seq(0, 9)],
+                [create_mock_node(integer_to_binary(I*4+2), allocated) || I <- lists:seq(0, 9)],
+                [create_mock_node(integer_to_binary(I*4+3), mixed) || I <- lists:seq(0, 9)],
+                [create_mock_node(integer_to_binary(I*4+4), down) || I <- lists:seq(0, 9)]
+            ]),
+            ?assertEqual(10, flurm_controller_app:count_nodes_by_state(Nodes, idle)),
+            ?assertEqual(10, flurm_controller_app:count_nodes_by_state(Nodes, allocated)),
+            ?assertEqual(10, flurm_controller_app:count_nodes_by_state(Nodes, mixed)),
+            ?assertEqual(10, flurm_controller_app:count_nodes_by_state(Nodes, down))
+        end}
+    ].
+
+%%====================================================================
+%% API Function Extended Tests
+%%====================================================================
+
+api_extended_test_() ->
+    [
+        {"status returns consistent structure", fun() ->
+            Status1 = flurm_controller_app:status(),
+            Status2 = flurm_controller_app:status(),
+            %% Static fields should match
+            ?assertEqual(maps:get(application, Status1), maps:get(application, Status2)),
+            ?assertEqual(maps:get(status, Status1), maps:get(status, Status2))
+        end},
+        {"config returns consistent structure", fun() ->
+            Config1 = flurm_controller_app:config(),
+            Config2 = flurm_controller_app:config(),
+            %% Config should be identical between calls
+            ?assertEqual(maps:keys(Config1), maps:keys(Config2))
+        end},
+        {"status has all required keys", fun() ->
+            RequiredKeys = [application, status, listener, node_listener, jobs, nodes, partitions],
+            Status = flurm_controller_app:status(),
+            lists:foreach(fun(Key) ->
+                ?assert(maps:is_key(Key, Status))
+            end, RequiredKeys)
+        end},
+        {"config has all required keys", fun() ->
+            RequiredKeys = [listen_port, listen_address, num_acceptors, max_connections,
+                           cluster_name, cluster_nodes, ra_data_dir],
+            Config = flurm_controller_app:config(),
+            lists:foreach(fun(Key) ->
+                ?assert(maps:is_key(Key, Config))
+            end, RequiredKeys)
+        end},
+        {"cluster_status handles missing cluster gracefully", fun() ->
+            %% Should not crash even if cluster is not configured
+            Result = flurm_controller_app:cluster_status(),
+            ?assert(is_map(Result)),
+            ?assert(maps:is_key(status, Result) orelse maps:is_key(cluster_enabled, Result))
+        end}
+    ].
+
+%%====================================================================
+%% Stop Callback Tests
+%%====================================================================
+
+stop_callback_test_() ->
+    [
+        {"stop returns ok with undefined state", fun() ->
+            ?assertEqual(ok, flurm_controller_app:stop(undefined))
+        end},
+        {"stop returns ok with any state", fun() ->
+            ?assertEqual(ok, flurm_controller_app:stop(some_state)),
+            ?assertEqual(ok, flurm_controller_app:stop({complex, state})),
+            ?assertEqual(ok, flurm_controller_app:stop(#{key => value})),
+            ?assertEqual(ok, flurm_controller_app:stop([1, 2, 3]))
+        end}
+    ].
+
+%%====================================================================
+%% Job State Enumeration Tests
+%%====================================================================
+
+job_state_enumeration_test_() ->
+    [
+        {"all standard job states", fun() ->
+            %% Test all standard job states
+            States = [pending, running, completed, failed, cancelled, timeout, node_fail, preempted],
+            lists:foreach(fun(State) ->
+                Job = create_mock_job(1, State),
+                ?assertEqual(1, flurm_controller_app:count_jobs_by_state([Job], State))
+            end, States)
+        end},
+        {"all standard node states", fun() ->
+            %% Test all standard node states
+            States = [idle, allocated, mixed, down, drain, maint, resume],
+            lists:foreach(fun(State) ->
+                Node = create_mock_node(<<"n1">>, State),
+                ?assertEqual(1, flurm_controller_app:count_nodes_by_state([Node], State))
+            end, States)
+        end},
+        {"unknown job state returns zero", fun() ->
+            Jobs = [create_mock_job(I, pending) || I <- lists:seq(1, 10)],
+            ?assertEqual(0, flurm_controller_app:count_jobs_by_state(Jobs, nonexistent_state))
+        end},
+        {"unknown node state returns zero", fun() ->
+            Nodes = [create_mock_node(integer_to_binary(I), idle) || I <- lists:seq(1, 10)],
+            ?assertEqual(0, flurm_controller_app:count_nodes_by_state(Nodes, nonexistent_state))
+        end}
+    ].
+
+%%====================================================================
+%% Performance Tests
+%%====================================================================
+
+performance_test_() ->
+    [
+        {"count_jobs scales with list size", fun() ->
+            %% Test with increasing sizes
+            Sizes = [100, 500, 1000],
+            lists:foreach(fun(Size) ->
+                Jobs = [create_mock_job(I, pending) || I <- lists:seq(1, Size)],
+                ?assertEqual(Size, flurm_controller_app:count_jobs_by_state(Jobs, pending))
+            end, Sizes)
+        end},
+        {"count_nodes scales with list size", fun() ->
+            %% Test with increasing sizes
+            Sizes = [100, 500, 1000],
+            lists:foreach(fun(Size) ->
+                Nodes = [create_mock_node(integer_to_binary(I), idle) || I <- lists:seq(1, Size)],
+                ?assertEqual(Size, flurm_controller_app:count_nodes_by_state(Nodes, idle))
+            end, Sizes)
+        end}
+    ].

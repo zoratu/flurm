@@ -171,3 +171,60 @@ iterate_kvs_test() ->
     ),
 
     ?assertEqual(2, length(Results)).
+
+%%%===================================================================
+%%% Additional KVS Operations Tests
+%%%===================================================================
+
+%% Test put with binary key and list value
+put_list_value_test() ->
+    KVS0 = flurm_pmi_kvs:new(),
+    KVS1 = flurm_pmi_kvs:put(KVS0, <<"key">>, "list_value"),
+    ?assertEqual({ok, <<"list_value">>}, flurm_pmi_kvs:get(KVS1, <<"key">>)).
+
+%% Test multiple puts and gets with different key types
+multiple_key_types_test() ->
+    KVS0 = flurm_pmi_kvs:new(),
+    KVS1 = flurm_pmi_kvs:put(KVS0, <<"binary_key">>, <<"val1">>),
+    KVS2 = flurm_pmi_kvs:put(KVS1, "string_key", <<"val2">>),
+    KVS3 = flurm_pmi_kvs:put(KVS2, atom_key, <<"val3">>),
+    ?assertEqual({ok, <<"val1">>}, flurm_pmi_kvs:get(KVS3, <<"binary_key">>)),
+    ?assertEqual({ok, <<"val2">>}, flurm_pmi_kvs:get(KVS3, <<"string_key">>)),
+    ?assertEqual({ok, <<"val3">>}, flurm_pmi_kvs:get(KVS3, <<"atom_key">>)).
+
+%% Test delete on nonexistent key (should be idempotent)
+delete_nonexistent_test() ->
+    KVS0 = flurm_pmi_kvs:new(),
+    KVS1 = flurm_pmi_kvs:delete(KVS0, <<"nonexistent">>),
+    ?assertEqual(0, flurm_pmi_kvs:size(KVS1)).
+
+%% Test get_by_index with very large index
+get_by_index_large_test() ->
+    KVS0 = flurm_pmi_kvs:new(),
+    KVS1 = flurm_pmi_kvs:put(KVS0, <<"key">>, <<"value">>),
+    ?assertEqual({error, end_of_kvs}, flurm_pmi_kvs:get_by_index(KVS1, 999999)).
+
+%% Test merging empty KVS with non-empty
+merge_empty_first_test() ->
+    KVS1 = flurm_pmi_kvs:new(),
+    KVS2 = flurm_pmi_kvs:new(#{<<"key">> => <<"value">>}),
+    Merged = flurm_pmi_kvs:merge(KVS1, KVS2),
+    ?assertEqual(1, flurm_pmi_kvs:size(Merged)),
+    ?assertEqual({ok, <<"value">>}, flurm_pmi_kvs:get(Merged, <<"key">>)).
+
+%% Test merging non-empty with empty KVS
+merge_empty_second_test() ->
+    KVS1 = flurm_pmi_kvs:new(#{<<"key">> => <<"value">>}),
+    KVS2 = flurm_pmi_kvs:new(),
+    Merged = flurm_pmi_kvs:merge(KVS1, KVS2),
+    ?assertEqual(1, flurm_pmi_kvs:size(Merged)),
+    ?assertEqual({ok, <<"value">>}, flurm_pmi_kvs:get(Merged, <<"key">>)).
+
+%% Test keys returns sorted order
+keys_sorted_test() ->
+    KVS0 = flurm_pmi_kvs:new(),
+    KVS1 = flurm_pmi_kvs:put(KVS0, <<"zzz">>, <<"1">>),
+    KVS2 = flurm_pmi_kvs:put(KVS1, <<"aaa">>, <<"2">>),
+    KVS3 = flurm_pmi_kvs:put(KVS2, <<"mmm">>, <<"3">>),
+    Keys = flurm_pmi_kvs:keys(KVS3),
+    ?assertEqual([<<"aaa">>, <<"mmm">>, <<"zzz">>], lists:sort(Keys)).

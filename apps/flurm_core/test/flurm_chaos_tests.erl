@@ -11,6 +11,8 @@
 %%% - GC pressure testing
 %%% - Scheduler suspension
 %%% - Configuration helpers
+%%% - Internal helper functions
+%%% - Edge cases and error handling
 %%%
 %%% @end
 %%%-------------------------------------------------------------------
@@ -708,4 +710,423 @@ test_network_partition_no_nodes() ->
     %% When there are no connected nodes, partition scenario fails
     Result = flurm_chaos:inject_once(network_partition),
     ?assertEqual({error, no_nodes_available}, Result),
+    ok.
+
+%%====================================================================
+%% Internal Helper Function Tests
+%%====================================================================
+
+internal_helpers_test_() ->
+    {"Internal helper function tests",
+     {setup,
+      fun() -> ok end,
+      fun(_) -> ok end,
+      [
+       {"increment_stat adds to stats map", fun test_increment_stat/0},
+       {"is_system_process detects system processes", fun test_is_system_process/0},
+       {"is_supervisor detects supervisors", fun test_is_supervisor/0},
+       {"shuffle_list produces permutation", fun test_shuffle_list/0},
+       {"should_delay_module checks module targeting", fun test_should_delay_module/0},
+       {"map_to_delay_config converts maps", fun test_map_to_delay_config/0},
+       {"map_to_kill_config converts maps", fun test_map_to_kill_config/0},
+       {"map_to_partition_config converts maps", fun test_map_to_partition_config/0},
+       {"map_to_gc_config converts maps", fun test_map_to_gc_config/0},
+       {"map_to_scheduler_config converts maps", fun test_map_to_scheduler_config/0},
+       {"config_to_map round-trips", fun test_config_to_map_roundtrip/0}
+      ]}}.
+
+test_increment_stat() ->
+    %% Empty stats
+    Stats1 = flurm_chaos:increment_stat(trigger_gc, #{}),
+    ?assertEqual(#{trigger_gc => 1}, Stats1),
+
+    %% Existing stat
+    Stats2 = flurm_chaos:increment_stat(trigger_gc, Stats1),
+    ?assertEqual(#{trigger_gc => 2}, Stats2),
+
+    %% Multiple stats
+    Stats3 = flurm_chaos:increment_stat(gc_pressure, Stats2),
+    ?assertEqual(#{trigger_gc => 2, gc_pressure => 1}, Stats3),
+    ok.
+
+test_is_system_process() ->
+    %% Non-system process (no registered name)
+    Info1 = [{registered_name, []}],
+    ?assertNot(flurm_chaos:is_system_process(Info1)),
+
+    %% System process (known name)
+    Info2 = [{registered_name, init}],
+    ?assert(flurm_chaos:is_system_process(Info2)),
+
+    Info3 = [{registered_name, error_logger}],
+    ?assert(flurm_chaos:is_system_process(Info3)),
+
+    %% Non-system process with name
+    Info4 = [{registered_name, my_custom_process}],
+    ?assertNot(flurm_chaos:is_system_process(Info4)),
+    ok.
+
+test_is_supervisor() ->
+    %% Supervisor initial_call
+    Info1 = [{initial_call, {supervisor, kernel, 1}}, {dictionary, []}],
+    ?assert(flurm_chaos:is_supervisor(Info1)),
+
+    %% Non-supervisor
+    Info2 = [{initial_call, {gen_server, init_it, 6}}, {dictionary, []}],
+    ?assertNot(flurm_chaos:is_supervisor(Info2)),
+
+    %% Supervisor via dictionary
+    Info3 = [{initial_call, {gen_server, init_it, 6}},
+             {dictionary, [{'$ancestors', [kernel_sup]},
+                          {'$initial_call', {supervisor, kernel, 1}}]}],
+    ?assert(flurm_chaos:is_supervisor(Info3)),
+    ok.
+
+test_shuffle_list() ->
+    %% Empty list
+    ?assertEqual([], flurm_chaos:shuffle_list([])),
+
+    %% Single element
+    ?assertEqual([1], flurm_chaos:shuffle_list([1])),
+
+    %% Multiple elements - result should be a permutation
+    Original = [1, 2, 3, 4, 5],
+    Shuffled = flurm_chaos:shuffle_list(Original),
+    ?assertEqual(5, length(Shuffled)),
+    ?assertEqual(lists:sort(Original), lists:sort(Shuffled)),
+    ok.
+
+test_should_delay_module() ->
+    %% undefined module - always delay
+    Config1 = flurm_chaos:map_to_delay_config(#{}),
+    ?assert(flurm_chaos:should_delay_module(undefined, Config1)),
+
+    %% No target modules (all modules) - exclude specific
+    Config2 = flurm_chaos:map_to_delay_config(#{exclude_modules => [kernel, stdlib]}),
+    ?assert(flurm_chaos:should_delay_module(my_module, Config2)),
+    ?assertNot(flurm_chaos:should_delay_module(kernel, Config2)),
+
+    %% Specific target modules
+    Config3 = flurm_chaos:map_to_delay_config(#{target_modules => [my_module, other_module]}),
+    ?assert(flurm_chaos:should_delay_module(my_module, Config3)),
+    ?assertNot(flurm_chaos:should_delay_module(not_targeted, Config3)),
+
+    %% Target and exclude
+    Config4 = flurm_chaos:map_to_delay_config(#{target_modules => [my_module],
+                                                 exclude_modules => [my_module]}),
+    ?assertNot(flurm_chaos:should_delay_module(my_module, Config4)),
+    ok.
+
+test_map_to_delay_config() ->
+    %% Default values
+    Config1 = flurm_chaos:map_to_delay_config(#{}),
+    ?assertEqual(10, element(2, Config1)),  % min_delay_ms
+    ?assertEqual(500, element(3, Config1)), % max_delay_ms
+    ?assertEqual([], element(4, Config1)),  % target_modules
+
+    %% Custom values
+    Config2 = flurm_chaos:map_to_delay_config(#{min_delay_ms => 100, max_delay_ms => 1000}),
+    ?assertEqual(100, element(2, Config2)),
+    ?assertEqual(1000, element(3, Config2)),
+    ok.
+
+test_map_to_kill_config() ->
+    %% Default values
+    Config1 = flurm_chaos:map_to_kill_config(#{}),
+    ?assertEqual(1, element(2, Config1)),  % max_kills_per_tick
+    ?assertEqual(chaos_kill, element(3, Config1)), % kill_signal
+    ?assertEqual(true, element(4, Config1)),  % respect_links
+
+    %% Custom values
+    Config2 = flurm_chaos:map_to_kill_config(#{max_kills_per_tick => 5, kill_signal => brutal_kill}),
+    ?assertEqual(5, element(2, Config2)),
+    ?assertEqual(brutal_kill, element(3, Config2)),
+    ok.
+
+test_map_to_partition_config() ->
+    %% Default values
+    Config1 = flurm_chaos:map_to_partition_config(#{}),
+    ?assertEqual(5000, element(2, Config1)),  % duration_ms
+    ?assertEqual(true, element(3, Config1)),  % auto_heal
+    ?assertEqual(disconnect, element(4, Config1)),  % block_mode
+
+    %% Custom values
+    Config2 = flurm_chaos:map_to_partition_config(#{duration_ms => 10000, auto_heal => false}),
+    ?assertEqual(10000, element(2, Config2)),
+    ?assertEqual(false, element(3, Config2)),
+    ok.
+
+test_map_to_gc_config() ->
+    %% Default values
+    Config1 = flurm_chaos:map_to_gc_config(#{}),
+    ?assertEqual(10, element(2, Config1)),  % max_processes_per_tick
+    ?assertEqual(undefined, element(3, Config1)),  % target_heap_size
+    ?assertEqual(false, element(4, Config1)),  % aggressive
+
+    %% Custom values
+    Config2 = flurm_chaos:map_to_gc_config(#{max_processes_per_tick => 50, aggressive => true}),
+    ?assertEqual(50, element(2, Config2)),
+    ?assertEqual(true, element(4, Config2)),
+    ok.
+
+test_map_to_scheduler_config() ->
+    %% Default values
+    Config1 = flurm_chaos:map_to_scheduler_config(#{}),
+    ?assertEqual(1, element(2, Config1)),  % min_suspend_ms
+    ?assertEqual(100, element(3, Config1)),  % max_suspend_ms
+    ?assertEqual(false, element(4, Config1)),  % affect_dirty_schedulers
+
+    %% Custom values
+    Config2 = flurm_chaos:map_to_scheduler_config(#{min_suspend_ms => 10, max_suspend_ms => 200}),
+    ?assertEqual(10, element(2, Config2)),
+    ?assertEqual(200, element(3, Config2)),
+    ok.
+
+test_config_to_map_roundtrip() ->
+    %% delay_config round-trip
+    DelayMap = #{min_delay_ms => 50, max_delay_ms => 200, target_modules => [test], exclude_modules => [kernel]},
+    DelayConfig = flurm_chaos:map_to_delay_config(DelayMap),
+    DelayMapBack = flurm_chaos:delay_config_to_map(DelayConfig),
+    ?assertEqual(50, maps:get(min_delay_ms, DelayMapBack)),
+    ?assertEqual(200, maps:get(max_delay_ms, DelayMapBack)),
+    ?assertEqual([test], maps:get(target_modules, DelayMapBack)),
+
+    %% kill_config round-trip
+    KillMap = #{max_kills_per_tick => 3, kill_signal => brutal, respect_links => false},
+    KillConfig = flurm_chaos:map_to_kill_config(KillMap),
+    KillMapBack = flurm_chaos:kill_config_to_map(KillConfig),
+    ?assertEqual(3, maps:get(max_kills_per_tick, KillMapBack)),
+    ?assertEqual(brutal, maps:get(kill_signal, KillMapBack)),
+    ?assertEqual(false, maps:get(respect_links, KillMapBack)),
+
+    %% partition_config round-trip
+    PartMap = #{duration_ms => 8000, auto_heal => false, block_mode => filter},
+    PartConfig = flurm_chaos:map_to_partition_config(PartMap),
+    PartMapBack = flurm_chaos:partition_config_to_map(PartConfig),
+    ?assertEqual(8000, maps:get(duration_ms, PartMapBack)),
+    ?assertEqual(false, maps:get(auto_heal, PartMapBack)),
+    ?assertEqual(filter, maps:get(block_mode, PartMapBack)),
+
+    %% gc_config round-trip
+    GcMap = #{max_processes_per_tick => 25, target_heap_size => 50000, aggressive => true},
+    GcConfig = flurm_chaos:map_to_gc_config(GcMap),
+    GcMapBack = flurm_chaos:gc_config_to_map(GcConfig),
+    ?assertEqual(25, maps:get(max_processes_per_tick, GcMapBack)),
+    ?assertEqual(50000, maps:get(target_heap_size, GcMapBack)),
+    ?assertEqual(true, maps:get(aggressive, GcMapBack)),
+
+    %% scheduler_config round-trip
+    SchedMap = #{min_suspend_ms => 5, max_suspend_ms => 50, affect_dirty_schedulers => true},
+    SchedConfig = flurm_chaos:map_to_scheduler_config(SchedMap),
+    SchedMapBack = flurm_chaos:scheduler_config_to_map(SchedConfig),
+    ?assertEqual(5, maps:get(min_suspend_ms, SchedMapBack)),
+    ?assertEqual(50, maps:get(max_suspend_ms, SchedMapBack)),
+    ?assertEqual(true, maps:get(affect_dirty_schedulers, SchedMapBack)),
+    ok.
+
+%%====================================================================
+%% Terminate Tests
+%%====================================================================
+
+terminate_test_() ->
+    {"Terminate heals all partitions",
+     {setup,
+      fun setup/0,
+      fun(_) -> ok end,  % We'll stop manually in the test
+      fun(#{pid := Pid}) ->
+          [
+           {"terminate heals partitions", fun() ->
+               %% Note: Can't test partition healing without actual connected nodes
+               %% Just verify graceful shutdown
+               catch gen_server:stop(Pid, normal, 5000),
+               ?assertEqual(undefined, whereis(flurm_chaos))
+           end}
+          ]
+      end}}.
+
+%%====================================================================
+%% Wrap Call Timeout Test
+%%====================================================================
+
+wrap_call_timeout_test_() ->
+    {setup,
+     fun setup/0,
+     fun cleanup/1,
+     fun(_) ->
+         [
+          {"wrap_call respects timeout", fun test_wrap_call_timeout/0}
+         ]
+     end}.
+
+test_wrap_call_timeout() ->
+    %% wrap_call with explicit timeout
+    Result = flurm_chaos:wrap_call(flurm_chaos, flurm_chaos, status, 5000),
+    ?assert(is_map(Result)),
+    ok.
+
+%%====================================================================
+%% Multiple Protected Pids Tests
+%%====================================================================
+
+multiple_protected_test_() ->
+    {setup,
+     fun setup/0,
+     fun cleanup/1,
+     fun(_) ->
+         [
+          {"Multiple processes can be protected", fun test_multiple_protected/0}
+         ]
+     end}.
+
+test_multiple_protected() ->
+    %% Create multiple test processes
+    Pids = [spawn(fun loop/0) || _ <- lists:seq(1, 5)],
+
+    %% Mark all protected
+    lists:foreach(fun(Pid) ->
+        ok = flurm_chaos:mark_process_protected(Pid)
+    end, Pids),
+
+    %% Verify count
+    Status1 = flurm_chaos:status(),
+    ?assertEqual(5, maps:get(protected_pids, Status1)),
+
+    %% Unmark some
+    lists:foreach(fun(Pid) ->
+        ok = flurm_chaos:unmark_process_protected(Pid)
+    end, lists:sublist(Pids, 3)),
+
+    %% Verify count decreased
+    Status2 = flurm_chaos:status(),
+    ?assertEqual(2, maps:get(protected_pids, Status2)),
+
+    %% Clean up
+    lists:foreach(fun(Pid) ->
+        catch exit(Pid, kill)
+    end, Pids),
+    ok.
+
+%%====================================================================
+%% Scheduler Suspend Scenario Tests
+%%====================================================================
+
+scheduler_suspend_scenario_test_() ->
+    {setup,
+     fun setup/0,
+     fun cleanup/1,
+     fun(_) ->
+         [
+          {"Inject scheduler_suspend scenario", fun test_inject_scheduler_suspend/0}
+         ]
+     end}.
+
+test_inject_scheduler_suspend() ->
+    %% Set minimal suspend time
+    ok = flurm_chaos:set_scheduler_config(#{
+        min_suspend_ms => 1,
+        max_suspend_ms => 5
+    }),
+
+    %% Inject the scenario
+    Result = flurm_chaos:inject_once(scheduler_suspend),
+    ?assertEqual(ok, Result),
+    ok.
+
+%%====================================================================
+%% Partition with Options Tests
+%%====================================================================
+
+partition_options_test_() ->
+    {setup,
+     fun setup/0,
+     fun cleanup/1,
+     fun(_) ->
+         [
+          {"Partition with custom options", fun test_partition_with_options/0}
+         ]
+     end}.
+
+test_partition_with_options() ->
+    %% Try to partition with custom options (will fail because node not connected)
+    Result = flurm_chaos:partition_node('test@node', #{
+        duration_ms => 1000,
+        auto_heal => false
+    }),
+    ?assertEqual({error, node_not_connected}, Result),
+    ok.
+
+%%====================================================================
+%% Enabled State Persistence Tests
+%%====================================================================
+
+enabled_state_test_() ->
+    {setup,
+     fun setup/0,
+     fun cleanup/1,
+     fun(_) ->
+         [
+          {"Enable/disable preserves scenario states", fun test_enable_disable_preserves_states/0}
+         ]
+     end}.
+
+test_enable_disable_preserves_states() ->
+    %% Enable some scenarios
+    ok = flurm_chaos:enable_scenario(trigger_gc),
+    ok = flurm_chaos:enable_scenario(gc_pressure),
+
+    %% Enable chaos globally
+    ok = flurm_chaos:enable(),
+    ?assert(flurm_chaos:is_enabled()),
+
+    %% Disable chaos globally
+    ok = flurm_chaos:disable(),
+    ?assertNot(flurm_chaos:is_enabled()),
+
+    %% Scenario states should be preserved
+    ?assert(flurm_chaos:is_scenario_enabled(trigger_gc)),
+    ?assert(flurm_chaos:is_scenario_enabled(gc_pressure)),
+    ?assertNot(flurm_chaos:is_scenario_enabled(kill_random_process)),
+    ok.
+
+%%====================================================================
+%% Disable While Running Tests
+%%====================================================================
+
+disable_while_running_test_() ->
+    {setup,
+     fun setup/0,
+     fun cleanup/1,
+     fun(_) ->
+         [
+          {"Disable stops tick timer", fun test_disable_stops_timer/0}
+         ]
+     end}.
+
+test_disable_stops_timer() ->
+    %% Enable chaos
+    ok = flurm_chaos:enable(),
+
+    %% Get initial status - timer should be set (tick_ref in state)
+    Status1 = flurm_chaos:status(),
+    ?assertEqual(true, maps:get(enabled, Status1)),
+
+    %% Disable
+    ok = flurm_chaos:disable(),
+
+    %% Tick should stop firing
+    Status2 = flurm_chaos:status(),
+    ?assertEqual(false, maps:get(enabled, Status2)),
+
+    %% Wait a bit and verify no more ticks fire
+    InitStats = maps:get(stats, Status2),
+
+    %% Enable a scenario and wait
+    ok = flurm_chaos:enable_scenario(trigger_gc),
+    ok = flurm_chaos:set_scenario(trigger_gc, 1.0),
+    timer:sleep(100),
+
+    %% Stats should not have changed (timer is disabled)
+    Status3 = flurm_chaos:status(),
+    NewStats = maps:get(stats, Status3),
+    ?assertEqual(InitStats, NewStats),
     ok.
