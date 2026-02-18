@@ -125,6 +125,16 @@ start_with_mock_test_() ->
      fun() ->
          application:ensure_all_started(meck),
          application:ensure_all_started(lager),
+         %% Stop any real processes before mocking
+         case whereis(flurm_pmi_sup) of
+             undefined -> ok;
+             SupPid -> catch gen_server:stop(SupPid, normal, 1000)
+         end,
+         case whereis(flurm_pmi_manager) of
+             undefined -> ok;
+             MgrPid -> catch gen_server:stop(MgrPid, normal, 1000)
+         end,
+         timer:sleep(50),
          meck:new(flurm_pmi_sup, [passthrough, non_strict]),
          meck:expect(flurm_pmi_sup, start_link, fun() ->
              {ok, spawn(fun() -> timer:sleep(60000) end)}
@@ -167,6 +177,16 @@ start_error_handling_test_() ->
      fun() ->
          application:ensure_all_started(meck),
          application:ensure_all_started(lager),
+         %% Stop any real processes before mocking
+         case whereis(flurm_pmi_sup) of
+             undefined -> ok;
+             SupPid -> catch gen_server:stop(SupPid, normal, 1000)
+         end,
+         case whereis(flurm_pmi_manager) of
+             undefined -> ok;
+             MgrPid -> catch gen_server:stop(MgrPid, normal, 1000)
+         end,
+         timer:sleep(50),
          meck:new(flurm_pmi_sup, [passthrough, non_strict]),
          meck:expect(flurm_pmi_sup, start_link, fun() ->
              {error, {already_started, self()}}
@@ -325,6 +345,17 @@ full_lifecycle_test_() ->
      fun() ->
          setup(),
          application:ensure_all_started(meck),
+         %% Stop any real processes before mocking
+         case whereis(flurm_pmi_sup) of
+             undefined -> ok;
+             SupPid -> catch gen_server:stop(SupPid, normal, 1000)
+         end,
+         case whereis(flurm_pmi_manager) of
+             undefined -> ok;
+             MgrPid -> catch gen_server:stop(MgrPid, normal, 1000)
+         end,
+         timer:sleep(50),
+         catch meck:unload(flurm_pmi_sup),
          meck:new(flurm_pmi_sup, [passthrough, non_strict]),
          %% Create a real process that can be stopped
          Pid = spawn(fun() ->

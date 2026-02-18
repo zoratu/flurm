@@ -89,16 +89,31 @@ pmi_manager_test_() ->
 
 setup() ->
     application:ensure_all_started(sasl),
+    %% Ensure no meck mocks are active for modules we need real
+    catch meck:unload(flurm_pmi_manager),
+    catch meck:unload(flurm_pmi_sup),
+    catch meck:unload(flurm_pmi_kvs),
+    %% Stop supervisor first if running (to prevent restart storms when stopping manager)
+    case whereis(flurm_pmi_sup) of
+        undefined -> ok;
+        SupPid ->
+            catch gen_server:stop(SupPid, normal, 5000),
+            timer:sleep(50)
+    end,
+    %% Now stop manager if still running (shouldn't be, but just in case)
     case whereis(flurm_pmi_manager) of
-        undefined ->
-            {ok, Pid} = flurm_pmi_manager:start_link(),
-            unlink(Pid),
-            Pid;
-        Pid ->
-            Pid
-    end.
+        undefined -> ok;
+        MgrPid0 ->
+            catch gen_server:stop(MgrPid0, normal, 5000),
+            timer:sleep(50)
+    end,
+    %% Start fresh manager
+    {ok, Pid} = flurm_pmi_manager:start_link(),
+    unlink(Pid),
+    Pid.
 
 cleanup(Pid) ->
+    %% Stop manager (no supervisor to worry about - we stopped it in setup)
     case is_process_alive(Pid) of
         true -> gen_server:stop(Pid, normal, 5000);
         false -> ok

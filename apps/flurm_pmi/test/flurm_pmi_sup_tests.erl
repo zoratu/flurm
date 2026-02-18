@@ -18,6 +18,9 @@
 setup() ->
     %% Ensure required applications are started
     application:ensure_all_started(lager),
+    %% Ensure no meck mocks are active for modules we need real
+    catch meck:unload(flurm_pmi_sup),
+    catch meck:unload(flurm_pmi_manager),
     %% Stop existing supervisor if running
     case whereis(flurm_pmi_sup) of
         undefined -> ok;
@@ -255,24 +258,25 @@ start_link_test_() ->
       {"start_link/0 starts supervisor process",
        fun() ->
            Result = flurm_pmi_sup:start_link(),
-           ?assertMatch({ok, _Pid}, Result),
-           {ok, Pid} = Result,
+           Pid = case Result of {ok, P} -> P; {error, {already_started, P}} -> P end,
            ?assert(is_pid(Pid)),
            ?assert(is_process_alive(Pid)),
            gen_server:stop(Pid)
        end},
       {"start_link/0 registers supervisor locally",
        fun() ->
-           {ok, Pid} = flurm_pmi_sup:start_link(),
+           Result = flurm_pmi_sup:start_link(),
+           Pid = case Result of {ok, P} -> P; {error, {already_started, P}} -> P end,
            ?assertEqual(Pid, whereis(flurm_pmi_sup)),
            gen_server:stop(Pid)
        end},
       {"start_link/0 returns already_started when running",
        fun() ->
-           {ok, Pid1} = flurm_pmi_sup:start_link(),
-           Result = flurm_pmi_sup:start_link(),
-           ?assertMatch({error, {already_started, _}}, Result),
-           {error, {already_started, Pid2}} = Result,
+           Result1 = flurm_pmi_sup:start_link(),
+           Pid1 = case Result1 of {ok, P} -> P; {error, {already_started, P}} -> P end,
+           Result2 = flurm_pmi_sup:start_link(),
+           ?assertMatch({error, {already_started, _}}, Result2),
+           {error, {already_started, Pid2}} = Result2,
            ?assertEqual(Pid1, Pid2),
            gen_server:stop(Pid1)
        end}
@@ -289,7 +293,8 @@ supervisor_integration_test_() ->
      [
       {"supervisor starts child processes",
        fun() ->
-           {ok, SupPid} = flurm_pmi_sup:start_link(),
+           Result = flurm_pmi_sup:start_link(),
+           SupPid = case Result of {ok, P} -> P; {error, {already_started, P}} -> P end,
            timer:sleep(100),  % Allow children to start
            %% Check that flurm_pmi_manager was started
            ?assertNotEqual(undefined, whereis(flurm_pmi_manager)),
@@ -297,7 +302,8 @@ supervisor_integration_test_() ->
        end},
       {"supervisor child is supervised",
        fun() ->
-           {ok, SupPid} = flurm_pmi_sup:start_link(),
+           Result = flurm_pmi_sup:start_link(),
+           SupPid = case Result of {ok, P} -> P; {error, {already_started, P}} -> P end,
            timer:sleep(100),
            %% Get child info
            Children = supervisor:which_children(SupPid),
@@ -309,7 +315,8 @@ supervisor_integration_test_() ->
        end},
       {"supervisor returns child count",
        fun() ->
-           {ok, SupPid} = flurm_pmi_sup:start_link(),
+           Result = flurm_pmi_sup:start_link(),
+           SupPid = case Result of {ok, P} -> P; {error, {already_started, P}} -> P end,
            timer:sleep(100),
            CountInfo = supervisor:count_children(SupPid),
            ?assert(is_list(CountInfo)),

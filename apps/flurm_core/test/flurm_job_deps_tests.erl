@@ -446,3 +446,852 @@ release_and_hold_test_() ->
              end}
          ]
      end}.
+
+%%====================================================================
+%% Additional Coverage Tests
+%%====================================================================
+
+%% Test singleton dependency where another job holds the singleton
+singleton_contention_test_() ->
+    {setup,
+     fun() ->
+         {ok, Pid} = flurm_job_deps:start_link(),
+         #{deps_pid => Pid}
+     end,
+     fun(#{deps_pid := Pid}) ->
+         catch unlink(Pid),
+         catch gen_server:stop(Pid, shutdown, 5000)
+     end,
+     fun(_) ->
+         [
+             {"Singleton contention - second job waits", fun() ->
+                 %% First job grabs singleton
+                 ok = flurm_job_deps:add_dependency(1000, singleton, <<"contention_test">>),
+                 Deps1 = flurm_job_deps:get_dependencies(1000),
+                 ?assertEqual(1, length(Deps1)),
+                 %% First singleton should be satisfied
+                 [Dep1] = Deps1,
+                 ?assert(element(6, Dep1)),  %% satisfied field
+
+                 %% Second job tries to grab same singleton - should be unsatisfied
+                 ok = flurm_job_deps:add_dependency(1001, singleton, <<"contention_test">>),
+                 Deps2 = flurm_job_deps:get_dependencies(1001),
+                 ?assertEqual(1, length(Deps2)),
+                 [Dep2] = Deps2,
+                 ?assertNot(element(6, Dep2)),  %% should NOT be satisfied
+
+                 %% Second job should be dependent on first
+                 Dependents = flurm_job_deps:get_dependents(1000),
+                 ?assert(lists:member(1001, Dependents))
+             end}
+         ]
+     end}.
+
+%% Test add_dependencies with invalid spec
+add_dependencies_error_test_() ->
+    {setup,
+     fun() ->
+         {ok, Pid} = flurm_job_deps:start_link(),
+         #{deps_pid => Pid}
+     end,
+     fun(#{deps_pid := Pid}) ->
+         catch unlink(Pid),
+         catch gen_server:stop(Pid, shutdown, 5000)
+     end,
+     fun(_) ->
+         [
+             {"add_dependencies with invalid spec", fun() ->
+                 Result = flurm_job_deps:add_dependencies(2000, <<"invalidtype:123">>),
+                 ?assertMatch({error, _}, Result)
+             end},
+             {"add_dependencies with empty spec", fun() ->
+                 Result = flurm_job_deps:add_dependencies(2001, <<>>),
+                 ?assertEqual(ok, Result)
+             end}
+         ]
+     end}.
+
+%% Test multiple target dependency (with list of targets)
+multiple_targets_full_test_() ->
+    {setup,
+     fun() ->
+         {ok, Pid} = flurm_job_deps:start_link(),
+         #{deps_pid => Pid}
+     end,
+     fun(#{deps_pid := Pid}) ->
+         catch unlink(Pid),
+         catch gen_server:stop(Pid, shutdown, 5000)
+     end,
+     fun(_) ->
+         [
+             {"Add dependency with multiple integer targets", fun() ->
+                 %% Parsed from "afterok:100+101+102" syntax
+                 ok = flurm_job_deps:add_dependency(3000, afterok, [100, 101, 102]),
+                 Deps = flurm_job_deps:get_dependencies(3000),
+                 %% Should have 3 separate dependencies
+                 ?assertEqual(3, length(Deps))
+             end},
+             {"Multiple targets with circular dependency error", fun() ->
+                 %% First set up: 3100 depends on 3101
+                 ok = flurm_job_deps:add_dependency(3100, afterok, 3101),
+                 %% Try to add 3101 depending on [3100, 3102] - should fail due to cycle
+                 Result = flurm_job_deps:add_dependency(3101, afterok, [3100, 3102]),
+                 ?assertMatch({error, {circular_dependency, _}}, Result)
+             end}
+         ]
+     end}.
+
+%% Test hold_for_dependencies with unsatisfied dependencies
+hold_for_deps_unsatisfied_test_() ->
+    {setup,
+     fun() ->
+         {ok, Pid} = flurm_job_deps:start_link(),
+         #{deps_pid => Pid}
+     end,
+     fun(#{deps_pid := Pid}) ->
+         catch unlink(Pid),
+         catch gen_server:stop(Pid, shutdown, 5000)
+     end,
+     fun(_) ->
+         [
+             {"hold_for_dependencies with unsatisfied deps", fun() ->
+                 %% Add an unsatisfied dependency first
+                 ok = flurm_job_deps:add_dependency(4000, afterok, 4001),
+                 %% Now try to hold - should return ok or error depending on job_manager
+                 Result = flurm_job_deps:hold_for_dependencies(4000),
+                 %% Result can be ok (if job_manager accepts) or error (if not available)
+                 ?assert(Result =:= ok orelse element(1, Result) =:= error)
+             end}
+         ]
+     end}.
+
+%% Test state change with terminal state
+state_change_terminal_test_() ->
+    {setup,
+     fun() ->
+         {ok, Pid} = flurm_job_deps:start_link(),
+         #{deps_pid => Pid}
+     end,
+     fun(#{deps_pid := Pid}) ->
+         catch unlink(Pid),
+         catch gen_server:stop(Pid, shutdown, 5000)
+     end,
+     fun(_) ->
+         [
+             {"State change to terminal state releases singleton", fun() ->
+                 %% Job 5000 holds singleton
+                 ok = flurm_job_deps:add_dependency(5000, singleton, <<"terminal_test">>),
+                 %% Job 5001 waits for singleton
+                 ok = flurm_job_deps:add_dependency(5001, singleton, <<"terminal_test">>),
+                 %% Verify 5001 is unsatisfied
+                 {waiting, _} = flurm_job_deps:check_dependencies(5001),
+                 %% Simulate 5000 completing (terminal state)
+                 ok = flurm_job_deps:on_job_state_change(5000, completed),
+                 %% Give async message time to process
+                 timer:sleep(10),
+                 _ = sys:get_state(flurm_job_deps),
+                 %% Now 5001's singleton should be satisfied
+                 Deps = flurm_job_deps:get_dependencies(5001),
+                 [Dep] = Deps,
+                 ?assert(element(6, Dep))  %% satisfied field
+             end},
+             {"State change updates afterok dependency", fun() ->
+                 %% Job 5100 depends on 5101 completing successfully
+                 ok = flurm_job_deps:add_dependency(5100, afterok, 5101),
+                 {waiting, _} = flurm_job_deps:check_dependencies(5100),
+                 %% Simulate 5101 completing
+                 ok = flurm_job_deps:on_job_state_change(5101, completed),
+                 timer:sleep(10),
+                 _ = sys:get_state(flurm_job_deps),
+                 %% Dependency should now be satisfied
+                 Deps = flurm_job_deps:get_dependencies(5100),
+                 [Dep] = Deps,
+                 ?assert(element(6, Dep))  %% satisfied field
+             end},
+             {"State change with non-terminal state", fun() ->
+                 %% Job 5200 depends on 5201
+                 ok = flurm_job_deps:add_dependency(5200, afterok, 5201),
+                 %% State change to running (non-terminal)
+                 ok = flurm_job_deps:on_job_state_change(5201, running),
+                 timer:sleep(10),
+                 _ = sys:get_state(flurm_job_deps),
+                 %% Dependency should still be unsatisfied
+                 {waiting, _} = flurm_job_deps:check_dependencies(5200)
+             end},
+             {"State change afternotok satisfied by failed", fun() ->
+                 ok = flurm_job_deps:add_dependency(5300, afternotok, 5301),
+                 {waiting, _} = flurm_job_deps:check_dependencies(5300),
+                 ok = flurm_job_deps:on_job_state_change(5301, failed),
+                 timer:sleep(10),
+                 _ = sys:get_state(flurm_job_deps),
+                 Deps = flurm_job_deps:get_dependencies(5300),
+                 [Dep] = Deps,
+                 ?assert(element(6, Dep))
+             end},
+             {"State change afterany satisfied by timeout", fun() ->
+                 ok = flurm_job_deps:add_dependency(5400, afterany, 5401),
+                 {waiting, _} = flurm_job_deps:check_dependencies(5400),
+                 ok = flurm_job_deps:on_job_state_change(5401, timeout),
+                 timer:sleep(10),
+                 _ = sys:get_state(flurm_job_deps),
+                 Deps = flurm_job_deps:get_dependencies(5400),
+                 [Dep] = Deps,
+                 ?assert(element(6, Dep))
+             end}
+         ]
+     end}.
+
+%% Test circular dependency in add_dependencies (batch)
+batch_circular_dependency_test_() ->
+    {setup,
+     fun() ->
+         {ok, Pid} = flurm_job_deps:start_link(),
+         #{deps_pid => Pid}
+     end,
+     fun(#{deps_pid := Pid}) ->
+         catch unlink(Pid),
+         catch gen_server:stop(Pid, shutdown, 5000)
+     end,
+     fun(_) ->
+         [
+             {"add_dependencies fails on circular dependency", fun() ->
+                 %% Set up: 6000 depends on 6001
+                 ok = flurm_job_deps:add_dependency(6000, afterok, 6001),
+                 %% Try batch add: 6001 depending on 6000 - should fail
+                 Result = flurm_job_deps:add_dependencies(6001, <<"afterok:6000">>),
+                 ?assertMatch({error, {circular_dependency, _}}, Result)
+             end}
+         ]
+     end}.
+
+%% Test code_change callback
+code_change_test_() ->
+    {setup,
+     fun() ->
+         {ok, Pid} = flurm_job_deps:start_link(),
+         #{deps_pid => Pid}
+     end,
+     fun(#{deps_pid := Pid}) ->
+         catch unlink(Pid),
+         catch gen_server:stop(Pid, shutdown, 5000)
+     end,
+     fun(_) ->
+         {"code_change returns ok", fun() ->
+             State = sys:get_state(flurm_job_deps),
+             Result = flurm_job_deps:code_change("1.0", State, []),
+             ?assertEqual({ok, State}, Result)
+         end}
+     end}.
+
+%% Test dependency graph operations
+graph_operations_test_() ->
+    {setup,
+     fun() ->
+         {ok, Pid} = flurm_job_deps:start_link(),
+         #{deps_pid => Pid}
+     end,
+     fun(#{deps_pid := Pid}) ->
+         catch unlink(Pid),
+         catch gen_server:stop(Pid, shutdown, 5000)
+     end,
+     fun(_) ->
+         [
+             {"Adding same dependency twice doesn't duplicate in graph", fun() ->
+                 ok = flurm_job_deps:add_dependency(7000, afterok, 7001),
+                 ok = flurm_job_deps:add_dependency(7000, afternotok, 7001),
+                 Graph = flurm_job_deps:get_dependency_graph(),
+                 ?assert(maps:is_key(7000, Graph))
+             end},
+             {"Removing dependency updates graph", fun() ->
+                 ok = flurm_job_deps:add_dependency(7100, afterok, 7101),
+                 ok = flurm_job_deps:add_dependency(7100, afternotok, 7102),
+                 ok = flurm_job_deps:remove_dependency(7100, {afterok, 7101}),
+                 Deps = flurm_job_deps:get_dependencies(7100),
+                 ?assertEqual(1, length(Deps))
+             end},
+             {"Remove all dependencies clears graph entry", fun() ->
+                 ok = flurm_job_deps:add_dependency(7200, afterok, 7201),
+                 ok = flurm_job_deps:add_dependency(7200, afternotok, 7202),
+                 ok = flurm_job_deps:remove_all_dependencies(7200),
+                 Deps = flurm_job_deps:get_dependencies(7200),
+                 ?assertEqual(0, length(Deps))
+             end}
+         ]
+     end}.
+
+%% Test removing dependency from non-integer target
+remove_non_integer_target_test_() ->
+    {setup,
+     fun() ->
+         {ok, Pid} = flurm_job_deps:start_link(),
+         #{deps_pid => Pid}
+     end,
+     fun(#{deps_pid := Pid}) ->
+         catch unlink(Pid),
+         catch gen_server:stop(Pid, shutdown, 5000)
+     end,
+     fun(_) ->
+         {"Remove singleton dependency", fun() ->
+             ok = flurm_job_deps:add_dependency(8000, singleton, <<"my_singleton">>),
+             ok = flurm_job_deps:remove_dependency(8000, {singleton, <<"my_singleton">>}),
+             Deps = flurm_job_deps:get_dependencies(8000),
+             ?assertEqual(0, length(Deps))
+         end}
+     end}.
+
+%% Test adding to dependents when already exists
+dependents_duplicate_test_() ->
+    {setup,
+     fun() ->
+         {ok, Pid} = flurm_job_deps:start_link(),
+         #{deps_pid => Pid}
+     end,
+     fun(#{deps_pid := Pid}) ->
+         catch unlink(Pid),
+         catch gen_server:stop(Pid, shutdown, 5000)
+     end,
+     fun(_) ->
+         {"Adding same dependent twice doesn't duplicate", fun() ->
+             %% Add two dependencies on same target from same job
+             ok = flurm_job_deps:add_dependency(8100, afterok, 8101),
+             ok = flurm_job_deps:add_dependency(8100, afternotok, 8101),
+             Dependents = flurm_job_deps:get_dependents(8101),
+             %% Should only have one entry
+             ?assertEqual(1, length(Dependents))
+         end}
+     end}.
+
+%% Test remove_from_dependents when target doesn't exist
+remove_nonexistent_dependent_test_() ->
+    {setup,
+     fun() ->
+         {ok, Pid} = flurm_job_deps:start_link(),
+         #{deps_pid => Pid}
+     end,
+     fun(#{deps_pid := Pid}) ->
+         catch unlink(Pid),
+         catch gen_server:stop(Pid, shutdown, 5000)
+     end,
+     fun(_) ->
+         {"Removing dependency when dependents list is empty", fun() ->
+             %% Try to remove a dependency that doesn't exist
+             ok = flurm_job_deps:remove_dependency(8200, {afterok, 8201}),
+             Deps = flurm_job_deps:get_dependencies(8200),
+             ?assertEqual(0, length(Deps))
+         end}
+     end}.
+
+%% Test clear_completed_deps
+clear_completed_deps_test_() ->
+    {setup,
+     fun() ->
+         {ok, Pid} = flurm_job_deps:start_link(),
+         #{deps_pid => Pid}
+     end,
+     fun(#{deps_pid := Pid}) ->
+         catch unlink(Pid),
+         catch gen_server:stop(Pid, shutdown, 5000)
+     end,
+     fun(_) ->
+         {"Clear completed deps returns count", fun() ->
+             %% Add some dependencies
+             ok = flurm_job_deps:add_dependency(8300, afterok, 8301),
+             ok = flurm_job_deps:add_dependency(8302, afterok, 8303),
+             %% Clear - will clean up deps for non-existent jobs
+             Count = flurm_job_deps:clear_completed_dependencies(),
+             ?assert(is_integer(Count)),
+             ?assert(Count >= 0)
+         end}
+     end}.
+
+%% Test already_started path in start_link
+start_link_already_started_test_() ->
+    {setup,
+     fun() ->
+         ok
+     end,
+     fun(_) ->
+         catch gen_server:stop(flurm_job_deps, shutdown, 5000),
+         ok
+     end,
+     fun(_) ->
+         {"start_link when already running returns existing pid", fun() ->
+             %% First start_link
+             {ok, Pid1} = flurm_job_deps:start_link(),
+             %% Second start_link should return same pid
+             {ok, Pid2} = flurm_job_deps:start_link(),
+             ?assertEqual(Pid1, Pid2)
+         end}
+     end}.
+
+%% Test dependency with pre-satisfied target (target already in terminal state)
+pre_satisfied_dependency_test_() ->
+    {setup,
+     fun() ->
+         {ok, Pid} = flurm_job_deps:start_link(),
+         #{deps_pid => Pid}
+     end,
+     fun(#{deps_pid := Pid}) ->
+         catch unlink(Pid),
+         catch gen_server:stop(Pid, shutdown, 5000)
+     end,
+     fun(_) ->
+         [
+             {"Add dependency to already-completed target", fun() ->
+                 %% First simulate a job completing by state change
+                 ok = flurm_job_deps:on_job_state_change(9500, completed),
+                 timer:sleep(10),
+                 _ = sys:get_state(flurm_job_deps),
+                 %% Now add a dependency on that "completed" job
+                 %% The dependency may be satisfied immediately based on check_target_satisfies
+                 ok = flurm_job_deps:add_dependency(9501, afterok, 9500),
+                 Deps = flurm_job_deps:get_dependencies(9501),
+                 ?assertEqual(1, length(Deps))
+             end}
+         ]
+     end}.
+
+%% Test remove from graph with last target
+graph_remove_last_target_test_() ->
+    {setup,
+     fun() ->
+         {ok, Pid} = flurm_job_deps:start_link(),
+         #{deps_pid => Pid}
+     end,
+     fun(#{deps_pid := Pid}) ->
+         catch unlink(Pid),
+         catch gen_server:stop(Pid, shutdown, 5000)
+     end,
+     fun(_) ->
+         {"Removing last dependency removes graph entry", fun() ->
+             ok = flurm_job_deps:add_dependency(9600, afterok, 9601),
+             ?assertEqual(1, length(flurm_job_deps:get_dependencies(9600))),
+             ok = flurm_job_deps:remove_dependency(9600, {afterok, 9601}),
+             ?assertEqual(0, length(flurm_job_deps:get_dependencies(9600))),
+             %% Graph should be cleaned up
+             Graph = flurm_job_deps:get_dependency_graph(),
+             ?assertNot(maps:is_key(9600, Graph))
+         end}
+     end}.
+
+%% Test remove from dependents when last dependent removed
+dependents_remove_last_test_() ->
+    {setup,
+     fun() ->
+         {ok, Pid} = flurm_job_deps:start_link(),
+         #{deps_pid => Pid}
+     end,
+     fun(#{deps_pid := Pid}) ->
+         catch unlink(Pid),
+         catch gen_server:stop(Pid, shutdown, 5000)
+     end,
+     fun(_) ->
+         {"Removing last dependent clears dependents table entry", fun() ->
+             ok = flurm_job_deps:add_dependency(9700, afterok, 9701),
+             Dependents1 = flurm_job_deps:get_dependents(9701),
+             ?assertEqual([9700], Dependents1),
+             ok = flurm_job_deps:remove_dependency(9700, {afterok, 9701}),
+             Dependents2 = flurm_job_deps:get_dependents(9701),
+             ?assertEqual([], Dependents2)
+         end}
+     end}.
+
+%% Test state change satisfying after_start dependency
+after_start_dependency_test_() ->
+    {setup,
+     fun() ->
+         {ok, Pid} = flurm_job_deps:start_link(),
+         #{deps_pid => Pid}
+     end,
+     fun(#{deps_pid := Pid}) ->
+         catch unlink(Pid),
+         catch gen_server:stop(Pid, shutdown, 5000)
+     end,
+     fun(_) ->
+         {"after_start satisfied when job starts running", fun() ->
+             ok = flurm_job_deps:add_dependency(9800, after_start, 9801),
+             {waiting, _} = flurm_job_deps:check_dependencies(9800),
+             %% State change to running satisfies after_start
+             ok = flurm_job_deps:on_job_state_change(9801, running),
+             timer:sleep(10),
+             _ = sys:get_state(flurm_job_deps),
+             Deps = flurm_job_deps:get_dependencies(9800),
+             [Dep] = Deps,
+             ?assert(element(6, Dep))  %% satisfied field
+         end}
+     end}.
+
+%% Test notify_completion (alias for state_change)
+notify_completion_test_() ->
+    {setup,
+     fun() ->
+         {ok, Pid} = flurm_job_deps:start_link(),
+         #{deps_pid => Pid}
+     end,
+     fun(#{deps_pid := Pid}) ->
+         catch unlink(Pid),
+         catch gen_server:stop(Pid, shutdown, 5000)
+     end,
+     fun(_) ->
+         {"notify_completion updates dependencies", fun() ->
+             ok = flurm_job_deps:add_dependency(10000, afterany, 10001),
+             {waiting, _} = flurm_job_deps:check_dependencies(10000),
+             ok = flurm_job_deps:notify_completion(10001, cancelled),
+             timer:sleep(10),
+             _ = sys:get_state(flurm_job_deps),
+             Deps = flurm_job_deps:get_dependencies(10000),
+             [Dep] = Deps,
+             ?assert(element(6, Dep))  %% satisfied
+         end}
+     end}.
+
+%% Test aftercorr dependency
+aftercorr_dependency_test_() ->
+    {setup,
+     fun() ->
+         {ok, Pid} = flurm_job_deps:start_link(),
+         #{deps_pid => Pid}
+     end,
+     fun(#{deps_pid := Pid}) ->
+         catch unlink(Pid),
+         catch gen_server:stop(Pid, shutdown, 5000)
+     end,
+     fun(_) ->
+         {"aftercorr satisfied by terminal states", fun() ->
+             ok = flurm_job_deps:add_dependency(10100, aftercorr, 10101),
+             {waiting, _} = flurm_job_deps:check_dependencies(10100),
+             ok = flurm_job_deps:on_job_state_change(10101, cancelled),
+             timer:sleep(10),
+             _ = sys:get_state(flurm_job_deps),
+             Deps = flurm_job_deps:get_dependencies(10100),
+             [Dep] = Deps,
+             ?assert(element(6, Dep))  %% satisfied
+         end}
+     end}.
+
+%% Test already-satisfied dependency branch for singleton
+singleton_already_owned_test_() ->
+    {setup,
+     fun() ->
+         {ok, Pid} = flurm_job_deps:start_link(),
+         #{deps_pid => Pid}
+     end,
+     fun(#{deps_pid := Pid}) ->
+         catch unlink(Pid),
+         catch gen_server:stop(Pid, shutdown, 5000)
+     end,
+     fun(_) ->
+         [
+             {"Singleton dependency - owned job completing releases next", fun() ->
+                 %% First job grabs singleton
+                 ok = flurm_job_deps:add_dependency(10200, singleton, <<"release_singleton_test">>),
+                 %% Second job waits
+                 ok = flurm_job_deps:add_dependency(10201, singleton, <<"release_singleton_test">>),
+                 %% Verify second is waiting
+                 {waiting, _} = flurm_job_deps:check_dependencies(10201),
+                 %% First job completes
+                 ok = flurm_job_deps:on_job_state_change(10200, completed),
+                 timer:sleep(20),
+                 _ = sys:get_state(flurm_job_deps),
+                 %% Second job's singleton should now be satisfied
+                 {ok, []} = flurm_job_deps:check_dependencies(10201)
+             end},
+             {"Multiple jobs waiting for singleton - first gets it", fun() ->
+                 %% First job owns singleton
+                 ok = flurm_job_deps:add_dependency(10300, singleton, <<"multi_singleton_test">>),
+                 %% Second and third jobs wait
+                 ok = flurm_job_deps:add_dependency(10301, singleton, <<"multi_singleton_test">>),
+                 ok = flurm_job_deps:add_dependency(10302, singleton, <<"multi_singleton_test">>),
+                 %% First completes
+                 ok = flurm_job_deps:on_job_state_change(10300, completed),
+                 timer:sleep(20),
+                 _ = sys:get_state(flurm_job_deps),
+                 %% One of the waiting jobs should now be satisfied
+                 Deps1 = flurm_job_deps:get_dependencies(10301),
+                 Deps2 = flurm_job_deps:get_dependencies(10302),
+                 %% At least one should be satisfied
+                 Satisfied = lists:any(fun(D) -> element(6, D) end, Deps1 ++ Deps2),
+                 ?assert(Satisfied)
+             end}
+         ]
+     end}.
+
+%% Test graph add_to_graph when already exists
+graph_add_existing_test_() ->
+    {setup,
+     fun() ->
+         {ok, Pid} = flurm_job_deps:start_link(),
+         #{deps_pid => Pid}
+     end,
+     fun(#{deps_pid := Pid}) ->
+         catch unlink(Pid),
+         catch gen_server:stop(Pid, shutdown, 5000)
+     end,
+     fun(_) ->
+         {"Adding same target twice to graph doesn't duplicate", fun() ->
+             %% Add dependency to same target twice (different dep types)
+             ok = flurm_job_deps:add_dependency(10400, afterok, 10401),
+             ok = flurm_job_deps:add_dependency(10400, afternotok, 10401),
+             %% Graph should have one entry with one target
+             Graph = flurm_job_deps:get_dependency_graph(),
+             ?assert(maps:is_key(10400, Graph)),
+             %% Dependencies should exist
+             Deps = flurm_job_deps:get_dependencies(10400),
+             ?assertEqual(2, length(Deps))
+         end}
+     end}.
+
+%% Test remove_from_graph with remaining targets
+graph_remove_partial_test_() ->
+    {setup,
+     fun() ->
+         {ok, Pid} = flurm_job_deps:start_link(),
+         #{deps_pid => Pid}
+     end,
+     fun(#{deps_pid := Pid}) ->
+         catch unlink(Pid),
+         catch gen_server:stop(Pid, shutdown, 5000)
+     end,
+     fun(_) ->
+         {"Removing one dependency keeps graph entry with other targets", fun() ->
+             %% Add dependencies to different targets
+             ok = flurm_job_deps:add_dependency(10500, afterok, 10501),
+             ok = flurm_job_deps:add_dependency(10500, afterok, 10502),
+             %% Remove one
+             ok = flurm_job_deps:remove_dependency(10500, {afterok, 10501}),
+             %% Graph should still have 10500
+             Graph = flurm_job_deps:get_dependency_graph(),
+             ?assert(maps:is_key(10500, Graph))
+         end}
+     end}.
+
+%% Test add_to_graph with non-integer (skips)
+graph_non_integer_test_() ->
+    {setup,
+     fun() ->
+         {ok, Pid} = flurm_job_deps:start_link(),
+         #{deps_pid => Pid}
+     end,
+     fun(#{deps_pid := Pid}) ->
+         catch unlink(Pid),
+         catch gen_server:stop(Pid, shutdown, 5000)
+     end,
+     fun(_) ->
+         {"Singleton dependencies don't go into cycle detection graph", fun() ->
+             %% Add singleton (non-integer target)
+             ok = flurm_job_deps:add_dependency(10600, singleton, <<"no_graph">>),
+             %% Should not create cycle detection issue
+             ?assertEqual(false, flurm_job_deps:has_circular_dependency(10600, 10601))
+         end}
+     end}.
+
+%% Test removing one dependent when multiple exist (line 505)
+remove_one_of_multiple_dependents_test_() ->
+    {setup,
+     fun() ->
+         {ok, Pid} = flurm_job_deps:start_link(),
+         #{deps_pid => Pid}
+     end,
+     fun(#{deps_pid := Pid}) ->
+         catch unlink(Pid),
+         catch gen_server:stop(Pid, shutdown, 5000)
+     end,
+     fun(_) ->
+         {"Remove one dependent when multiple exist", fun() ->
+             %% Two jobs depend on same target
+             ok = flurm_job_deps:add_dependency(10700, afterok, 10702),
+             ok = flurm_job_deps:add_dependency(10701, afterok, 10702),
+             %% Both should be dependents of 10702
+             Dependents1 = flurm_job_deps:get_dependents(10702),
+             ?assertEqual(2, length(Dependents1)),
+             %% Remove one dependency
+             ok = flurm_job_deps:remove_dependency(10700, {afterok, 10702}),
+             %% Should still have one dependent
+             Dependents2 = flurm_job_deps:get_dependents(10702),
+             ?assertEqual(1, length(Dependents2)),
+             ?assertEqual([10701], Dependents2)
+         end}
+     end}.
+
+%% Test afterburstbuffer dependency type parsing and formatting (lines 734, 766)
+afterburstbuffer_dep_test_() ->
+    {setup,
+     fun() ->
+         {ok, Pid} = flurm_job_deps:start_link(),
+         #{deps_pid => Pid}
+     end,
+     fun(#{deps_pid := Pid}) ->
+         catch unlink(Pid),
+         catch gen_server:stop(Pid, shutdown, 5000)
+     end,
+     fun(_) ->
+         [
+             {"Parse afterburstbuffer dependency type", fun() ->
+                 {ok, Deps} = flurm_job_deps:parse_dependency_spec(<<"afterburstbuffer:100">>),
+                 ?assertEqual([{afterburstbuffer, 100}], Deps)
+             end},
+             {"Format afterburstbuffer dependency type", fun() ->
+                 Formatted = flurm_job_deps:format_dependency_spec([{afterburstbuffer, 200}]),
+                 ?assertEqual(<<"afterburstbuffer:200">>, Formatted)
+             end}
+         ]
+     end}.
+
+%% Test format_dep_type for additional types (lines 761, 763-765)
+format_dep_types_test_() ->
+    {setup,
+     fun() ->
+         {ok, Pid} = flurm_job_deps:start_link(),
+         #{deps_pid => Pid}
+     end,
+     fun(#{deps_pid := Pid}) ->
+         catch unlink(Pid),
+         catch gen_server:stop(Pid, shutdown, 5000)
+     end,
+     fun(_) ->
+         [
+             {"Format after_start dep type", fun() ->
+                 Formatted = flurm_job_deps:format_dependency_spec([{after_start, 300}]),
+                 ?assertEqual(<<"after:300">>, Formatted)
+             end},
+             {"Format afternotok dep type", fun() ->
+                 Formatted = flurm_job_deps:format_dependency_spec([{afternotok, 400}]),
+                 ?assertEqual(<<"afternotok:400">>, Formatted)
+             end},
+             {"Format afterany dep type", fun() ->
+                 Formatted = flurm_job_deps:format_dependency_spec([{afterany, 500}]),
+                 ?assertEqual(<<"afterany:500">>, Formatted)
+             end},
+             {"Format aftercorr dep type", fun() ->
+                 Formatted = flurm_job_deps:format_dependency_spec([{aftercorr, 600}]),
+                 ?assertEqual(<<"aftercorr:600">>, Formatted)
+             end}
+         ]
+     end}.
+
+%% Test invalid dependency spec without colon (line 726)
+invalid_dep_no_colon_test_() ->
+    {setup,
+     fun() ->
+         {ok, Pid} = flurm_job_deps:start_link(),
+         #{deps_pid => Pid}
+     end,
+     fun(#{deps_pid := Pid}) ->
+         catch unlink(Pid),
+         catch gen_server:stop(Pid, shutdown, 5000)
+     end,
+     fun(_) ->
+         {"Parse invalid dependency without colon", fun() ->
+             Result = flurm_job_deps:parse_dependency_spec(<<"invalid_no_colon">>),
+             ?assertMatch({error, {invalid_dependency, _}}, Result)
+         end}
+     end}.
+
+%% Test state_satisfies with unknown type (line 584)
+state_satisfies_unknown_test_() ->
+    {setup,
+     fun() ->
+         {ok, Pid} = flurm_job_deps:start_link(),
+         #{deps_pid => Pid}
+     end,
+     fun(#{deps_pid := Pid}) ->
+         catch unlink(Pid),
+         catch gen_server:stop(Pid, shutdown, 5000)
+     end,
+     fun(_) ->
+         {"state_satisfies returns false for unknown type", fun() ->
+             %% Call the exported test function
+             Result = flurm_job_deps:state_satisfies(afterburstbuffer, completed),
+             ?assertEqual(false, Result)
+         end}
+     end}.
+
+%% Test release_job when job_manager returns ok (lines 191-192)
+release_job_success_test_() ->
+    {setup,
+     fun() ->
+         meck:new(flurm_job_manager, [passthrough, non_strict]),
+         meck:expect(flurm_job_manager, release_job, fun(_) -> ok end),
+         {ok, Pid} = flurm_job_deps:start_link(),
+         #{deps_pid => Pid}
+     end,
+     fun(#{deps_pid := Pid}) ->
+         meck:unload(flurm_job_manager),
+         catch unlink(Pid),
+         catch gen_server:stop(Pid, shutdown, 5000)
+     end,
+     fun(_) ->
+         {"release_job returns ok when deps satisfied and job_manager succeeds", fun() ->
+             %% Job with no dependencies - deps satisfied
+             Result = flurm_job_deps:release_job(99900),
+             ?assertEqual(ok, Result)
+         end}
+     end}.
+
+%% Test release_job when job_manager returns error (line 194)
+release_job_error_test_() ->
+    {setup,
+     fun() ->
+         meck:new(flurm_job_manager, [passthrough, non_strict]),
+         meck:expect(flurm_job_manager, release_job, fun(_) -> {error, not_found} end),
+         {ok, Pid} = flurm_job_deps:start_link(),
+         #{deps_pid => Pid}
+     end,
+     fun(#{deps_pid := Pid}) ->
+         meck:unload(flurm_job_manager),
+         catch unlink(Pid),
+         catch gen_server:stop(Pid, shutdown, 5000)
+     end,
+     fun(_) ->
+         {"release_job returns error when job_manager fails", fun() ->
+             %% Job with no dependencies - deps satisfied
+             Result = flurm_job_deps:release_job(99901),
+             ?assertEqual({error, not_found}, Result)
+         end}
+     end}.
+
+%% Test hold_for_dependencies when job_manager returns ok (lines 214-215)
+hold_for_deps_success_test_() ->
+    {setup,
+     fun() ->
+         meck:new(flurm_job_manager, [passthrough, non_strict]),
+         meck:expect(flurm_job_manager, hold_job, fun(_) -> ok end),
+         {ok, Pid} = flurm_job_deps:start_link(),
+         #{deps_pid => Pid}
+     end,
+     fun(#{deps_pid := Pid}) ->
+         meck:unload(flurm_job_manager),
+         catch unlink(Pid),
+         catch gen_server:stop(Pid, shutdown, 5000)
+     end,
+     fun(_) ->
+         {"hold_for_dependencies returns ok when job_manager succeeds", fun() ->
+             %% Add unsatisfied dependency first
+             ok = flurm_job_deps:add_dependency(99902, afterok, 99903),
+             Result = flurm_job_deps:hold_for_dependencies(99902),
+             ?assertEqual(ok, Result)
+         end}
+     end}.
+
+%% Test hold_for_dependencies when job_manager returns error (lines 216-217)
+hold_for_deps_error_test_() ->
+    {setup,
+     fun() ->
+         meck:new(flurm_job_manager, [passthrough, non_strict]),
+         meck:expect(flurm_job_manager, hold_job, fun(_) -> {error, not_found} end),
+         {ok, Pid} = flurm_job_deps:start_link(),
+         #{deps_pid => Pid}
+     end,
+     fun(#{deps_pid := Pid}) ->
+         meck:unload(flurm_job_manager),
+         catch unlink(Pid),
+         catch gen_server:stop(Pid, shutdown, 5000)
+     end,
+     fun(_) ->
+         {"hold_for_dependencies returns error when job_manager fails", fun() ->
+             %% Add unsatisfied dependency first
+             ok = flurm_job_deps:add_dependency(99904, afterok, 99905),
+             Result = flurm_job_deps:hold_for_dependencies(99904),
+             ?assertEqual({error, not_found}, Result)
+         end}
+     end}.

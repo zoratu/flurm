@@ -29,7 +29,39 @@ setup() ->
 
     %% Stop any existing server
     catch gen_server:stop(flurm_cloud_scaling, normal, 1000),
-    ok,
+
+    %% Unload any existing httpc mock and create a new one
+    catch meck:unload(httpc),
+    meck:new(httpc, [unstick, passthrough]),
+
+    %% Default mock for AWS API calls - returns successful responses
+    meck:expect(httpc, request, fun
+        (post, {Url, _Headers, _ContentType, Body}, _HttpOpts, _Opts) ->
+            case string:find(Url, "ec2.") of
+                nomatch ->
+                    %% Generic webhook - return success with count
+                    {ok, {{version, 200, "OK"}, [], "{\"status\":\"ok\",\"count\":1}"}};
+                _ ->
+                    %% AWS EC2 API call - extract MinCount from Body and return that many instances
+                    Count = case re:run(Body, "MinCount=([0-9]+)", [{capture, [1], list}]) of
+                        {match, [NumStr]} -> list_to_integer(NumStr);
+                        nomatch -> 1
+                    end,
+                    InstanceItems = lists:flatten([
+                        io_lib:format("<item><instanceId>i-mock~3..0B</instanceId></item>", [N])
+                        || N <- lists:seq(1, Count)
+                    ]),
+                    Response = lists:flatten([
+                        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
+                        "<RunInstancesResponse><instancesSet>",
+                        InstanceItems,
+                        "</instancesSet></RunInstancesResponse>"
+                    ]),
+                    {ok, {{version, 200, "OK"}, [], Response}}
+            end;
+        (get, {_Url, _Headers}, _HttpOpts, _Opts) ->
+            {ok, {{version, 200, "OK"}, [], "{\"status\":\"ok\"}"}}
+    end),
 
     %% Start the cloud scaling server
     {ok, Pid} = flurm_cloud_scaling:start_link(),
@@ -38,6 +70,7 @@ setup() ->
 cleanup(#{pid := Pid}) ->
     catch unlink(Pid),
     catch gen_server:stop(Pid, normal, 5000),
+    catch meck:unload(httpc),
     ok.
 
 %%====================================================================
@@ -345,24 +378,20 @@ test_scale_down_min_capacity() ->
     ok.
 
 test_generic_scale_up_webhook_error() ->
-    meck:new(httpc, [non_strict, no_link]),
+    %% Override existing httpc mock to return timeout errors
     meck:expect(httpc, request, fun(post, _Req, _Opts, _HttpOpts) ->
         {error, timeout}
     end),
-    try
-        ok = flurm_cloud_scaling:configure_provider(generic, #{
-            scale_up_webhook => <<"http://127.0.0.1/scale_up">>,
-            scale_down_webhook => <<"http://127.0.0.1/scale_down">>
-        }),
-        ok = flurm_cloud_scaling:enable(),
-        {ok, _ActionId} = flurm_cloud_scaling:request_scale_up(2, #{source => test}),
-        timer:sleep(80),
-        Stats = flurm_cloud_scaling:get_stats(),
-        ?assert(is_map(Stats)),
-        ?assert(maps:get(failed_actions, Stats) >= 1)
-    after
-        meck:unload(httpc)
-    end,
+    ok = flurm_cloud_scaling:configure_provider(generic, #{
+        scale_up_webhook => <<"http://127.0.0.1/scale_up">>,
+        scale_down_webhook => <<"http://127.0.0.1/scale_down">>
+    }),
+    ok = flurm_cloud_scaling:enable(),
+    {ok, _ActionId} = flurm_cloud_scaling:request_scale_up(2, #{source => test}),
+    timer:sleep(80),
+    Stats = flurm_cloud_scaling:get_stats(),
+    ?assert(is_map(Stats)),
+    ?assert(maps:get(failed_actions, Stats) >= 1),
     ok.
 
 test_generic_scale_down_completion() ->
@@ -379,19 +408,15 @@ test_generic_scale_down_completion() ->
         scale_up_webhook => <<"http://127.0.0.1/scale_up">>,
         scale_down_webhook => <<"http://127.0.0.1/scale_down">>
     }),
-    meck:new(httpc, [non_strict, no_link]),
+    %% Override existing httpc mock to return connection errors
     meck:expect(httpc, request, fun(post, _Req, _Opts, _HttpOpts) ->
         {error, econnrefused}
     end),
-    try
-        {ok, _ActionId} = flurm_cloud_scaling:request_scale_down(1, #{source => test}),
-        timer:sleep(80),
-        Stats = flurm_cloud_scaling:get_stats(),
-        ?assert(is_map(Stats)),
-        ?assert(maps:get(failed_actions, Stats) >= 1)
-    after
-        meck:unload(httpc)
-    end,
+    {ok, _ActionId} = flurm_cloud_scaling:request_scale_down(1, #{source => test}),
+    timer:sleep(80),
+    Stats = flurm_cloud_scaling:get_stats(),
+    ?assert(is_map(Stats)),
+    ?assert(maps:get(failed_actions, Stats) >= 1),
     ok.
 
 %%====================================================================
@@ -838,10 +863,10 @@ test_spot_max_price() ->
     end.
 
 test_spot_capacity_unavailable() ->
-    meck:new(httpc, [unstick]),
+    %% Override existing httpc mock to return capacity unavailable
     meck:expect(httpc, request, fun(_Method, _Request, _HttpOpts, _Opts) ->
         {ok, {{version, 503, "Service Unavailable"}, [],
-              <<"{\"error\":\"InsufficientSpotCapacity\"}">>}}
+              "{\"error\":\"InsufficientSpotCapacity\"}"}}
     end),
 
     ok = flurm_cloud_scaling:configure_provider(generic, #{
@@ -854,8 +879,6 @@ test_spot_capacity_unavailable() ->
         {ok, _} -> ok;
         {error, _} -> ok
     end,
-
-    meck:unload(httpc),
     ok.
 
 %%====================================================================
@@ -2395,9 +2418,9 @@ error_handling_test_() ->
      ]}.
 
 test_provider_api_error() ->
-    meck:new(httpc, [unstick]),
+    %% Override existing httpc mock to return server errors
     meck:expect(httpc, request, fun(_Method, _Request, _HttpOpts, _Opts) ->
-        {ok, {{version, 500, "Internal Server Error"}, [], <<"Server Error">>}}
+        {ok, {{version, 500, "Internal Server Error"}, [], "Server Error"}}
     end),
 
     ok = flurm_cloud_scaling:configure_provider(generic, #{
@@ -2410,8 +2433,6 @@ test_provider_api_error() ->
         {ok, _} -> ok;
         {error, _} -> ok
     end,
-
-    meck:unload(httpc),
     ok.
 
 test_invalid_instance_id() ->
@@ -2441,7 +2462,7 @@ test_malformed_request() ->
     end.
 
 test_recover_transient() ->
-    meck:new(httpc, [unstick]),
+    %% Override existing httpc mock with retry counter
     Counter = ets:new(retry_counter, [public]),
     ets:insert(Counter, {count, 0}),
 
@@ -2450,7 +2471,7 @@ test_recover_transient() ->
         ets:insert(Counter, {count, N + 1}),
         case N < 2 of
             true -> {error, timeout};
-            false -> {ok, {{version, 200, "OK"}, [], <<"{\"success\":true}">>}}
+            false -> {ok, {{version, 200, "OK"}, [], "{\"success\":true}"}}
         end
     end),
 
@@ -2464,7 +2485,6 @@ test_recover_transient() ->
     timer:sleep(200),
 
     ets:delete(Counter),
-    meck:unload(httpc),
     ok.
 
 %%====================================================================

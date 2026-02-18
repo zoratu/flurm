@@ -788,6 +788,7 @@ handle_action_complete(ActionId, Result, State) ->
             State;
         Action ->
             {NewAction, NodeDelta} = case Result of
+                %% Atom keys (from AWS/GCP/Azure implementations)
                 {ok, #{instance_ids := Ids}} ->
                     {Action#scaling_action{
                         status = completed,
@@ -804,6 +805,29 @@ handle_action_complete(ActionId, Result, State) ->
                         status = completed,
                         end_time = erlang:system_time(second)
                     }, -Count};
+                %% Binary keys (from generic webhook JSON responses)
+                {ok, #{<<"instance_ids">> := Ids}} ->
+                    {Action#scaling_action{
+                        status = completed,
+                        end_time = erlang:system_time(second),
+                        instance_ids = Ids
+                    }, length(Ids)};
+                {ok, #{<<"count">> := Count}} ->
+                    {Action#scaling_action{
+                        status = completed,
+                        end_time = erlang:system_time(second)
+                    }, Count};
+                {ok, #{<<"terminated_count">> := Count}} ->
+                    {Action#scaling_action{
+                        status = completed,
+                        end_time = erlang:system_time(second)
+                    }, -Count};
+                %% Generic success without specific count (assume requested_count)
+                {ok, _} ->
+                    {Action#scaling_action{
+                        status = completed,
+                        end_time = erlang:system_time(second)
+                    }, Action#scaling_action.requested_count};
                 {error, Reason} ->
                     {Action#scaling_action{
                         status = failed,

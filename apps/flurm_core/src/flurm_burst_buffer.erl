@@ -1165,12 +1165,26 @@ map_to_request(Map) ->
 %% Internal Functions - Utilities
 %%====================================================================
 
-generate_bb_path(JobId, PoolName) ->
+generate_bb_path(JobId, PoolName) when is_integer(JobId) ->
     iolist_to_binary([
         <<"/bb/">>,
         PoolName,
         <<"/">>,
         integer_to_binary(JobId)
+    ]);
+generate_bb_path(JobId, PoolName) when is_binary(JobId) ->
+    iolist_to_binary([
+        <<"/bb/">>,
+        PoolName,
+        <<"/">>,
+        JobId
+    ]);
+generate_bb_path(JobId, PoolName) when is_list(JobId) ->
+    iolist_to_binary([
+        <<"/bb/">>,
+        PoolName,
+        <<"/">>,
+        list_to_binary(JobId)
     ]).
 
 round_to_granularity(Size, Granularity) ->

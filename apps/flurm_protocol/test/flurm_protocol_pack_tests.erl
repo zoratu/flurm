@@ -637,6 +637,122 @@ list_test_() ->
 %%% String Array Packing Tests
 %%%===================================================================
 
+%%%===================================================================
+%%% Memory (packmem) Packing Tests - Coverage for lines 119-137
+%%%===================================================================
+
+mem_test_() ->
+    [
+        {"pack_mem undefined returns zero length", fun() ->
+            Result = flurm_protocol_pack:pack_mem(undefined),
+            ?assertEqual(<<0:32/big>>, Result)
+        end},
+
+        {"pack_mem empty binary returns zero length", fun() ->
+            Result = flurm_protocol_pack:pack_mem(<<>>),
+            ?assertEqual(<<0:32/big>>, Result)
+        end},
+
+        {"pack_mem normal binary", fun() ->
+            Result = flurm_protocol_pack:pack_mem(<<"hello">>),
+            ?assertEqual(<<5:32/big, "hello">>, Result)
+        end},
+
+        {"unpack_mem zero length returns empty binary", fun() ->
+            {ok, Value, Rest} = flurm_protocol_pack:unpack_mem(<<0:32/big, "rest">>),
+            ?assertEqual(<<>>, Value),
+            ?assertEqual(<<"rest">>, Rest)
+        end},
+
+        {"unpack_mem normal data", fun() ->
+            {ok, Value, Rest} = flurm_protocol_pack:unpack_mem(<<5:32/big, "hello", "rest">>),
+            ?assertEqual(<<"hello">>, Value),
+            ?assertEqual(<<"rest">>, Rest)
+        end},
+
+        {"unpack_mem insufficient data returns error", fun() ->
+            Result = flurm_protocol_pack:unpack_mem(<<10:32/big, "abc">>),
+            ?assertMatch({error, {insufficient_mem_data, 10}}, Result)
+        end},
+
+        {"unpack_mem incomplete length returns error", fun() ->
+            Result = flurm_protocol_pack:unpack_mem(<<1, 2>>),
+            ?assertMatch({error, {incomplete_mem_length, 2}}, Result)
+        end},
+
+        {"unpack_mem invalid data returns error", fun() ->
+            %% Not a binary at all - triggers the catch-all clause
+            Result = flurm_protocol_pack:unpack_mem(not_a_binary),
+            ?assertMatch({error, invalid_mem_data}, Result)
+        end},
+
+        {"mem roundtrip", fun() ->
+            lists:foreach(fun(V) ->
+                Packed = flurm_protocol_pack:pack_mem(V),
+                {ok, Result, <<>>} = flurm_protocol_pack:unpack_mem(Packed),
+                Expected = case V of undefined -> <<>>; _ -> V end,
+                ?assertEqual(Expected, Result)
+            end, [undefined, <<>>, <<"test">>, <<1,2,3,4,5>>])
+        end}
+    ].
+
+%%%===================================================================
+%%% Invalid Data Error Path Tests - Coverage for catch-all clauses
+%%%===================================================================
+
+invalid_data_test_() ->
+    [
+        {"unpack_string invalid data", fun() ->
+            Result = flurm_protocol_pack:unpack_string(not_a_binary),
+            ?assertMatch({error, invalid_string_data}, Result)
+        end},
+
+        {"unpack_list invalid data", fun() ->
+            Result = flurm_protocol_pack:unpack_list(not_a_binary, fun flurm_protocol_pack:unpack_uint32/1),
+            ?assertMatch({error, invalid_list_data}, Result)
+        end},
+
+        {"unpack_time invalid data", fun() ->
+            Result = flurm_protocol_pack:unpack_time(not_a_binary),
+            ?assertMatch({error, invalid_timestamp_data}, Result)
+        end},
+
+        {"unpack_uint8 invalid data", fun() ->
+            Result = flurm_protocol_pack:unpack_uint8(not_a_binary),
+            ?assertMatch({error, invalid_uint8_data}, Result)
+        end},
+
+        {"unpack_uint16 invalid data", fun() ->
+            Result = flurm_protocol_pack:unpack_uint16(not_a_binary),
+            ?assertMatch({error, invalid_uint16_data}, Result)
+        end},
+
+        {"unpack_uint32 invalid data", fun() ->
+            Result = flurm_protocol_pack:unpack_uint32(not_a_binary),
+            ?assertMatch({error, invalid_uint32_data}, Result)
+        end},
+
+        {"unpack_uint64 invalid data", fun() ->
+            Result = flurm_protocol_pack:unpack_uint64(not_a_binary),
+            ?assertMatch({error, invalid_uint64_data}, Result)
+        end},
+
+        {"unpack_int32 invalid data", fun() ->
+            Result = flurm_protocol_pack:unpack_int32(not_a_binary),
+            ?assertMatch({error, invalid_int32_data}, Result)
+        end},
+
+        {"unpack_bool invalid data", fun() ->
+            Result = flurm_protocol_pack:unpack_bool(not_a_binary),
+            ?assertMatch({error, invalid_bool_data}, Result)
+        end},
+
+        {"unpack_double invalid data", fun() ->
+            Result = flurm_protocol_pack:unpack_double(not_a_binary),
+            ?assertMatch({error, invalid_double_data}, Result)
+        end}
+    ].
+
 string_array_test_() ->
     [
         {"pack empty string array", fun() ->

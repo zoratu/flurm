@@ -75,6 +75,16 @@ pmi_task_test_() ->
 
 setup() ->
     application:ensure_all_started(sasl),
+    %% Stop any real processes before mocking
+    case whereis(flurm_pmi_sup) of
+        undefined -> ok;
+        SupPid -> catch gen_server:stop(SupPid, normal, 1000)
+    end,
+    case whereis(flurm_pmi_manager) of
+        undefined -> ok;
+        MgrPid -> catch gen_server:stop(MgrPid, normal, 1000)
+    end,
+    timer:sleep(50),
     catch meck:unload(flurm_pmi_listener),
     catch meck:unload(flurm_pmi_manager),
     meck:new(flurm_pmi_listener, [non_strict]),

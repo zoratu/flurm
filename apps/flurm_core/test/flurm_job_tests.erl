@@ -975,6 +975,18 @@ preemption_from_suspended_test_() ->
                  {ok, suspended} = flurm_job:get_state(Pid),
                  ok = flurm_job:preempt(Pid, cancel, 30),
                  {ok, cancelled} = flurm_job:get_state(Pid)
+             end},
+             {"Preempt checkpoint from suspended returns error", fun() ->
+                 JobSpec = make_job_spec(),
+                 {ok, Pid, _} = flurm_job:submit(JobSpec),
+                 ok = flurm_job:allocate(Pid, [<<"node1">>]),
+                 ok = flurm_job:signal_config_complete(Pid),
+                 ok = flurm_job:suspend(Pid),
+                 {ok, suspended} = flurm_job:get_state(Pid),
+                 %% Checkpoint preemption is not supported from suspended state
+                 {error, invalid_operation} = flurm_job:preempt(Pid, checkpoint, 30),
+                 %% State should remain suspended
+                 {ok, suspended} = flurm_job:get_state(Pid)
              end}
          ]
      end}.

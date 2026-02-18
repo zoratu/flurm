@@ -57,16 +57,29 @@ pmi_listener_test_() ->
 
 setup() ->
     application:ensure_all_started(sasl),
-    %% Stop any existing manager
-    case whereis(flurm_pmi_manager) of
+    %% Ensure no meck mocks are active for modules we need real
+    catch meck:unload(flurm_pmi_manager),
+    catch meck:unload(flurm_pmi_listener),
+    catch meck:unload(flurm_pmi_sup),
+    catch meck:unload(flurm_pmi_protocol),
+    %% Stop supervisor first if running (to prevent restart storms when stopping manager)
+    case whereis(flurm_pmi_sup) of
         undefined -> ok;
-        Pid ->
-            gen_server:stop(Pid, normal, 5000),
+        SupPid ->
+            catch gen_server:stop(SupPid, normal, 5000),
             timer:sleep(50)
     end,
-    {ok, MgrPid} = flurm_pmi_manager:start_link(),
-    unlink(MgrPid),
-    MgrPid.
+    %% Now stop manager if still running (shouldn't be, but just in case)
+    case whereis(flurm_pmi_manager) of
+        undefined -> ok;
+        MgrPid0 ->
+            catch gen_server:stop(MgrPid0, normal, 5000),
+            timer:sleep(50)
+    end,
+    %% Start fresh manager
+    {ok, P} = flurm_pmi_manager:start_link(),
+    unlink(P),
+    P.
 
 cleanup(MgrPid) ->
     %% Stop any test listeners
@@ -79,7 +92,7 @@ cleanup(MgrPid) ->
         Path = lists:flatten(flurm_pmi_listener:get_socket_path(99, StepId)),
         file:delete(Path)
     end, [0, 1, 2, 3]),
-    %% Stop manager
+    %% Stop manager (no supervisor to worry about - we stopped it in setup)
     case is_process_alive(MgrPid) of
         true -> gen_server:stop(MgrPid, normal, 5000);
         false -> ok
@@ -95,13 +108,19 @@ start_listener(JobId, StepId, Size) ->
     Pid.
 
 connect_to_listener(JobId, StepId) ->
+    connect_to_listener(JobId, StepId, 5).
+
+connect_to_listener(JobId, StepId, 0) ->
     Path = lists:flatten(flurm_pmi_listener:get_socket_path(JobId, StepId)),
-    {ok, Socket} = gen_tcp:connect({local, Path}, 0, [
-        binary,
-        {packet, line},
-        {active, false}
-    ], 5000),
-    Socket.
+    {ok, Socket} = gen_tcp:connect({local, Path}, 0, [binary, {packet, line}, {active, false}], 5000),
+    Socket;
+connect_to_listener(JobId, StepId, Retries) ->
+    Path = lists:flatten(flurm_pmi_listener:get_socket_path(JobId, StepId)),
+    case gen_tcp:connect({local, Path}, 0, [binary, {packet, line}, {active, false}], 5000) of
+        {ok, Socket} -> Socket;
+        {error, econnrefused} -> timer:sleep(50), connect_to_listener(JobId, StepId, Retries - 1);
+        {error, enoent} -> timer:sleep(50), connect_to_listener(JobId, StepId, Retries - 1)
+    end.
 
 send_pmi_cmd(Socket, Cmd) ->
     ok = gen_tcp:send(Socket, [Cmd, "\n"]),
@@ -855,3 +874,172 @@ test_multiple_conn_same_job() ->
     {ok, _} = send_pmi_cmd(S2, <<"cmd=init pmi_version=1 pmi_subversion=1 rank=1">>),
     gen_tcp:close(S1),
     gen_tcp:close(S2).
+
+%%====================================================================
+%% Error Path Coverage Tests
+%%====================================================================
+
+error_path_test_() ->
+    {foreach,
+     fun setup_error_tests/0,
+     fun cleanup_error_tests/1,
+     [
+        {"init error: job not found returns rc=-1",
+         fun test_init_job_not_found/0},
+        {"get_maxes error: job not found returns rc=-1",
+         fun test_get_maxes_job_not_found/0},
+        {"get_kvsname error: job not found returns rc=-1",
+         fun test_get_kvsname_job_not_found/0},
+        {"barrier error: returns rc=-1",
+         fun test_barrier_error/0},
+        {"put error: returns rc=-1",
+         fun test_put_error/0},
+        {"tcp_error removes connection",
+         fun test_tcp_error_handling/0}
+     ]}.
+
+setup_error_tests() ->
+    application:ensure_all_started(sasl),
+    %% Ensure no meck mocks are active
+    catch meck:unload(flurm_pmi_manager),
+    catch meck:unload(flurm_pmi_listener),
+    catch meck:unload(flurm_pmi_sup),
+    catch meck:unload(flurm_pmi_protocol),
+    %% Stop any existing processes
+    case whereis(flurm_pmi_sup) of
+        undefined -> ok;
+        SupPid ->
+            catch gen_server:stop(SupPid, normal, 5000),
+            timer:sleep(50)
+    end,
+    case whereis(flurm_pmi_manager) of
+        undefined -> ok;
+        MgrPid0 ->
+            catch gen_server:stop(MgrPid0, normal, 5000),
+            timer:sleep(50)
+    end,
+    %% Clean up any lingering socket files for error test job IDs
+    lists:foreach(fun(JobId) ->
+        lists:foreach(fun(StepId) ->
+            Path = lists:flatten(flurm_pmi_listener:get_socket_path(JobId, StepId)),
+            file:delete(Path)
+        end, [0, 1, 2, 3])
+    end, [101, 102, 103, 104, 105, 106]),
+    %% Start fresh manager
+    {ok, P} = flurm_pmi_manager:start_link(),
+    unlink(P),
+    P.
+
+cleanup_error_tests(MgrPid) ->
+    %% Stop test listeners
+    lists:foreach(fun(JobId) ->
+        catch flurm_pmi_listener:stop(JobId, 0)
+    end, [101, 102, 103, 104, 105, 106]),
+    %% Clean up socket files
+    lists:foreach(fun(JobId) ->
+        Path = lists:flatten(flurm_pmi_listener:get_socket_path(JobId, 0)),
+        file:delete(Path)
+    end, [101, 102, 103, 104, 105, 106]),
+    %% Unload any mocks
+    catch meck:unload(flurm_pmi_manager),
+    %% Stop manager
+    case is_process_alive(MgrPid) of
+        true -> gen_server:stop(MgrPid, normal, 5000);
+        false -> ok
+    end.
+
+test_init_job_not_found() ->
+    %% Start listener normally first (uses job 101)
+    _Pid = start_listener(101, 0, 1),
+    timer:sleep(100),
+    %% Now mock get_job_info to return error
+    meck:new(flurm_pmi_manager, [passthrough]),
+    meck:expect(flurm_pmi_manager, get_job_info, fun(_J, _S) -> {error, not_found} end),
+    try
+        Socket = connect_to_listener(101, 0),
+        {ok, RawResp} = send_pmi_cmd(Socket, <<"cmd=init pmi_version=1 pmi_subversion=1">>),
+        {ok, {init_ack, Attrs}} = parse_response(RawResp),
+        ?assertEqual(-1, maps:get(rc, Attrs)),
+        gen_tcp:close(Socket)
+    after
+        meck:unload(flurm_pmi_manager)
+    end.
+
+test_get_maxes_job_not_found() ->
+    %% Start listener with real manager first (uses job 102)
+    _Pid = start_listener(102, 0, 1),
+    timer:sleep(100),
+    meck:new(flurm_pmi_manager, [passthrough]),
+    meck:expect(flurm_pmi_manager, get_job_info, fun(_J, _S) -> {error, not_found} end),
+    try
+        Socket = connect_to_listener(102, 0),
+        {ok, RawResp} = send_pmi_cmd(Socket, <<"cmd=get_maxes">>),
+        {ok, {maxes, Attrs}} = parse_response(RawResp),
+        ?assertEqual(-1, maps:get(rc, Attrs)),
+        gen_tcp:close(Socket)
+    after
+        meck:unload(flurm_pmi_manager)
+    end.
+
+test_get_kvsname_job_not_found() ->
+    %% Start listener with real manager first (uses job 103)
+    _Pid = start_listener(103, 0, 1),
+    timer:sleep(100),
+    meck:new(flurm_pmi_manager, [passthrough]),
+    meck:expect(flurm_pmi_manager, get_kvs_name, fun(_J, _S) -> {error, not_found} end),
+    try
+        Socket = connect_to_listener(103, 0),
+        {ok, RawResp} = send_pmi_cmd(Socket, <<"cmd=get_my_kvsname">>),
+        {ok, {my_kvsname, Attrs}} = parse_response(RawResp),
+        ?assertEqual(-1, maps:get(rc, Attrs)),
+        gen_tcp:close(Socket)
+    after
+        meck:unload(flurm_pmi_manager)
+    end.
+
+test_barrier_error() ->
+    %% Start listener with real manager first (uses job 104)
+    _Pid = start_listener(104, 0, 1),
+    timer:sleep(100),
+    Socket = connect_to_listener(104, 0),
+    {ok, _} = send_pmi_cmd(Socket, <<"cmd=init pmi_version=1 pmi_subversion=1 rank=0">>),
+    meck:new(flurm_pmi_manager, [passthrough]),
+    meck:expect(flurm_pmi_manager, barrier_in, fun(_J, _S, _R) -> {error, barrier_failed} end),
+    try
+        {ok, RawResp} = send_pmi_cmd(Socket, <<"cmd=barrier_in">>),
+        {ok, {barrier_out, Attrs}} = parse_response(RawResp),
+        ?assertEqual(-1, maps:get(rc, Attrs)),
+        gen_tcp:close(Socket)
+    after
+        meck:unload(flurm_pmi_manager)
+    end.
+
+test_put_error() ->
+    %% Start listener with real manager first (uses job 105)
+    _Pid = start_listener(105, 0, 1),
+    timer:sleep(100),
+    Socket = connect_to_listener(105, 0),
+    {ok, _} = send_pmi_cmd(Socket, <<"cmd=init pmi_version=1 pmi_subversion=1">>),
+    meck:new(flurm_pmi_manager, [passthrough]),
+    meck:expect(flurm_pmi_manager, kvs_put, fun(_J, _S, _K, _V) -> {error, kvs_full} end),
+    try
+        {ok, RawResp} = send_pmi_cmd(Socket, <<"cmd=put key=k value=v">>),
+        {ok, {put_ack, Attrs}} = parse_response(RawResp),
+        ?assertEqual(-1, maps:get(rc, Attrs)),
+        gen_tcp:close(Socket)
+    after
+        meck:unload(flurm_pmi_manager)
+    end.
+
+test_tcp_error_handling() ->
+    %% Uses job 106
+    Pid = start_listener(106, 0, 1),
+    timer:sleep(100),
+    Socket = connect_to_listener(106, 0),
+    {ok, _} = send_pmi_cmd(Socket, <<"cmd=init pmi_version=1 pmi_subversion=1">>),
+    %% Simulate tcp_error by sending the message directly
+    Pid ! {tcp_error, Socket, econnreset},
+    timer:sleep(50),
+    %% Listener should still be alive
+    ?assert(is_process_alive(Pid)),
+    gen_tcp:close(Socket).

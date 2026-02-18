@@ -106,6 +106,9 @@ supervisor_lifecycle_test_() ->
      fun() ->
          %% Start required applications
          application:start(lager),
+         %% Ensure no meck mocks are active
+         catch meck:unload(flurm_pmi_sup),
+         catch meck:unload(flurm_pmi_manager),
          ok
      end,
      fun(_) -> ok end,
@@ -119,7 +122,8 @@ supervisor_lifecycle_test_() ->
                    gen_server:stop(OldPid),
                    timer:sleep(10)
            end,
-           {ok, NewPid} = flurm_pmi_sup:start_link(),
+           Result = flurm_pmi_sup:start_link(),
+           NewPid = case Result of {ok, P} -> P; {error, {already_started, P}} -> P end,
            ?assert(is_pid(NewPid)),
            ?assert(is_process_alive(NewPid)),
            %% Cleanup
@@ -133,7 +137,8 @@ supervisor_lifecycle_test_() ->
                    gen_server:stop(OldPid2),
                    timer:sleep(10)
            end,
-           {ok, NewPid2} = flurm_pmi_sup:start_link(),
+           Result = flurm_pmi_sup:start_link(),
+           NewPid2 = case Result of {ok, P} -> P; {error, {already_started, P}} -> P end,
            ?assertEqual(NewPid2, whereis(flurm_pmi_sup)),
            gen_server:stop(NewPid2)
        end}

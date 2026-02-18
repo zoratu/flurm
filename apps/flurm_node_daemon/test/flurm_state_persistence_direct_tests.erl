@@ -209,3 +209,90 @@ test_state_missing_version() ->
 
     Result = flurm_state_persistence:load_state(),
     ?assertEqual({error, invalid_state}, Result).
+
+%%====================================================================
+%% Mocked error path tests for coverage
+%%====================================================================
+
+filesystem_error_test_() ->
+    {foreach,
+     fun fs_error_setup/0,
+     fun fs_error_cleanup/1,
+     [
+      fun(_) -> {"file:write_file error using read-only dir", fun test_write_file_readonly_dir/0} end,
+      fun(_) -> {"file:read_file generic error using unreadable file", fun test_read_file_unreadable/0} end,
+      fun(_) -> {"file:delete error using undeletable file", fun test_delete_protected/0} end,
+      fun(_) -> {"save_state with non-map triggers exception", fun test_save_state_non_map_exception/0} end
+     ]}.
+
+fs_error_setup() ->
+    catch application:start(lager),
+    TestDir = "/tmp/flurm_fserror_test_" ++ integer_to_list(erlang:unique_integer([positive])),
+    ok = filelib:ensure_dir(TestDir ++ "/"),
+    file:make_dir(TestDir),
+    TestStateFile = TestDir ++ "/node_state.dat",
+    application:set_env(flurm_node_daemon, state_file, TestStateFile),
+    #{test_dir => TestDir, state_file => TestStateFile}.
+
+fs_error_cleanup(#{test_dir := TestDir}) ->
+    %% Restore permissions and clean up
+    os:cmd("chmod -R 755 " ++ TestDir),
+    os:cmd("rm -rf " ++ TestDir),
+    application:unset_env(flurm_node_daemon, state_file),
+    ok.
+
+test_write_file_readonly_dir() ->
+    %% Make the directory read-only so we cannot create temp file
+    StateFile = flurm_state_persistence:get_state_file(),
+    Dir = filename:dirname(StateFile),
+    %% Make directory read-only
+    ok = file:change_mode(Dir, 8#444),
+
+    State = #{test => true},
+    Result = flurm_state_persistence:save_state(State),
+
+    %% Should fail with permission error
+    ?assertMatch({error, _}, Result),
+
+    %% Restore permissions for cleanup
+    file:change_mode(Dir, 8#755).
+
+test_read_file_unreadable() ->
+    %% First save a valid state
+    StateFile = flurm_state_persistence:get_state_file(),
+    ok = flurm_state_persistence:save_state(#{test => true}),
+
+    %% Make the file unreadable
+    ok = file:change_mode(StateFile, 8#000),
+
+    Result = flurm_state_persistence:load_state(),
+
+    %% Should fail with permission error (eacces)
+    ?assertEqual({error, eacces}, Result),
+
+    %% Restore permissions for cleanup
+    file:change_mode(StateFile, 8#644).
+
+test_delete_protected() ->
+    %% First save a valid state
+    StateFile = flurm_state_persistence:get_state_file(),
+    ok = flurm_state_persistence:save_state(#{test => true}),
+
+    %% Make the directory read-only (sticky bit) so file cannot be deleted
+    Dir = filename:dirname(StateFile),
+    ok = file:change_mode(Dir, 8#555),
+
+    Result = flurm_state_persistence:clear_state(),
+
+    %% Should fail with permission error
+    ?assertMatch({error, _}, Result),
+
+    %% Restore permissions for cleanup
+    file:change_mode(Dir, 8#755).
+
+test_save_state_non_map_exception() ->
+    %% Passing a non-map to save_state triggers an exception in map update
+    %% This covers the catch block in save_state_to_file/2
+    Result = flurm_state_persistence:save_state(not_a_map),
+    %% Should return error tuple with the exception details
+    ?assertMatch({error, {error, _}}, Result).

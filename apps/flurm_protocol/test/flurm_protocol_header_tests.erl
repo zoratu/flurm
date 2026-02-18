@@ -454,3 +454,116 @@ wire_format_test_() ->
             ?assertEqual(Expected, Binary)
         end}
     ].
+
+%%%===================================================================
+%%% Address Family Tests (AF_INET and AF_INET6)
+%%%===================================================================
+
+%% Helper to create AF_INET header (22 bytes: 14 fixed + 8 bytes orig_addr)
+%% Format: version:16, flags:16, msg_type:16, body_len:32, fwd_cnt:16, ret_cnt:16,
+%%         family:16(=2), port:16, addr:32
+make_af_inet_header(Version, Flags, MsgType, BodyLen, FwdCnt, RetCnt, Port, Addr) ->
+    <<Version:16/big, Flags:16/big, MsgType:16/big, BodyLen:32/big,
+      FwdCnt:16/big, RetCnt:16/big, 2:16/big, Port:16/big, Addr:32/big>>.
+
+%% Helper to create AF_INET6 header (34 bytes: 14 fixed + 20 bytes orig_addr)
+%% Format: version:16, flags:16, msg_type:16, body_len:32, fwd_cnt:16, ret_cnt:16,
+%%         family:16(=10), port:16, addr:128
+make_af_inet6_header(Version, Flags, MsgType, BodyLen, FwdCnt, RetCnt, Port, AddrHigh, AddrLow) ->
+    <<Version:16/big, Flags:16/big, MsgType:16/big, BodyLen:32/big,
+      FwdCnt:16/big, RetCnt:16/big, 10:16/big, Port:16/big, AddrHigh:64/big, AddrLow:64/big>>.
+
+parse_af_inet_test_() ->
+    [
+        {"parse AF_INET header (22 bytes)", fun() ->
+            Binary = make_af_inet_header(?SLURM_PROTOCOL_VERSION, 0, ?REQUEST_PING, 100, 0, 0, 8080, 16#C0A80101),
+            {ok, Header, Rest} = flurm_protocol_header:parse_header(Binary),
+            ?assertEqual(?SLURM_PROTOCOL_VERSION, Header#slurm_header.version),
+            ?assertEqual(0, Header#slurm_header.flags),
+            ?assertEqual(?REQUEST_PING, Header#slurm_header.msg_type),
+            ?assertEqual(100, Header#slurm_header.body_length),
+            ?assertEqual(0, Header#slurm_header.forward_cnt),
+            ?assertEqual(0, Header#slurm_header.ret_cnt),
+            ?assertEqual(<<>>, Rest)
+        end},
+
+        {"parse AF_INET header with non-zero forward_cnt", fun() ->
+            Binary = make_af_inet_header(?SLURM_PROTOCOL_VERSION, 16#1234, ?REQUEST_JOB_INFO, 500, 5, 0, 22, 16#0A000001),
+            {ok, Header, <<>>} = flurm_protocol_header:parse_header(Binary),
+            ?assertEqual(16#1234, Header#slurm_header.flags),
+            ?assertEqual(5, Header#slurm_header.forward_cnt),
+            ?assertEqual(0, Header#slurm_header.ret_cnt)
+        end},
+
+        {"parse AF_INET header with non-zero ret_cnt", fun() ->
+            Binary = make_af_inet_header(?SLURM_PROTOCOL_VERSION, 0, ?RESPONSE_SLURM_RC, 0, 0, 3, 443, 16#7F000001),
+            {ok, Header, <<>>} = flurm_protocol_header:parse_header(Binary),
+            ?assertEqual(0, Header#slurm_header.forward_cnt),
+            ?assertEqual(3, Header#slurm_header.ret_cnt)
+        end},
+
+        {"parse AF_INET header with trailing data", fun() ->
+            Binary = <<(make_af_inet_header(?SLURM_PROTOCOL_VERSION, 0, 0, 50, 0, 0, 80, 16#08080808))/binary, "trailing">>,
+            {ok, Header, Rest} = flurm_protocol_header:parse_header(Binary),
+            ?assertEqual(50, Header#slurm_header.body_length),
+            ?assertEqual(<<"trailing">>, Rest)
+        end},
+
+        {"parse AF_INET header with max values", fun() ->
+            Binary = make_af_inet_header(65535, 65535, 65535, 16#FFFFFFFF, 65535, 65535, 65535, 16#FFFFFFFF),
+            {ok, Header, <<>>} = flurm_protocol_header:parse_header(Binary),
+            ?assertEqual(65535, Header#slurm_header.version),
+            ?assertEqual(65535, Header#slurm_header.flags),
+            ?assertEqual(65535, Header#slurm_header.msg_type),
+            ?assertEqual(16#FFFFFFFF, Header#slurm_header.body_length),
+            ?assertEqual(65535, Header#slurm_header.forward_cnt),
+            ?assertEqual(65535, Header#slurm_header.ret_cnt)
+        end}
+    ].
+
+parse_af_inet6_test_() ->
+    [
+        {"parse AF_INET6 header (34 bytes)", fun() ->
+            Binary = make_af_inet6_header(?SLURM_PROTOCOL_VERSION, 0, ?REQUEST_PING, 200, 0, 0, 8080, 16#20010DB8, 16#1),
+            {ok, Header, Rest} = flurm_protocol_header:parse_header(Binary),
+            ?assertEqual(?SLURM_PROTOCOL_VERSION, Header#slurm_header.version),
+            ?assertEqual(0, Header#slurm_header.flags),
+            ?assertEqual(?REQUEST_PING, Header#slurm_header.msg_type),
+            ?assertEqual(200, Header#slurm_header.body_length),
+            ?assertEqual(0, Header#slurm_header.forward_cnt),
+            ?assertEqual(0, Header#slurm_header.ret_cnt),
+            ?assertEqual(<<>>, Rest)
+        end},
+
+        {"parse AF_INET6 header with non-zero counts", fun() ->
+            Binary = make_af_inet6_header(?SLURM_PROTOCOL_VERSION, 16#ABCD, ?REQUEST_SUBMIT_BATCH_JOB, 1000, 10, 5, 443, 0, 1),
+            {ok, Header, <<>>} = flurm_protocol_header:parse_header(Binary),
+            ?assertEqual(16#ABCD, Header#slurm_header.flags),
+            ?assertEqual(10, Header#slurm_header.forward_cnt),
+            ?assertEqual(5, Header#slurm_header.ret_cnt)
+        end},
+
+        {"parse AF_INET6 header with trailing data", fun() ->
+            Binary = <<(make_af_inet6_header(?SLURM_PROTOCOL_VERSION, 0, 0, 75, 0, 0, 22, 16#FE800000, 16#1))/binary, "extra data">>,
+            {ok, Header, Rest} = flurm_protocol_header:parse_header(Binary),
+            ?assertEqual(75, Header#slurm_header.body_length),
+            ?assertEqual(<<"extra data">>, Rest)
+        end},
+
+        {"parse AF_INET6 header with max values", fun() ->
+            Binary = make_af_inet6_header(65535, 65535, 65535, 16#FFFFFFFF, 65535, 65535, 65535, 16#FFFFFFFFFFFFFFFF, 16#FFFFFFFFFFFFFFFF),
+            {ok, Header, <<>>} = flurm_protocol_header:parse_header(Binary),
+            ?assertEqual(65535, Header#slurm_header.version),
+            ?assertEqual(65535, Header#slurm_header.flags),
+            ?assertEqual(65535, Header#slurm_header.msg_type),
+            ?assertEqual(16#FFFFFFFF, Header#slurm_header.body_length),
+            ?assertEqual(65535, Header#slurm_header.forward_cnt),
+            ?assertEqual(65535, Header#slurm_header.ret_cnt)
+        end},
+
+        {"parse AF_INET6 loopback address (::1)", fun() ->
+            Binary = make_af_inet6_header(?SLURM_PROTOCOL_VERSION, 0, ?RESPONSE_SLURM_RC, 0, 0, 0, 80, 0, 1),
+            {ok, Header, <<>>} = flurm_protocol_header:parse_header(Binary),
+            ?assertEqual(?RESPONSE_SLURM_RC, Header#slurm_header.msg_type)
+        end}
+    ].

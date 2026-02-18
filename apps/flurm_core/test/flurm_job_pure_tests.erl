@@ -1210,3 +1210,128 @@ running_timeout_sets_end_time_test() ->
     Data = make_job_data(#{end_time => undefined}),
     {next_state, timeout, NewData} = flurm_job:running(state_timeout, job_timeout, Data),
     ?assertNotEqual(undefined, NewData#job_data.end_time).
+
+%%====================================================================
+%% Additional Coverage Tests for 90%+ Coverage
+%%====================================================================
+
+%% Test suspended state preempt with checkpoint mode - falls through to catch-all
+suspended_preempt_checkpoint_invalid_test() ->
+    Data = make_job_data(#{allocated_nodes => [<<"node1">>], start_time => erlang:timestamp()}),
+    From = fake_from(),
+    Result = flurm_job:suspended({call, From}, {preempt, checkpoint, 120}, Data),
+    ?assertMatch({keep_state, #job_data{}, [{reply, _, {error, invalid_operation}}]}, Result).
+
+%% Test suspended state set_priority clamps low values
+suspended_set_priority_clamps_low_test() ->
+    Data = make_job_data(#{priority => 100}),
+    From = fake_from(),
+    {keep_state, NewData, _} = flurm_job:suspended({call, From}, {set_priority, -500}, Data),
+    ?assertEqual(?MIN_PRIORITY, NewData#job_data.priority).
+
+%% Test running state set_priority exactly at MIN boundary
+running_set_priority_exactly_min_test() ->
+    Data = make_job_data(#{priority => 500}),
+    From = fake_from(),
+    {keep_state, NewData, _} = flurm_job:running({call, From}, {set_priority, ?MIN_PRIORITY}, Data),
+    ?assertEqual(?MIN_PRIORITY, NewData#job_data.priority).
+
+%% Test running state set_priority exactly at MAX boundary
+running_set_priority_exactly_max_test() ->
+    Data = make_job_data(#{priority => 500}),
+    From = fake_from(),
+    {keep_state, NewData, _} = flurm_job:running({call, From}, {set_priority, ?MAX_PRIORITY}, Data),
+    ?assertEqual(?MAX_PRIORITY, NewData#job_data.priority).
+
+%% Test suspended state set_priority exactly at MIN boundary
+suspended_set_priority_exactly_min_test() ->
+    Data = make_job_data(#{priority => 500}),
+    From = fake_from(),
+    {keep_state, NewData, _} = flurm_job:suspended({call, From}, {set_priority, ?MIN_PRIORITY}, Data),
+    ?assertEqual(?MIN_PRIORITY, NewData#job_data.priority).
+
+%% Test suspended state set_priority exactly at MAX boundary
+suspended_set_priority_exactly_max_test() ->
+    Data = make_job_data(#{priority => 500}),
+    From = fake_from(),
+    {keep_state, NewData, _} = flurm_job:suspended({call, From}, {set_priority, ?MAX_PRIORITY}, Data),
+    ?assertEqual(?MAX_PRIORITY, NewData#job_data.priority).
+
+%% Test completing state with undefined exit code (edge case)
+completing_cleanup_complete_exit_undefined_test() ->
+    Data = make_job_data(#{exit_code => undefined}),
+    Result = flurm_job:completing(cast, cleanup_complete, Data),
+    %% undefined is not 0, so goes to failed
+    ?assertMatch({next_state, failed, #job_data{}}, Result).
+
+%% Test completing state timeout with undefined exit code
+completing_state_timeout_exit_undefined_test() ->
+    Data = make_job_data(#{exit_code => undefined}),
+    Result = flurm_job:completing(state_timeout, cleanup_timeout, Data),
+    %% undefined is not 0, so goes to failed
+    ?assertMatch({next_state, failed, #job_data{}}, Result).
+
+%% Test preempt requeue from suspended clears allocated_nodes and start_time
+suspended_preempt_requeue_clears_fields_test() ->
+    Data = make_job_data(#{allocated_nodes => [<<"n1">>, <<"n2">>], start_time => erlang:timestamp()}),
+    From = fake_from(),
+    {next_state, pending, NewData, _} = flurm_job:suspended({call, From}, {preempt, requeue, 30}, Data),
+    ?assertEqual([], NewData#job_data.allocated_nodes),
+    ?assertEqual(undefined, NewData#job_data.start_time).
+
+%% Test preempt checkpoint from running clears allocated_nodes and start_time
+running_preempt_checkpoint_clears_fields_test() ->
+    Data = make_job_data(#{allocated_nodes => [<<"n1">>], start_time => erlang:timestamp()}),
+    From = fake_from(),
+    {next_state, pending, NewData, _} = flurm_job:running({call, From}, {preempt, checkpoint, 60}, Data),
+    ?assertEqual([], NewData#job_data.allocated_nodes),
+    ?assertEqual(undefined, NewData#job_data.start_time).
+
+%%====================================================================
+%% Coverage Tests for Uncovered Lines
+%%====================================================================
+
+%% Test completing state timeout with exit_code = 0 -> completed (line 550)
+completing_state_timeout_exit_code_0_test() ->
+    Data = make_job_data(#{exit_code => 0}),
+    Result = flurm_job:completing(state_timeout, cleanup_timeout, Data),
+    ?assertMatch({next_state, completed, #job_data{}}, Result).
+
+%% Test completing state timeout with exit_code = nonzero -> failed (line 551)
+completing_state_timeout_exit_code_nonzero_test() ->
+    Data = make_job_data(#{exit_code => 42}),
+    Result = flurm_job:completing(state_timeout, cleanup_timeout, Data),
+    ?assertMatch({next_state, failed, #job_data{}}, Result).
+
+%% Test completing info message ignored (line 555)
+completing_info_message_test() ->
+    Data = make_job_data(),
+    Result = flurm_job:completing(info, some_random_info, Data),
+    ?assertMatch({keep_state, #job_data{}}, Result).
+
+%% Test maybe_upgrade_state_data with current version (line 750)
+maybe_upgrade_current_version_test() ->
+    Data = make_job_data(#{state_version => ?JOB_STATE_VERSION}),
+    Result = flurm_job:maybe_upgrade_state_data(Data),
+    ?assertEqual(Data, Result),
+    ?assertEqual(?JOB_STATE_VERSION, Result#job_data.state_version).
+
+%% Test maybe_upgrade_state_data with old version (line 755)
+maybe_upgrade_old_version_test() ->
+    OldVersion = ?JOB_STATE_VERSION - 1,
+    Data = make_job_data(#{state_version => OldVersion}),
+    Result = flurm_job:maybe_upgrade_state_data(Data),
+    ?assertEqual(?JOB_STATE_VERSION, Result#job_data.state_version).
+
+%% Test maybe_upgrade_state_data with version 0 (line 755)
+maybe_upgrade_version_zero_test() ->
+    Data = make_job_data(#{state_version => 0}),
+    Result = flurm_job:maybe_upgrade_state_data(Data),
+    ?assertEqual(?JOB_STATE_VERSION, Result#job_data.state_version).
+
+%% Test code_change with old version triggers upgrade (lines 262-263)
+code_change_with_old_version_test() ->
+    OldData = make_job_data(#{state_version => 0}),
+    {ok, State, NewData} = flurm_job:code_change("1.0", running, OldData, []),
+    ?assertEqual(running, State),
+    ?assertEqual(?JOB_STATE_VERSION, NewData#job_data.state_version).

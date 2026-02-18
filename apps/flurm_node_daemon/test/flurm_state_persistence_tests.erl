@@ -770,3 +770,70 @@ test_symlink_path() ->
             ok
     end,
     ok.
+
+%%====================================================================
+%% Mocked Error Path Tests (for coverage)
+%%====================================================================
+
+mocked_error_test_() ->
+    {foreach,
+     fun mocked_setup/0,
+     fun mocked_cleanup/1,
+     [
+        {"write_file error path (lines 82-83)", fun test_write_file_error/0},
+        {"read_file error non-enoent (lines 118-119)", fun test_read_file_error/0},
+        {"delete error non-enoent (line 129)", fun test_delete_error/0}
+     ]}.
+
+mocked_setup() ->
+    application:ensure_all_started(lager),
+    application:ensure_all_started(meck),
+    TempDir = create_temp_dir(),
+    StateFile = filename:join(TempDir, "test_state.dat"),
+    application:set_env(flurm_node_daemon, state_file, StateFile),
+    #{temp_dir => TempDir, state_file => StateFile}.
+
+mocked_cleanup(#{temp_dir := TempDir}) ->
+    meck:unload(),
+    delete_dir_recursive(TempDir),
+    application:unset_env(flurm_node_daemon, state_file),
+    ok.
+
+test_write_file_error() ->
+    %% Mock file:write_file to fail
+    meck:new(file, [unstick, passthrough]),
+    meck:expect(file, write_file, fun(Path, _Data) ->
+        case lists:suffix(".tmp", Path) of
+            true -> {error, enospc};  % Simulate disk full on temp file
+            false -> meck:passthrough([Path, _Data])
+        end
+    end),
+
+    State = #{test => true},
+    Result = flurm_state_persistence:save_state(State),
+    ?assertEqual({error, enospc}, Result),
+
+    meck:unload(file),
+    ok.
+
+test_read_file_error() ->
+    %% Mock file:read_file to return a non-enoent error
+    meck:new(file, [unstick, passthrough]),
+    meck:expect(file, read_file, fun(_Path) -> {error, eacces} end),
+
+    Result = flurm_state_persistence:load_state(),
+    ?assertEqual({error, eacces}, Result),
+
+    meck:unload(file),
+    ok.
+
+test_delete_error() ->
+    %% Mock file:delete to return a non-enoent error
+    meck:new(file, [unstick, passthrough]),
+    meck:expect(file, delete, fun(_Path) -> {error, eacces} end),
+
+    Result = flurm_state_persistence:clear_state(),
+    ?assertEqual({error, eacces}, Result),
+
+    meck:unload(file),
+    ok.

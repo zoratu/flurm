@@ -547,3 +547,189 @@ test_ignored_info() ->
     _ = sys:get_state(Pid),
     {ok, configuring} = flurm_job:get_state(Pid),
     ok.
+
+%%====================================================================
+%% Mocked Tests for Error Paths (requires meck)
+%%====================================================================
+
+job_mocked_test_() ->
+    {foreach,
+     fun setup_mocked/0,
+     fun cleanup_mocked/1,
+     [
+        {"submit error path", fun test_submit_error/0},
+        {"cancel via job_id", fun test_cancel_via_job_id/0},
+        {"unknown cast in running state", fun test_running_unknown_cast/0},
+        {"unknown call in running state", fun test_running_unknown_call/0},
+        {"info in running state", fun test_running_info/0},
+        {"info in completing state", fun test_completing_info/0}
+     ]}.
+
+setup_mocked() ->
+    application:ensure_all_started(sasl),
+    meck:new(flurm_job_sup, [passthrough]),
+    meck:new(flurm_accounting, [passthrough]),
+    meck:new(flurm_job_registry, [passthrough]),
+    %% Start real registry and supervisor for non-mocked tests
+    {ok, RegistryPid} = flurm_job_registry:start_link(),
+    {ok, SupPid} = flurm_job_sup:start_link(),
+    #{registry => RegistryPid, supervisor => SupPid}.
+
+cleanup_mocked(#{registry := RegistryPid, supervisor := SupPid}) ->
+    meck:unload(flurm_job_sup),
+    meck:unload(flurm_accounting),
+    meck:unload(flurm_job_registry),
+    [catch flurm_job_sup:stop_job(P) || P <- flurm_job_sup:which_jobs()],
+    lists:foreach(fun(Pid) ->
+        case is_process_alive(Pid) of
+            true ->
+                Ref = monitor(process, Pid),
+                unlink(Pid),
+                catch gen_server:stop(Pid, shutdown, 5000),
+                receive
+                    {'DOWN', Ref, process, Pid, _} -> ok
+                after 5000 ->
+                    demonitor(Ref, [flush]),
+                    catch exit(Pid, kill)
+                end;
+            false ->
+                ok
+        end
+    end, [SupPid, RegistryPid]),
+    ok.
+
+test_submit_error() ->
+    %% Mock start_job to return error
+    meck:expect(flurm_job_sup, start_job, fun(_JobSpec) -> {error, test_error} end),
+    JobSpec = make_job_spec(),
+    Result = flurm_job:submit(JobSpec),
+    ?assertEqual({error, test_error}, Result),
+    ok.
+
+test_cancel_via_job_id() ->
+    %% Reset mocks to passthrough for this test
+    meck:expect(flurm_job_sup, start_job, fun(JobSpec) -> meck:passthrough([JobSpec]) end),
+    JobSpec = make_job_spec(),
+    {ok, _Pid, JobId} = flurm_job:submit(JobSpec),
+    {ok, pending} = flurm_job:get_state(JobId),
+    %% Cancel via job ID (this hits line 101)
+    ok = flurm_job:cancel(JobId),
+    {ok, cancelled} = flurm_job:get_state(JobId),
+    ok.
+
+test_running_unknown_cast() ->
+    %% Reset mocks
+    meck:expect(flurm_job_sup, start_job, fun(JobSpec) -> meck:passthrough([JobSpec]) end),
+    JobSpec = make_job_spec(),
+    {ok, Pid, _JobId} = flurm_job:submit(JobSpec),
+    ok = flurm_job:allocate(Pid, [<<"node1">>]),
+    ok = flurm_job:signal_config_complete(Pid),
+    {ok, running} = flurm_job:get_state(Pid),
+    %% Send unknown cast - should be ignored (line 440)
+    gen_statem:cast(Pid, some_unknown_cast),
+    _ = sys:get_state(Pid),
+    {ok, running} = flurm_job:get_state(Pid),
+    ok.
+
+test_running_unknown_call() ->
+    %% Reset mocks
+    meck:expect(flurm_job_sup, start_job, fun(JobSpec) -> meck:passthrough([JobSpec]) end),
+    JobSpec = make_job_spec(),
+    {ok, Pid, _JobId} = flurm_job:submit(JobSpec),
+    ok = flurm_job:allocate(Pid, [<<"node1">>]),
+    ok = flurm_job:signal_config_complete(Pid),
+    {ok, running} = flurm_job:get_state(Pid),
+    %% Send unknown call - should return error (line 421)
+    Result = gen_statem:call(Pid, {some_unknown_call, with_args}),
+    ?assertEqual({error, invalid_operation}, Result),
+    {ok, running} = flurm_job:get_state(Pid),
+    ok.
+
+test_running_info() ->
+    %% Reset mocks
+    meck:expect(flurm_job_sup, start_job, fun(JobSpec) -> meck:passthrough([JobSpec]) end),
+    JobSpec = make_job_spec(),
+    {ok, Pid, _JobId} = flurm_job:submit(JobSpec),
+    ok = flurm_job:allocate(Pid, [<<"node1">>]),
+    ok = flurm_job:signal_config_complete(Pid),
+    {ok, running} = flurm_job:get_state(Pid),
+    %% Send info message - should be ignored
+    Pid ! some_random_info,
+    _ = sys:get_state(Pid),
+    {ok, running} = flurm_job:get_state(Pid),
+    ok.
+
+test_completing_info() ->
+    %% Reset mocks
+    meck:expect(flurm_job_sup, start_job, fun(JobSpec) -> meck:passthrough([JobSpec]) end),
+    JobSpec = make_job_spec(),
+    {ok, Pid, _JobId} = flurm_job:submit(JobSpec),
+    ok = flurm_job:allocate(Pid, [<<"node1">>]),
+    ok = flurm_job:signal_config_complete(Pid),
+    ok = flurm_job:signal_job_complete(Pid, 0),
+    {ok, completing} = flurm_job:get_state(Pid),
+    %% Send info message - should be ignored (line 555)
+    Pid ! completing_info_message,
+    _ = sys:get_state(Pid),
+    {ok, completing} = flurm_job:get_state(Pid),
+    ok.
+
+%%====================================================================
+%% Job ID API Variant Tests (covers lines 141, 151, 161, 183)
+%%====================================================================
+
+job_id_api_variants_test_() ->
+    {foreach,
+     fun setup/0,
+     fun cleanup/1,
+     [
+        {"signal_job_complete via job_id", fun test_signal_job_complete_via_job_id/0},
+        {"signal_cleanup_complete via job_id", fun test_signal_cleanup_complete_via_job_id/0},
+        {"signal_node_failure via job_id", fun test_signal_node_failure_via_job_id/0},
+        {"preempt via job_id", fun test_preempt_via_job_id/0}
+     ]}.
+
+test_signal_job_complete_via_job_id() ->
+    JobSpec = make_job_spec(),
+    {ok, _Pid, JobId} = flurm_job:submit(JobSpec),
+    ok = flurm_job:allocate(JobId, [<<"node1">>]),
+    ok = flurm_job:signal_config_complete(JobId),
+    {ok, running} = flurm_job:get_state(JobId),
+    %% Signal job complete via job ID (line 141)
+    ok = flurm_job:signal_job_complete(JobId, 0),
+    {ok, completing} = flurm_job:get_state(JobId),
+    ok.
+
+test_signal_cleanup_complete_via_job_id() ->
+    JobSpec = make_job_spec(),
+    {ok, _Pid, JobId} = flurm_job:submit(JobSpec),
+    ok = flurm_job:allocate(JobId, [<<"node1">>]),
+    ok = flurm_job:signal_config_complete(JobId),
+    ok = flurm_job:signal_job_complete(JobId, 0),
+    {ok, completing} = flurm_job:get_state(JobId),
+    %% Signal cleanup complete via job ID (line 151)
+    ok = flurm_job:signal_cleanup_complete(JobId),
+    {ok, completed} = flurm_job:get_state(JobId),
+    ok.
+
+test_signal_node_failure_via_job_id() ->
+    JobSpec = make_job_spec(),
+    {ok, _Pid, JobId} = flurm_job:submit(JobSpec),
+    ok = flurm_job:allocate(JobId, [<<"node1">>]),
+    ok = flurm_job:signal_config_complete(JobId),
+    {ok, running} = flurm_job:get_state(JobId),
+    %% Signal node failure via job ID (line 161)
+    ok = flurm_job:signal_node_failure(JobId, <<"node1">>),
+    {ok, node_fail} = flurm_job:get_state(JobId),
+    ok.
+
+test_preempt_via_job_id() ->
+    JobSpec = make_job_spec(),
+    {ok, _Pid, JobId} = flurm_job:submit(JobSpec),
+    ok = flurm_job:allocate(JobId, [<<"node1">>]),
+    ok = flurm_job:signal_config_complete(JobId),
+    {ok, running} = flurm_job:get_state(JobId),
+    %% Preempt via job ID (line 183)
+    ok = flurm_job:preempt(JobId, requeue, 30),
+    {ok, pending} = flurm_job:get_state(JobId),
+    ok.

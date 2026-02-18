@@ -36,6 +36,7 @@ encode_success_test_() ->
                      node_register, node_register_ack, node_heartbeat, node_heartbeat_ack,
                      node_status, node_drain, node_resume,
                      partition_create, partition_update, partition_delete,
+                     step_launch, step_complete,
                      ack, error],
             lists:foreach(fun(Type) ->
                 Msg = #{type => Type, payload => #{}},
@@ -304,6 +305,53 @@ type_encoding_test_() ->
             Binary = <<999:16, PayloadSize:32, Payload/binary>>,
             {ok, Decoded} = flurm_protocol:decode(Binary),
             ?assertEqual(unknown, maps:get(type, Decoded))
+        end},
+
+        {"step_launch encodes to 30", fun() ->
+            Msg = #{type => step_launch, payload => #{}},
+            {ok, Binary} = flurm_protocol:encode(Msg),
+            <<30:16, _/binary>> = Binary,
+            ?assert(true)
+        end},
+
+        {"step_complete encodes to 31", fun() ->
+            Msg = #{type => step_complete, payload => #{}},
+            {ok, Binary} = flurm_protocol:encode(Msg),
+            <<31:16, _/binary>> = Binary,
+            ?assert(true)
+        end},
+
+        {"step_launch roundtrip", fun() ->
+            Msg = #{type => step_launch, payload => #{step_id => 1}},
+            {ok, Encoded} = flurm_protocol:encode(Msg),
+            {ok, Decoded} = flurm_protocol:decode(Encoded),
+            ?assertEqual(step_launch, maps:get(type, Decoded))
+        end},
+
+        {"step_complete roundtrip", fun() ->
+            Msg = #{type => step_complete, payload => #{status => <<"done">>}},
+            {ok, Encoded} = flurm_protocol:encode(Msg),
+            {ok, Decoded} = flurm_protocol:decode(Encoded),
+            ?assertEqual(step_complete, maps:get(type, Decoded))
+        end},
+
+        {"decode all type codes directly", fun() ->
+            %% Test decoding all valid type codes to exercise decode_type fully
+            TypeCodes = [{1, job_submit}, {2, job_cancel}, {3, job_status},
+                         {4, job_launch}, {5, job_complete}, {6, job_failed},
+                         {10, node_register}, {11, node_register_ack},
+                         {12, node_heartbeat}, {13, node_heartbeat_ack},
+                         {14, node_status}, {15, node_drain}, {16, node_resume},
+                         {20, partition_create}, {21, partition_update}, {22, partition_delete},
+                         {30, step_launch}, {31, step_complete},
+                         {100, ack}, {101, error}, {255, unknown}],
+            Payload = jsx:encode(#{}),
+            PayloadSize = byte_size(Payload),
+            lists:foreach(fun({Code, ExpectedType}) ->
+                Binary = <<Code:16, PayloadSize:32, Payload/binary>>,
+                {ok, Decoded} = flurm_protocol:decode(Binary),
+                ?assertEqual(ExpectedType, maps:get(type, Decoded))
+            end, TypeCodes)
         end}
     ].
 
