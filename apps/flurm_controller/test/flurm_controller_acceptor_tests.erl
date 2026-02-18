@@ -29,18 +29,24 @@ acceptor_test_() ->
 setup() ->
     %% Start meck
     application:ensure_all_started(lager),
+    catch meck:unload(ranch),
     meck:new(ranch, [passthrough, unstick]),
+    catch meck:unload(ranch_tcp),
     meck:new(ranch_tcp, [passthrough, unstick]),
     %% Mock inet for peername calls with fake sockets
+    catch meck:unload(inet),
     meck:new(inet, [passthrough, unstick]),
     meck:expect(inet, peername, fun(_Socket) -> {ok, {{127, 0, 0, 1}, 12345}} end),
     %% Mock connection limiter
+    catch meck:unload(flurm_connection_limiter),
     meck:new(flurm_connection_limiter, [passthrough, non_strict]),
     meck:expect(flurm_connection_limiter, connection_allowed, fun(_) -> true end),
     meck:expect(flurm_connection_limiter, connection_opened, fun(_) -> ok end),
     meck:expect(flurm_connection_limiter, connection_closed, fun(_) -> ok end),
     %% Use passthrough to preserve coverage instrumentation
+    catch meck:unload(flurm_protocol_codec),
     meck:new(flurm_protocol_codec, [passthrough, non_strict]),
+    catch meck:unload(flurm_controller_handler),
     meck:new(flurm_controller_handler, [passthrough, non_strict]),
     ok.
 
@@ -134,9 +140,13 @@ process_buffer_test_() ->
     {foreach,
      fun() ->
          application:ensure_all_started(lager),
+         catch meck:unload(ranch),
          meck:new(ranch, [passthrough, unstick]),
+         catch meck:unload(ranch_tcp),
          meck:new(ranch_tcp, [passthrough, unstick]),
+         catch meck:unload(flurm_protocol_codec),
          meck:new(flurm_protocol_codec, [passthrough, non_strict]),
+         catch meck:unload(flurm_controller_handler),
          meck:new(flurm_controller_handler, [passthrough, non_strict])
      end,
      fun(_) ->
@@ -231,9 +241,13 @@ message_handling_test_() ->
     {foreach,
      fun() ->
          application:ensure_all_started(lager),
+         catch meck:unload(ranch),
          meck:new(ranch, [passthrough, unstick]),
+         catch meck:unload(ranch_tcp),
          meck:new(ranch_tcp, [passthrough, unstick]),
+         catch meck:unload(flurm_protocol_codec),
          meck:new(flurm_protocol_codec, [passthrough, non_strict]),
+         catch meck:unload(flurm_controller_handler),
          meck:new(flurm_controller_handler, [passthrough, non_strict])
      end,
      fun(_) ->
@@ -383,9 +397,13 @@ buffer_edge_cases_test_() ->
     {foreach,
      fun() ->
          application:ensure_all_started(lager),
+         catch meck:unload(ranch),
          meck:new(ranch, [passthrough, unstick]),
+         catch meck:unload(ranch_tcp),
          meck:new(ranch_tcp, [passthrough, unstick]),
+         catch meck:unload(flurm_protocol_codec),
          meck:new(flurm_protocol_codec, [passthrough, non_strict]),
+         catch meck:unload(flurm_controller_handler),
          meck:new(flurm_controller_handler, [passthrough, non_strict])
      end,
      fun(_) ->
@@ -490,9 +508,13 @@ response_test_() ->
     {foreach,
      fun() ->
          application:ensure_all_started(lager),
+         catch meck:unload(ranch),
          meck:new(ranch, [passthrough, unstick]),
+         catch meck:unload(ranch_tcp),
          meck:new(ranch_tcp, [passthrough, unstick]),
+         catch meck:unload(flurm_protocol_codec),
          meck:new(flurm_protocol_codec, [passthrough, non_strict]),
+         catch meck:unload(flurm_controller_handler),
          meck:new(flurm_controller_handler, [passthrough, non_strict])
      end,
      fun(_) ->

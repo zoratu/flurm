@@ -84,6 +84,7 @@ query_test_() ->
      ]}.
 
 setup() ->
+    catch meck:unload(lager),
     meck:new(lager, [passthrough, no_link, non_strict]),
     meck:expect(lager, info, fun(_) -> ok end),
     meck:expect(lager, info, fun(_, _) -> ok end),
@@ -91,10 +92,12 @@ setup() ->
     meck:expect(lager, warning, fun(_, _) -> ok end),
     meck:expect(lager, error, fun(_, _) -> ok end),
 
+    catch meck:unload(flurm_dbd_ra),
     meck:new(flurm_dbd_ra, [non_strict, no_link]),
     meck:expect(flurm_dbd_ra, query_jobs, fun(_) -> {ok, sample_jobs()} end),
     meck:expect(flurm_dbd_ra, get_tres_usage, fun(_, _, _) -> {ok, sample_tres()} end),
 
+    catch meck:unload(flurm_dbd_server),
     meck:new(flurm_dbd_server, [non_strict, no_link]),
     meck:expect(flurm_dbd_server, list_job_records, fun() -> sample_jobs() end),
     meck:expect(flurm_dbd_server, list_job_records, fun(_) -> sample_jobs() end),

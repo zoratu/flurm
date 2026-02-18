@@ -40,9 +40,13 @@ flurm_dbd_acceptor_coverage_test_() ->
      ]}.
 
 setup() ->
+    catch meck:unload(ranch),
     meck:new(ranch, [non_strict]),
+    catch meck:unload(lager),
     meck:new(lager, [non_strict]),
+    catch meck:unload(flurm_protocol_codec),
     meck:new(flurm_protocol_codec, [passthrough, non_strict]),
+    catch meck:unload(flurm_dbd_server),
     meck:new(flurm_dbd_server, [passthrough, non_strict]),
 
     meck:expect(lager, debug, fun(_) -> ok end),

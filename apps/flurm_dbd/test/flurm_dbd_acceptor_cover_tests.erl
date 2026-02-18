@@ -151,6 +151,7 @@ acceptor_test_() ->
      ]}.
 
 setup() ->
+    catch meck:unload(lager),
     meck:new(lager, [passthrough, no_link, non_strict]),
     meck:expect(lager, info,    fun(_) -> ok end),
     meck:expect(lager, info,    fun(_, _) -> ok end),
@@ -162,9 +163,11 @@ setup() ->
     setup_transport(),
 
     %% Mock flurm_dbd_server and flurm_job_manager for GET_JOBS_COND
+    catch meck:unload(flurm_dbd_server),
     meck:new(flurm_dbd_server, [non_strict, no_link]),
     meck:expect(flurm_dbd_server, list_job_records, fun() -> [] end),
 
+    catch meck:unload(flurm_job_manager),
     meck:new(flurm_job_manager, [non_strict, no_link]),
     meck:expect(flurm_job_manager, list_jobs, fun() -> [] end),
     ok.

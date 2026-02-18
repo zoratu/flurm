@@ -40,6 +40,9 @@ dispatcher_server_test_() ->
      ]}.
 
 setup() ->
+    %% Unload any existing mocks to prevent conflicts in parallel tests
+    catch meck:unload(flurm_node_connection_manager),
+
     %% Mock the node connection manager
     meck:new(flurm_node_connection_manager, [passthrough, non_strict]),
     meck:expect(flurm_node_connection_manager, send_to_nodes,
@@ -396,6 +399,7 @@ signal_test_() ->
 
 test_signal_conversions() ->
     Self = self(),
+    catch meck:unload(flurm_node_connection_manager),
     meck:new(flurm_node_connection_manager, [passthrough, non_strict]),
     meck:expect(flurm_node_connection_manager, send_to_nodes,
                 fun(Nodes, Msg) ->
@@ -449,6 +453,7 @@ job_launch_message_test_() ->
      ]}.
 
 setup_launch() ->
+    catch meck:unload(flurm_node_connection_manager),
     meck:new(flurm_node_connection_manager, [passthrough, non_strict]),
     ok.
 
@@ -590,6 +595,7 @@ live_server_test_() ->
      ]}.
 
 setup_live() ->
+    catch meck:unload(flurm_node_connection_manager),
     meck:new(flurm_node_connection_manager, [passthrough, non_strict]),
     meck:expect(flurm_node_connection_manager, send_to_nodes,
                 fun(Nodes, _Msg) -> [{N, ok} || N <- Nodes] end),
@@ -717,6 +723,7 @@ preempt_explicit_nodes_test_() ->
      ]}.
 
 setup_explicit() ->
+    catch meck:unload(flurm_node_connection_manager),
     meck:new(flurm_node_connection_manager, [passthrough, non_strict]),
     ok.
 

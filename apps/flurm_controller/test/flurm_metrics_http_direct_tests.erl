@@ -35,6 +35,7 @@ metrics_http_test_() ->
      ]}.
 
 setup() ->
+    catch meck:unload(application),
     meck:new(application, [unstick, passthrough]),
     meck:expect(application, get_env, fun
         (flurm_controller, metrics_port, Default) -> Default;

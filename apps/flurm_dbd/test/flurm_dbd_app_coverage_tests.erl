@@ -25,8 +25,11 @@ flurm_dbd_app_coverage_test_() ->
      ]}.
 
 setup() ->
+    catch meck:unload(lager),
     meck:new(lager, [non_strict]),
-    meck:expect(lager, md, fun(_) -> ok end),    meck:new(flurm_dbd_sup, [passthrough, non_strict]),
+    meck:expect(lager, md, fun(_) -> ok end),
+    catch meck:unload(flurm_dbd_sup),
+    meck:new(flurm_dbd_sup, [passthrough, non_strict]),
 
     meck:expect(lager, info, fun(_) -> ok end),
     meck:expect(lager, info, fun(_, _) -> ok end),

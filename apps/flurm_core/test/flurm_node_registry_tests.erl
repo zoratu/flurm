@@ -66,6 +66,7 @@ setup_with_registry() ->
     setup(),
 
     %% Mock flurm_node for get_info calls during registration
+    catch meck:unload(flurm_node),
     meck:new(flurm_node, [passthrough, non_strict]),
     meck:expect(flurm_node, get_info, fun(_Pid) ->
         {ok, #{
@@ -634,6 +635,7 @@ test_handle_down_message() ->
 
 test_handle_config_reload() ->
     %% Mock flurm_config_slurm
+    catch meck:unload(flurm_config_slurm),
     meck:new(flurm_config_slurm, [passthrough, non_strict]),
     meck:expect(flurm_config_slurm, expand_hostlist, fun(Pattern) -> [Pattern] end),
 
@@ -651,6 +653,7 @@ test_handle_config_reload() ->
 
 test_handle_config_changed() ->
     %% Mock flurm_config_slurm
+    catch meck:unload(flurm_config_slurm),
     meck:new(flurm_config_slurm, [passthrough, non_strict]),
     meck:expect(flurm_config_slurm, expand_hostlist, fun(Pattern) -> [Pattern] end),
 

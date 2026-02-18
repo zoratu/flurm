@@ -22,6 +22,7 @@ setup() ->
             flurm_test_utils:kill_and_wait(ExistingPid)
     end,
     %% Mock flurm_dbd_sup to avoid Ranch dependency
+    catch meck:unload(flurm_dbd_sup),
     meck:new(flurm_dbd_sup, [passthrough, no_link]),
     meck:expect(flurm_dbd_sup, start_listener, fun() -> {ok, self()} end),
     %% Start the DBD server for testing

@@ -84,6 +84,8 @@ start_child_test_() ->
      end}.
 
 setup_mocked_supervisor() ->
+    %% Unload any existing mocks to prevent conflicts in parallel tests
+    catch meck:unload(flurm_job),
     %% Mock the flurm_job module to avoid starting real processes
     meck:new(flurm_job, [passthrough, non_strict]),
     meck:expect(flurm_job, start_link, fun(_JobSpec) ->

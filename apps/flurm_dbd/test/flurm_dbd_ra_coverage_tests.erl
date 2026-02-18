@@ -65,6 +65,7 @@ pure_functions_test_() ->
      ]}.
 
 setup_lager() ->
+    catch meck:unload(lager),
     meck:new(lager, [passthrough, no_link, non_strict]),
     meck:expect(lager, info, fun(_) -> ok end),
     meck:expect(lager, info, fun(_, _) -> ok end),
@@ -72,6 +73,7 @@ setup_lager() ->
     meck:expect(lager, warning, fun(_, _) -> ok end),
     meck:expect(lager, error, fun(_, _) -> ok end),
 
+    catch meck:unload(flurm_tres),
     meck:new(flurm_tres, [non_strict, no_link]),
     meck:expect(flurm_tres, add, fun(M1, M2) ->
         maps:fold(fun(K, V, Acc) ->

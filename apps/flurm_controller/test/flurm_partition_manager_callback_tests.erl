@@ -40,6 +40,8 @@ make_state_with_partitions(Partitions) ->
     #state{partitions = PartitionMap}.
 
 setup() ->
+    catch meck:unload(lager),
+    catch meck:unload(flurm_core),
     meck:new(lager, [passthrough, no_link, non_strict]),
     meck:expect(lager, md, fun() -> [] end),
     meck:expect(lager, md, fun(_) -> ok end),

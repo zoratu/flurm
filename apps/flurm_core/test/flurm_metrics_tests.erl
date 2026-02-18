@@ -857,6 +857,11 @@ coverage_mocked_test_() ->
     {foreach,
      fun() ->
          %% Start meck for all modules we need to mock
+         catch meck:unload(flurm_job_registry),
+         catch meck:unload(flurm_node_registry),
+         catch meck:unload(flurm_rate_limiter),
+         catch meck:unload(flurm_federation),
+         catch meck:unload(flurm_account_manager),
          meck:new(flurm_job_registry, [passthrough, non_strict]),
          meck:new(flurm_node_registry, [passthrough, non_strict]),
          meck:new(flurm_rate_limiter, [passthrough, non_strict]),
@@ -1181,3 +1186,149 @@ test_tres_help() ->
     ?assert(string:find(OutputStr, "TRES allocated") =/= nomatch),
     ?assert(string:find(OutputStr, "TRES available") =/= nomatch),
     ?assert(string:find(OutputStr, "Configured TRES") =/= nomatch).
+
+%%====================================================================
+%% Uncovered Branch Tests - Target specific missed lines
+%%====================================================================
+
+%% Test start_link returning real error (line 82)
+start_link_error_test_() ->
+    {"start_link returns error when init fails", fun() ->
+        %% Stop any existing instance first
+        case whereis(flurm_metrics) of
+            undefined -> ok;
+            Pid ->
+                Ref = monitor(process, Pid),
+                catch gen_server:stop(flurm_metrics, shutdown, 5000),
+                receive {'DOWN', Ref, process, Pid, _} -> ok
+                after 5000 -> demonitor(Ref, [flush])
+                end,
+                %% Clean up ETS tables
+                catch ets:delete(flurm_metrics),
+                catch ets:delete(flurm_histograms),
+                catch ets:delete(flurm_labeled_metrics)
+        end,
+        %% Register a fake process to cause error (not already_started)
+        FakePid = spawn(fun() -> receive stop -> ok end end),
+        register(flurm_metrics, FakePid),
+
+        %% Now start_link should fail with a different error
+        Result = flurm_metrics:start_link(),
+
+        %% Clean up
+        FakePid ! stop,
+
+        %% Unregister in case process died but name still registered
+        catch unregister(flurm_metrics),
+
+        %% Should get error (not already_started since it's not a gen_server)
+        ?assertMatch({error, _}, Result)
+    end}.
+
+%% Test catch-all branches via mocked errors
+coverage_error_branches_test_() ->
+    {foreach,
+     fun() ->
+         catch meck:unload(flurm_job_registry),
+         catch meck:unload(flurm_node_registry),
+         catch meck:unload(flurm_rate_limiter),
+         catch meck:unload(flurm_federation),
+         catch meck:unload(flurm_account_manager),
+         meck:new(flurm_job_registry, [passthrough, non_strict]),
+         meck:new(flurm_node_registry, [passthrough, non_strict]),
+         meck:new(flurm_rate_limiter, [passthrough, non_strict]),
+         meck:new(flurm_federation, [passthrough, non_strict]),
+         meck:new(flurm_account_manager, [passthrough, non_strict]),
+         setup()
+     end,
+     fun(SetupResult) ->
+         cleanup(SetupResult),
+         meck:unload()
+     end,
+     [
+      {"collect_node_metrics catch-all (line 408)", fun test_node_metrics_catch_all/0},
+      {"collect_resource_utilization catch-all (line 424)", fun test_resource_util_catch_all/0},
+      {"collect_federation_metrics catch-all (line 453)", fun test_federation_catch_all/0},
+      {"collect_tres_metrics fold catch-all (line 486)", fun test_tres_fold_catch_all/0},
+      {"collect_tres_metrics outer catch (line 507)", fun test_tres_outer_catch/0}
+     ]}.
+
+test_node_metrics_catch_all() ->
+    %% Mock node registry to return non-map to trigger catch-all in collect_node_metrics
+    meck:expect(flurm_node_registry, count_by_state, fun() ->
+        throw(some_error)  %% This will trigger the catch-all _ -> ok at line 408
+    end),
+    meck:expect(flurm_node_registry, list_nodes, fun() -> [] end),
+
+    %% Trigger collection - should not crash
+    flurm_metrics ! collect_metrics,
+    timer:sleep(100),
+    _ = sys:get_state(flurm_metrics),
+
+    %% Server should still be running
+    ?assert(is_pid(whereis(flurm_metrics))).
+
+test_resource_util_catch_all() ->
+    %% Mock node registry to return nodes but with bad entry data
+    meck:expect(flurm_node_registry, count_by_state, fun() -> #{} end),
+    meck:expect(flurm_node_registry, list_nodes, fun() ->
+        [{<<"node_bad">>, self()}]
+    end),
+    meck:expect(flurm_node_registry, get_node_entry, fun(<<"node_bad">>) ->
+        %% Return something that doesn't match the expected pattern
+        {error, node_not_found}  %% This triggers line 424 catch-all
+    end),
+    meck:expect(flurm_account_manager, list_tres, fun() -> [] end),
+
+    flurm_metrics ! collect_metrics,
+    timer:sleep(100),
+    _ = sys:get_state(flurm_metrics),
+
+    ?assert(is_pid(whereis(flurm_metrics))).
+
+test_federation_catch_all() ->
+    %% Mock federation to return non-map to trigger catch-all at line 453
+    meck:expect(flurm_federation, get_federation_stats, fun() ->
+        not_a_map  %% This triggers the _ -> ok branch
+    end),
+    meck:expect(flurm_node_registry, count_by_state, fun() -> #{} end),
+    meck:expect(flurm_node_registry, list_nodes, fun() -> [] end),
+    meck:expect(flurm_account_manager, list_tres, fun() -> [] end),
+
+    flurm_metrics ! collect_metrics,
+    timer:sleep(100),
+    _ = sys:get_state(flurm_metrics),
+
+    ?assert(is_pid(whereis(flurm_metrics))).
+
+test_tres_fold_catch_all() ->
+    %% Mock node registry to return nodes but get_node_entry returns error
+    %% This triggers the _ -> Acc branch at line 486
+    meck:expect(flurm_node_registry, count_by_state, fun() -> #{} end),
+    meck:expect(flurm_node_registry, list_nodes, fun() ->
+        [{<<"tres_node_bad">>, self()}]
+    end),
+    meck:expect(flurm_node_registry, get_node_entry, fun(<<"tres_node_bad">>) ->
+        {error, not_found}  %% Doesn't match {ok, #node_entry{}}, triggers line 486
+    end),
+    meck:expect(flurm_account_manager, list_tres, fun() -> [] end),
+
+    flurm_metrics ! collect_metrics,
+    timer:sleep(100),
+    _ = sys:get_state(flurm_metrics),
+
+    ?assert(is_pid(whereis(flurm_metrics))).
+
+test_tres_outer_catch() ->
+    %% Mock list_nodes to throw an error, triggering the outer catch at line 507
+    meck:expect(flurm_node_registry, count_by_state, fun() -> #{} end),
+    meck:expect(flurm_node_registry, list_nodes, fun() ->
+        throw(tres_error)  %% Triggers outer catch at line 507
+    end),
+    meck:expect(flurm_account_manager, list_tres, fun() -> [] end),
+
+    flurm_metrics ! collect_metrics,
+    timer:sleep(100),
+    _ = sys:get_state(flurm_metrics),
+
+    ?assert(is_pid(whereis(flurm_metrics))).

@@ -63,6 +63,13 @@ setup() ->
     %% Set application environment for cluster name BEFORE starting federation
     application:set_env(flurm_core, cluster_name, <<"test_origin">>),
 
+    %% Unload any existing mocks to prevent conflicts in parallel tests
+    catch meck:unload(flurm_scheduler),
+    catch meck:unload(flurm_job_manager),
+    catch meck:unload(flurm_config_server),
+    catch meck:unload(flurm_metrics),
+    catch meck:unload(httpc),
+
     %% Setup meck for external dependencies
     meck:new(flurm_scheduler, [passthrough, non_strict, no_link]),
     meck:new(flurm_job_manager, [passthrough, non_strict, no_link]),

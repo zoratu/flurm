@@ -64,6 +64,7 @@ dbd_test_() ->
      ]}.
 
 setup() ->
+    catch meck:unload(lager),
     meck:new(lager, [passthrough, no_link, non_strict]),
     meck:expect(lager, info, fun(_) -> ok end),
     meck:expect(lager, info, fun(_, _) -> ok end),
@@ -71,6 +72,7 @@ setup() ->
     meck:expect(lager, warning, fun(_, _) -> ok end),
     meck:expect(lager, error, fun(_, _) -> ok end),
 
+    catch meck:unload(flurm_dbd_server),
     meck:new(flurm_dbd_server, [non_strict, no_link]),
     meck:expect(flurm_dbd_server, record_job_submit, fun(_) -> ok end),
     meck:expect(flurm_dbd_server, record_job_start, fun(_, _) -> ok end),

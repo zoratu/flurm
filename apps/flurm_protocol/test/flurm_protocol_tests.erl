@@ -434,5 +434,16 @@ edge_case_test_() ->
             Msg = #{type => job_submit, payload => Payload},
             {ok, Binary} = flurm_protocol:encode(Msg),
             ?assert(is_binary(Binary))
+        end},
+
+        {"decode with truly empty payload binary", fun() ->
+            %% Create a message where the payload is 0 bytes (empty binary)
+            %% This exercises the decode_payload(<<>>) -> #{} clause
+            TypeCode = 100,  %% ack
+            PayloadSize = 0,
+            Binary = <<TypeCode:16, PayloadSize:32>>,
+            {ok, Decoded} = flurm_protocol:decode(Binary),
+            ?assertEqual(ack, maps:get(type, Decoded)),
+            ?assertEqual(#{}, maps:get(payload, Decoded))
         end}
     ].

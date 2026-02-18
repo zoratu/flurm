@@ -41,6 +41,7 @@ partition_manager_test_() ->
      ]}.
 
 setup() ->
+    catch meck:unload(flurm_core),
     meck:new(flurm_core, [passthrough, non_strict]),
     meck:expect(flurm_core, new_partition, fun(Spec) ->
         #partition{
@@ -228,6 +229,7 @@ api_test_() ->
      ]}.
 
 setup_api() ->
+    catch meck:unload(flurm_core),
     meck:new(flurm_core, [passthrough, non_strict]),
     meck:expect(flurm_core, new_partition, fun(Spec) ->
         #partition{

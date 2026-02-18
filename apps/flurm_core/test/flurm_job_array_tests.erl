@@ -903,3 +903,172 @@ code_change_test_() ->
              ?assert(is_integer(ArrayJobId))
          end}
      end}.
+
+%% Test start_link edge cases (already_started and errors)
+start_link_edge_cases_test_() ->
+    {setup,
+     fun() ->
+         %% Ensure the server is not running first
+         catch gen_server:stop(flurm_job_array, shutdown, 5000),
+         timer:sleep(50),
+         ok
+     end,
+     fun(_) ->
+         catch gen_server:stop(flurm_job_array, shutdown, 5000)
+     end,
+     fun(_) ->
+         [
+             {"Start link when already started returns existing pid", fun() ->
+                 %% First start succeeds
+                 {ok, Pid1} = flurm_job_array:start_link(),
+                 ?assert(is_pid(Pid1)),
+                 %% Second start should return the same pid (already_started)
+                 {ok, Pid2} = flurm_job_array:start_link(),
+                 ?assertEqual(Pid1, Pid2)
+             end}
+         ]
+     end}.
+
+%% Test create_array_job with parse error via mocking
+create_with_invalid_spec_test_() ->
+    {setup,
+     fun() ->
+         {ok, Pid} = flurm_job_array:start_link(),
+         #{array_pid => Pid}
+     end,
+     fun(#{array_pid := Pid}) ->
+         catch unlink(Pid),
+         catch gen_server:stop(Pid, shutdown, 5000)
+     end,
+     fun(_) ->
+         [
+             {"Create array job with binary spec that returns parse error", fun() ->
+                 %% Mock parse_array_spec to return an error for specific spec
+                 catch meck:unload(flurm_job_array),
+                 meck:new(flurm_job_array, [passthrough]),
+                 meck:expect(flurm_job_array, parse_array_spec,
+                     fun(<<"invalid-spec">>) -> {error, invalid_spec};
+                        (Other) -> meck:passthrough([Other])
+                     end),
+                 try
+                     BaseJob = make_base_job(),
+                     Result = flurm_job_array:create_array_job(BaseJob, <<"invalid-spec">>),
+                     ?assertEqual({error, invalid_spec}, Result)
+                 after
+                     meck:unload(flurm_job_array)
+                 end
+             end},
+             {"Expand array with binary spec that returns parse error", fun() ->
+                 %% Mock parse_array_spec to return an error for specific spec
+                 catch meck:unload(flurm_job_array),
+                 meck:new(flurm_job_array, [passthrough]),
+                 meck:expect(flurm_job_array, parse_array_spec,
+                     fun(<<"bad-expand-spec">>) -> {error, expand_error};
+                        (Other) -> meck:passthrough([Other])
+                     end),
+                 try
+                     Result = flurm_job_array:expand_array(<<"bad-expand-spec">>),
+                     ?assertEqual({error, expand_error}, Result)
+                 after
+                     meck:unload(flurm_job_array)
+                 end
+             end}
+         ]
+     end}.
+
+%% Test code_change callback directly
+code_change_direct_test_() ->
+    {setup,
+     fun() ->
+         {ok, Pid} = flurm_job_array:start_link(),
+         #{array_pid => Pid}
+     end,
+     fun(#{array_pid := Pid}) ->
+         catch unlink(Pid),
+         catch gen_server:stop(Pid, shutdown, 5000)
+     end,
+     fun(_) ->
+         {"Direct code_change callback test", fun() ->
+             %% Get current state through sys module
+             State = sys:get_state(flurm_job_array),
+             %% Call code_change directly through sys:change_code
+             %% Since we can't easily trigger code_change through sys:change_code,
+             %% we simulate it by using sys:suspend/resume and verify server still works
+             ok = sys:suspend(flurm_job_array),
+             ok = sys:resume(flurm_job_array),
+             %% Verify server still works
+             BaseJob = make_base_job(),
+             {ok, Spec} = flurm_job_array:parse_array_spec(<<"0-1">>),
+             {ok, ArrayJobId} = flurm_job_array:create_array_job(BaseJob, Spec),
+             ?assert(is_integer(ArrayJobId)),
+             %% Also test via sys:change_code (triggers code_change)
+             ok = sys:suspend(flurm_job_array),
+             Result = sys:change_code(flurm_job_array, flurm_job_array, "1.0.0", []),
+             ok = sys:resume(flurm_job_array),
+             ?assertEqual(ok, Result)
+         end}
+     end}.
+
+%% Test check_array_completion when array job is missing (tasks exist but job deleted)
+check_completion_missing_job_test_() ->
+    {setup,
+     fun() ->
+         {ok, Pid} = flurm_job_array:start_link(),
+         #{array_pid => Pid}
+     end,
+     fun(#{array_pid := Pid}) ->
+         catch unlink(Pid),
+         catch gen_server:stop(Pid, shutdown, 5000)
+     end,
+     fun(_) ->
+         {"Check completion handles missing array job", fun() ->
+             BaseJob = make_base_job(),
+             {ok, Spec} = flurm_job_array:parse_array_spec(<<"0-1">>),
+             {ok, ArrayJobId} = flurm_job_array:create_array_job(BaseJob, Spec),
+             %% Start and complete a task
+             flurm_job_array:task_started(ArrayJobId, 0, 1000),
+             _ = sys:get_state(flurm_job_array),
+             %% Delete the array job from ETS directly (simulate corruption/race)
+             ets:delete(flurm_array_jobs, ArrayJobId),
+             %% Complete the task - this triggers check_array_completion
+             %% with a missing array job entry
+             flurm_job_array:task_completed(ArrayJobId, 0, 0),
+             %% Also complete the second task
+             flurm_job_array:task_started(ArrayJobId, 1, 1001),
+             flurm_job_array:task_completed(ArrayJobId, 1, 0),
+             _ = sys:get_state(flurm_job_array),
+             %% The server should handle this gracefully
+             ?assertEqual(true, is_process_alive(whereis(flurm_job_array)))
+         end}
+     end}.
+
+%% Test parse_array_spec throw:{parse_error,...} catch clause
+parse_error_throw_test_() ->
+    {setup,
+     fun() ->
+         {ok, Pid} = flurm_job_array:start_link(),
+         #{array_pid => Pid}
+     end,
+     fun(#{array_pid := Pid}) ->
+         catch unlink(Pid),
+         catch gen_server:stop(Pid, shutdown, 5000)
+     end,
+     fun(_) ->
+         [
+             {"Parse spec with throw parse_error triggers catch clause", fun() ->
+                 %% Mock do_parse_array_spec to throw parse_error
+                 catch meck:unload(flurm_job_array),
+                 meck:new(flurm_job_array, [passthrough]),
+                 meck:expect(flurm_job_array, do_parse_array_spec,
+                     fun("throw-error") -> throw({parse_error, mock_parse_error});
+                        (Other) -> meck:passthrough([Other])
+                     end),
+                 try
+                     Result = flurm_job_array:parse_array_spec("throw-error"),
+                     ?assertEqual({error, mock_parse_error}, Result)
+                 after
+                     meck:unload(flurm_job_array)
+                 end
+             end}
+         ]
+     end}.

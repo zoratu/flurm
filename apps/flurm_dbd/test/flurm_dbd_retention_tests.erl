@@ -33,6 +33,7 @@ setup() ->
     application:unset_env(flurm_dbd, prune_timer_ref),
 
     %% Mock flurm_dbd_server
+    catch meck:unload(flurm_dbd_server),
     meck:new(flurm_dbd_server, [passthrough, non_strict, no_link]),
     meck:expect(flurm_dbd_server, archive_old_records, fun(_Days) -> {ok, 5} end),
     meck:expect(flurm_dbd_server, purge_old_records, fun(_Days) -> {ok, 3} end),

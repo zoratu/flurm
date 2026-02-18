@@ -83,6 +83,7 @@ setup() ->
     meck:expect(lager, md, fun(_) -> ok end),
 
     %% Mock flurm_dbd_sup to prevent listener startup
+    catch meck:unload(flurm_dbd_sup),
     meck:new(flurm_dbd_sup, [passthrough, no_link]),
     meck:expect(flurm_dbd_sup, start_listener, fun() -> {ok, self()} end),
     ok.
@@ -604,6 +605,7 @@ listener_error_test_() ->
          meck:expect(lager, error, fun(_, _) -> ok end),
     meck:expect(lager, md, fun(_) -> ok end),
          %% Mock flurm_dbd_sup to fail listener start
+         catch meck:unload(flurm_dbd_sup),
          meck:new(flurm_dbd_sup, [passthrough, no_link]),
          meck:expect(flurm_dbd_sup, start_listener, fun() -> {error, eaddrinuse} end),
          ok

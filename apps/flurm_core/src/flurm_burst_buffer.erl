@@ -636,12 +636,18 @@ do_unregister_buffer(Name) ->
 normalize_type(generic) -> generic;
 normalize_type(datawarp) -> datawarp;
 normalize_type(lua) -> lua;
+normalize_type(nvme) -> nvme;
+normalize_type(ssd) -> ssd;
 normalize_type(<<"generic">>) -> generic;
 normalize_type(<<"datawarp">>) -> datawarp;
 normalize_type(<<"lua">>) -> lua;
+normalize_type(<<"nvme">>) -> nvme;
+normalize_type(<<"ssd">>) -> ssd;
 normalize_type("generic") -> generic;
 normalize_type("datawarp") -> datawarp;
 normalize_type("lua") -> lua;
+normalize_type("nvme") -> nvme;
+normalize_type("ssd") -> ssd;
 normalize_type(_) -> generic.
 
 %%====================================================================

@@ -31,6 +31,14 @@ federation_test_() ->
       ]}}.
 
 setup() ->
+    %% Unload any existing mocks to prevent conflicts in parallel tests
+    catch meck:unload(lager),
+    catch meck:unload(httpc),
+    catch meck:unload(flurm_config_server),
+    catch meck:unload(flurm_partition_manager),
+    catch meck:unload(flurm_job_manager),
+    catch meck:unload(flurm_scheduler),
+
     %% Mock lager
     meck:new(lager, [non_strict, no_link]),
     meck:expect(lager, debug, fun(_) -> ok end),

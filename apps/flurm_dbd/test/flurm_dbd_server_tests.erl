@@ -22,6 +22,8 @@ setup() ->
         ExistingPid ->
             flurm_test_utils:kill_and_wait(ExistingPid)
     end,
+    %% Clean up any previous meck state
+    catch meck:unload(flurm_dbd_sup),
     %% Mock flurm_dbd_sup to avoid Ranch dependency
     meck:new(flurm_dbd_sup, [passthrough, no_link]),
     meck:expect(flurm_dbd_sup, start_listener, fun() -> {ok, self()} end),
@@ -850,6 +852,7 @@ handle_info_listener_test_() ->
                      flurm_test_utils:kill_and_wait(ExistingPid)
              end,
              %% Mock to return error
+             catch meck:unload(flurm_dbd_sup),
              meck:new(flurm_dbd_sup, [passthrough, no_link]),
              meck:expect(flurm_dbd_sup, start_listener, fun() -> {error, test_error} end),
 

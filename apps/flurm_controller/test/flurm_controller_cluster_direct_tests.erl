@@ -76,9 +76,13 @@ gen_server_test_() ->
      ]}.
 
 setup_gen_server() ->
+    catch meck:unload(application),
     meck:new(application, [unstick, passthrough]),
+    catch meck:unload(ra),
     meck:new(ra, [passthrough, non_strict]),
+    catch meck:unload(flurm_job_manager),
     meck:new(flurm_job_manager, [passthrough, non_strict]),
+    catch meck:unload(flurm_controller_failover),
     meck:new(flurm_controller_failover, [passthrough, non_strict]),
 
     meck:expect(application, get_env, fun

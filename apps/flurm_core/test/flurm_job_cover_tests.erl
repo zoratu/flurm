@@ -567,6 +567,9 @@ job_mocked_test_() ->
 
 setup_mocked() ->
     application:ensure_all_started(sasl),
+    catch meck:unload(flurm_job_sup),
+    catch meck:unload(flurm_accounting),
+    catch meck:unload(flurm_job_registry),
     meck:new(flurm_job_sup, [passthrough]),
     meck:new(flurm_accounting, [passthrough]),
     meck:new(flurm_job_registry, [passthrough]),

@@ -33,6 +33,10 @@ executor_test_() ->
      ]}.
 
 setup() ->
+    %% Unload any existing mocks to prevent conflicts in parallel tests
+    catch meck:unload(lager),
+    catch meck:unload(flurm_controller_connector),
+
     %% Suppress lager output during tests
     meck:new(lager, [non_strict, passthrough]),
     meck:expect(lager, info, fun(_Fmt) -> ok end),

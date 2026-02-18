@@ -82,6 +82,10 @@ setup_supervisor() ->
     %% Start required applications
     application:ensure_all_started(sasl),
 
+    %% Unload any existing mocks to prevent conflicts in parallel tests
+    catch meck:unload(lager),
+    catch meck:unload(flurm_controller_connector),
+
     %% Mock lager
     meck:new(lager, [non_strict, passthrough]),
     meck:expect(lager, info, fun(_Fmt) -> ok end),
@@ -269,6 +273,9 @@ restart_behavior_test_() ->
 setup_restart() ->
     application:ensure_all_started(sasl),
 
+    catch meck:unload(lager),
+    catch meck:unload(flurm_controller_connector),
+
     meck:new(lager, [non_strict, passthrough]),
     meck:expect(lager, info, fun(_Fmt) -> ok end),
     meck:expect(lager, info, fun(_Fmt, _Args) -> ok end),
@@ -365,6 +372,9 @@ edge_cases_test_() ->
 
 setup_edge_cases() ->
     application:ensure_all_started(sasl),
+
+    catch meck:unload(lager),
+    catch meck:unload(flurm_controller_connector),
 
     meck:new(lager, [non_strict, passthrough]),
     meck:expect(lager, info, fun(_Fmt) -> ok end),

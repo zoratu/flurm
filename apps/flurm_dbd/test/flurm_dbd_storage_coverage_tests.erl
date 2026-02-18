@@ -286,6 +286,7 @@ setup_mnesia() ->
     meck:expect(lager, error, fun(_, _) -> ok end),
     meck:expect(lager, md, fun(_) -> ok end),
 
+    catch meck:unload(mnesia),
     meck:new(mnesia, [passthrough, unstick, no_link]),
     meck:expect(mnesia, create_table, fun(_, _) -> {atomic, ok} end),
     meck:expect(mnesia, dirty_write, fun(_, _) -> ok end),

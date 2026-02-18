@@ -53,6 +53,7 @@ sync_test_() ->
      ]}.
 
 setup() ->
+    catch meck:unload(lager),
     meck:new(lager, [passthrough, no_link, non_strict]),
     meck:expect(lager, info, fun(_) -> ok end),
     meck:expect(lager, info, fun(_, _) -> ok end),
@@ -60,6 +61,7 @@ setup() ->
     meck:expect(lager, warning, fun(_, _) -> ok end),
     meck:expect(lager, error, fun(_, _) -> ok end),
 
+    catch meck:unload(flurm_dbd_mysql),
     meck:new(flurm_dbd_mysql, [non_strict, no_link]),
     meck:expect(flurm_dbd_mysql, is_connected, fun() -> false end),
     meck:expect(flurm_dbd_mysql, sync_job_record, fun(_) -> ok end),

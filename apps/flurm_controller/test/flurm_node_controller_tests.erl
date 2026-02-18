@@ -41,6 +41,7 @@ connection_manager_test_() ->
      end}.
 
 setup_conn_mgr() ->
+    catch meck:unload(flurm_node_manager_server),
     meck:new(flurm_node_manager_server, [passthrough, non_strict]),
     meck:expect(flurm_node_manager_server, update_node, fun(_, _) -> ok end),
     {ok, Pid} = flurm_node_connection_manager:start_link(),
@@ -231,21 +232,26 @@ node_manager_server_test_() ->
      ]}.
 
 setup_node_manager() ->
+    catch meck:unload(flurm_scheduler),
     meck:new(flurm_scheduler, [passthrough, non_strict]),
     meck:expect(flurm_scheduler, trigger_schedule, fun() -> ok end),
     meck:expect(flurm_scheduler, job_completed, fun(_) -> ok end),
     meck:expect(flurm_scheduler, job_failed, fun(_) -> ok end),
+    catch meck:unload(flurm_partition_registry),
     meck:new(flurm_partition_registry, [passthrough, non_strict]),
     meck:expect(flurm_partition_registry, add_node_to_partition, fun(_, _) -> ok end),
     meck:expect(flurm_partition_registry, remove_node_from_partition, fun(_, _) -> ok end),
+    catch meck:unload(flurm_config_server),
     meck:new(flurm_config_server, [passthrough, non_strict]),
     meck:expect(flurm_config_server, subscribe_changes, fun(_) -> ok end),
     meck:expect(flurm_config_server, get_nodes, fun() -> [] end),
     meck:expect(flurm_config_server, get_node, fun(_) -> undefined end),
+    catch meck:unload(flurm_gres),
     meck:new(flurm_gres, [passthrough, non_strict]),
     meck:expect(flurm_gres, register_node_gres, fun(_, _) -> ok end),
     meck:expect(flurm_gres, deallocate, fun(_, _) -> ok end),
     meck:expect(flurm_gres, parse_gres_string, fun(<<>>) -> {ok, []}; (_) -> {ok, [#{type => gpu, count => 1, name => any}]} end),
+    catch meck:unload(lager),
     meck:new(lager, [non_strict, passthrough]),
     meck:expect(lager, info, fun(_) -> ok end),
     meck:expect(lager, info, fun(_, _) -> ok end),
@@ -253,6 +259,7 @@ setup_node_manager() ->
     meck:expect(lager, warning, fun(_, _) -> ok end),
     meck:expect(lager, error, fun(_, _) -> ok end),
     meck:expect(lager, md, fun(_) -> ok end),
+    catch meck:unload(flurm_config_slurm),
     meck:new(flurm_config_slurm, [passthrough, non_strict]),
     meck:expect(flurm_config_slurm, expand_hostlist, fun(Name) -> [Name] end),
     {ok, Pid} = flurm_node_manager_server:start_link(),

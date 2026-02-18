@@ -67,6 +67,12 @@ setup() ->
     ets:new(?FED_PARTITION_MAP, [named_table, public, bag, {keypos, 2}]),
     ets:new(?FED_REMOTE_JOBS, [named_table, public, set, {keypos, 2}]),
 
+    %% Unload any existing mocks to prevent conflicts in parallel tests
+    catch meck:unload(flurm_metrics),
+    catch meck:unload(flurm_scheduler),
+    catch meck:unload(flurm_job_registry),
+    catch meck:unload(flurm_federation_sync),
+
     %% Setup mocks
     meck:new(flurm_metrics, [passthrough, non_strict]),
     meck:expect(flurm_metrics, increment, fun(_) -> ok end),

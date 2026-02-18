@@ -22,6 +22,11 @@ setup() ->
     catch ets:delete(flurm_nodes_by_state),
     catch ets:delete(flurm_nodes_by_partition),
 
+    %% Unload any existing mocks to prevent conflicts in parallel tests
+    catch meck:unload(lager),
+    catch meck:unload(flurm_node),
+    catch meck:unload(flurm_config_slurm),
+
     %% Mock dependencies
     meck:new(lager, [passthrough, non_strict]),
     meck:expect(lager, info, fun(_Fmt) -> ok end),

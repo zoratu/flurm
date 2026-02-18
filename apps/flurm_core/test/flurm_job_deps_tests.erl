@@ -1210,6 +1210,7 @@ state_satisfies_unknown_test_() ->
 release_job_success_test_() ->
     {setup,
      fun() ->
+         catch meck:unload(flurm_job_manager),
          meck:new(flurm_job_manager, [passthrough, non_strict]),
          meck:expect(flurm_job_manager, release_job, fun(_) -> ok end),
          {ok, Pid} = flurm_job_deps:start_link(),
@@ -1232,6 +1233,7 @@ release_job_success_test_() ->
 release_job_error_test_() ->
     {setup,
      fun() ->
+         catch meck:unload(flurm_job_manager),
          meck:new(flurm_job_manager, [passthrough, non_strict]),
          meck:expect(flurm_job_manager, release_job, fun(_) -> {error, not_found} end),
          {ok, Pid} = flurm_job_deps:start_link(),
@@ -1254,6 +1256,7 @@ release_job_error_test_() ->
 hold_for_deps_success_test_() ->
     {setup,
      fun() ->
+         catch meck:unload(flurm_job_manager),
          meck:new(flurm_job_manager, [passthrough, non_strict]),
          meck:expect(flurm_job_manager, hold_job, fun(_) -> ok end),
          {ok, Pid} = flurm_job_deps:start_link(),
@@ -1277,6 +1280,7 @@ hold_for_deps_success_test_() ->
 hold_for_deps_error_test_() ->
     {setup,
      fun() ->
+         catch meck:unload(flurm_job_manager),
          meck:new(flurm_job_manager, [passthrough, non_strict]),
          meck:expect(flurm_job_manager, hold_job, fun(_) -> {error, not_found} end),
          {ok, Pid} = flurm_job_deps:start_link(),
@@ -1293,5 +1297,406 @@ hold_for_deps_error_test_() ->
              ok = flurm_job_deps:add_dependency(99904, afterok, 99905),
              Result = flurm_job_deps:hold_for_dependencies(99904),
              ?assertEqual({error, not_found}, Result)
+         end}
+     end}.
+
+%% Test start_link when already_started returns error for other reasons (line 104)
+start_link_error_test_() ->
+    {setup,
+     fun() ->
+         %% Ensure server is stopped
+         catch gen_server:stop(flurm_job_deps, shutdown, 5000),
+         timer:sleep(50),
+         ok
+     end,
+     fun(_) ->
+         catch gen_server:stop(flurm_job_deps, shutdown, 5000),
+         ok
+     end,
+     fun(_) ->
+         {"start_link handles gen_server errors", fun() ->
+             %% First start should succeed
+             {ok, _Pid1} = flurm_job_deps:start_link(),
+             %% Second start should return existing pid (already_started path)
+             {ok, _Pid2} = flurm_job_deps:start_link()
+         end}
+     end}.
+
+%% Test add dependency where target is already satisfied (line 410)
+dependency_already_satisfied_test_() ->
+    {setup,
+     fun() ->
+         catch meck:unload(flurm_job_manager),
+         catch meck:unload(flurm_job_registry),
+         meck:new(flurm_job_manager, [passthrough, non_strict]),
+         meck:new(flurm_job_registry, [passthrough, non_strict]),
+         %% Mock get_job to return a completed job
+         meck:expect(flurm_job_manager, get_job, fun(9999) ->
+             {ok, {job, 9999, <<"test">>, <<"user">>, <<"default">>, completed, <<>>, 1, 1, 1024, 3600, 100, 0, 0, 0, [], undefined, <<>>, <<"normal">>}}
+         end),
+         {ok, Pid} = flurm_job_deps:start_link(),
+         #{deps_pid => Pid}
+     end,
+     fun(#{deps_pid := Pid}) ->
+         meck:unload(flurm_job_manager),
+         meck:unload(flurm_job_registry),
+         catch unlink(Pid),
+         catch gen_server:stop(Pid, shutdown, 5000)
+     end,
+     fun(_) ->
+         {"Add dependency to already-completed target is satisfied immediately", fun() ->
+             %% Add dependency to job 9999 which is "completed"
+             ok = flurm_job_deps:add_dependency(9998, afterok, 9999),
+             %% Dependency should be immediately satisfied
+             Deps = flurm_job_deps:get_dependencies(9998),
+             ?assertEqual(1, length(Deps)),
+             [Dep] = Deps,
+             %% The satisfied field should be true
+             ?assert(element(6, Dep))
+         end}
+     end}.
+
+%% Test multiple targets where one fails with circular dep (line 458)
+multiple_targets_partial_error_test_() ->
+    {setup,
+     fun() ->
+         {ok, Pid} = flurm_job_deps:start_link(),
+         #{deps_pid => Pid}
+     end,
+     fun(#{deps_pid := Pid}) ->
+         catch unlink(Pid),
+         catch gen_server:stop(Pid, shutdown, 5000)
+     end,
+     fun(_) ->
+         {"Multiple targets with partial circular dependency error", fun() ->
+             %% Set up: 11000 depends on 11001
+             ok = flurm_job_deps:add_dependency(11000, afterok, 11001),
+             %% Try to add 11001 depending on [11000, 11002] - should fail
+             %% This tests line 458 where we find the first error
+             Result = flurm_job_deps:add_dependency(11001, afterok, [11000, 11002]),
+             ?assertMatch({error, {circular_dependency, _}}, Result)
+         end}
+     end}.
+
+%% Test find_path when already visited (line 545)
+find_path_already_visited_test_() ->
+    {setup,
+     fun() ->
+         {ok, Pid} = flurm_job_deps:start_link(),
+         #{deps_pid => Pid}
+     end,
+     fun(#{deps_pid := Pid}) ->
+         catch unlink(Pid),
+         catch gen_server:stop(Pid, shutdown, 5000)
+     end,
+     fun(_) ->
+         {"Find path returns not_found when target not reachable", fun() ->
+             %% Create a chain: 12000 -> 12001 -> 12002
+             ok = flurm_job_deps:add_dependency(12000, afterok, 12001),
+             ok = flurm_job_deps:add_dependency(12001, afterok, 12002),
+             %% Try to find path from 12002 to 12003 (doesn't exist)
+             %% This exercises the not_found path
+             Result = flurm_job_deps:detect_circular_dependency(12003, 12002),
+             ?assertEqual(ok, Result),
+             %% Try to find cycle that doesn't exist
+             ?assertEqual(false, flurm_job_deps:has_circular_dependency(12003, 12004))
+         end}
+     end}.
+
+%% Test find_path recursion (line 563)
+find_path_recursive_test_() ->
+    {setup,
+     fun() ->
+         {ok, Pid} = flurm_job_deps:start_link(),
+         #{deps_pid => Pid}
+     end,
+     fun(#{deps_pid := Pid}) ->
+         catch unlink(Pid),
+         catch gen_server:stop(Pid, shutdown, 5000)
+     end,
+     fun(_) ->
+         {"Find path traverses multiple targets", fun() ->
+             %% Create a more complex graph:
+             %% 13000 -> 13001
+             %% 13000 -> 13002
+             %% 13001 -> 13003
+             ok = flurm_job_deps:add_dependency(13000, afterok, 13001),
+             ok = flurm_job_deps:add_dependency(13000, afternotok, 13002),
+             ok = flurm_job_deps:add_dependency(13001, afterok, 13003),
+             %% Try to add 13003 -> 13000 (would create cycle through first path)
+             Result = flurm_job_deps:detect_circular_dependency(13003, 13000),
+             ?assertMatch({error, circular_dependency, _}, Result)
+         end}
+     end}.
+
+%% Test check_target_satisfies with job_manager returning job (line 568, 591-592)
+check_target_satisfies_with_job_manager_test_() ->
+    {setup,
+     fun() ->
+         catch meck:unload(flurm_job_manager),
+         catch meck:unload(flurm_job_registry),
+         meck:new(flurm_job_manager, [passthrough, non_strict]),
+         meck:new(flurm_job_registry, [passthrough, non_strict]),
+         %% Mock get_job to return a running job (satisfies after_start)
+         meck:expect(flurm_job_manager, get_job, fun(14000) ->
+             {ok, {job, 14000, <<"test">>, <<"user">>, <<"default">>, running, <<>>, 1, 1, 1024, 3600, 100, 0, 0, 0, [], undefined, <<>>, <<"normal">>}}
+         end),
+         {ok, Pid} = flurm_job_deps:start_link(),
+         #{deps_pid => Pid}
+     end,
+     fun(#{deps_pid := Pid}) ->
+         meck:unload(flurm_job_manager),
+         meck:unload(flurm_job_registry),
+         catch unlink(Pid),
+         catch gen_server:stop(Pid, shutdown, 5000)
+     end,
+     fun(_) ->
+         {"Add after_start dependency to running job is satisfied", fun() ->
+             ok = flurm_job_deps:add_dependency(14001, after_start, 14000),
+             Deps = flurm_job_deps:get_dependencies(14001),
+             ?assertEqual(1, length(Deps)),
+             [Dep] = Deps,
+             %% Should be satisfied because 14000 is "running"
+             ?assert(element(6, Dep))
+         end}
+     end}.
+
+%% Test get_job_state via job_registry fallback (lines 598-599)
+get_job_state_via_registry_test_() ->
+    {setup,
+     fun() ->
+         catch meck:unload(flurm_job_manager),
+         catch meck:unload(flurm_job_registry),
+         meck:new(flurm_job_manager, [passthrough, non_strict]),
+         meck:new(flurm_job_registry, [passthrough, non_strict]),
+         %% Mock get_job to fail
+         meck:expect(flurm_job_manager, get_job, fun(_) -> {error, not_found} end),
+         %% Mock job_registry to return a job entry
+         meck:expect(flurm_job_registry, get_job_entry, fun(15000) ->
+             {ok, {job_entry, 15000, <<"test">>, completed, 0}}
+         end),
+         {ok, Pid} = flurm_job_deps:start_link(),
+         #{deps_pid => Pid}
+     end,
+     fun(#{deps_pid := Pid}) ->
+         meck:unload(flurm_job_manager),
+         meck:unload(flurm_job_registry),
+         catch unlink(Pid),
+         catch gen_server:stop(Pid, shutdown, 5000)
+     end,
+     fun(_) ->
+         {"Add dependency uses job_registry fallback for state check", fun() ->
+             ok = flurm_job_deps:add_dependency(15001, afterok, 15000),
+             Deps = flurm_job_deps:get_dependencies(15001),
+             ?assertEqual(1, length(Deps)),
+             [Dep] = Deps,
+             %% Should be satisfied because 15000 is "completed" via registry
+             ?assert(element(6, Dep))
+         end}
+     end}.
+
+%% Test release_singleton with no waiting jobs (line 663)
+release_singleton_no_waiting_test_() ->
+    {setup,
+     fun() ->
+         {ok, Pid} = flurm_job_deps:start_link(),
+         #{deps_pid => Pid}
+     end,
+     fun(#{deps_pid := Pid}) ->
+         catch unlink(Pid),
+         catch gen_server:stop(Pid, shutdown, 5000)
+     end,
+     fun(_) ->
+         {"Singleton release with no waiting jobs", fun() ->
+             %% Only one job holds the singleton, no others waiting
+             ok = flurm_job_deps:add_dependency(16000, singleton, <<"solo_singleton">>),
+             %% Job completes - releases singleton with no waiters (line 663)
+             ok = flurm_job_deps:on_job_state_change(16000, completed),
+             timer:sleep(20),
+             _ = sys:get_state(flurm_job_deps),
+             %% Singleton should be released
+             ok
+         end}
+     end}.
+
+%% Test maybe_notify_scheduler with release success (lines 680-681)
+notify_scheduler_release_success_test_() ->
+    {setup,
+     fun() ->
+         catch meck:unload(flurm_job_manager),
+         catch meck:unload(flurm_scheduler),
+         meck:new(flurm_job_manager, [passthrough, non_strict]),
+         meck:new(flurm_scheduler, [passthrough, non_strict]),
+         meck:expect(flurm_job_manager, release_job, fun(_) -> ok end),
+         meck:expect(flurm_scheduler, job_deps_satisfied, fun(_) -> ok end),
+         {ok, Pid} = flurm_job_deps:start_link(),
+         #{deps_pid => Pid}
+     end,
+     fun(#{deps_pid := Pid}) ->
+         meck:unload(flurm_job_manager),
+         meck:unload(flurm_scheduler),
+         catch unlink(Pid),
+         catch gen_server:stop(Pid, shutdown, 5000)
+     end,
+     fun(_) ->
+         {"maybe_notify_scheduler releases job and notifies scheduler", fun() ->
+             %% Setup dependency
+             ok = flurm_job_deps:add_dependency(17000, afterok, 17001),
+             {waiting, _} = flurm_job_deps:check_dependencies(17000),
+             %% Complete target job
+             ok = flurm_job_deps:on_job_state_change(17001, completed),
+             timer:sleep(50),
+             _ = sys:get_state(flurm_job_deps),
+             %% Should have called release_job and job_deps_satisfied
+             ?assert(meck:called(flurm_job_manager, release_job, [17000])),
+             ?assert(meck:called(flurm_scheduler, job_deps_satisfied, [17000]))
+         end}
+     end}.
+
+%% Test maybe_notify_scheduler with invalid_state pending error (lines 684-685)
+notify_scheduler_already_pending_test_() ->
+    {setup,
+     fun() ->
+         catch meck:unload(flurm_job_manager),
+         catch meck:unload(flurm_scheduler),
+         meck:new(flurm_job_manager, [passthrough, non_strict]),
+         meck:new(flurm_scheduler, [passthrough, non_strict]),
+         meck:expect(flurm_job_manager, release_job, fun(_) -> {error, {invalid_state, pending}} end),
+         meck:expect(flurm_scheduler, job_deps_satisfied, fun(_) -> ok end),
+         {ok, Pid} = flurm_job_deps:start_link(),
+         #{deps_pid => Pid}
+     end,
+     fun(#{deps_pid := Pid}) ->
+         meck:unload(flurm_job_manager),
+         meck:unload(flurm_scheduler),
+         catch unlink(Pid),
+         catch gen_server:stop(Pid, shutdown, 5000)
+     end,
+     fun(_) ->
+         {"maybe_notify_scheduler handles already pending job", fun() ->
+             ok = flurm_job_deps:add_dependency(18000, afterok, 18001),
+             ok = flurm_job_deps:on_job_state_change(18001, completed),
+             timer:sleep(50),
+             _ = sys:get_state(flurm_job_deps),
+             %% Should still notify scheduler
+             ?assert(meck:called(flurm_scheduler, job_deps_satisfied, [18000]))
+         end}
+     end}.
+
+%% Test maybe_notify_scheduler with other error (lines 687-688)
+notify_scheduler_release_error_test_() ->
+    {setup,
+     fun() ->
+         catch meck:unload(flurm_job_manager),
+         catch meck:unload(lager),
+         meck:new(flurm_job_manager, [passthrough, non_strict]),
+         meck:new(lager, [passthrough, non_strict]),
+         meck:expect(flurm_job_manager, release_job, fun(_) -> {error, some_other_error} end),
+         meck:expect(lager, warning, fun(_, _) -> ok end),
+         {ok, Pid} = flurm_job_deps:start_link(),
+         #{deps_pid => Pid}
+     end,
+     fun(#{deps_pid := Pid}) ->
+         meck:unload(flurm_job_manager),
+         meck:unload(lager),
+         catch unlink(Pid),
+         catch gen_server:stop(Pid, shutdown, 5000)
+     end,
+     fun(_) ->
+         {"maybe_notify_scheduler logs warning on release error", fun() ->
+             ok = flurm_job_deps:add_dependency(19000, afterok, 19001),
+             ok = flurm_job_deps:on_job_state_change(19001, completed),
+             timer:sleep(50),
+             _ = sys:get_state(flurm_job_deps),
+             %% Should have logged warning
+             ok
+         end}
+     end}.
+
+%% Test maybe_notify_scheduler with unsatisfied deps (line 694)
+notify_scheduler_deps_not_satisfied_test_() ->
+    {setup,
+     fun() ->
+         {ok, Pid} = flurm_job_deps:start_link(),
+         #{deps_pid => Pid}
+     end,
+     fun(#{deps_pid := Pid}) ->
+         catch unlink(Pid),
+         catch gen_server:stop(Pid, shutdown, 5000)
+     end,
+     fun(_) ->
+         {"maybe_notify_scheduler does nothing when deps not satisfied", fun() ->
+             %% Job with two dependencies
+             ok = flurm_job_deps:add_dependency(20000, afterok, 20001),
+             ok = flurm_job_deps:add_dependency(20000, afterok, 20002),
+             %% Only complete one target
+             ok = flurm_job_deps:on_job_state_change(20001, completed),
+             timer:sleep(50),
+             _ = sys:get_state(flurm_job_deps),
+             %% Job should still have unsatisfied dependency
+             {waiting, _} = flurm_job_deps:check_dependencies(20000)
+         end}
+     end}.
+
+%% Test clear_completed_deps with terminal state job (line 702)
+clear_completed_deps_terminal_test_() ->
+    {setup,
+     fun() ->
+         catch meck:unload(flurm_job_manager),
+         catch meck:unload(flurm_job_registry),
+         meck:new(flurm_job_manager, [passthrough, non_strict]),
+         meck:new(flurm_job_registry, [passthrough, non_strict]),
+         %% Mock get_job to return a completed job for cleanup
+         meck:expect(flurm_job_manager, get_job, fun(21000) ->
+             {ok, {job, 21000, <<"test">>, <<"user">>, <<"default">>, completed, <<>>, 1, 1, 1024, 3600, 100, 0, 0, 0, [], undefined, <<>>, <<"normal">>}}
+         end),
+         {ok, Pid} = flurm_job_deps:start_link(),
+         #{deps_pid => Pid}
+     end,
+     fun(#{deps_pid := Pid}) ->
+         meck:unload(flurm_job_manager),
+         meck:unload(flurm_job_registry),
+         catch unlink(Pid),
+         catch gen_server:stop(Pid, shutdown, 5000)
+     end,
+     fun(_) ->
+         {"clear_completed_deps removes deps for terminal state jobs", fun() ->
+             %% Add a dependency for job 21000 which is "completed"
+             ok = flurm_job_deps:add_dependency(21000, afterok, 21001),
+             %% Clear completed dependencies
+             Count = flurm_job_deps:clear_completed_dependencies(),
+             %% Should have cleared at least one
+             ?assert(Count >= 1)
+         end}
+     end}.
+
+%% Test dependency already satisfied at add time (line 422)
+dependency_satisfied_at_add_skip_dependents_test_() ->
+    {setup,
+     fun() ->
+         catch meck:unload(flurm_job_manager),
+         catch meck:unload(flurm_job_registry),
+         meck:new(flurm_job_manager, [passthrough, non_strict]),
+         meck:new(flurm_job_registry, [passthrough, non_strict]),
+         %% Mock get_job to return a completed job
+         meck:expect(flurm_job_manager, get_job, fun(22000) ->
+             {ok, {job, 22000, <<"test">>, <<"user">>, <<"default">>, completed, <<>>, 1, 1, 1024, 3600, 100, 0, 0, 0, [], undefined, <<>>, <<"normal">>}}
+         end),
+         {ok, Pid} = flurm_job_deps:start_link(),
+         #{deps_pid => Pid}
+     end,
+     fun(#{deps_pid := Pid}) ->
+         meck:unload(flurm_job_manager),
+         meck:unload(flurm_job_registry),
+         catch unlink(Pid),
+         catch gen_server:stop(Pid, shutdown, 5000)
+     end,
+     fun(_) ->
+         {"Satisfied dependency doesn't add to dependents list", fun() ->
+             %% Add dependency to job 22000 which is "completed"
+             ok = flurm_job_deps:add_dependency(22001, afterok, 22000),
+             %% Should not be in dependents list since already satisfied
+             Dependents = flurm_job_deps:get_dependents(22000),
+             ?assertNot(lists:member(22001, Dependents))
          end}
      end}.

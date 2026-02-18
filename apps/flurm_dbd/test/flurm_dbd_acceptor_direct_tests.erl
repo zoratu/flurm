@@ -106,9 +106,11 @@ setup_message_handling() ->
     meck:expect(lager, error, fun(_, _) -> ok end),
     meck:expect(lager, md, fun(_) -> ok end),
 
+    catch meck:unload(ranch),
     meck:new(ranch, [passthrough, unstick, no_link]),
     meck:expect(ranch, handshake, fun(_) -> {ok, fake_socket} end),
 
+    catch meck:unload(ranch_tcp),
     meck:new(ranch_tcp, [passthrough, unstick, no_link]),
     meck:expect(ranch_tcp, setopts, fun(_, _) -> ok end),
     meck:expect(ranch_tcp, peername, fun(_) -> {ok, {{127,0,0,1}, 54321}} end),

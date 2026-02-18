@@ -50,6 +50,7 @@ format_test_() ->
      ]}.
 
 setup_lager() ->
+    catch meck:unload(lager),
     meck:new(lager, [passthrough, no_link, non_strict]),
     meck:expect(lager, info,    fun(_) -> ok end),
     meck:expect(lager, info,    fun(_, _) -> ok end),
@@ -248,6 +249,7 @@ query_test_() ->
      ]}.
 
 setup_query() ->
+    catch meck:unload(lager),
     meck:new(lager, [passthrough, no_link, non_strict]),
     meck:expect(lager, info,    fun(_) -> ok end),
     meck:expect(lager, info,    fun(_, _) -> ok end),
@@ -268,6 +270,7 @@ setup_query() ->
           end_time => Now - 250, state => failed, elapsed => 40}
     ],
 
+    catch meck:unload(flurm_dbd_server),
     meck:new(flurm_dbd_server, [non_strict, no_link]),
     meck:expect(flurm_dbd_server, list_job_records, fun(_) -> Jobs end),
     meck:expect(flurm_dbd_server, calculate_user_tres_usage, fun(_) ->

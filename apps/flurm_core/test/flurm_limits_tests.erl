@@ -592,3 +592,170 @@ test_tres_no_negative() ->
     Usage = flurm_limits:get_usage(user, User),
     TRESUsed = element(5, Usage),
     ?assertEqual(0, maps:get(cpu, TRESUsed, 0)).
+
+%%====================================================================
+%% Additional Coverage Tests
+%%====================================================================
+
+additional_coverage_test_() ->
+    {foreach,
+     fun setup/0,
+     fun cleanup/1,
+     [
+      {"unknown request handler", fun test_unknown_request/0},
+      {"unknown cast message", fun test_unknown_cast/0},
+      {"unknown info message", fun test_unknown_info/0},
+      {"code_change handler", fun test_code_change/0},
+      {"check submit limits unlimited", fun test_check_submit_unlimited/0},
+      {"check submit grp unlimited", fun test_check_submit_grp_unlimited/0},
+      {"compute effective with no account limits", fun test_effective_no_account_limits/0},
+      {"compute effective with specific user+account+partition limits", fun test_effective_specific_limits/0},
+      {"merge tres limits", fun test_merge_tres_limits/0},
+      {"check grp_jobs false case", fun test_check_grp_jobs_false/0}
+     ]}.
+
+test_unknown_request() ->
+    Result = gen_server:call(flurm_limits, {unknown_request, foo}),
+    ?assertEqual({error, unknown_request}, Result).
+
+test_unknown_cast() ->
+    ok = gen_server:cast(flurm_limits, {unknown_cast_message}),
+    _ = sys:get_state(flurm_limits),
+    ?assert(is_process_alive(whereis(flurm_limits))).
+
+test_unknown_info() ->
+    flurm_limits ! {unknown_info, message},
+    _ = sys:get_state(flurm_limits),
+    ?assert(is_process_alive(whereis(flurm_limits))).
+
+test_code_change() ->
+    Pid = whereis(flurm_limits),
+    sys:suspend(Pid),
+    Result = sys:change_code(Pid, flurm_limits, "1.0.0", []),
+    ?assertEqual(ok, Result),
+    sys:resume(Pid).
+
+test_check_submit_unlimited() ->
+    %% Set max_submit to 0 (unlimited) - tests line 315
+    ok = flurm_limits:set_user_limit(<<"unlimited_submit">>, max_submit, 0),
+
+    JobSpec = #{
+        user => <<"unlimited_submit">>,
+        account => <<>>,
+        partition => <<"default">>
+    },
+
+    Result = flurm_limits:check_submit_limits(JobSpec),
+    ?assertEqual(ok, Result).
+
+test_check_submit_grp_unlimited() ->
+    Account = <<"grp_unlimited_acct">>,
+    User = <<"grp_unlimited_user">>,
+
+    %% Set grp_submit to 0 (unlimited) - tests line 326
+    ok = flurm_limits:set_account_limit(Account, grp_submit, 0),
+    ok = flurm_limits:set_user_limit(User, max_submit, 100),  %% User limit not exceeded
+
+    %% Start some jobs
+    flurm_limits:enforce_limit(start, 600, #{user => User, account => Account}),
+    flurm_limits:enforce_limit(start, 601, #{user => User, account => Account}),
+
+    JobSpec = #{
+        user => User,
+        account => Account,
+        partition => <<"default">>
+    },
+
+    Result = flurm_limits:check_submit_limits(JobSpec),
+    ?assertEqual(ok, Result).
+
+test_effective_no_account_limits() ->
+    %% Get effective limits with non-existent account - tests line 337
+    Limits = flurm_limits:get_effective_limits(
+        <<"newuser">>,
+        <<"nonexistent_account">>,
+        <<"default">>
+    ),
+    %% Should return default effective limits
+    ?assert(is_tuple(Limits)).
+
+test_effective_specific_limits() ->
+    %% Set user+account+partition specific limits using internal key format
+    %% This tests line 354 - the specific limits lookup
+    User = <<"specific_user">>,
+    Account = <<"specific_acct">>,
+    Partition = <<"specific_part">>,
+
+    %% Set partition limit first
+    ok = flurm_limits:set_partition_limit(Partition, max_jobs, 500),
+
+    %% The module uses {user, User, Account, Partition} key format
+    %% We can test via the effective limits computation
+    Limits = flurm_limits:get_effective_limits(User, Account, Partition),
+    ?assert(is_tuple(Limits)).
+
+test_merge_tres_limits() ->
+    %% Test merge_tres_limits by setting TRES limits and merging
+    %% Tests lines 387-389
+    ok = flurm_limits:set_user_limit(<<"tres_user">>, max_tres, #{cpu => 100, gpu => 10}),
+    ok = flurm_limits:set_account_limit(<<"tres_acct">>, max_tres, #{cpu => 50, mem => 1000}),
+
+    %% Get effective limits - should merge TRES
+    Limits = flurm_limits:get_effective_limits(
+        <<"tres_user">>,
+        <<"tres_acct">>,
+        <<"default">>
+    ),
+
+    %% max_tres should contain merged values
+    MaxTRES = element(9, Limits),  %% max_tres is at position 9
+    ?assert(is_map(MaxTRES)),
+    %% CPU should be min(100, 50) = 50
+    ?assertEqual(50, maps:get(cpu, MaxTRES, 0)),
+    %% GPU should be 10 (only from user)
+    ?assertEqual(10, maps:get(gpu, MaxTRES, 0)),
+    %% Mem should be 1000 (only from account)
+    ?assertEqual(1000, maps:get(mem, MaxTRES, 0)).
+
+test_check_grp_jobs_false() ->
+    %% Test grp_jobs check where running < max (passes) - line 406
+    Account = <<"grp_false_acct">>,
+    User = <<"grp_false_user">>,
+
+    %% Set grp_jobs limit
+    ok = flurm_limits:set_account_limit(Account, grp_jobs, 5),
+
+    %% Start only 1 job
+    flurm_limits:enforce_limit(start, 700, #{user => User, account => Account}),
+
+    JobSpec = #{
+        user => User,
+        account => Account,
+        partition => <<"default">>,
+        num_cpus => 1
+    },
+
+    %% Should pass since 1 < 5
+    Result = flurm_limits:check_limits(JobSpec),
+    ?assertEqual(ok, Result).
+
+%% Test start_link already_started path
+start_link_already_started_test_() ->
+    {setup,
+     fun() ->
+         %% Ensure fresh state
+         catch gen_server:stop(flurm_limits, shutdown, 5000),
+         timer:sleep(50),
+         ok
+     end,
+     fun(_) ->
+         catch gen_server:stop(flurm_limits, shutdown, 5000),
+         ok
+     end,
+     fun(_) ->
+         {"start_link returns existing pid when already started", fun() ->
+             {ok, Pid1} = flurm_limits:start_link(),
+             {ok, Pid2} = flurm_limits:start_link(),
+             ?assertEqual(Pid1, Pid2)
+         end}
+     end}.

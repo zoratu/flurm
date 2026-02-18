@@ -65,6 +65,7 @@ pure_functions_test_() ->
      ]}.
 
 setup_lager() ->
+    catch meck:unload(lager),
     meck:new(lager, [passthrough, no_link, non_strict]),
     meck:expect(lager, info,    fun(_) -> ok end),
     meck:expect(lager, info,    fun(_, _) -> ok end),
@@ -74,6 +75,7 @@ setup_lager() ->
     meck:expect(lager, error,   fun(_, _) -> ok end),
 
     %% Mock flurm_tres since calculate_tres_usage calls it
+    catch meck:unload(flurm_tres),
     meck:new(flurm_tres, [non_strict, no_link]),
     meck:expect(flurm_tres, from_job, fun(_) ->
         #{cpu_seconds => 0, mem_seconds => 0, gpu_seconds => 0,
@@ -361,6 +363,7 @@ server_test_() ->
      ]}.
 
 setup_server() ->
+    catch meck:unload(lager),
     meck:new(lager, [passthrough, no_link, non_strict]),
     meck:expect(lager, info,    fun(_) -> ok end),
     meck:expect(lager, info,    fun(_, _) -> ok end),
@@ -369,6 +372,7 @@ setup_server() ->
     meck:expect(lager, warning, fun(_, _) -> ok end),
     meck:expect(lager, error,   fun(_, _) -> ok end),
 
+    catch meck:unload(flurm_tres),
     meck:new(flurm_tres, [non_strict, no_link]),
     meck:expect(flurm_tres, from_job, fun(_) ->
         #{cpu_seconds => 10, mem_seconds => 0, gpu_seconds => 0,
@@ -385,6 +389,7 @@ setup_server() ->
     end),
 
     %% Mock start_listener since init sends start_listener message
+    catch meck:unload(flurm_dbd_sup),
     meck:new(flurm_dbd_sup, [non_strict, no_link]),
     meck:expect(flurm_dbd_sup, start_listener, fun() -> {ok, self()} end),
 

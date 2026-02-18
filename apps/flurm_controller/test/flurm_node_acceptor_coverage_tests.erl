@@ -38,6 +38,12 @@ flurm_node_acceptor_coverage_test_() ->
      ]}.
 
 setup() ->
+    catch meck:unload(ranch),
+    catch meck:unload(flurm_protocol),
+    catch meck:unload(flurm_node_manager_server),
+    catch meck:unload(flurm_node_connection_manager),
+    catch meck:unload(flurm_job_manager),
+    catch meck:unload(flurm_scheduler),
     meck:new(ranch, [non_strict]),
     meck:new(flurm_protocol, [passthrough, non_strict]),
     meck:new(flurm_node_manager_server, [passthrough, non_strict]),

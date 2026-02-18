@@ -46,14 +46,23 @@ job_manager_test_() ->
 setup() ->
     application:ensure_all_started(lager),
 
+    catch meck:unload(flurm_db_persist),
     meck:new(flurm_db_persist, [passthrough, non_strict]),
+    catch meck:unload(flurm_scheduler),
     meck:new(flurm_scheduler, [passthrough, non_strict]),
+    catch meck:unload(flurm_limits),
     meck:new(flurm_limits, [passthrough, non_strict]),
+    catch meck:unload(flurm_license),
     meck:new(flurm_license, [passthrough, non_strict]),
+    catch meck:unload(flurm_metrics),
     meck:new(flurm_metrics, [passthrough, non_strict]),
+    catch meck:unload(flurm_job_dispatcher_server),
     meck:new(flurm_job_dispatcher_server, [passthrough, non_strict]),
+    catch meck:unload(flurm_job_deps),
     meck:new(flurm_job_deps, [passthrough, non_strict]),
+    catch meck:unload(flurm_job_array),
     meck:new(flurm_job_array, [passthrough, non_strict]),
+    catch meck:unload(flurm_core),
     meck:new(flurm_core, [passthrough, non_strict]),
 
     %% Default mocks

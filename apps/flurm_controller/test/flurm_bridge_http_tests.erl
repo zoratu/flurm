@@ -409,6 +409,7 @@ route_request_get_test_() ->
     {setup,
      fun() ->
          %% Start meck for flurm_federation
+         catch meck:unload(flurm_federation),
          meck:new(flurm_federation, [passthrough, non_strict]),
          meck:expect(flurm_federation, get_federation_stats, fun() ->
              #{clusters_total => 2, clusters_healthy => 2, clusters_unhealthy => 0}
@@ -522,6 +523,7 @@ route_get_unknown() ->
 route_request_mutation_test_() ->
     {setup,
      fun() ->
+         catch meck:unload(flurm_federation),
          meck:new(flurm_federation, [passthrough, non_strict]),
          meck:expect(flurm_federation, add_cluster, fun(Name, _Config) ->
              case Name of
@@ -692,6 +694,7 @@ error_various_methods() ->
 status_error_test_() ->
     {setup,
      fun() ->
+         catch meck:unload(flurm_federation),
          meck:new(flurm_federation, [passthrough, non_strict]),
          ok
      end,
@@ -718,6 +721,8 @@ status_federation_error() ->
 cowboy_callback_test_() ->
     {setup,
      fun() ->
+         catch meck:unload(cowboy_req),
+         catch meck:unload(flurm_federation),
          meck:new(cowboy_req, [non_strict]),
          meck:new(flurm_federation, [passthrough, non_strict]),
          ok
@@ -815,6 +820,8 @@ test_resource_exists() ->
 jwt_auth_middleware_test_() ->
     {setup,
      fun() ->
+         catch meck:unload(cowboy_req),
+         catch meck:unload(flurm_jwt),
          meck:new(cowboy_req, [non_strict]),
          meck:new(flurm_jwt, [passthrough, non_strict]),
          application:set_env(flurm_controller, jwt_secret, <<"test-secret">>),
@@ -908,6 +915,7 @@ auth_stores_claims() ->
 integration_test_() ->
     {setup,
      fun() ->
+         catch meck:unload(flurm_federation),
          meck:new(flurm_federation, [passthrough, non_strict]),
          %% Setup cluster storage for integration tests
          ClusterTable = ets:new(test_clusters, [set, public, named_table]),
@@ -1022,6 +1030,7 @@ integration_encoding_roundtrip() ->
 edge_case_test_() ->
     {setup,
      fun() ->
+         catch meck:unload(flurm_federation),
          meck:new(flurm_federation, [passthrough, non_strict]),
          meck:expect(flurm_federation, add_cluster, fun(_, _) -> ok end),
          ok
@@ -1078,6 +1087,7 @@ edge_long_cluster_name() ->
 default_values_test_() ->
     {setup,
      fun() ->
+         catch meck:unload(flurm_federation),
          meck:new(flurm_federation, [passthrough, non_strict]),
          meck:expect(flurm_federation, add_cluster, fun(_Name, Config) ->
              %% Verify default values are applied

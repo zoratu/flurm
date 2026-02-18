@@ -11,6 +11,75 @@
 -include_lib("eunit/include/eunit.hrl").
 
 %%====================================================================
+%% Start/2 Callback Tests with Mocking
+%%====================================================================
+
+start_with_mock_test_() ->
+    {setup,
+     fun setup_mocks/0,
+     fun cleanup_mocks/1,
+     [
+         {"start/2 calls lager:info and flurm_dbd_sup:start_link", fun test_start_normal/0},
+         {"start/2 with takeover start type", fun test_start_takeover/0},
+         {"start/2 with failover start type", fun test_start_failover/0},
+         {"start/2 with empty args", fun test_start_empty_args/0},
+         {"start/2 with complex args", fun test_start_complex_args/0},
+         {"start/2 returns supervisor pid", fun test_start_returns_pid/0},
+         {"start/2 propagates supervisor error", fun test_start_error/0}
+     ]
+    }.
+
+setup_mocks() ->
+    %% Don't mock lager - it causes conflicts with parallel tests
+    %% Just mock flurm_dbd_sup to avoid starting the full supervisor tree
+    catch meck:unload(flurm_dbd_sup),
+    meck:new(flurm_dbd_sup, [passthrough, no_link]),
+    meck:expect(flurm_dbd_sup, start_link, fun() -> {ok, spawn(fun() -> ok end)} end),
+    ok.
+
+cleanup_mocks(_) ->
+    catch meck:unload(flurm_dbd_sup),
+    ok.
+
+test_start_normal() ->
+    Result = flurm_dbd_app:start(normal, []),
+    ?assertMatch({ok, _Pid}, Result),
+    %% Just verify flurm_dbd_sup:start_link was called
+    %% (lager parse transform may change or eliminate calls)
+    ?assert(meck:called(flurm_dbd_sup, start_link, [])).
+
+test_start_takeover() ->
+    Result = flurm_dbd_app:start({takeover, 'other@node'}, []),
+    ?assertMatch({ok, _Pid}, Result),
+    ?assert(meck:called(flurm_dbd_sup, start_link, [])).
+
+test_start_failover() ->
+    Result = flurm_dbd_app:start({failover, 'other@node'}, []),
+    ?assertMatch({ok, _Pid}, Result),
+    ?assert(meck:called(flurm_dbd_sup, start_link, [])).
+
+test_start_empty_args() ->
+    Result = flurm_dbd_app:start(normal, []),
+    ?assertMatch({ok, _Pid}, Result).
+
+test_start_complex_args() ->
+    Args = [{config, #{port => 6819}}, {nodes, [node()]}],
+    Result = flurm_dbd_app:start(normal, Args),
+    ?assertMatch({ok, _Pid}, Result).
+
+test_start_returns_pid() ->
+    TestPid = spawn(fun() -> receive stop -> ok end end),
+    meck:expect(flurm_dbd_sup, start_link, fun() -> {ok, TestPid} end),
+    Result = flurm_dbd_app:start(normal, []),
+    ?assertEqual({ok, TestPid}, Result),
+    TestPid ! stop.
+
+test_start_error() ->
+    meck:expect(flurm_dbd_sup, start_link, fun() -> {error, {already_started, self()}} end),
+    Result = flurm_dbd_app:start(normal, []),
+    ?assertMatch({error, {already_started, _}}, Result).
+
+%%====================================================================
 %% Module Behaviour Tests
 %%====================================================================
 

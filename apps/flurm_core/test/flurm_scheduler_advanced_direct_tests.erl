@@ -31,6 +31,15 @@
 setup() ->
     application:ensure_all_started(sasl),
     application:ensure_all_started(lager),
+    %% Unload any existing mocks to prevent conflicts in parallel tests
+    catch meck:unload(flurm_job_registry),
+    catch meck:unload(flurm_node_registry),
+    catch meck:unload(flurm_job),
+    catch meck:unload(flurm_node),
+    catch meck:unload(flurm_backfill),
+    catch meck:unload(flurm_preemption),
+    catch meck:unload(flurm_priority),
+    catch meck:unload(flurm_fairshare),
     %% Start meck for external dependencies only - NOT flurm_scheduler_advanced
     meck:new(flurm_job_registry, [passthrough, non_strict, no_link]),
     meck:new(flurm_node_registry, [passthrough, non_strict, no_link]),

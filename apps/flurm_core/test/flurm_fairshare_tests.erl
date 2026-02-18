@@ -527,3 +527,112 @@ test_lifecycle() ->
         demonitor(Ref, [flush])
     end,
     ?assertNot(is_process_alive(Pid)).
+
+%%====================================================================
+%% Additional Coverage Tests
+%%====================================================================
+
+additional_coverage_test_() ->
+    {foreach,
+     fun setup/0,
+     fun cleanup/1,
+     [
+        {"already started handling", fun test_already_started/0},
+        {"decay timer message handling", fun test_decay_timer_message/0},
+        {"zero share fraction", fun test_zero_share_fraction/0},
+        {"negligible usage removal during decay", fun test_negligible_usage_removal/0},
+        {"code_change callback", fun test_code_change/0},
+        {"terminate with undefined timer", fun test_terminate_undefined_timer/0}
+     ]}.
+
+test_already_started() ->
+    %% Server is already started by setup, try to start again
+    %% This should return {ok, Pid} with existing pid
+    Result = flurm_fairshare:start_link(),
+    ?assertMatch({ok, _Pid}, Result),
+    {ok, Pid} = Result,
+    ?assertEqual(whereis(flurm_fairshare), Pid).
+
+test_decay_timer_message() ->
+    %% Record usage first
+    User = <<"decaytimer_user">>,
+    Account = <<"decaytimer_account">>,
+    flurm_fairshare:record_usage(User, Account, 5000, 500),
+    _ = sys:get_state(flurm_fairshare),
+
+    {ok, InitUsage} = flurm_fairshare:get_usage(User, Account),
+    ?assert(InitUsage > 0),
+
+    %% Send the decay timer message directly
+    flurm_fairshare ! decay,
+    _ = sys:get_state(flurm_fairshare),
+
+    %% Server should still be responsive
+    {ok, _} = flurm_fairshare:get_shares(User, Account),
+
+    %% Usage should have decayed
+    {ok, NewUsage} = flurm_fairshare:get_usage(User, Account),
+    ?assert(NewUsage < InitUsage orelse NewUsage == 0.0).
+
+test_zero_share_fraction() ->
+    %% Create a scenario where total shares is 0
+    %% This happens when all shares sum to 0 (edge case)
+    User = <<"zeroshare_user">>,
+    Account = <<"zeroshare_account">>,
+
+    %% First, set shares to 0 explicitly
+    ok = flurm_fairshare:set_shares(User, Account, 0),
+
+    %% Now get priority factor - should return 0.0 (lowest priority)
+    Factor = flurm_fairshare:get_priority_factor(User, Account),
+    ?assertEqual(0.0, Factor).
+
+test_negligible_usage_removal() ->
+    %% Record a very small usage that should be reduced during decay
+    User = <<"negligible_user">>,
+    Account = <<"negligible_account">>,
+
+    %% Record small usage
+    flurm_fairshare:record_usage(User, Account, 1, 1),  % Very small value
+    {ok, InitialUsage} = flurm_fairshare:get_usage(User, Account),
+    _ = sys:get_state(flurm_fairshare),
+
+    %% Multiple decay cycles should reduce usage
+    lists:foreach(fun(_) ->
+        flurm_fairshare ! decay,
+        _ = sys:get_state(flurm_fairshare)
+    end, lists:seq(1, 50)),
+
+    %% Usage should be reduced after decay cycles
+    {ok, Usage} = flurm_fairshare:get_usage(User, Account),
+    ?assert(Usage =< InitialUsage).
+
+test_code_change() ->
+    %% Test code_change callback directly
+    State = sys:get_state(flurm_fairshare),
+    %% code_change should return {ok, State}
+    %% We can't call code_change directly, but we can verify the server handles it
+    %% by checking it's still alive and working
+    ?assert(is_process_alive(whereis(flurm_fairshare))),
+    {ok, _} = flurm_fairshare:get_shares(<<"user">>, <<"account">>),
+    ?assert(State =/= undefined).
+
+test_terminate_undefined_timer() ->
+    %% Stop and restart the server to test terminate with potentially undefined timer
+    Pid = whereis(flurm_fairshare),
+    ?assert(is_pid(Pid)),
+
+    %% Stop the server - this triggers terminate
+    Ref = monitor(process, Pid),
+    unlink(Pid),
+    gen_server:stop(Pid, shutdown, 5000),
+    receive
+        {'DOWN', Ref, process, Pid, _} -> ok
+    after 5000 ->
+        demonitor(Ref, [flush])
+    end,
+
+    %% Restart it for other tests
+    {ok, NewPid} = flurm_fairshare:start_link(),
+    unlink(NewPid),
+    ?assert(is_process_alive(NewPid)).

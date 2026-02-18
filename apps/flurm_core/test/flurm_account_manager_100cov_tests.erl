@@ -17,6 +17,12 @@ setup() ->
     catch gen_server:stop(flurm_account_manager),
     timer:sleep(50),
 
+    %% Unload any existing mocks to prevent conflicts in parallel tests
+    catch meck:unload(lager),
+    catch meck:unload(flurm_limits),
+    catch meck:unload(flurm_qos),
+    catch meck:unload(flurm_tres),
+
     %% Mock lager
     meck:new(lager, [passthrough, non_strict]),
     meck:expect(lager, info, fun(_, _) -> ok end),

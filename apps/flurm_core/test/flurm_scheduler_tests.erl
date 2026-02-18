@@ -1085,6 +1085,7 @@ test_schedule_cycle_mocked() ->
 
 test_license_check() ->
     %% Test that license checking returns available
+    catch meck:unload(flurm_license),
     meck:new(flurm_license, [passthrough, no_link]),
     meck:expect(flurm_license, check_availability, fun(_Licenses) -> true end),
 
@@ -1121,6 +1122,7 @@ test_reservation_check() ->
     ok.
 
 test_preemption_attempt() ->
+    catch meck:unload(flurm_preemption),
     meck:new(flurm_preemption, [passthrough, no_link]),
     meck:expect(flurm_preemption, get_priority_threshold, fun() -> 1000 end),
     meck:expect(flurm_preemption, find_preemptable_jobs,

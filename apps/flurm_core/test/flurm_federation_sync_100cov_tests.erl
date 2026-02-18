@@ -72,6 +72,15 @@ setup() ->
     ets:new(?FED_CLUSTERS_TABLE, [named_table, public, set, {keypos, 2}]),
     ets:new(?FED_SIBLING_JOBS, [named_table, public, set, {keypos, 2}]),
 
+    %% Unload any existing mocks to prevent conflicts in parallel tests
+    catch meck:unload(flurm_metrics),
+    catch meck:unload(httpc),
+    catch meck:unload(jsx),
+    catch meck:unload(flurm_node_registry),
+    catch meck:unload(flurm_job_registry),
+    catch meck:unload(flurm_protocol_codec),
+    catch meck:unload(flurm_scheduler),
+
     %% Setup mocks
     meck:new(flurm_metrics, [passthrough, non_strict]),
     meck:expect(flurm_metrics, increment, fun(_) -> ok end),

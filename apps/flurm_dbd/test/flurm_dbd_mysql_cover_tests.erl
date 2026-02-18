@@ -58,6 +58,7 @@ pure_test_() ->
      ]}.
 
 setup_pure() ->
+    catch meck:unload(lager),
     meck:new(lager, [passthrough, no_link, non_strict]),
     meck:expect(lager, info,    fun(_) -> ok end),
     meck:expect(lager, info,    fun(_, _) -> ok end),
@@ -283,6 +284,7 @@ server_test_() ->
      ]}.
 
 setup_server() ->
+    catch meck:unload(lager),
     meck:new(lager, [passthrough, no_link, non_strict]),
     meck:expect(lager, info,    fun(_) -> ok end),
     meck:expect(lager, info,    fun(_, _) -> ok end),
@@ -290,6 +292,7 @@ setup_server() ->
     meck:expect(lager, warning, fun(_, _) -> ok end),
     meck:expect(lager, error,   fun(_, _) -> ok end),
 
+    catch meck:unload(mysql),
     meck:new(mysql, [non_strict, no_link]),
     meck:expect(mysql, start_link, fun(_) -> {ok, spawn(fun() -> receive stop -> ok end end)} end),
     meck:expect(mysql, stop, fun(_) -> ok end),

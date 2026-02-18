@@ -23,6 +23,7 @@ setup() ->
             wait_for_death(ExistingPid)
     end,
     %% Mock dependencies
+    catch meck:unload(flurm_dbd_mysql),
     meck:new(flurm_dbd_mysql, [passthrough, non_strict, no_link]),
     meck:expect(flurm_dbd_mysql, is_connected, fun() -> true end),
     meck:expect(flurm_dbd_mysql, sync_job_record, fun(_Job) -> ok end),

@@ -39,6 +39,10 @@ job_sup_test_() ->
 setup() ->
     application:ensure_all_started(sasl),
 
+    %% Unload any existing mocks to prevent conflicts in parallel tests
+    catch meck:unload(flurm_job),
+    catch meck:unload(flurm_accounting),
+
     %% Mock dependencies
     meck:new(flurm_job, [passthrough, non_strict]),
     meck:expect(flurm_job, start_link, fun(#job_spec{} = _Spec) ->
@@ -307,6 +311,9 @@ integration_test_() ->
 
 integration_setup() ->
     application:ensure_all_started(sasl),
+
+    %% Unload any existing mocks to prevent conflicts in parallel tests
+    catch meck:unload(flurm_accounting),
 
     %% Use mock for accounting only
     meck:new(flurm_accounting, [passthrough, non_strict]),

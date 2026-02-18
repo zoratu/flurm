@@ -260,8 +260,22 @@ test_add_node_duplicate() ->
 
 state_transition_test_() ->
     [
-     {"Job can transition through lifecycle", fun test_job_lifecycle/0}
+     {"Job can transition through lifecycle", fun test_job_lifecycle/0},
+     {"Update job state to timeout", fun test_update_job_state_timeout/0},
+     {"Update job state to node_fail", fun test_update_job_state_node_fail/0}
     ].
+
+test_update_job_state_timeout() ->
+    Job = flurm_core:new_job(#{state => running}),
+    UpdatedJob = flurm_core:update_job_state(Job, timeout),
+    ?assertEqual(timeout, UpdatedJob#job.state),
+    ?assert(is_integer(UpdatedJob#job.end_time)).
+
+test_update_job_state_node_fail() ->
+    Job = flurm_core:new_job(#{state => running}),
+    UpdatedJob = flurm_core:update_job_state(Job, node_fail),
+    ?assertEqual(node_fail, UpdatedJob#job.state),
+    ?assert(is_integer(UpdatedJob#job.end_time)).
 
 test_job_lifecycle() ->
     %% Create pending job

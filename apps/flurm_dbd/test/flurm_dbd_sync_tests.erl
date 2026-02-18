@@ -33,6 +33,7 @@ setup() ->
             flurm_test_utils:wait_for_death(ExistingPid)
     end,
     %% Mock flurm_dbd_mysql
+    catch meck:unload(flurm_dbd_mysql),
     meck:new(flurm_dbd_mysql, [passthrough, non_strict, no_link]),
     meck:expect(flurm_dbd_mysql, is_connected, fun() -> true end),
     meck:expect(flurm_dbd_mysql, sync_job_record, fun(_Job) -> ok end),
@@ -488,9 +489,11 @@ batch_trigger_test_() ->
                  flurm_test_utils:wait_for_process_death(ExistingPid)
          end,
          %% Mock
+         catch meck:unload(flurm_dbd_mysql),
          meck:new(flurm_dbd_mysql, [passthrough, non_strict, no_link]),
          meck:expect(flurm_dbd_mysql, is_connected, fun() -> true end),
          meck:expect(flurm_dbd_mysql, sync_job_records, fun(Jobs) -> {ok, length(Jobs)} end),
+         catch meck:unload(lager),
          meck:new(lager, [non_strict, no_link, passthrough]),
          meck:expect(lager, info, fun(_Fmt) -> ok end),
          meck:expect(lager, info, fun(_Fmt, _Args) -> ok end),
@@ -539,6 +542,7 @@ batch_boundary_test_() ->
                  catch gen_server:stop(ExistingPid, normal, 5000),
                  flurm_test_utils:wait_for_process_death(ExistingPid)
          end,
+         catch meck:unload(flurm_dbd_mysql),
          meck:new(flurm_dbd_mysql, [passthrough, non_strict, no_link]),
          meck:expect(flurm_dbd_mysql, is_connected, fun() -> true end),
          BatchSizes = ets:new(batch_sizes, [public, bag]),
@@ -546,6 +550,7 @@ batch_boundary_test_() ->
              ets:insert(BatchSizes, {batch, length(Jobs)}),
              {ok, length(Jobs)}
          end),
+         catch meck:unload(lager),
          meck:new(lager, [non_strict, no_link, passthrough]),
          meck:expect(lager, info, fun(_Fmt) -> ok end),
          meck:expect(lager, info, fun(_Fmt, _Args) -> ok end),
@@ -600,6 +605,7 @@ partial_sync_test_() ->
                  catch gen_server:stop(Pid, normal, 5000),
                  flurm_test_utils:wait_for_process_death(Pid)
          end,
+         catch meck:unload(flurm_dbd_mysql),
          meck:new(flurm_dbd_mysql, [passthrough, non_strict, no_link]),
          meck:expect(flurm_dbd_mysql, is_connected, fun() -> true end),
          %% Batch fails, but individual succeeds for some
@@ -614,6 +620,7 @@ partial_sync_test_() ->
                  1 -> {error, individual_error}
              end
          end),
+         catch meck:unload(lager),
          meck:new(lager, [non_strict, no_link, passthrough]),
          meck:expect(lager, info, fun(_Fmt) -> ok end),
          meck:expect(lager, info, fun(_Fmt, _Args) -> ok end),
@@ -710,9 +717,11 @@ queue_partial_test_() ->
                  catch gen_server:stop(Pid, normal, 5000),
                  flurm_test_utils:wait_for_process_death(Pid)
          end,
+         catch meck:unload(flurm_dbd_mysql),
          meck:new(flurm_dbd_mysql, [passthrough, non_strict, no_link]),
          meck:expect(flurm_dbd_mysql, is_connected, fun() -> true end),
          meck:expect(flurm_dbd_mysql, sync_job_records, fun(Jobs) -> {ok, length(Jobs)} end),
+         catch meck:unload(lager),
          meck:new(lager, [non_strict, no_link, passthrough]),
          meck:expect(lager, info, fun(_Fmt) -> ok end),
          meck:expect(lager, info, fun(_Fmt, _Args) -> ok end),
@@ -760,10 +769,12 @@ flush_timer_test_() ->
                  catch gen_server:stop(Pid, normal, 5000),
                  flurm_test_utils:wait_for_process_death(Pid)
          end,
+         catch meck:unload(flurm_dbd_mysql),
          meck:new(flurm_dbd_mysql, [passthrough, non_strict, no_link]),
          meck:expect(flurm_dbd_mysql, is_connected, fun() -> true end),
          meck:expect(flurm_dbd_mysql, sync_job_records, fun(_Jobs) -> {error, timeout} end),
          meck:expect(flurm_dbd_mysql, sync_job_record, fun(_Job) -> {error, timeout} end),
+         catch meck:unload(lager),
          meck:new(lager, [non_strict, no_link, passthrough]),
          meck:expect(lager, info, fun(_Fmt) -> ok end),
          meck:expect(lager, info, fun(_Fmt, _Args) -> ok end),
@@ -811,6 +822,7 @@ terminate_test_() ->
                  catch gen_server:stop(Pid, normal, 5000),
                  flurm_test_utils:wait_for_process_death(Pid)
          end,
+         catch meck:unload(flurm_dbd_mysql),
          meck:new(flurm_dbd_mysql, [passthrough, non_strict, no_link]),
          meck:expect(flurm_dbd_mysql, is_connected, fun() -> true end),
          FlushCalled = ets:new(flush_called, [public]),
@@ -819,6 +831,7 @@ terminate_test_() ->
              ets:insert(FlushCalled, {called, true}),
              {ok, length(Jobs)}
          end),
+         catch meck:unload(lager),
          meck:new(lager, [non_strict, no_link, passthrough]),
          meck:expect(lager, info, fun(_Fmt) -> ok end),
          meck:expect(lager, info, fun(_Fmt, _Args) -> ok end),
@@ -877,10 +890,12 @@ all_jobs_failed_test_() ->
                  catch gen_server:stop(Pid, normal, 5000),
                  flurm_test_utils:wait_for_process_death(Pid)
          end,
+         catch meck:unload(flurm_dbd_mysql),
          meck:new(flurm_dbd_mysql, [passthrough, non_strict, no_link]),
          meck:expect(flurm_dbd_mysql, is_connected, fun() -> true end),
          meck:expect(flurm_dbd_mysql, sync_job_records, fun(_Jobs) -> {error, db_error} end),
          meck:expect(flurm_dbd_mysql, sync_job_record, fun(_Job) -> {error, db_error} end),
+         catch meck:unload(lager),
          meck:new(lager, [non_strict, no_link, passthrough]),
          meck:expect(lager, info, fun(_Fmt) -> ok end),
          meck:expect(lager, info, fun(_Fmt, _Args) -> ok end),

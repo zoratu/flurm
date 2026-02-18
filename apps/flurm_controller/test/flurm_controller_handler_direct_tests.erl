@@ -45,16 +45,27 @@ handler_test_() ->
      ]}.
 
 setup() ->
+    catch meck:unload(flurm_job_manager),
     meck:new(flurm_job_manager, [passthrough, non_strict]),
+    catch meck:unload(flurm_node_manager_server),
     meck:new(flurm_node_manager_server, [passthrough, non_strict]),
+    catch meck:unload(flurm_partition_manager),
     meck:new(flurm_partition_manager, [passthrough, non_strict]),
+    catch meck:unload(flurm_config_server),
     meck:new(flurm_config_server, [passthrough, non_strict]),
+    catch meck:unload(flurm_controller_cluster),
     meck:new(flurm_controller_cluster, [passthrough, non_strict]),
+    catch meck:unload(flurm_reservation),
     meck:new(flurm_reservation, [passthrough, non_strict]),
+    catch meck:unload(flurm_license),
     meck:new(flurm_license, [passthrough, non_strict]),
+    catch meck:unload(flurm_burst_buffer),
     meck:new(flurm_burst_buffer, [passthrough, non_strict]),
+    catch meck:unload(flurm_step_manager),
     meck:new(flurm_step_manager, [passthrough, non_strict]),
+    catch meck:unload(flurm_scheduler),
     meck:new(flurm_scheduler, [passthrough, non_strict]),
+    catch meck:unload(flurm_node_connection_manager),
     meck:new(flurm_node_connection_manager, [passthrough, non_strict]),
 
     %% Default mocks - cluster disabled for simple testing

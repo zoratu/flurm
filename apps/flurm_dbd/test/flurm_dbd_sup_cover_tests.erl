@@ -43,6 +43,7 @@ sup_pure_test_() ->
      ]}.
 
 setup_sup_pure() ->
+    catch meck:unload(lager),
     meck:new(lager, [passthrough, no_link, non_strict]),
     meck:expect(lager, info,    fun(_) -> ok end),
     meck:expect(lager, info,    fun(_, _) -> ok end),
@@ -150,6 +151,7 @@ sup_dynamic_test_() ->
      ]}.
 
 setup_sup_dynamic() ->
+    catch meck:unload(lager),
     meck:new(lager, [passthrough, no_link, non_strict]),
     meck:expect(lager, info,    fun(_) -> ok end),
     meck:expect(lager, info,    fun(_, _) -> ok end),
@@ -157,6 +159,7 @@ setup_sup_dynamic() ->
     meck:expect(lager, warning, fun(_, _) -> ok end),
     meck:expect(lager, error,   fun(_, _) -> ok end),
 
+    catch meck:unload(ranch),
     meck:new(ranch, [non_strict, no_link]),
     meck:expect(ranch, start_listener, fun(_, _, _, _, _) -> {ok, self()} end),
     meck:expect(ranch, stop_listener, fun(_) -> ok end),
@@ -164,9 +167,11 @@ setup_sup_dynamic() ->
     meck:expect(ranch, get_max_connections, fun(_) -> 100 end),
     meck:expect(ranch, procs, fun(_, _) -> [] end),
 
+    catch meck:unload(flurm_dbd_ra),
     meck:new(flurm_dbd_ra, [non_strict, no_link]),
     meck:expect(flurm_dbd_ra, start_cluster, fun(_) -> ok end),
 
+    catch meck:unload(ra),
     meck:new(ra, [non_strict, no_link]),
     meck:expect(ra, members, fun(_) -> {ok, [{flurm_dbd_ra, node()}], {flurm_dbd_ra, node()}} end),
 
@@ -261,6 +266,7 @@ storage_test_() ->
      ]}.
 
 setup_storage() ->
+    catch meck:unload(lager),
     meck:new(lager, [passthrough, no_link, non_strict]),
     meck:expect(lager, info,    fun(_) -> ok end),
     meck:expect(lager, info,    fun(_, _) -> ok end),

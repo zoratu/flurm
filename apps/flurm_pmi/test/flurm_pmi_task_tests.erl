@@ -251,3 +251,44 @@ test_cleanup_pmi_different_job() ->
     ok = flurm_pmi_task:cleanup_pmi(999, 5),
     ?assert(meck:called(flurm_pmi_listener, stop, [999, 5])),
     ?assert(meck:called(flurm_pmi_manager, finalize_job, [999, 5])).
+
+%%====================================================================
+%% Hostname Fallback Tests
+%%====================================================================
+
+hostname_fallback_test_() ->
+    {foreach,
+     fun setup_hostname/0,
+     fun cleanup_hostname/1,
+     [
+        {"get_hostname returns localhost on inet error",
+         fun test_get_hostname_fallback/0}
+     ]}.
+
+setup_hostname() ->
+    application:ensure_all_started(sasl),
+    catch meck:unload(inet),
+    catch meck:unload(flurm_pmi_listener),
+    catch meck:unload(flurm_pmi_manager),
+    meck:new(inet, [unstick, passthrough]),
+    meck:new(flurm_pmi_listener, [non_strict]),
+    meck:new(flurm_pmi_manager, [non_strict]),
+    meck:expect(flurm_pmi_listener, get_socket_path, fun(JobId, StepId) ->
+        "/tmp/flurm_pmi_" ++ integer_to_list(JobId) ++ "_" ++ integer_to_list(StepId) ++ ".sock"
+    end),
+    ok.
+
+cleanup_hostname(_) ->
+    catch meck:unload(inet),
+    catch meck:unload(flurm_pmi_listener),
+    catch meck:unload(flurm_pmi_manager),
+    ok.
+
+test_get_hostname_fallback() ->
+    %% Mock inet:gethostname to return error
+    meck:expect(inet, gethostname, fun() -> {error, nxdomain} end),
+
+    %% Now get_pmi_env should use "localhost" fallback
+    Env = flurm_pmi_task:get_pmi_env(10, 0, 0, 4),
+    Hostname = proplists:get_value(<<"MPICH_INTERFACE_HOSTNAME">>, Env),
+    ?assertEqual(<<"localhost">>, Hostname).

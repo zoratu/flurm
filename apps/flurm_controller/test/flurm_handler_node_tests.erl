@@ -67,6 +67,12 @@ setup() ->
     application:unset_env(flurm_controller, cluster_nodes),
 
     %% Start meck for mocking
+    catch meck:unload(flurm_node_manager_server),
+    catch meck:unload(flurm_config_server),
+    catch meck:unload(flurm_partition_manager),
+    catch meck:unload(flurm_controller_cluster),
+    catch meck:unload(flurm_scheduler),
+    catch meck:unload(flurm_config_slurm),
     meck:new([flurm_node_manager_server, flurm_config_server, flurm_partition_manager,
               flurm_controller_cluster, flurm_scheduler, flurm_config_slurm],
              [passthrough, no_link, non_strict]),

@@ -427,6 +427,7 @@ export_count_test_() ->
 %%====================================================================
 
 setup_meck() ->
+    catch meck:unload(flurm_dbd_server),
     meck:new(flurm_dbd_server, [passthrough]),
     ok.
 

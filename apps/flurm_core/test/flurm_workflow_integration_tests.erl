@@ -142,6 +142,8 @@ setup_mocks() ->
         flurm_job_dispatcher_server,
         flurm_node_manager_server
     ],
+    %% Unload any existing mocks to prevent conflicts in parallel tests
+    lists:foreach(fun(M) -> catch meck:unload(M) end, Modules),
     lists:foreach(fun(M) ->
         meck:new(M, [passthrough, non_strict, no_link])
     end, Modules),

@@ -29,6 +29,20 @@ scheduler_test_() ->
       ]}}.
 
 setup() ->
+    %% Unload any existing mocks to prevent conflicts in parallel tests
+    catch meck:unload(lager),
+    catch meck:unload(flurm_config_server),
+    catch meck:unload(flurm_metrics),
+    catch meck:unload(flurm_job_manager),
+    catch meck:unload(flurm_node_manager),
+    catch meck:unload(flurm_job_deps),
+    catch meck:unload(flurm_limits),
+    catch meck:unload(flurm_job_dispatcher),
+    catch meck:unload(flurm_backfill),
+    catch meck:unload(flurm_reservation),
+    catch meck:unload(flurm_preemption),
+    catch meck:unload(flurm_license),
+    catch meck:unload(flurm_gres),
     %% Mock lager
     meck:new(lager, [non_strict, no_link]),
     meck:expect(lager, debug, fun(_) -> ok end),

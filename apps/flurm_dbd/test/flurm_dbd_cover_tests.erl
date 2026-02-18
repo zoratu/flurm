@@ -58,6 +58,7 @@ dbd_delegation_test_() ->
      ]}.
 
 setup_delegation() ->
+    catch meck:unload(lager),
     meck:new(lager, [passthrough, no_link, non_strict]),
     meck:expect(lager, info,    fun(_) -> ok end),
     meck:expect(lager, info,    fun(_, _) -> ok end),
@@ -66,6 +67,7 @@ setup_delegation() ->
     meck:expect(lager, warning, fun(_, _) -> ok end),
     meck:expect(lager, error,   fun(_, _) -> ok end),
 
+    catch meck:unload(flurm_dbd_server),
     meck:new(flurm_dbd_server, [non_strict, no_link]),
     %% Set up stubs for every function that flurm_dbd delegates to.
     %% Casts return ok; calls return identifiable sentinel values.
@@ -242,10 +244,12 @@ dbd_app_test_() ->
      ]}.
 
 setup_app() ->
+    catch meck:unload(lager),
     meck:new(lager, [passthrough, no_link, non_strict]),
     meck:expect(lager, info, fun(_) -> ok end),
     meck:expect(lager, info, fun(_, _) -> ok end),
 
+    catch meck:unload(flurm_dbd_sup),
     meck:new(flurm_dbd_sup, [non_strict, no_link]),
     meck:expect(flurm_dbd_sup, start_link, fun() -> {ok, self()} end),
     ok.
@@ -273,6 +277,7 @@ ra_effects_test_() ->
      ]}.
 
 setup_ra() ->
+    catch meck:unload(lager),
     meck:new(lager, [passthrough, no_link, non_strict]),
     meck:expect(lager, info,  fun(_, _) -> ok end),
     meck:expect(lager, debug, fun(_, _) -> ok end),

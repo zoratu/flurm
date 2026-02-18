@@ -24,10 +24,15 @@ protocol_test_() ->
      ]}.
 
 setup() ->
+    catch meck:unload(ranch),
     meck:new(ranch, [passthrough, non_strict]),
+    catch meck:unload(flurm_protocol),
     meck:new(flurm_protocol, [passthrough, non_strict]),
+    catch meck:unload(flurm_job_manager),
     meck:new(flurm_job_manager, [passthrough, non_strict]),
+    catch meck:unload(flurm_node_manager_server),
     meck:new(flurm_node_manager_server, [passthrough, non_strict]),
+    catch meck:unload(flurm_partition_manager),
     meck:new(flurm_partition_manager, [passthrough, non_strict]),
 
     %% Default mocks
@@ -104,10 +109,15 @@ message_handling_test_() ->
      ]}.
 
 setup_message_handling() ->
+    catch meck:unload(ranch),
     meck:new(ranch, [passthrough, non_strict]),
+    catch meck:unload(flurm_protocol),
     meck:new(flurm_protocol, [passthrough, non_strict]),
+    catch meck:unload(flurm_job_manager),
     meck:new(flurm_job_manager, [passthrough, non_strict]),
+    catch meck:unload(flurm_node_manager_server),
     meck:new(flurm_node_manager_server, [passthrough, non_strict]),
+    catch meck:unload(flurm_partition_manager),
     meck:new(flurm_partition_manager, [passthrough, non_strict]),
 
     meck:expect(ranch, handshake, fun(_) -> {ok, make_ref()} end),

@@ -43,6 +43,9 @@
 
 setup() ->
     application:ensure_all_started(sasl),
+    %% Unload any existing mocks to prevent conflicts in parallel tests
+    catch meck:unload(flurm_job_registry),
+    catch meck:unload(flurm_job),
     %% Start meck for external dependencies only - NOT flurm_preemption
     meck:new(flurm_job_registry, [passthrough, non_strict, no_link]),
     meck:new(flurm_job, [passthrough, non_strict, no_link]),

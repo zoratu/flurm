@@ -47,9 +47,11 @@ setup() ->
     meck:expect(lager, md, fun(_) -> ok end),
 
     %% Mock child processes to avoid starting actual servers
+    catch meck:unload(flurm_dbd_storage),
     meck:new(flurm_dbd_storage, [passthrough, no_link]),
     meck:expect(flurm_dbd_storage, start_link, fun() -> {ok, spawn(fun() -> receive stop -> ok end end)} end),
 
+    catch meck:unload(flurm_dbd_server),
     meck:new(flurm_dbd_server, [passthrough, no_link]),
     meck:expect(flurm_dbd_server, start_link, fun() -> {ok, spawn(fun() -> receive stop -> ok end end)} end),
 

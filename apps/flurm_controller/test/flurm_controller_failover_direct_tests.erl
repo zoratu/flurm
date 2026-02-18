@@ -39,9 +39,13 @@ failover_test_() ->
      ]}.
 
 setup() ->
+    catch meck:unload(flurm_controller_cluster),
     meck:new(flurm_controller_cluster, [passthrough, non_strict]),
+    catch meck:unload(flurm_job_manager),
     meck:new(flurm_job_manager, [passthrough, non_strict]),
+    catch meck:unload(flurm_node_manager_server),
     meck:new(flurm_node_manager_server, [passthrough, non_strict]),
+    catch meck:unload(flurm_scheduler),
     meck:new(flurm_scheduler, [passthrough, non_strict]),
 
     %% Default mocks
@@ -201,9 +205,13 @@ api_test_() ->
 
 setup_api() ->
     %% Start the server for API tests
+    catch meck:unload(flurm_controller_cluster),
     meck:new(flurm_controller_cluster, [passthrough, non_strict]),
+    catch meck:unload(flurm_job_manager),
     meck:new(flurm_job_manager, [passthrough, non_strict]),
+    catch meck:unload(flurm_node_manager_server),
     meck:new(flurm_node_manager_server, [passthrough, non_strict]),
+    catch meck:unload(flurm_scheduler),
     meck:new(flurm_scheduler, [passthrough, non_strict]),
 
     meck:expect(flurm_controller_cluster, cluster_status, fun() -> #{ra_ready => true} end),

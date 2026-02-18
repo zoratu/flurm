@@ -118,6 +118,14 @@ setup() ->
     application:unset_env(flurm_controller, cluster_nodes),
 
     %% Start meck for mocking
+    catch meck:unload(flurm_job_manager),
+    catch meck:unload(flurm_node_manager_server),
+    catch meck:unload(flurm_partition_manager),
+    catch meck:unload(flurm_config_server),
+    catch meck:unload(flurm_controller_cluster),
+    catch meck:unload(flurm_federation),
+    catch meck:unload(flurm_srun_callback),
+    catch meck:unload(flurm_node_connection_manager),
     meck:new([flurm_job_manager, flurm_node_manager_server, flurm_partition_manager,
               flurm_config_server, flurm_controller_cluster, flurm_federation,
               flurm_srun_callback, flurm_node_connection_manager],
@@ -939,6 +947,7 @@ safe_binary_to_integer_test_() ->
 validate_partition_test_() ->
     {setup,
      fun() ->
+         catch meck:unload(flurm_partition_manager),
          meck:new(flurm_partition_manager, [passthrough, no_link, non_strict]),
          ok
      end,
@@ -1000,6 +1009,8 @@ build_field_updates_test_() ->
 federation_routing_test_() ->
     {setup,
      fun() ->
+         catch meck:unload(flurm_federation),
+         catch meck:unload(flurm_job_manager),
          meck:new([flurm_federation, flurm_job_manager], [passthrough, no_link, non_strict]),
          application:set_env(flurm_controller, federation_routing, true),
          ok
@@ -1035,6 +1046,8 @@ federation_routing_test_() ->
 cluster_mode_test_() ->
     {setup,
      fun() ->
+         catch meck:unload(flurm_controller_cluster),
+         catch meck:unload(flurm_job_manager),
          meck:new([flurm_controller_cluster, flurm_job_manager], [passthrough, no_link, non_strict]),
          ok
      end,
@@ -1078,6 +1091,7 @@ cluster_mode_test_() ->
 execute_suspend_test_() ->
     {setup,
      fun() ->
+         catch meck:unload(flurm_job_manager),
          meck:new(flurm_job_manager, [passthrough, no_link, non_strict]),
          ok
      end,
@@ -1103,6 +1117,7 @@ execute_suspend_test_() ->
 execute_job_update_test_() ->
     {setup,
      fun() ->
+         catch meck:unload(flurm_job_manager),
          meck:new(flurm_job_manager, [passthrough, no_link, non_strict]),
          ok
      end,
@@ -1153,6 +1168,7 @@ execute_job_update_test_() ->
 apply_base_updates_test_() ->
     {setup,
      fun() ->
+         catch meck:unload(flurm_job_manager),
          meck:new(flurm_job_manager, [passthrough, no_link, non_strict]),
          ok
      end,
@@ -1180,6 +1196,8 @@ apply_base_updates_test_() ->
 federation_routing_extended_test_() ->
     {setup,
      fun() ->
+         catch meck:unload(flurm_federation),
+         catch meck:unload(flurm_job_manager),
          meck:new([flurm_federation, flurm_job_manager], [passthrough, no_link, non_strict]),
          ok
      end,
@@ -1253,6 +1271,9 @@ federation_routing_extended_test_() ->
 resource_allocation_extended_test_() ->
     {setup,
      fun() ->
+         catch meck:unload(flurm_job_manager),
+         catch meck:unload(flurm_node_manager_server),
+         catch meck:unload(flurm_config_server),
          meck:new([flurm_job_manager, flurm_node_manager_server, flurm_config_server],
                   [passthrough, no_link, non_strict]),
          ok
@@ -1302,6 +1323,8 @@ resource_allocation_extended_test_() ->
 kill_job_extended_test_() ->
     {setup,
      fun() ->
+         catch meck:unload(flurm_job_manager),
+         catch meck:unload(flurm_controller_cluster),
          meck:new([flurm_job_manager, flurm_controller_cluster], [passthrough, no_link, non_strict]),
          ok
      end,
@@ -1351,6 +1374,8 @@ kill_job_extended_test_() ->
 cancel_job_extended_test_() ->
     {setup,
      fun() ->
+         catch meck:unload(flurm_job_manager),
+         catch meck:unload(flurm_controller_cluster),
          meck:new([flurm_job_manager, flurm_controller_cluster], [passthrough, no_link, non_strict]),
          ok
      end,
@@ -1403,6 +1428,8 @@ cancel_job_extended_test_() ->
 signal_job_extended_test_() ->
     {setup,
      fun() ->
+         catch meck:unload(flurm_job_manager),
+         catch meck:unload(flurm_controller_cluster),
          meck:new([flurm_job_manager, flurm_controller_cluster], [passthrough, no_link, non_strict]),
          ok
      end,
@@ -1455,6 +1482,8 @@ signal_job_extended_test_() ->
 suspend_job_extended_test_() ->
     {setup,
      fun() ->
+         catch meck:unload(flurm_job_manager),
+         catch meck:unload(flurm_controller_cluster),
          meck:new([flurm_job_manager, flurm_controller_cluster], [passthrough, no_link, non_strict]),
          ok
      end,
@@ -1507,6 +1536,8 @@ suspend_job_extended_test_() ->
 update_job_extended_test_() ->
     {setup,
      fun() ->
+         catch meck:unload(flurm_job_manager),
+         catch meck:unload(flurm_controller_cluster),
          meck:new([flurm_job_manager, flurm_controller_cluster], [passthrough, no_link, non_strict]),
          ok
      end,
@@ -1578,6 +1609,7 @@ update_job_extended_test_() ->
 job_will_run_extended_test_() ->
     {setup,
      fun() ->
+         catch meck:unload(flurm_node_manager_server),
          meck:new(flurm_node_manager_server, [passthrough, no_link, non_strict]),
          ok
      end,
@@ -1660,6 +1692,7 @@ parse_job_id_str_extended_test_() ->
 validate_partition_extended_test_() ->
     {setup,
      fun() ->
+         catch meck:unload(flurm_partition_manager),
          meck:new(flurm_partition_manager, [passthrough, no_link, non_strict]),
          ok
      end,
@@ -1683,6 +1716,8 @@ validate_partition_extended_test_() ->
 job_allocation_info_extended_test_() ->
     {setup,
      fun() ->
+         catch meck:unload(flurm_node_manager_server),
+         catch meck:unload(flurm_config_server),
          meck:new([flurm_node_manager_server, flurm_config_server], [passthrough, no_link, non_strict]),
          ok
      end,
