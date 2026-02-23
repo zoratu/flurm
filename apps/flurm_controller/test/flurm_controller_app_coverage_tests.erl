@@ -261,6 +261,14 @@ cluster_status_test_() ->
             Result = flurm_controller_app:cluster_status(),
             ?assert(is_map(Result))
         end},
+        {"returns not_available when cluster_status throws", fun() ->
+            catch meck:unload(flurm_controller_cluster),
+            meck:new(flurm_controller_cluster, [non_strict]),
+            meck:expect(flurm_controller_cluster, cluster_status, fun() -> erlang:error(simulated_failure) end),
+            ?assertEqual(#{status => not_available, cluster_enabled => false},
+                         flurm_controller_app:cluster_status()),
+            meck:unload(flurm_controller_cluster)
+        end},
         {"handles cluster not available", fun() ->
             %% When cluster module not running, should return not_available status
             Result = flurm_controller_app:cluster_status(),
@@ -523,6 +531,431 @@ api_extended_test_() ->
             ?assert(maps:is_key(status, Result) orelse maps:is_key(cluster_enabled, Result))
         end}
     ].
+
+%%====================================================================
+%% Live Stats Coverage Tests
+%%====================================================================
+
+live_stats_coverage_test_() ->
+    {setup,
+     fun setup_live_stats/0,
+     fun cleanup_live_stats/1,
+     [
+        {"status computes live job/node/partition stats", fun test_status_live_stats/0},
+        {"cluster_status returns live cluster map", fun test_cluster_status_live/0}
+     ]}.
+
+setup_live_stats() ->
+    catch meck:unload(flurm_controller_sup),
+    catch meck:unload(flurm_job_manager),
+    catch meck:unload(flurm_node_manager_server),
+    catch meck:unload(flurm_partition_manager),
+    catch meck:unload(flurm_controller_cluster),
+    meck:new(flurm_controller_sup, [non_strict]),
+    meck:new(flurm_job_manager, [non_strict]),
+    meck:new(flurm_node_manager_server, [non_strict]),
+    meck:new(flurm_partition_manager, [non_strict]),
+    meck:new(flurm_controller_cluster, [non_strict]),
+    meck:expect(flurm_controller_sup, listener_info, fun() -> #{active_connections => 3} end),
+    meck:expect(flurm_controller_sup, node_listener_info, fun() -> #{active_connections => 2} end),
+    meck:expect(flurm_job_manager, list_jobs, fun() ->
+        [
+            create_mock_job(1, pending),
+            create_mock_job(2, running),
+            create_mock_job(3, running),
+            create_mock_job(4, completed)
+        ]
+    end),
+    meck:expect(flurm_node_manager_server, list_nodes, fun() ->
+        [
+            create_mock_node(<<"n1">>, idle),
+            create_mock_node(<<"n2">>, allocated),
+            create_mock_node(<<"n3">>, mixed),
+            create_mock_node(<<"n4">>, down)
+        ]
+    end),
+    meck:expect(flurm_partition_manager, list_partitions, fun() ->
+        [{partition, <<"default">>}, {partition, <<"gpu">>}]
+    end),
+    meck:expect(flurm_controller_cluster, cluster_status, fun() ->
+        #{status => healthy, cluster_enabled => true}
+    end),
+    ok.
+
+cleanup_live_stats(_) ->
+    meck:unload(flurm_controller_sup),
+    meck:unload(flurm_job_manager),
+    meck:unload(flurm_node_manager_server),
+    meck:unload(flurm_partition_manager),
+    meck:unload(flurm_controller_cluster),
+    ok.
+
+test_status_live_stats() ->
+    Status = flurm_controller_app:status(),
+    Jobs = maps:get(jobs, Status),
+    Nodes = maps:get(nodes, Status),
+    Partitions = maps:get(partitions, Status),
+    ?assertEqual(4, maps:get(total, Jobs)),
+    ?assertEqual(1, maps:get(pending, Jobs)),
+    ?assertEqual(2, maps:get(running, Jobs)),
+    ?assertEqual(1, maps:get(completed, Jobs)),
+    ?assertEqual(4, maps:get(total, Nodes)),
+    ?assertEqual(3, maps:get(up, Nodes)),
+    ?assertEqual(1, maps:get(down, Nodes)),
+    ?assertEqual(2, maps:get(total, Partitions)),
+    ?assertEqual([<<"default">>, <<"gpu">>], maps:get(names, Partitions)).
+
+test_cluster_status_live() ->
+    ?assertEqual(#{status => healthy, cluster_enabled => true},
+        flurm_controller_app:cluster_status()).
+
+%%====================================================================
+%% Startup/Shutdown Coverage Tests
+%%====================================================================
+
+startup_shutdown_coverage_test_() ->
+    {setup,
+     fun setup_startup_shutdown/0,
+     fun cleanup_startup_shutdown/1,
+     [
+        {"start returns config validation error", fun test_start_invalid_config/0},
+        {"start rejects invalid listen_address type", fun test_start_invalid_listen_address_type/0},
+        {"start rejects invalid listen_address value", fun test_start_invalid_listen_address_value/0},
+        {"start rejects invalid num_acceptors", fun test_start_invalid_num_acceptors/0},
+        {"start rejects invalid max_connections", fun test_start_invalid_max_connections/0},
+        {"start rejects invalid http_api_port", fun test_start_invalid_http_api_port/0},
+        {"start rejects invalid multi-node ra_data_dir", fun test_start_invalid_ra_data_dir/0},
+        {"start handles multi-node distributed setup path", fun test_start_multi_node_mode/0},
+        {"start succeeds with healthy supervisor", fun test_start_success/0},
+        {"start succeeds even when listeners fail", fun test_start_listener_failures/0},
+        {"start returns supervisor error", fun test_start_supervisor_error/0},
+        {"start skips HTTP API when disabled", fun test_start_http_disabled/0},
+        {"prep_stop handles stopped listeners", fun test_prep_stop_not_found/0},
+        {"prep_stop exits when connections already drained", fun test_prep_stop_drained/0},
+        {"prep_stop warns on active connections at timeout", fun test_prep_stop_timeout_active/0}
+     ]}.
+
+setup_startup_shutdown() ->
+    application:ensure_all_started(sasl),
+
+    catch meck:unload(flurm_controller_sup),
+    meck:new(flurm_controller_sup, [non_strict]),
+    meck:expect(flurm_controller_sup, start_link, fun() -> {ok, self()} end),
+    meck:expect(flurm_controller_sup, start_listener, fun() -> {ok, listener_pid} end),
+    meck:expect(flurm_controller_sup, start_node_listener, fun() -> {ok, node_listener_pid} end),
+    meck:expect(flurm_controller_sup, start_http_api, fun() -> {ok, http_pid} end),
+    meck:expect(flurm_controller_sup, stop_listener, fun() -> ok end),
+    meck:expect(flurm_controller_sup, stop_node_listener, fun() -> ok end),
+    meck:expect(flurm_controller_sup, stop_http_api, fun() -> ok end),
+    meck:expect(flurm_controller_sup, listener_info, fun() -> #{active_connections => 0} end),
+    meck:expect(flurm_controller_sup, node_listener_info, fun() -> #{active_connections => 0} end),
+
+    %% Clean relevant env keys so each test starts from known defaults
+    lists:foreach(fun(Key) -> application:unset_env(flurm_controller, Key) end, [
+        listen_port,
+        listen_address,
+        num_acceptors,
+        max_connections,
+        cluster_nodes,
+        enable_bridge_api,
+        shutdown_drain_timeout,
+        ra_data_dir,
+        http_api_port
+    ]),
+    reset_controller_sup_mocks(),
+    ok.
+
+cleanup_startup_shutdown(_) ->
+    lists:foreach(fun(Key) -> application:unset_env(flurm_controller, Key) end, [
+        listen_port,
+        listen_address,
+        num_acceptors,
+        max_connections,
+        cluster_nodes,
+        enable_bridge_api,
+        shutdown_drain_timeout,
+        ra_data_dir,
+        http_api_port
+    ]),
+    meck:unload(flurm_controller_sup),
+    ok.
+
+reset_controller_sup_mocks() ->
+    meck:expect(flurm_controller_sup, start_link, fun() -> {ok, self()} end),
+    meck:expect(flurm_controller_sup, start_listener, fun() -> {ok, listener_pid} end),
+    meck:expect(flurm_controller_sup, start_node_listener, fun() -> {ok, node_listener_pid} end),
+    meck:expect(flurm_controller_sup, start_http_api, fun() -> {ok, http_pid} end),
+    meck:expect(flurm_controller_sup, stop_listener, fun() -> ok end),
+    meck:expect(flurm_controller_sup, stop_node_listener, fun() -> ok end),
+    meck:expect(flurm_controller_sup, stop_http_api, fun() -> ok end),
+    meck:expect(flurm_controller_sup, listener_info, fun() -> #{active_connections => 0} end),
+    meck:expect(flurm_controller_sup, node_listener_info, fun() -> #{active_connections => 0} end).
+
+test_start_invalid_config() ->
+    reset_controller_sup_mocks(),
+    application:set_env(flurm_controller, listen_port, 0),
+    Result = flurm_controller_app:start(normal, []),
+    ?assertMatch({error, {config_validation_failed, _}}, Result),
+    application:unset_env(flurm_controller, listen_port).
+
+test_start_invalid_listen_address_type() ->
+    reset_controller_sup_mocks(),
+    application:set_env(flurm_controller, listen_address, 42),
+    Result = flurm_controller_app:start(normal, []),
+    ?assertMatch({error, {config_validation_failed, _}}, Result),
+    application:unset_env(flurm_controller, listen_address).
+
+test_start_invalid_listen_address_value() ->
+    reset_controller_sup_mocks(),
+    application:set_env(flurm_controller, listen_address, "999.999.999.999"),
+    Result = flurm_controller_app:start(normal, []),
+    ?assertMatch({error, {config_validation_failed, _}}, Result),
+    application:unset_env(flurm_controller, listen_address).
+
+test_start_invalid_num_acceptors() ->
+    reset_controller_sup_mocks(),
+    application:set_env(flurm_controller, num_acceptors, 0),
+    Result = flurm_controller_app:start(normal, []),
+    ?assertMatch({error, {config_validation_failed, _}}, Result),
+    application:unset_env(flurm_controller, num_acceptors).
+
+test_start_invalid_max_connections() ->
+    reset_controller_sup_mocks(),
+    application:set_env(flurm_controller, max_connections, 1),
+    Result = flurm_controller_app:start(normal, []),
+    ?assertMatch({error, {config_validation_failed, _}}, Result),
+    application:unset_env(flurm_controller, max_connections).
+
+test_start_invalid_http_api_port() ->
+    reset_controller_sup_mocks(),
+    application:set_env(flurm_controller, enable_bridge_api, true),
+    application:set_env(flurm_controller, http_api_port, 70000),
+    Result = flurm_controller_app:start(normal, []),
+    ?assertMatch({error, {config_validation_failed, _}}, Result),
+    application:unset_env(flurm_controller, enable_bridge_api),
+    application:unset_env(flurm_controller, http_api_port).
+
+test_start_invalid_ra_data_dir() ->
+    reset_controller_sup_mocks(),
+    application:set_env(flurm_controller, cluster_nodes, [node(), other@node]),
+    application:set_env(flurm_controller, ra_data_dir, "/dev/null/flurm_ra"),
+    Result = flurm_controller_app:start(normal, []),
+    ?assertMatch({error, {config_validation_failed, _}}, Result),
+    application:unset_env(flurm_controller, cluster_nodes),
+    application:unset_env(flurm_controller, ra_data_dir).
+
+test_start_multi_node_mode() ->
+    reset_controller_sup_mocks(),
+    application:set_env(flurm_controller, cluster_nodes, [node(), other@node]),
+    application:set_env(flurm_controller, ra_data_dir, "/tmp/flurm_controller_ra_test"),
+    ?assertMatch({ok, _}, flurm_controller_app:start(normal, [])),
+    application:unset_env(flurm_controller, cluster_nodes),
+    application:unset_env(flurm_controller, ra_data_dir).
+
+test_start_success() ->
+    reset_controller_sup_mocks(),
+    application:set_env(flurm_controller, listen_port, 6817),
+    application:set_env(flurm_controller, listen_address, "0.0.0.0"),
+    application:set_env(flurm_controller, num_acceptors, 10),
+    application:set_env(flurm_controller, max_connections, 1000),
+    application:set_env(flurm_controller, cluster_nodes, [node()]),
+    application:set_env(flurm_controller, enable_bridge_api, true),
+    application:set_env(flurm_controller, http_api_port, 6820),
+    ?assertMatch({ok, _}, flurm_controller_app:start(normal, [])).
+
+test_start_listener_failures() ->
+    reset_controller_sup_mocks(),
+    meck:expect(flurm_controller_sup, start_listener, fun() -> {error, listener_failed} end),
+    meck:expect(flurm_controller_sup, start_node_listener, fun() -> {error, node_listener_failed} end),
+    meck:expect(flurm_controller_sup, start_http_api, fun() -> {error, http_failed} end),
+    application:set_env(flurm_controller, enable_bridge_api, true),
+    ?assertMatch({ok, _}, flurm_controller_app:start(normal, [])).
+
+test_start_supervisor_error() ->
+    reset_controller_sup_mocks(),
+    meck:expect(flurm_controller_sup, start_link, fun() -> {error, supervisor_failed} end),
+    ?assertEqual({error, supervisor_failed}, flurm_controller_app:start(normal, [])).
+
+test_start_http_disabled() ->
+    reset_controller_sup_mocks(),
+    application:set_env(flurm_controller, enable_bridge_api, false),
+    ?assertMatch({ok, _}, flurm_controller_app:start(normal, [])).
+
+test_prep_stop_not_found() ->
+    reset_controller_sup_mocks(),
+    meck:expect(flurm_controller_sup, listener_info, fun() -> {error, not_found} end),
+    application:set_env(flurm_controller, shutdown_drain_timeout, 0),
+    ?assertEqual(my_state, flurm_controller_app:prep_stop(my_state)).
+
+test_prep_stop_drained() ->
+    reset_controller_sup_mocks(),
+    meck:expect(flurm_controller_sup, listener_info, fun() -> #{active_connections => 0} end),
+    application:set_env(flurm_controller, shutdown_drain_timeout, 0),
+    ?assertEqual(drained_state, flurm_controller_app:prep_stop(drained_state)).
+
+test_prep_stop_timeout_active() ->
+    reset_controller_sup_mocks(),
+    meck:expect(flurm_controller_sup, listener_info, fun() -> #{active_connections => 5} end),
+    application:set_env(flurm_controller, shutdown_drain_timeout, 0),
+    ?assertEqual(state2, flurm_controller_app:prep_stop(state2)).
+
+%%====================================================================
+%% Internal Helper Coverage Tests
+%%====================================================================
+
+internal_helpers_coverage_test_() ->
+    {setup,
+     fun setup_internal_helpers/0,
+     fun cleanup_internal_helpers/1,
+     [
+        {"validate_config succeeds with defaults", fun test_validate_config_defaults/0},
+        {"validator functions reject bad values", fun test_validator_error_paths/0},
+        {"ra_data_dir multi-node create success path", fun test_validate_ra_data_dir_create_ok/0},
+        {"ra_data_dir multi-node create error path", fun test_validate_ra_data_dir_error/0},
+        {"connect_to_cluster_nodes uses net_kernel", fun test_connect_to_cluster_nodes/0},
+        {"connect_to_cluster_nodes logs true/false/ignored outcomes",
+         fun test_connect_to_cluster_nodes_outcomes/0},
+        {"maybe_setup_distributed reaches connect_to_cluster_nodes path",
+         fun test_maybe_setup_distributed_connect_path/0},
+        {"wait_for_connections_to_drain recursion path", fun test_wait_for_connections_to_drain/0},
+        {"wait_for_connections_to_drain handles not_found before timeout",
+         fun test_wait_for_connections_to_drain_not_found/0},
+        {"log_startup_complete covers api on/off", fun test_log_startup_complete_paths/0}
+     ]}.
+
+setup_internal_helpers() ->
+    application:ensure_all_started(lager),
+    catch meck:unload(flurm_controller_sup),
+    meck:new(flurm_controller_sup, [non_strict]),
+    meck:expect(flurm_controller_sup, listener_info, fun() -> #{active_connections => 0} end),
+    ok.
+
+cleanup_internal_helpers(_) ->
+    lists:foreach(fun(Key) -> application:unset_env(flurm_controller, Key) end, [
+        listen_port,
+        listen_address,
+        num_acceptors,
+        max_connections,
+        cluster_nodes,
+        ra_data_dir,
+        enable_bridge_api,
+        http_api_port,
+        listen_port,
+        node_listen_port
+    ]),
+    meck:unload(flurm_controller_sup),
+    ok.
+
+test_validate_config_defaults() ->
+    lists:foreach(fun(Key) -> application:unset_env(flurm_controller, Key) end, [
+        listen_port, listen_address, num_acceptors, max_connections,
+        cluster_nodes, ra_data_dir, enable_bridge_api, http_api_port
+    ]),
+    ?assertEqual(ok, flurm_controller_app:validate_config()).
+
+test_validator_error_paths() ->
+    application:set_env(flurm_controller, listen_port, 0),
+    ?assertMatch({error, _}, flurm_controller_app:validate_listen_port()),
+    application:set_env(flurm_controller, listen_address, 123),
+    ?assertMatch({error, _}, flurm_controller_app:validate_listen_address()),
+    application:set_env(flurm_controller, num_acceptors, 0),
+    ?assertMatch({error, _}, flurm_controller_app:validate_num_acceptors()),
+    application:set_env(flurm_controller, max_connections, 1),
+    ?assertMatch({error, _}, flurm_controller_app:validate_max_connections()),
+    application:set_env(flurm_controller, enable_bridge_api, true),
+    application:set_env(flurm_controller, http_api_port, 99999),
+    ?assertMatch({error, _}, flurm_controller_app:validate_http_api_port()).
+
+test_validate_ra_data_dir_error() ->
+    application:set_env(flurm_controller, cluster_nodes, [node(), other@node]),
+    application:set_env(flurm_controller, ra_data_dir, "/dev/null/flurm_bad_ra"),
+    ?assertMatch({error, _}, flurm_controller_app:validate_ra_data_dir()).
+
+test_validate_ra_data_dir_create_ok() ->
+    TmpDir = "/tmp/flurm_controller_ra_cov_" ++ integer_to_list(erlang:unique_integer([positive])),
+    application:set_env(flurm_controller, cluster_nodes, [node(), other@node]),
+    application:set_env(flurm_controller, ra_data_dir, TmpDir),
+    ?assertEqual(ok, flurm_controller_app:validate_ra_data_dir()),
+    ?assert(filelib:is_dir(TmpDir)),
+    _ = os:cmd("rm -rf " ++ TmpDir),
+    ok.
+
+test_connect_to_cluster_nodes() ->
+    %% With only this node in the list there are no outbound connect attempts.
+    ?assertEqual(ok, flurm_controller_app:connect_to_cluster_nodes([node()])).
+
+test_connect_to_cluster_nodes_outcomes() ->
+    catch meck:unload(net_kernel),
+    meck:new(net_kernel, [unstick, non_strict]),
+    meck:expect(net_kernel, connect_node,
+        fun(NodeName) ->
+            case NodeName of
+                'cov_true@host' -> true;
+                'cov_false@host' -> false;
+                'cov_ignored@host' -> ignored;
+                _ -> false
+            end
+        end),
+    Nodes = [node(), 'cov_true@host', 'cov_false@host', 'cov_ignored@host'],
+    ?assertEqual(ok, flurm_controller_app:connect_to_cluster_nodes(Nodes)),
+    meck:unload(net_kernel).
+
+test_maybe_setup_distributed_connect_path() ->
+    StartedDist = ensure_distribution_started(),
+    application:set_env(flurm_controller, cluster_nodes, [node(), 'cov_unreachable@host']),
+    ?assertEqual(ok, flurm_controller_app:maybe_setup_distributed()),
+    maybe_stop_distribution(StartedDist),
+    ok.
+
+test_wait_for_connections_to_drain() ->
+    put(listener_calls, 0),
+    meck:expect(flurm_controller_sup, listener_info,
+        fun() ->
+            Calls = get(listener_calls),
+            put(listener_calls, Calls + 1),
+            case Calls of
+                0 -> #{active_connections => 1};
+                _ -> #{active_connections => 0}
+            end
+        end),
+    Start = erlang:monotonic_time(millisecond),
+    ?assertEqual(ok, flurm_controller_app:wait_for_connections_to_drain(Start, 250)).
+
+test_wait_for_connections_to_drain_not_found() ->
+    meck:expect(flurm_controller_sup, listener_info, fun() -> {error, not_found} end),
+    Start = erlang:monotonic_time(millisecond),
+    ?assertEqual(ok, flurm_controller_app:wait_for_connections_to_drain(Start, 100)),
+    meck:expect(flurm_controller_sup, listener_info, fun() -> #{active_connections => 0} end).
+
+test_log_startup_complete_paths() ->
+    application:set_env(flurm_controller, listen_address, "127.0.0.1"),
+    application:set_env(flurm_controller, listen_port, 6817),
+    application:set_env(flurm_controller, node_listen_port, 6818),
+    application:set_env(flurm_controller, http_api_port, 6820),
+    application:set_env(flurm_controller, enable_bridge_api, false),
+    ?assertEqual(ok, flurm_controller_app:log_startup_complete()),
+    application:set_env(flurm_controller, enable_bridge_api, true),
+    ?assertEqual(ok, flurm_controller_app:log_startup_complete()).
+
+ensure_distribution_started() ->
+    case node() of
+        nonode@nohost ->
+            _ = os:cmd("epmd -daemon"),
+            NodeName = list_to_atom("flurm_cov_" ++ integer_to_list(erlang:unique_integer([positive]))),
+            case net_kernel:start([NodeName, shortnames]) of
+                {ok, _} -> true;
+                {error, {already_started, _}} -> false;
+                {error, _} -> false
+            end;
+        _ ->
+            false
+    end.
+
+maybe_stop_distribution(true) ->
+    catch net_kernel:stop(),
+    ok;
+maybe_stop_distribution(false) ->
+    ok.
 
 %%====================================================================
 %% Stop Callback Tests

@@ -323,3 +323,86 @@ verify_with_correct_secret_test() ->
     {ok, Token} = flurm_jwt:generate(<<"user">>),
     {ok, Claims} = flurm_jwt:verify(Token, Secret),
     ?assertEqual(<<"user">>, maps:get(<<"sub">>, Claims)).
+
+generate_catch_path_test() ->
+    %% Pid is not JSON-encodable by jsx, so generate/2 should hit catch path.
+    Result = flurm_jwt:generate(self()),
+    ?assertMatch({error, {generation_failed, _}}, Result).
+
+verify_unsupported_algorithm_test() ->
+    Secret = flurm_jwt:get_secret(),
+    Header = #{<<"alg">> => <<"none">>, <<"typ">> => <<"JWT">>},
+    Payload = #{
+        <<"sub">> => <<"user">>,
+        <<"iss">> => <<"flurm">>,
+        <<"iat">> => erlang:system_time(second),
+        <<"exp">> => erlang:system_time(second) + 3600
+    },
+    HeaderB64 = flurm_jwt:encode_base64url(jsx:encode(Header)),
+    PayloadB64 = flurm_jwt:encode_base64url(jsx:encode(Payload)),
+    Message = <<HeaderB64/binary, ".", PayloadB64/binary>>,
+    SignatureB64 = flurm_jwt:encode_base64url(flurm_jwt:sign(Message, Secret)),
+    Token = <<Message/binary, ".", SignatureB64/binary>>,
+    ?assertEqual({error, {unsupported_algorithm, <<"none">>}}, flurm_jwt:verify(Token)).
+
+verify_catch_path_test() ->
+    {ok, Token} = flurm_jwt:generate(<<"user">>),
+    %% Non-binary secret forces crypto:mac to error, exercising verify/2 catch path.
+    Result = flurm_jwt:verify(Token, 123),
+    ?assertMatch({error, {verification_failed, _}}, Result).
+
+refresh_expired_token_branch_test() ->
+    PrevExpiry = application:get_env(flurm_controller, jwt_expiry),
+    application:set_env(flurm_controller, jwt_expiry, -1),
+    {ok, ExpiredToken} = flurm_jwt:generate(<<"expired_user">>, #{<<"role">> => <<"ops">>}),
+    application:set_env(flurm_controller, jwt_expiry, 3600),
+    {ok, NewToken} = flurm_jwt:refresh(ExpiredToken),
+    {ok, NewClaims} = flurm_jwt:get_claims(NewToken),
+    ?assertEqual(<<"expired_user">>, maps:get(<<"sub">>, NewClaims)),
+    ?assertEqual(<<"ops">>, maps:get(<<"role">>, NewClaims)),
+    restore_env(flurm_controller, jwt_expiry, PrevExpiry).
+
+refresh_expired_get_claims_error_branch_test() ->
+    PrevExpiry = application:get_env(flurm_controller, jwt_expiry),
+    application:set_env(flurm_controller, jwt_expiry, -1),
+    {ok, ExpiredToken} = flurm_jwt:generate(<<"expired_user_2">>),
+    application:set_env(flurm_controller, jwt_expiry, 3600),
+    catch meck:unload(jsx),
+    meck:new(jsx, [passthrough]),
+    put(jsx_decode_calls, 0),
+    meck:expect(jsx, decode,
+        fun(Data, Opts) ->
+            Calls = get(jsx_decode_calls),
+            put(jsx_decode_calls, Calls + 1),
+            case Calls of
+                0 -> meck:passthrough([Data, Opts]);  % verify/2 header decode
+                1 -> meck:passthrough([Data, Opts]);  % verify/2 payload decode
+                _ -> erlang:error(simulated_decode_failure)  % get_claims/1 decode
+            end
+        end),
+    ?assertEqual({error, invalid_token_format}, flurm_jwt:refresh(ExpiredToken)),
+    meck:unload(jsx),
+    restore_env(flurm_controller, jwt_expiry, PrevExpiry).
+
+build_payload_cluster_name_env_branches_test() ->
+    PrevCluster = application:get_env(flurm_core, cluster_name),
+    application:set_env(flurm_core, cluster_name, <<"cluster-bin">>),
+    Payload1 = flurm_jwt:build_payload(<<"u1">>, #{}),
+    ?assertEqual(<<"cluster-bin">>, maps:get(<<"cluster_id">>, Payload1)),
+    application:set_env(flurm_core, cluster_name, "cluster-list"),
+    Payload2 = flurm_jwt:build_payload(<<"u2">>, #{}),
+    ?assertEqual(<<"cluster-list">>, maps:get(<<"cluster_id">>, Payload2)),
+    restore_env(flurm_core, cluster_name, PrevCluster).
+
+get_secret_env_branches_test() ->
+    PrevSecret = application:get_env(flurm_controller, jwt_secret),
+    application:set_env(flurm_controller, jwt_secret, <<"bin-secret">>),
+    ?assertEqual(<<"bin-secret">>, flurm_jwt:get_secret()),
+    application:set_env(flurm_controller, jwt_secret, "list-secret"),
+    ?assertEqual(<<"list-secret">>, flurm_jwt:get_secret()),
+    restore_env(flurm_controller, jwt_secret, PrevSecret).
+
+restore_env(App, Key, undefined) ->
+    application:unset_env(App, Key);
+restore_env(App, Key, {ok, Value}) ->
+    application:set_env(App, Key, Value).

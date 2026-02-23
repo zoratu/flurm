@@ -18,6 +18,8 @@ partition_manager_test_() ->
      fun cleanup/1,
      fun(_) ->
          [
+             {"start_link returns existing pid when already started",
+              fun test_start_link_already_started/0},
              {"list_partitions returns default partition", fun test_list_partitions_default/0},
              {"get_partition for default", fun test_get_partition_default/0},
              {"get_partition not found", fun test_get_partition_not_found/0},
@@ -50,6 +52,51 @@ setup() ->
 
 cleanup(Pid) ->
     catch gen_server:stop(Pid, shutdown, 2000).
+
+%%====================================================================
+%% start_link Branch Tests
+%%====================================================================
+
+test_start_link_already_started() ->
+    Existing = whereis(flurm_partition_manager),
+    ?assert(is_pid(Existing)),
+    ?assertEqual({ok, Existing}, flurm_partition_manager:start_link()).
+
+%%====================================================================
+%% init/1 Config Branch Tests
+%%====================================================================
+
+init_config_branches_test_() ->
+    {setup,
+     fun() ->
+         application:get_env(flurm_controller, partitions)
+     end,
+     fun(PrevPartitions) ->
+         restore_env(flurm_controller, partitions, PrevPartitions)
+     end,
+     [
+         {"init loads binary/list partition names and ignores invalid entries", fun() ->
+             application:set_env(flurm_controller, partitions, [
+                 {<<"gpu">>, #{max_time => 7200, priority => 200}},
+                 {"debug", #{default_time => 900}},
+                 invalid_entry
+             ]),
+             {ok, State} = flurm_partition_manager:init([]),
+             Partitions = element(2, State),
+             ?assert(maps:is_key(<<"gpu">>, Partitions)),
+             ?assert(maps:is_key(<<"debug">>, Partitions)),
+             ?assert(maps:is_key(<<"default">>, Partitions))
+         end},
+         {"init adds default partition when config omits it", fun() ->
+             application:set_env(flurm_controller, partitions, [
+                 {<<"batch">>, #{max_time => 3600}}
+             ]),
+             {ok, State} = flurm_partition_manager:init([]),
+             Partitions = element(2, State),
+             ?assert(maps:is_key(<<"batch">>, Partitions)),
+             ?assert(maps:is_key(<<"default">>, Partitions))
+         end}
+     ]}.
 
 %%====================================================================
 %% list_partitions Tests
@@ -411,3 +458,8 @@ unknown_info_test_() ->
              ?assert(is_process_alive(Pid))
          end}]
      end}.
+
+restore_env(App, Key, undefined) ->
+    application:unset_env(App, Key);
+restore_env(App, Key, {ok, Value}) ->
+    application:set_env(App, Key, Value).

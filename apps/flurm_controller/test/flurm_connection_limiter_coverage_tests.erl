@@ -24,8 +24,10 @@ connection_limiter_test_() ->
              {"get_connection_count returns count", fun test_get_connection_count/0},
              {"get_all_counts returns list", fun test_get_all_counts/0},
              {"get_stats returns map", fun test_get_stats/0},
+             {"get_stats handles empty table", fun test_get_stats_empty_table/0},
              {"connection limit is enforced", fun test_connection_limit_enforced/0},
-             {"cleanup removes zero entries", fun test_cleanup/0}
+             {"cleanup removes zero entries", fun test_cleanup/0},
+             {"terminate handles undefined timer", fun test_terminate_with_undefined_timer/0}
          ]
      end}.
 
@@ -82,6 +84,32 @@ test_connection_opened() ->
     %% Open another
     ok = flurm_connection_limiter:connection_opened(IP),
     ?assertEqual(2, flurm_connection_limiter:get_connection_count(IP)).
+
+test_connection_opened_without_table() ->
+    IP = {10, 0, 0, 9},
+    %% Exercise startup race path where ETS table does not exist yet.
+    catch ets:delete(flurm_conn_limits),
+    ?assertEqual(ok, flurm_connection_limiter:connection_opened(IP)).
+
+connection_opened_without_table_test_() ->
+    {setup,
+     fun() ->
+         case whereis(flurm_connection_limiter) of
+             undefined -> ok;
+             Pid ->
+                 catch unlink(Pid),
+                 catch gen_server:stop(Pid, shutdown, 2000)
+         end,
+         catch ets:delete(flurm_conn_limits),
+         ok
+     end,
+     fun(_) ->
+         ok
+     end,
+     [
+         {"connection_opened handles missing ETS table",
+          fun test_connection_opened_without_table/0}
+     ]}.
 
 %%====================================================================
 %% connection_closed Tests
@@ -165,6 +193,13 @@ test_get_stats() ->
     ?assert(MaxPerPeer >= 0),
     ?assert(LimitPerPeer > 0).
 
+test_get_stats_empty_table() ->
+    ets:delete_all_objects(flurm_conn_limits),
+    Stats = flurm_connection_limiter:get_stats(),
+    ?assertEqual(0, maps:get(total_peers, Stats)),
+    ?assertEqual(0, maps:get(total_connections, Stats)),
+    ?assertEqual(0, maps:get(max_per_peer, Stats)).
+
 %%====================================================================
 %% Connection Limit Tests
 %%====================================================================
@@ -208,6 +243,10 @@ test_cleanup() ->
 
     %% The entry should be removed (count is 0)
     ?assertEqual(0, flurm_connection_limiter:get_connection_count(IP)).
+
+test_terminate_with_undefined_timer() ->
+    %% Record tuple layout: {state, CleanupTimer, MaxPerPeer}
+    ?assertEqual(ok, flurm_connection_limiter:terminate(normal, {state, undefined, 100})).
 
 %%====================================================================
 %% gen_server Callback Tests

@@ -36,7 +36,19 @@
 -ifdef(TEST).
 -export([get_config/2,
          count_jobs_by_state/2,
-         count_nodes_by_state/2]).
+         count_nodes_by_state/2,
+         validate_config/0,
+         validate_listen_port/0,
+         validate_listen_address/0,
+         validate_num_acceptors/0,
+         validate_max_connections/0,
+         validate_ra_data_dir/0,
+         validate_http_api_port/0,
+         maybe_setup_distributed/0,
+         connect_to_cluster_nodes/1,
+         wait_for_connections_to_drain/1,
+         wait_for_connections_to_drain/2,
+         log_startup_complete/0]).
 -endif.
 
 %%====================================================================
