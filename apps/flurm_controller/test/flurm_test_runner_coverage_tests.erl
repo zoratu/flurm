@@ -58,6 +58,91 @@ run_no_nodes_test_() ->
          ]
      end}.
 
+%% Deterministic branch tests using mocked dependencies.
+runner_branches_with_mocks_test_() ->
+    {setup,
+     fun setup_runner_mecks/0,
+     fun cleanup_runner_mecks/1,
+     [
+         {"run/0 calls run_job_impl path when nodes are connected",
+          fun test_run_with_connected_nodes/0},
+         {"run_job_impl/0 handles submit error path",
+          fun test_run_job_impl_submit_error/0},
+         {"run_job_impl/0 success path reaches monitor_job and completes",
+          fun test_run_job_impl_completed/0},
+         {"monitor_job/2 returns failed state error",
+          fun test_monitor_job_failed/0},
+         {"monitor_job/2 retries and then completes",
+          fun test_monitor_job_retries_then_completes/0}
+     ]}.
+
+setup_runner_mecks() ->
+    catch meck:unload(flurm_node_connection_manager),
+    catch meck:unload(flurm_job_manager),
+    meck:new(flurm_node_connection_manager, [non_strict]),
+    meck:new(flurm_job_manager, [non_strict]),
+    ok.
+
+cleanup_runner_mecks(_) ->
+    meck:unload(flurm_node_connection_manager),
+    meck:unload(flurm_job_manager),
+    erase(test_runner_get_job_calls),
+    ok.
+
+test_run_with_connected_nodes() ->
+    meck:expect(flurm_node_connection_manager, list_connected_nodes, fun() -> [<<"node1">>] end),
+    meck:expect(flurm_job_manager, submit_job, fun(_) -> {error, simulated_submit_failure} end),
+    ?assertEqual({error, simulated_submit_failure}, flurm_test_runner:run()).
+
+test_run_job_impl_submit_error() ->
+    meck:expect(flurm_job_manager, submit_job, fun(_) -> {error, submit_failed} end),
+    ?assertEqual({error, submit_failed}, flurm_test_runner:run_job_impl()).
+
+test_run_job_impl_completed() ->
+    meck:expect(flurm_job_manager, submit_job, fun(_) -> {ok, 42} end),
+    meck:expect(flurm_job_manager, get_job, fun(42) -> {ok, mk_job(42, completed, 0)} end),
+    ?assertEqual(ok, flurm_test_runner:run_job_impl()).
+
+test_monitor_job_failed() ->
+    meck:expect(flurm_job_manager, get_job, fun(99) -> {ok, mk_job(99, failed, 1)} end),
+    ?assertEqual({error, job_failed}, flurm_test_runner:monitor_job(99, 1)).
+
+test_monitor_job_retries_then_completes() ->
+    put(test_runner_get_job_calls, 0),
+    meck:expect(flurm_job_manager, get_job,
+        fun(77) ->
+            Calls = get(test_runner_get_job_calls),
+            put(test_runner_get_job_calls, Calls + 1),
+            case Calls of
+                0 -> {ok, mk_job(77, running, undefined)};
+                _ -> {ok, mk_job(77, completed, 0)}
+            end
+        end),
+    ?assertEqual(ok, flurm_test_runner:monitor_job(77, 2)).
+
+mk_job(Id, State, ExitCode) ->
+    #job{
+        id = Id,
+        name = <<"test_job">>,
+        user = <<"test">>,
+        partition = <<"default">>,
+        state = State,
+        script = <<"#!/bin/bash\necho test">>,
+        num_nodes = 1,
+        num_cpus = 1,
+        memory_mb = 512,
+        time_limit = 60,
+        priority = 100,
+        submit_time = erlang:system_time(second),
+        start_time = undefined,
+        end_time = undefined,
+        allocated_nodes = [<<"node1">>],
+        exit_code = ExitCode,
+        account = <<"default">>,
+        qos = <<"normal">>,
+        licenses = []
+    }.
+
 %%====================================================================
 %% monitor_job Tests (via -ifdef(TEST) export)
 %%====================================================================

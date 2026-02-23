@@ -182,6 +182,13 @@ format_licenses_test_() ->
         {"empty list", fun() ->
             ?assertEqual(<<>>, flurm_controller_handler:format_licenses([]))
         end},
+        {"empty binary passthrough", fun() ->
+            ?assertEqual(<<>>, flurm_controller_handler:format_licenses(<<>>))
+        end},
+        {"binary passthrough", fun() ->
+            ?assertEqual(<<"matlab:2,ansys:1">>,
+                         flurm_controller_handler:format_licenses(<<"matlab:2,ansys:1">>))
+        end},
         {"single license", fun() ->
             ?assertEqual(<<"matlab:1">>,
                         flurm_controller_handler:format_licenses([{<<"matlab">>, 1}]))
@@ -598,6 +605,148 @@ extract_reservation_fields_test_() ->
             ?assertEqual(active, State)
         end}
     ].
+
+%%====================================================================
+%% handle/2 dispatch coverage tests
+%%====================================================================
+
+handle_dispatch_test_() ->
+    {setup,
+     fun setup_handle_dispatch/0,
+     fun cleanup_handle_dispatch/1,
+     [
+        {"dispatches admin message types", fun test_handle_dispatch_admin/0},
+        {"dispatches job message types", fun test_handle_dispatch_job/0},
+        {"dispatches node message types", fun test_handle_dispatch_node/0},
+        {"dispatches step message types", fun test_handle_dispatch_step/0},
+        {"dispatches query message types", fun test_handle_dispatch_query/0},
+        {"handles unknown message type", fun test_handle_dispatch_unknown/0}
+     ]}.
+
+setup_handle_dispatch() ->
+    catch meck:unload(flurm_handler_admin),
+    catch meck:unload(flurm_handler_job),
+    catch meck:unload(flurm_handler_node),
+    catch meck:unload(flurm_handler_step),
+    catch meck:unload(flurm_handler_query),
+    catch meck:unload(flurm_protocol_codec),
+    meck:new(flurm_handler_admin, [non_strict]),
+    meck:new(flurm_handler_job, [non_strict]),
+    meck:new(flurm_handler_node, [non_strict]),
+    meck:new(flurm_handler_step, [non_strict]),
+    meck:new(flurm_handler_query, [non_strict]),
+    meck:new(flurm_protocol_codec, [non_strict]),
+    meck:expect(flurm_handler_admin, handle,
+        fun(#slurm_header{msg_type = Msg}, Body) -> {ok, 9100, {admin, Msg, Body}} end),
+    meck:expect(flurm_handler_job, handle,
+        fun(#slurm_header{msg_type = Msg}, Body) -> {ok, 9200, {job, Msg, Body}} end),
+    meck:expect(flurm_handler_node, handle,
+        fun(#slurm_header{msg_type = Msg}, Body) -> {ok, 9300, {node, Msg, Body}} end),
+    meck:expect(flurm_handler_step, handle,
+        fun(#slurm_header{msg_type = Msg}, Body) -> {ok, 9400, {step, Msg, Body}} end),
+    meck:expect(flurm_handler_query, handle,
+        fun(#slurm_header{msg_type = Msg}, Body) -> {ok, 9500, {query, Msg, Body}} end),
+    meck:expect(flurm_protocol_codec, message_type_name,
+        fun(MsgType) -> {unknown_type, MsgType} end),
+    ok.
+
+cleanup_handle_dispatch(_) ->
+    meck:unload(flurm_handler_admin),
+    meck:unload(flurm_handler_job),
+    meck:unload(flurm_handler_node),
+    meck:unload(flurm_handler_step),
+    meck:unload(flurm_handler_query),
+    meck:unload(flurm_protocol_codec),
+    ok.
+
+test_handle_dispatch_admin() ->
+    Msgs = [
+        ?REQUEST_PING,
+        ?REQUEST_SHUTDOWN,
+        ?REQUEST_RESERVATION_INFO,
+        ?REQUEST_CREATE_RESERVATION,
+        ?REQUEST_UPDATE_RESERVATION,
+        ?REQUEST_DELETE_RESERVATION,
+        ?REQUEST_LICENSE_INFO,
+        ?REQUEST_TOPO_INFO,
+        ?REQUEST_FRONT_END_INFO,
+        ?REQUEST_BURST_BUFFER_INFO
+    ],
+    lists:foreach(fun(Msg) ->
+        Header = #slurm_header{msg_type = Msg},
+        ?assertEqual({ok, 9100, {admin, Msg, <<"payload">>}},
+            flurm_controller_handler:handle(Header, <<"payload">>))
+    end, Msgs).
+
+test_handle_dispatch_job() ->
+    Msgs = [
+        ?REQUEST_SUBMIT_BATCH_JOB,
+        ?REQUEST_RESOURCE_ALLOCATION,
+        ?REQUEST_JOB_ALLOCATION_INFO,
+        ?REQUEST_JOB_READY,
+        ?REQUEST_KILL_TIMELIMIT,
+        ?REQUEST_KILL_JOB,
+        ?REQUEST_CANCEL_JOB,
+        ?REQUEST_SUSPEND,
+        ?REQUEST_SIGNAL_JOB,
+        ?REQUEST_UPDATE_JOB,
+        ?REQUEST_JOB_WILL_RUN
+    ],
+    lists:foreach(fun(Msg) ->
+        Header = #slurm_header{msg_type = Msg},
+        ?assertEqual({ok, 9200, {job, Msg, <<"payload">>}},
+            flurm_controller_handler:handle(Header, <<"payload">>))
+    end, Msgs).
+
+test_handle_dispatch_node() ->
+    Msgs = [
+        ?REQUEST_NODE_INFO,
+        ?REQUEST_NODE_REGISTRATION_STATUS,
+        ?REQUEST_RECONFIGURE,
+        ?REQUEST_RECONFIGURE_WITH_CONFIG
+    ],
+    lists:foreach(fun(Msg) ->
+        Header = #slurm_header{msg_type = Msg},
+        ?assertEqual({ok, 9300, {node, Msg, <<"payload">>}},
+            flurm_controller_handler:handle(Header, <<"payload">>))
+    end, Msgs).
+
+test_handle_dispatch_step() ->
+    Msgs = [
+        ?REQUEST_JOB_STEP_CREATE,
+        ?REQUEST_JOB_STEP_INFO,
+        ?REQUEST_COMPLETE_PROLOG,
+        ?MESSAGE_EPILOG_COMPLETE,
+        ?MESSAGE_TASK_EXIT
+    ],
+    lists:foreach(fun(Msg) ->
+        Header = #slurm_header{msg_type = Msg},
+        ?assertEqual({ok, 9400, {step, Msg, <<"payload">>}},
+            flurm_controller_handler:handle(Header, <<"payload">>))
+    end, Msgs).
+
+test_handle_dispatch_query() ->
+    Msgs = [
+        ?REQUEST_JOB_INFO,
+        ?REQUEST_JOB_INFO_SINGLE,
+        ?REQUEST_JOB_USER_INFO,
+        ?REQUEST_PARTITION_INFO,
+        ?REQUEST_BUILD_INFO,
+        ?REQUEST_CONFIG_INFO,
+        ?REQUEST_STATS_INFO,
+        ?REQUEST_FED_INFO,
+        ?REQUEST_UPDATE_FEDERATION
+    ],
+    lists:foreach(fun(Msg) ->
+        Header = #slurm_header{msg_type = Msg},
+        ?assertEqual({ok, 9500, {query, Msg, <<"payload">>}},
+            flurm_controller_handler:handle(Header, <<"payload">>))
+    end, Msgs).
+
+test_handle_dispatch_unknown() ->
+    Header = #slurm_header{msg_type = 99999},
+    Result = flurm_controller_handler:handle(Header, <<"unknown">>),
+    ?assertMatch({ok, ?RESPONSE_SLURM_RC, #slurm_rc_response{return_code = -1}}, Result).
 
 %%====================================================================
 %% execute_job_update tests
