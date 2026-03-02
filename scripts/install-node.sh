@@ -153,14 +153,14 @@ generate_config() {
     mkdir -p "$INSTALL_DIR/data"
     mkdir -p "$INSTALL_DIR/log"
 
-    # Convert comma-separated controllers to Erlang list format
-    CONTROLLER_LIST=$(echo "$CONTROLLERS" | sed 's/,/", "/g')
+    # Get the first controller from comma-separated list
+    CONTROLLER_HOST=$(echo "$CONTROLLERS" | cut -d',' -f1)
 
     # Generate sys.config
     cat > "$INSTALL_DIR/config/sys.config" << EOF
 [
     {flurm_node_daemon, [
-        {controller_hosts, ["$CONTROLLER_LIST"]},
+        {controller_host, "$CONTROLLER_HOST"},
         {controller_port, $PORT},
         {heartbeat_interval, 30000},
         {state_file, "$INSTALL_DIR/data/node_state.dat"}
