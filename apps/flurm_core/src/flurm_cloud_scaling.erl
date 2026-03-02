@@ -296,11 +296,14 @@ init([]) ->
         monthly_costs = #{}
     },
 
-    State = #state{
+    %% Check for app config and auto-configure
+    {Enabled, Provider, ProviderConfig, Policy} = load_app_config(DefaultPolicy),
+
+    State0 = #state{
         enabled = false,
         provider = undefined,
         provider_config = #{},
-        policy = DefaultPolicy,
+        policy = Policy,
         current_cloud_nodes = 0,
         pending_actions = [],
         action_history = [],
@@ -311,7 +314,71 @@ init([]) ->
         cost_tracking = DefaultCostTracking
     },
 
+    %% Auto-configure if settings found
+    State = case Provider of
+        undefined ->
+            lager:info("Cloud scaling: no provider configured"),
+            State0;
+        _ ->
+            lager:info("Cloud scaling: auto-configuring ~p provider", [Provider]),
+            case validate_provider_config(Provider, ProviderConfig) of
+                ok ->
+                    State1 = State0#state{
+                        provider = Provider,
+                        provider_config = ProviderConfig
+                    },
+                    case Enabled of
+                        true ->
+                            lager:info("Cloud scaling: enabling with ~p provider", [Provider]),
+                            Timer = erlang:send_after(?SCALE_CHECK_INTERVAL, self(), check_scaling),
+                            IdleTimer = erlang:send_after(?IDLE_CHECK_INTERVAL, self(), check_idle_nodes),
+                            State1#state{enabled = true, check_timer = Timer, idle_check_timer = IdleTimer};
+                        false ->
+                            State1
+                    end;
+                {error, Reason} ->
+                    lager:error("Cloud scaling: invalid config - ~p", [Reason]),
+                    State0
+            end
+    end,
+
     {ok, State}.
+
+%% Load configuration from application environment
+%% Config is in sys.config under flurm_controller with cloud_scaling_* keys
+load_app_config(DefaultPolicy) ->
+    %% Read from flurm_controller app env
+    Enabled = case application:get_env(flurm_controller, cloud_scaling_enabled) of
+        {ok, E} -> E;
+        undefined -> false
+    end,
+    Provider = case application:get_env(flurm_controller, cloud_scaling_provider) of
+        {ok, P} -> P;
+        undefined -> undefined
+    end,
+    ProviderConfig = case application:get_env(flurm_controller, cloud_scaling_config) of
+        {ok, PC} -> PC;
+        undefined -> #{}
+    end,
+    PolicyConfig = case application:get_env(flurm_controller, cloud_scaling_policy) of
+        {ok, SP} -> SP;
+        undefined -> #{}
+    end,
+    Policy = maps:fold(fun(K, V, Acc) ->
+        case K of
+            min_nodes -> Acc#scaling_policy{min_nodes = V};
+            max_nodes -> Acc#scaling_policy{max_nodes = V};
+            target_pending_jobs -> Acc#scaling_policy{target_pending_jobs = V};
+            target_idle_nodes -> Acc#scaling_policy{target_idle_nodes = V};
+            scale_up_increment -> Acc#scaling_policy{scale_up_increment = V};
+            scale_down_increment -> Acc#scaling_policy{scale_down_increment = V};
+            cooldown_seconds -> Acc#scaling_policy{cooldown_seconds = V};
+            spot_enabled -> Acc#scaling_policy{spot_enabled = V};
+            idle_threshold_seconds -> Acc#scaling_policy{idle_threshold_seconds = V};
+            _ -> Acc
+        end
+    end, DefaultPolicy, PolicyConfig),
+    {Enabled, Provider, ProviderConfig, Policy}.
 
 handle_call({configure_provider, Provider, Config}, _From, State) ->
     case validate_provider_config(Provider, Config) of
@@ -709,20 +776,30 @@ execute_scale_down(generic, Config, Count, Options) ->
     execute_generic_scale_down(Config, Count, Options).
 
 %% AWS implementation
-execute_aws_scale_up(Config, Count, _Options) ->
-    %% In production, this would use AWS SDK
-    %% For now, return mock success
-    _Region = maps:get(region, Config),
-    _AsgName = maps:get(asg_name, Config, <<"flurm-compute">>),
+execute_aws_scale_up(Config, Count, Options) ->
+    %% Use the EC2 RunInstances API for spot instances
+    InstanceType = maps:get(instance_type, Options, <<"c5.xlarge">>),
+    UseSpot = maps:get(spot, Options, true),
 
-    %% Would call: aws autoscaling set-desired-capacity
-    InstanceIds = [generate_instance_id(aws) || _ <- lists:seq(1, Count)],
-    {ok, #{instance_ids => InstanceIds, count => Count}}.
+    %% Pass user_data from Config into Options for the API call
+    UserData = maps:get(user_data, Config, <<>>),
+    RunOptions = Options#{user_data => UserData},
 
-execute_aws_scale_down(Config, Count, _Options) ->
-    _Region = maps:get(region, Config),
-    %% Would call: aws autoscaling terminate-instance-in-auto-scaling-group
-    {ok, #{terminated_count => Count}}.
+    lager:info("AWS scale_up: Count=~p, InstanceType=~p, UseSpot=~p", [Count, InstanceType, UseSpot]),
+    case aws_ec2_run_instances(Config, Count, InstanceType, UseSpot, RunOptions) of
+        {ok, InstanceIds} ->
+            lager:info("AWS scale_up succeeded: ~p", [InstanceIds]),
+            {ok, #{instance_ids => InstanceIds, count => length(InstanceIds)}};
+        {error, Reason} ->
+            lager:error("AWS scale_up failed: ~p", [Reason]),
+            {error, Reason}
+    end.
+
+execute_aws_scale_down(_Config, _Count, _Options) ->
+    %% Scale down is handled via terminate_nodes with specific instance IDs
+    %% This function is for scaling down by count without specific targets
+    %% For now, return empty - the actual termination happens via terminate_nodes
+    {ok, #{terminated_count => 0}}.
 
 %% GCP implementation
 execute_gcp_scale_up(Config, Count, _Options) ->
@@ -1306,9 +1383,12 @@ format_canonical_headers(Headers) ->
     Sorted = lists:sort(fun({A, _}, {B, _}) -> A =< B end, Headers),
     iolist_to_binary([[K, <<":">>, V, <<"\n">>] || {K, V} <- Sorted]).
 
-%% @private Convert binary to hex string
+%% @private Convert binary to hex string (lowercase for AWS SigV4)
 binary_to_hex(Bin) ->
-    << <<(integer_to_binary(B, 16))/binary>> || <<B:4>> <= Bin >>.
+    << <<(hex_char(B))>> || <<B:4>> <= Bin >>.
+
+hex_char(N) when N < 10 -> $0 + N;
+hex_char(N) -> $a + N - 10.
 
 %% @private Parse EC2 RunInstances response
 parse_ec2_run_instances_response(Body) ->
