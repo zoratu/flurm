@@ -190,6 +190,10 @@ EOF
 +K true
 +A 64
 EOF
+
+    # Copy configs to release directory (release uses these)
+    cp "$INSTALL_DIR/config/sys.config" "$INSTALL_DIR/releases/1.0.0/sys.config"
+    cp "$INSTALL_DIR/config/vm.args" "$INSTALL_DIR/releases/1.0.0/vm.args"
 }
 
 # Create systemd service
