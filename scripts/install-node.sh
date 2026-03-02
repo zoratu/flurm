@@ -134,8 +134,8 @@ build_flurm() {
     git clone --depth 1 --branch "$FLURM_BRANCH" "$FLURM_REPO" "$TEMP_DIR/flurm"
     cd "$TEMP_DIR/flurm"
 
-    # Build release
-    rebar3 as prod release
+    # Build release (specify flurmctld as there are multiple releases)
+    rebar3 as prod release -n flurmctld
 
     # Install
     mkdir -p "$INSTALL_DIR"
