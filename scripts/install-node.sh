@@ -119,8 +119,15 @@ install_erlang() {
 install_rebar3() {
     echo "=== Installing rebar3 ==="
     if ! command -v rebar3 &> /dev/null; then
-        curl -fsSL https://s3.amazonaws.com/rebar3/rebar3 -o /usr/local/bin/rebar3
+        # Build rebar3 from source to ensure compatibility with installed Erlang version
+        REBAR_TEMP=$(mktemp -d)
+        git clone --depth 1 https://github.com/erlang/rebar3.git "$REBAR_TEMP/rebar3"
+        cd "$REBAR_TEMP/rebar3"
+        ./bootstrap
+        cp rebar3 /usr/local/bin/rebar3
         chmod +x /usr/local/bin/rebar3
+        cd /
+        rm -rf "$REBAR_TEMP"
     fi
 }
 
