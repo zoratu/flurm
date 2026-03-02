@@ -196,18 +196,31 @@ EOF
 create_systemd_service() {
     echo "=== Creating systemd service ==="
 
+    # Create a start script that launches only the node daemon
+    cat > "$INSTALL_DIR/bin/start-node-daemon.sh" << 'SCRIPT'
+#!/bin/bash
+cd "$FLURM_DIR"
+exec erl -pa lib/*/ebin \
+    -config config/sys.config \
+    -args_file config/vm.args \
+    -eval 'application:ensure_all_started(flurm_node_daemon).' \
+    -noshell
+SCRIPT
+    chmod +x "$INSTALL_DIR/bin/start-node-daemon.sh"
+
     cat > /etc/systemd/system/flurm-node.service << EOF
 [Unit]
 Description=FLURM Node Daemon
-After=network.target
+After=network.target tailscaled.service
+Wants=tailscaled.service
 
 [Service]
 Type=simple
 User=root
 WorkingDirectory=$INSTALL_DIR
-Environment=HOME=$INSTALL_DIR
-ExecStart=$INSTALL_DIR/bin/flurmctld foreground
-ExecStop=$INSTALL_DIR/bin/flurmctld stop
+Environment=HOME=/root
+Environment=FLURM_DIR=$INSTALL_DIR
+ExecStart=$INSTALL_DIR/bin/start-node-daemon.sh
 Restart=on-failure
 RestartSec=5
 
