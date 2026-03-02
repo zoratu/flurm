@@ -392,6 +392,15 @@ init([]) ->
             shutdown => 5000,
             type => worker,
             modules => [flurm_srun_callback]
+        },
+        %% Cloud Scaling - manages EC2 spot instance scaling
+        #{
+            id => flurm_cloud_scaling,
+            start => {flurm_cloud_scaling, start_link, []},
+            restart => permanent,
+            shutdown => 5000,
+            type => worker,
+            modules => [flurm_cloud_scaling]
         }
     ],
 
