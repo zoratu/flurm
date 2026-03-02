@@ -134,12 +134,12 @@ build_flurm() {
     git clone --depth 1 --branch "$FLURM_BRANCH" "$FLURM_REPO" "$TEMP_DIR/flurm"
     cd "$TEMP_DIR/flurm"
 
-    # Build release (specify flurmctld as there are multiple releases)
-    rebar3 as prod release -n flurmctld
+    # Build node daemon release (flurmnd includes flurm_node_daemon)
+    rebar3 as prod release -n flurmnd
 
     # Install
     mkdir -p "$INSTALL_DIR"
-    cp -R _build/prod/rel/flurmctld/* "$INSTALL_DIR/"
+    cp -R _build/prod/rel/flurmnd/* "$INSTALL_DIR/"
 
     # Cleanup
     rm -rf "$TEMP_DIR"
@@ -196,18 +196,6 @@ EOF
 create_systemd_service() {
     echo "=== Creating systemd service ==="
 
-    # Create a start script that launches only the node daemon
-    cat > "$INSTALL_DIR/bin/start-node-daemon.sh" << 'SCRIPT'
-#!/bin/bash
-cd "$FLURM_DIR"
-exec erl -pa lib/*/ebin \
-    -config config/sys.config \
-    -args_file config/vm.args \
-    -eval 'application:ensure_all_started(flurm_node_daemon).' \
-    -noshell
-SCRIPT
-    chmod +x "$INSTALL_DIR/bin/start-node-daemon.sh"
-
     cat > /etc/systemd/system/flurm-node.service << EOF
 [Unit]
 Description=FLURM Node Daemon
@@ -219,8 +207,7 @@ Type=simple
 User=root
 WorkingDirectory=$INSTALL_DIR
 Environment=HOME=/root
-Environment=FLURM_DIR=$INSTALL_DIR
-ExecStart=$INSTALL_DIR/bin/start-node-daemon.sh
+ExecStart=$INSTALL_DIR/bin/flurmnd foreground
 Restart=on-failure
 RestartSec=5
 
