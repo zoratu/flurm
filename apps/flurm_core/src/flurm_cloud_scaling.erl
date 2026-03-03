@@ -864,13 +864,244 @@ get_region_config(Region, Config) ->
             AmiMap = maps:get(ami_map, Config, #{}),
             case maps:get(Region, AmiMap, undefined) of
                 undefined ->
-                    lager:warning("No config for region ~s, using defaults", [Region]),
-                    #{};
+                    %% Auto-discover region config
+                    lager:info("Auto-discovering config for region ~s", [Region]),
+                    auto_discover_region_config(Region, Config);
                 AmiId ->
                     #{ami_id => AmiId}
             end;
         RegionCfg when is_map(RegionCfg) ->
             RegionCfg
+    end.
+
+%% @private Auto-discover VPC, subnet, security group, and AMI for a region
+auto_discover_region_config(Region, Config) ->
+    AccessKey = maps:get(access_key_id, Config),
+    SecretKey = maps:get(secret_access_key, Config),
+    KeyName = maps:get(key_name, Config, undefined),
+
+    %% Discover in parallel for speed
+    Self = self(),
+    Ref = make_ref(),
+
+    %% Find default VPC and subnet
+    spawn_link(fun() ->
+        VpcResult = discover_default_vpc(Region, AccessKey, SecretKey),
+        Self ! {Ref, vpc, VpcResult}
+    end),
+
+    %% Find Ubuntu ARM64 AMI (Graviton)
+    spawn_link(fun() ->
+        AmiResult = discover_ubuntu_ami(Region, AccessKey, SecretKey, arm64),
+        Self ! {Ref, ami, AmiResult}
+    end),
+
+    %% Collect results and build config
+    build_discovered_config(Ref, KeyName, Region).
+
+%% @private Build config from discovered results
+build_discovered_config(Ref, KeyName, Region) ->
+    VpcInfo = receive {Ref, vpc, V} -> V after 30000 -> {error, timeout} end,
+    AmiInfo = receive {Ref, ami, A} -> A after 30000 -> {error, timeout} end,
+
+    Config0 = add_ami_to_config(AmiInfo, #{}, Region),
+    Config1 = add_vpc_to_config(VpcInfo, Config0, Region),
+    Config2 = add_key_to_config(KeyName, Config1),
+
+    lager:info("Auto-discovered config for ~s: ~p", [Region, Config2]),
+    Config2.
+
+add_ami_to_config({ok, AmiId}, Config, _Region) ->
+    Config#{ami_id => AmiId};
+add_ami_to_config(_, Config, Region) ->
+    lager:warning("Could not find Ubuntu AMI for ~s", [Region]),
+    Config.
+
+add_vpc_to_config({ok, #{subnet_id := SubnetId, security_group_id := SgId}}, Config, _Region) ->
+    Config#{subnet_id => SubnetId, security_groups => [SgId]};
+add_vpc_to_config({ok, #{subnet_id := SubnetId}}, Config, _Region) ->
+    Config#{subnet_id => SubnetId};
+add_vpc_to_config(_, Config, Region) ->
+    lager:warning("Could not find VPC/subnet for ~s, using defaults", [Region]),
+    Config.
+
+add_key_to_config(undefined, Config) -> Config;
+add_key_to_config(KeyName, Config) -> Config#{key_name => KeyName}.
+
+%% @private Discover default VPC and a subnet
+discover_default_vpc(Region, AccessKey, SecretKey) ->
+    %% First, find the default VPC
+    VpcParams = [
+        {<<"Action">>, <<"DescribeVpcs">>},
+        {<<"Version">>, <<"2016-11-15">>},
+        {<<"Filter.1.Name">>, <<"is-default">>},
+        {<<"Filter.1.Value.1">>, <<"true">>}
+    ],
+
+    Endpoint = iolist_to_binary([<<"https://ec2.">>, Region, <<".amazonaws.com/">>]),
+
+    case aws_signed_request(Endpoint, VpcParams, AccessKey, SecretKey, Region, <<"ec2">>) of
+        {ok, VpcBody} ->
+            case extract_xml_value(VpcBody, <<"vpcId">>) of
+                {ok, VpcId} ->
+                    %% Now find a subnet in this VPC
+                    find_subnet_and_sg(Region, VpcId, AccessKey, SecretKey);
+                _ ->
+                    {error, no_default_vpc}
+            end;
+        {error, Reason} ->
+            {error, Reason}
+    end.
+
+%% @private Find subnet and ensure security group exists
+find_subnet_and_sg(Region, VpcId, AccessKey, SecretKey) ->
+    Endpoint = iolist_to_binary([<<"https://ec2.">>, Region, <<".amazonaws.com/">>]),
+
+    %% Find subnets in this VPC
+    SubnetParams = [
+        {<<"Action">>, <<"DescribeSubnets">>},
+        {<<"Version">>, <<"2016-11-15">>},
+        {<<"Filter.1.Name">>, <<"vpc-id">>},
+        {<<"Filter.1.Value.1">>, VpcId}
+    ],
+
+    case aws_signed_request(Endpoint, SubnetParams, AccessKey, SecretKey, Region, <<"ec2">>) of
+        {ok, SubnetBody} ->
+            case extract_xml_value(SubnetBody, <<"subnetId">>) of
+                {ok, SubnetId} ->
+                    %% Find or create security group
+                    case find_or_create_security_group(Region, VpcId, AccessKey, SecretKey) of
+                        {ok, SgId} ->
+                            {ok, #{subnet_id => SubnetId, security_group_id => SgId, vpc_id => VpcId}};
+                        _ ->
+                            {ok, #{subnet_id => SubnetId, vpc_id => VpcId}}
+                    end;
+                _ ->
+                    {error, no_subnets}
+            end;
+        {error, Reason} ->
+            {error, Reason}
+    end.
+
+%% @private Find or create a security group for FLURM nodes
+find_or_create_security_group(Region, VpcId, AccessKey, SecretKey) ->
+    Endpoint = iolist_to_binary([<<"https://ec2.">>, Region, <<".amazonaws.com/">>]),
+
+    %% Look for existing flurm-node security group
+    DescribeParams = [
+        {<<"Action">>, <<"DescribeSecurityGroups">>},
+        {<<"Version">>, <<"2016-11-15">>},
+        {<<"Filter.1.Name">>, <<"vpc-id">>},
+        {<<"Filter.1.Value.1">>, VpcId},
+        {<<"Filter.2.Name">>, <<"group-name">>},
+        {<<"Filter.2.Value.1">>, <<"flurm-node">>}
+    ],
+
+    case aws_signed_request(Endpoint, DescribeParams, AccessKey, SecretKey, Region, <<"ec2">>) of
+        {ok, Body} ->
+            case extract_xml_value(Body, <<"groupId">>) of
+                {ok, SgId} ->
+                    {ok, SgId};
+                _ ->
+                    %% Create the security group
+                    create_flurm_security_group(Region, VpcId, AccessKey, SecretKey)
+            end;
+        {error, Reason} ->
+            {error, Reason}
+    end.
+
+%% @private Create a security group for FLURM nodes
+create_flurm_security_group(Region, VpcId, AccessKey, SecretKey) ->
+    Endpoint = iolist_to_binary([<<"https://ec2.">>, Region, <<".amazonaws.com/">>]),
+
+    CreateParams = [
+        {<<"Action">>, <<"CreateSecurityGroup">>},
+        {<<"Version">>, <<"2016-11-15">>},
+        {<<"GroupName">>, <<"flurm-node">>},
+        {<<"GroupDescription">>, <<"FLURM compute node security group">>},
+        {<<"VpcId">>, VpcId}
+    ],
+
+    case aws_signed_request(Endpoint, CreateParams, AccessKey, SecretKey, Region, <<"ec2">>) of
+        {ok, Body} ->
+            case extract_xml_value(Body, <<"groupId">>) of
+                {ok, SgId} ->
+                    %% Add SSH ingress rule
+                    add_ssh_ingress_rule(Region, SgId, AccessKey, SecretKey),
+                    {ok, SgId};
+                _ ->
+                    {error, sg_create_failed}
+            end;
+        {error, Reason} ->
+            {error, Reason}
+    end.
+
+%% @private Add SSH ingress rule to security group
+add_ssh_ingress_rule(Region, SgId, AccessKey, SecretKey) ->
+    Endpoint = iolist_to_binary([<<"https://ec2.">>, Region, <<".amazonaws.com/">>]),
+
+    IngressParams = [
+        {<<"Action">>, <<"AuthorizeSecurityGroupIngress">>},
+        {<<"Version">>, <<"2016-11-15">>},
+        {<<"GroupId">>, SgId},
+        {<<"IpPermissions.1.IpProtocol">>, <<"tcp">>},
+        {<<"IpPermissions.1.FromPort">>, <<"22">>},
+        {<<"IpPermissions.1.ToPort">>, <<"22">>},
+        {<<"IpPermissions.1.IpRanges.1.CidrIp">>, <<"0.0.0.0/0">>}
+    ],
+
+    aws_signed_request(Endpoint, IngressParams, AccessKey, SecretKey, Region, <<"ec2">>).
+
+%% @private Discover Ubuntu AMI for architecture
+discover_ubuntu_ami(Region, AccessKey, SecretKey, Arch) ->
+    Endpoint = iolist_to_binary([<<"https://ec2.">>, Region, <<".amazonaws.com/">>]),
+
+    ArchFilter = case Arch of
+        arm64 -> <<"arm64">>;
+        _ -> <<"x86_64">>
+    end,
+
+    %% Search for Ubuntu 22.04 LTS AMI
+    Params = [
+        {<<"Action">>, <<"DescribeImages">>},
+        {<<"Version">>, <<"2016-11-15">>},
+        {<<"Owner.1">>, <<"099720109477">>},  % Canonical's AWS account
+        {<<"Filter.1.Name">>, <<"name">>},
+        {<<"Filter.1.Value.1">>, <<"ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-*">>},
+        {<<"Filter.2.Name">>, <<"architecture">>},
+        {<<"Filter.2.Value.1">>, ArchFilter},
+        {<<"Filter.3.Name">>, <<"state">>},
+        {<<"Filter.3.Value.1">>, <<"available">>}
+    ],
+
+    case aws_signed_request(Endpoint, Params, AccessKey, SecretKey, Region, <<"ec2">>) of
+        {ok, Body} ->
+            %% Find the most recent AMI
+            case extract_all_xml_values(Body, <<"imageId">>) of
+                [] ->
+                    {error, no_ami_found};
+                [AmiId | _] ->
+                    %% Just take the first one (they're typically sorted)
+                    {ok, AmiId}
+            end;
+        {error, Reason} ->
+            {error, Reason}
+    end.
+
+%% @private Extract single XML value
+extract_xml_value(Xml, Tag) ->
+    Pattern = iolist_to_binary([<<"<">>, Tag, <<">([^<]*)</">>, Tag, <<">">>]),
+    case re:run(Xml, Pattern, [{capture, all_but_first, binary}]) of
+        {match, [Value]} -> {ok, Value};
+        nomatch -> {error, not_found}
+    end.
+
+%% @private Extract all XML values for a tag
+extract_all_xml_values(Xml, Tag) ->
+    Pattern = iolist_to_binary([<<"<">>, Tag, <<">([^<]*)</">>, Tag, <<">">>]),
+    case re:run(Xml, Pattern, [global, {capture, all_but_first, binary}]) of
+        {match, Matches} -> [hd(M) || M <- Matches];
+        nomatch -> []
     end.
 
 execute_aws_scale_down(_Config, _Count, _Options) ->
