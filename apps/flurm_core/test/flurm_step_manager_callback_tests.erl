@@ -64,7 +64,7 @@ make_state_with_steps(Steps) ->
 
 setup() ->
     catch meck:unload(lager),
-    meck:new(lager, [passthrough, no_link, non_strict]),
+    meck:new(lager, [passthrough, no_passthrough_cover, no_link, non_strict]),
     meck:expect(lager, md, fun(_) -> ok end),    meck:expect(lager, info, fun(_Fmt) -> ok end),
     meck:expect(lager, info, fun(_Fmt, _Args) -> ok end),
     ok.

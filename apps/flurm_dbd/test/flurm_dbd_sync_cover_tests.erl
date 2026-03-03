@@ -81,6 +81,37 @@ test_backoff_capped() ->
     ?assert(Delay >= 60000),
     ?assert(Delay =< 75000).
 
+start_link_defaults_test_() ->
+    {setup,
+     fun() ->
+         application:set_env(flurm_dbd, sync_enabled, true),
+         application:set_env(flurm_dbd, sync_batch_size, 7),
+         application:set_env(flurm_dbd, sync_flush_interval, 60000),
+         application:set_env(flurm_dbd, sync_max_retries, 4),
+         application:set_env(flurm_dbd, sync_retry_delay, 123),
+         application:set_env(flurm_dbd, sync_max_queue_size, 50),
+         ok
+     end,
+     fun(_) ->
+         application:unset_env(flurm_dbd, sync_enabled),
+         application:unset_env(flurm_dbd, sync_batch_size),
+         application:unset_env(flurm_dbd, sync_flush_interval),
+         application:unset_env(flurm_dbd, sync_max_retries),
+         application:unset_env(flurm_dbd, sync_retry_delay),
+         application:unset_env(flurm_dbd, sync_max_queue_size),
+         ok
+     end,
+     fun() ->
+         ?assertEqual(undefined, whereis(flurm_dbd_sync)),
+         {ok, Pid} = flurm_dbd_sync:start_link(),
+         ?assert(is_pid(Pid)),
+         Status = flurm_dbd_sync:get_sync_status(),
+         ?assertEqual(true, maps:get(enabled, Status)),
+         ?assertEqual(7, maps:get(batch_size, Status)),
+         ?assertEqual(50, maps:get(max_queue_size, Status)),
+         ok = gen_server:stop(Pid)
+     end}.
+
 %%====================================================================
 %% Gen_server tests
 %%====================================================================
@@ -102,12 +133,14 @@ server_test_() ->
       {"flush_queue not connected",       fun test_flush_not_connected/0},
       {"flush_queue batch error",         fun test_flush_batch_error/0},
       {"flush_queue partial success",     fun test_flush_partial/0},
+      {"flush_queue individual fallback all success", fun test_flush_individual_all_success/0},
       {"clear_queue",                     fun test_clear_queue/0},
       {"get_sync_status",                 fun test_get_sync_status/0},
       {"get_pending_count",               fun test_get_pending_count/0},
       {"get_failed_jobs",                 fun test_get_failed_jobs/0},
       {"retry_failed_jobs empty",         fun test_retry_empty/0},
       {"retry_failed_jobs with jobs",     fun test_retry_with_jobs/0},
+      {"retry_failed_jobs returns error", fun test_retry_with_jobs_error/0},
       {"flush_timer when disabled",       fun test_flush_timer_disabled/0},
       {"flush_timer with error backoff",  fun test_flush_timer_error/0},
       {"maybe_trigger_flush batch full",  fun test_batch_full_trigger/0},
@@ -120,7 +153,7 @@ server_test_() ->
 
 setup_server() ->
     catch meck:unload(lager),
-    meck:new(lager, [passthrough, no_link, non_strict]),
+    meck:new(lager, [passthrough, no_passthrough_cover, no_link, non_strict]),
     meck:expect(lager, info,    fun(_) -> ok end),
     meck:expect(lager, info,    fun(_, _) -> ok end),
     meck:expect(lager, debug,   fun(_, _) -> ok end),
@@ -233,6 +266,14 @@ test_flush_partial() ->
     {ok, Count} = flurm_dbd_sync:flush_queue(),
     ?assert(Count >= 1).
 
+test_flush_individual_all_success() ->
+    %% Force non-retryable batch failure and successful per-job fallback.
+    meck:expect(flurm_dbd_mysql, sync_job_records, fun(_) -> {error, bad_sql} end),
+    meck:expect(flurm_dbd_mysql, sync_job_record, fun(_) -> ok end),
+    flurm_dbd_sync:queue_job(#{job_id => 1}),
+    flurm_dbd_sync:queue_job(#{job_id => 2}),
+    ?assertEqual({ok, 2}, flurm_dbd_sync:flush_queue()).
+
 test_clear_queue() ->
     flurm_dbd_sync:queue_job(#{job_id => 1}),
     flurm_dbd_sync:queue_job(#{job_id => 2}),
@@ -273,6 +314,19 @@ test_retry_with_jobs() ->
     {ok, Count} = flurm_dbd_sync:retry_failed_jobs(),
     ?assert(Count >= 1),
     ?assertEqual([], flurm_dbd_sync:get_failed_jobs()).
+
+test_retry_with_jobs_error() ->
+    %% First, create failed jobs.
+    meck:expect(flurm_dbd_mysql, sync_job_records, fun(_) -> {error, timeout} end),
+    meck:expect(flurm_dbd_mysql, sync_job_record, fun(_) -> {error, timeout} end),
+    flurm_dbd_sync:queue_job(#{job_id => 1}),
+    ?assertMatch({error, _}, flurm_dbd_sync:flush_queue()),
+    ?assert(length(flurm_dbd_sync:get_failed_jobs()) >= 1),
+
+    %% Then force retry to fail before syncing.
+    meck:expect(flurm_dbd_mysql, is_connected, fun() -> false end),
+    ?assertEqual({error, not_connected}, flurm_dbd_sync:retry_failed_jobs()),
+    meck:expect(flurm_dbd_mysql, is_connected, fun() -> true end).
 
 test_flush_timer_disabled() ->
     flurm_dbd_sync:queue_job(#{job_id => 1}),

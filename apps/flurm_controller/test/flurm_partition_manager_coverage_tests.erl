@@ -62,6 +62,24 @@ test_start_link_already_started() ->
     ?assert(is_pid(Existing)),
     ?assertEqual({ok, Existing}, flurm_partition_manager:start_link()).
 
+normalize_start_result_test_() ->
+    [
+        {"normalize_start_result passes through ok tuple", fun() ->
+            Pid = self(),
+            ?assertEqual({ok, Pid},
+                flurm_partition_manager:normalize_start_result({ok, Pid}))
+        end},
+        {"normalize_start_result maps already_started to ok", fun() ->
+            Pid = self(),
+            ?assertEqual({ok, Pid},
+                flurm_partition_manager:normalize_start_result({error, {already_started, Pid}}))
+        end},
+        {"normalize_start_result preserves generic error", fun() ->
+            ?assertEqual({error, test_start_failure},
+                flurm_partition_manager:normalize_start_result({error, test_start_failure}))
+        end}
+    ].
+
 %%====================================================================
 %% init/1 Config Branch Tests
 %%====================================================================

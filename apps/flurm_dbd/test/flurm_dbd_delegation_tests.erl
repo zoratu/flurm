@@ -428,7 +428,7 @@ export_count_test_() ->
 
 setup_meck() ->
     catch meck:unload(flurm_dbd_server),
-    meck:new(flurm_dbd_server, [passthrough]),
+    meck:new(flurm_dbd_server, [passthrough, no_passthrough_cover]),
     ok.
 
 cleanup_meck(_) ->

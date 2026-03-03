@@ -31,7 +31,7 @@ setup() ->
     catch meck:unload(lager),
 
     %% Mock lager
-    meck:new(lager, [no_link, non_strict]),
+    meck:new(lager, [no_link, non_strict, passthrough, no_passthrough_cover]),
     meck:expect(lager, debug, fun(_) -> ok end),
     meck:expect(lager, debug, fun(_, _) -> ok end),
     meck:expect(lager, info, fun(_) -> ok end),
@@ -39,6 +39,7 @@ setup() ->
     meck:expect(lager, warning, fun(_) -> ok end),
     meck:expect(lager, warning, fun(_, _) -> ok end),
     meck:expect(lager, error, fun(_, _) -> ok end),
+    meck:expect(lager, md, fun() -> [] end),
     meck:expect(lager, md, fun(_) -> ok end),
     ok.
 
@@ -53,12 +54,12 @@ cleanup(_) ->
 test_start_link() ->
     %% Mock ranch
     catch meck:unload(ranch),
-    meck:new(ranch, [passthrough, unstick, no_link]),
+    meck:new(ranch, [passthrough, no_passthrough_cover, unstick, no_link]),
     meck:expect(ranch, handshake, fun(_) -> {ok, fake_socket} end),
 
     %% Mock transport
     catch meck:unload(ranch_tcp),
-    meck:new(ranch_tcp, [passthrough, unstick, no_link]),
+    meck:new(ranch_tcp, [passthrough, no_passthrough_cover, unstick, no_link]),
     meck:expect(ranch_tcp, setopts, fun(_, _) -> ok end),
     meck:expect(ranch_tcp, peername, fun(_) -> {ok, {{127,0,0,1}, 12345}} end),
     meck:expect(ranch_tcp, close, fun(_) -> ok end),
@@ -96,7 +97,7 @@ setup_message_handling() ->
     catch meck:unload(ranch),
     catch meck:unload(ranch_tcp),
 
-    meck:new(lager, [no_link, non_strict]),
+    meck:new(lager, [no_link, non_strict, passthrough, no_passthrough_cover]),
     meck:expect(lager, debug, fun(_) -> ok end),
     meck:expect(lager, debug, fun(_, _) -> ok end),
     meck:expect(lager, info, fun(_) -> ok end),
@@ -104,14 +105,15 @@ setup_message_handling() ->
     meck:expect(lager, warning, fun(_) -> ok end),
     meck:expect(lager, warning, fun(_, _) -> ok end),
     meck:expect(lager, error, fun(_, _) -> ok end),
+    meck:expect(lager, md, fun() -> [] end),
     meck:expect(lager, md, fun(_) -> ok end),
 
     catch meck:unload(ranch),
-    meck:new(ranch, [passthrough, unstick, no_link]),
+    meck:new(ranch, [passthrough, no_passthrough_cover, unstick, no_link]),
     meck:expect(ranch, handshake, fun(_) -> {ok, fake_socket} end),
 
     catch meck:unload(ranch_tcp),
-    meck:new(ranch_tcp, [passthrough, unstick, no_link]),
+    meck:new(ranch_tcp, [passthrough, no_passthrough_cover, unstick, no_link]),
     meck:expect(ranch_tcp, setopts, fun(_, _) -> ok end),
     meck:expect(ranch_tcp, peername, fun(_) -> {ok, {{127,0,0,1}, 54321}} end),
     meck:expect(ranch_tcp, close, fun(_) -> ok end),
@@ -235,7 +237,7 @@ test_handle_dbd_init() ->
 test_handle_get_jobs() ->
     %% DBD_GET_JOBS_COND = 1444
     Result = flurm_dbd_acceptor:handle_dbd_request(1444, <<>>),
-    ?assertMatch({rc, 0}, Result).
+    ?assertMatch({jobs, _}, Result).
 
 test_handle_register_ctld() ->
     %% DBD_REGISTER_CTLD = 1434

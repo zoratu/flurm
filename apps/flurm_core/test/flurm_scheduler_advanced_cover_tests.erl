@@ -43,7 +43,7 @@ setup() ->
 
     %% Create fresh mocks
     lists:foreach(
-        fun(M) -> meck:new(M, [passthrough, non_strict, no_link]) end,
+        fun(M) -> meck:new(M, [passthrough, no_passthrough_cover, non_strict, no_link]) end,
         ?MOCKED_MODULES),
 
     install_default_mocks(),

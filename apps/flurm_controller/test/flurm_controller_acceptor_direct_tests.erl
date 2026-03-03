@@ -26,18 +26,18 @@ acceptor_test_() ->
 
 setup() ->
     catch meck:unload(ranch),
-    meck:new(ranch, [passthrough, non_strict]),
+    meck:new(ranch, [passthrough, no_passthrough_cover, non_strict]),
     catch meck:unload(flurm_protocol_codec),
-    meck:new(flurm_protocol_codec, [passthrough, non_strict]),
+    meck:new(flurm_protocol_codec, [passthrough, no_passthrough_cover, non_strict]),
     catch meck:unload(flurm_controller_handler),
-    meck:new(flurm_controller_handler, [passthrough, non_strict]),
+    meck:new(flurm_controller_handler, [passthrough, no_passthrough_cover, non_strict]),
     %% Mock inet for peername calls with fake sockets
     catch meck:unload(inet),
-    meck:new(inet, [passthrough, unstick]),
+    meck:new(inet, [passthrough, no_passthrough_cover, unstick]),
     meck:expect(inet, peername, fun(_Socket) -> {ok, {{127, 0, 0, 1}, 12345}} end),
     %% Mock connection limiter
     catch meck:unload(flurm_connection_limiter),
-    meck:new(flurm_connection_limiter, [passthrough, non_strict]),
+    meck:new(flurm_connection_limiter, [passthrough, no_passthrough_cover, non_strict]),
     meck:expect(flurm_connection_limiter, connection_allowed, fun(_) -> true end),
     meck:expect(flurm_connection_limiter, connection_opened, fun(_) -> ok end),
     meck:expect(flurm_connection_limiter, connection_closed, fun(_) -> ok end),
@@ -113,11 +113,11 @@ buffer_test_() ->
 
 setup_buffer() ->
     catch meck:unload(ranch),
-    meck:new(ranch, [passthrough, non_strict]),
+    meck:new(ranch, [passthrough, no_passthrough_cover, non_strict]),
     catch meck:unload(flurm_protocol_codec),
-    meck:new(flurm_protocol_codec, [passthrough, non_strict]),
+    meck:new(flurm_protocol_codec, [passthrough, no_passthrough_cover, non_strict]),
     catch meck:unload(flurm_controller_handler),
-    meck:new(flurm_controller_handler, [passthrough, non_strict]),
+    meck:new(flurm_controller_handler, [passthrough, no_passthrough_cover, non_strict]),
     catch meck:unload(mock_transport),
     meck:new(mock_transport, [non_strict]),
 
@@ -322,15 +322,15 @@ binary_to_hex_test_() ->
 integration_test_() ->
     {setup,
      fun() ->
-         meck:new(ranch, [passthrough, non_strict]),
-         meck:new(flurm_protocol_codec, [passthrough, non_strict]),
-         meck:new(flurm_controller_handler, [passthrough, non_strict]),
+         meck:new(ranch, [passthrough, no_passthrough_cover, non_strict]),
+         meck:new(flurm_protocol_codec, [passthrough, no_passthrough_cover, non_strict]),
+         meck:new(flurm_controller_handler, [passthrough, no_passthrough_cover, non_strict]),
          meck:new(mock_transport, [non_strict]),
          %% Mock inet for peername calls with fake sockets
-         meck:new(inet, [passthrough, unstick]),
+         meck:new(inet, [passthrough, no_passthrough_cover, unstick]),
          meck:expect(inet, peername, fun(_Socket) -> {ok, {{127, 0, 0, 1}, 12345}} end),
          %% Mock connection limiter
-         meck:new(flurm_connection_limiter, [passthrough, non_strict]),
+         meck:new(flurm_connection_limiter, [passthrough, no_passthrough_cover, non_strict]),
          meck:expect(flurm_connection_limiter, connection_allowed, fun(_) -> true end),
          meck:expect(flurm_connection_limiter, connection_opened, fun(_) -> ok end),
          meck:expect(flurm_connection_limiter, connection_closed, fun(_) -> ok end),

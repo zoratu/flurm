@@ -97,7 +97,7 @@ setup() ->
     catch meck:unload(flurm_federation),
     meck:new([flurm_job_manager, flurm_partition_manager, flurm_node_manager_server,
               flurm_config_server, flurm_scheduler, flurm_federation],
-             [passthrough, no_link, non_strict]),
+             [passthrough, no_passthrough_cover, no_link, non_strict]),
 
     %% Default mock behaviors
     meck:expect(flurm_job_manager, list_jobs, fun() -> [] end),
@@ -931,7 +931,7 @@ get_sibling_job_counts_per_cluster_test_() ->
     {setup,
      fun() ->
          catch meck:unload(flurm_federation),
-         meck:new(flurm_federation, [passthrough, no_link, non_strict]),
+         meck:new(flurm_federation, [passthrough, no_passthrough_cover, no_link, non_strict]),
          ok
      end,
      fun(_) ->
@@ -990,7 +990,7 @@ edge_cases_test_() ->
          catch meck:unload(flurm_partition_manager),
          catch meck:unload(flurm_node_manager_server),
          meck:new([flurm_job_manager, flurm_partition_manager, flurm_node_manager_server],
-                  [passthrough, no_link, non_strict]),
+                  [passthrough, no_passthrough_cover, no_link, non_strict]),
          ok
      end,
      fun(_) ->
@@ -1032,7 +1032,7 @@ get_jobs_with_array_expansion_test_() ->
     {setup,
      fun() ->
          catch meck:unload(flurm_job_manager),
-         meck:new(flurm_job_manager, [passthrough, no_link, non_strict]),
+         meck:new(flurm_job_manager, [passthrough, no_passthrough_cover, no_link, non_strict]),
          ok
      end,
      fun(_) ->
@@ -1079,7 +1079,7 @@ get_federation_stats_test_() ->
     {setup,
      fun() ->
          catch meck:unload(flurm_federation),
-         meck:new(flurm_federation, [passthrough, no_link, non_strict]),
+         meck:new(flurm_federation, [passthrough, no_passthrough_cover, no_link, non_strict]),
          ok
      end,
      fun(_) ->
@@ -1124,7 +1124,7 @@ partition_info_extended_test_() ->
          catch meck:unload(flurm_partition_manager),
          catch meck:unload(flurm_node_manager_server),
          meck:new([flurm_partition_manager, flurm_node_manager_server],
-                  [passthrough, no_link, non_strict]),
+                  [passthrough, no_passthrough_cover, no_link, non_strict]),
          ok
      end,
      fun(_) ->
@@ -1204,7 +1204,7 @@ job_info_extended_test_() ->
     {setup,
      fun() ->
          catch meck:unload(flurm_job_manager),
-         meck:new(flurm_job_manager, [passthrough, no_link, non_strict]),
+         meck:new(flurm_job_manager, [passthrough, no_passthrough_cover, no_link, non_strict]),
          ok
      end,
      fun(_) ->
@@ -1331,7 +1331,7 @@ build_info_extended_test_() ->
     {setup,
      fun() ->
          catch meck:unload(flurm_config_server),
-         meck:new(flurm_config_server, [passthrough, no_link, non_strict]),
+         meck:new(flurm_config_server, [passthrough, no_passthrough_cover, no_link, non_strict]),
          ok
      end,
      fun(_) ->
@@ -1369,7 +1369,7 @@ config_info_extended_test_() ->
     {setup,
      fun() ->
          catch meck:unload(flurm_config_server),
-         meck:new(flurm_config_server, [passthrough, no_link, non_strict]),
+         meck:new(flurm_config_server, [passthrough, no_passthrough_cover, no_link, non_strict]),
          ok
      end,
      fun(_) ->
@@ -1395,7 +1395,7 @@ stats_info_extended_test_() ->
      fun() ->
          catch meck:unload(flurm_job_manager),
          catch meck:unload(flurm_scheduler),
-         meck:new([flurm_job_manager, flurm_scheduler], [passthrough, no_link, non_strict]),
+         meck:new([flurm_job_manager, flurm_scheduler], [passthrough, no_passthrough_cover, no_link, non_strict]),
          ok
      end,
      fun(_) ->
@@ -1459,7 +1459,7 @@ update_federation_extended_test_() ->
     {setup,
      fun() ->
          catch meck:unload(flurm_federation),
-         meck:new(flurm_federation, [passthrough, no_link, non_strict]),
+         meck:new(flurm_federation, [passthrough, no_passthrough_cover, no_link, non_strict]),
          ok
      end,
      fun(_) ->
@@ -1538,7 +1538,7 @@ sibling_job_counts_extended_test_() ->
     {setup,
      fun() ->
          catch meck:unload(flurm_federation),
-         meck:new(flurm_federation, [passthrough, no_link, non_strict]),
+         meck:new(flurm_federation, [passthrough, no_passthrough_cover, no_link, non_strict]),
          ok
      end,
      fun(_) ->
@@ -1575,7 +1575,7 @@ federation_info_extended_test_() ->
     {setup,
      fun() ->
          catch meck:unload(flurm_federation),
-         meck:new(flurm_federation, [passthrough, no_link, non_strict]),
+         meck:new(flurm_federation, [passthrough, no_passthrough_cover, no_link, non_strict]),
          ok
      end,
      fun(_) ->
@@ -1601,7 +1601,7 @@ job_user_info_extended_test_() ->
     {setup,
      fun() ->
          catch meck:unload(flurm_job_manager),
-         meck:new(flurm_job_manager, [passthrough, no_link, non_strict]),
+         meck:new(flurm_job_manager, [passthrough, no_passthrough_cover, no_link, non_strict]),
          ok
      end,
      fun(_) ->

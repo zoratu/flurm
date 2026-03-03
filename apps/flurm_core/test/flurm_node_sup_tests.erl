@@ -49,7 +49,7 @@ setup_with_supervisor() ->
     %% The supervisor uses simple_one_for_one which calls start_link with [NodeSpec]
     %% where NodeSpec comes from start_child call argument
     catch meck:unload(flurm_node),
-    meck:new(flurm_node, [passthrough, non_strict]),
+    meck:new(flurm_node, [passthrough, no_passthrough_cover, non_strict]),
     meck:expect(flurm_node, start_link, fun(NodeSpec) when is_record(NodeSpec, node_spec) ->
         %% Use spawn (not spawn_link) to avoid exit signal propagation
         {ok, spawn(fun() -> receive stop -> ok end end)}

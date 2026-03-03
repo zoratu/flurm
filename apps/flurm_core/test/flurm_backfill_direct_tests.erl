@@ -37,10 +37,10 @@ setup() ->
     catch meck:unload(flurm_job),
     catch meck:unload(flurm_job_manager),
     %% Start meck for external dependencies only - NOT flurm_backfill
-    meck:new(flurm_node_registry, [passthrough, non_strict, no_link]),
-    meck:new(flurm_job_registry, [passthrough, non_strict, no_link]),
-    meck:new(flurm_job, [passthrough, non_strict, no_link]),
-    meck:new(flurm_job_manager, [passthrough, non_strict, no_link]),
+    meck:new(flurm_node_registry, [passthrough, no_passthrough_cover, non_strict, no_link]),
+    meck:new(flurm_job_registry, [passthrough, no_passthrough_cover, non_strict, no_link]),
+    meck:new(flurm_job, [passthrough, no_passthrough_cover, non_strict, no_link]),
+    meck:new(flurm_job_manager, [passthrough, no_passthrough_cover, non_strict, no_link]),
 
     %% Setup default mocks
     setup_default_mocks(),

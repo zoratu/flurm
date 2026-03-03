@@ -30,14 +30,14 @@ setup() ->
             timer:sleep(100)
     end,
     %% Mock lager
-    meck:new(lager, [non_strict, no_link, passthrough]),
+    meck:new(lager, [non_strict, no_link, passthrough, no_passthrough_cover]),
     meck:expect(lager, info, fun(_Fmt) -> ok end),
     meck:expect(lager, info, fun(_Fmt, _Args) -> ok end),
     meck:expect(lager, warning, fun(_Fmt, _Args) -> ok end),
     meck:expect(lager, error, fun(_Fmt, _Args) -> ok end),
     meck:expect(lager, debug, fun(_Fmt, _Args) -> ok end),
     %% Mock mnesia operations for testing
-    meck:new(mnesia, [unstick, passthrough]),
+    meck:new(mnesia, [unstick, passthrough, no_passthrough_cover]),
     ok.
 
 cleanup(_) ->
@@ -432,7 +432,7 @@ should_age_table_test_() ->
 change_table_storage_test_() ->
     {setup,
      fun() ->
-         meck:new(mnesia, [unstick, passthrough]),
+         meck:new(mnesia, [unstick, passthrough, no_passthrough_cover]),
          ok
      end,
      fun(_) ->
@@ -465,7 +465,7 @@ change_table_storage_test_() ->
 create_job_table_test_() ->
     {setup,
      fun() ->
-         meck:new(mnesia, [unstick, passthrough]),
+         meck:new(mnesia, [unstick, passthrough, no_passthrough_cover]),
          ok
      end,
      fun(_) ->
@@ -524,7 +524,7 @@ create_job_table_test_() ->
 find_job_in_tables_test_() ->
     {setup,
      fun() ->
-         meck:new(mnesia, [unstick, passthrough]),
+         meck:new(mnesia, [unstick, passthrough, no_passthrough_cover]),
          ok
      end,
      fun(_) ->
@@ -584,7 +584,7 @@ find_job_in_tables_test_() ->
 delete_job_from_tables_test_() ->
     {setup,
      fun() ->
-         meck:new(mnesia, [unstick, passthrough]),
+         meck:new(mnesia, [unstick, passthrough, no_passthrough_cover]),
          ok
      end,
      fun(_) ->
@@ -637,7 +637,7 @@ delete_job_from_tables_test_() ->
 query_table_with_filters_test_() ->
     {setup,
      fun() ->
-         meck:new(mnesia, [unstick, passthrough]),
+         meck:new(mnesia, [unstick, passthrough, no_passthrough_cover]),
          ok
      end,
      fun(_) ->
@@ -687,7 +687,7 @@ query_table_with_filters_test_() ->
 update_record_count_test_() ->
     {setup,
      fun() ->
-         meck:new(mnesia, [unstick, passthrough]),
+         meck:new(mnesia, [unstick, passthrough, no_passthrough_cover]),
          ok
      end,
      fun(_) ->
@@ -712,7 +712,7 @@ update_record_count_test_() ->
 ensure_table_for_period_test_() ->
     {setup,
      fun() ->
-         meck:new(mnesia, [unstick, passthrough]),
+         meck:new(mnesia, [unstick, passthrough, no_passthrough_cover]),
          ok
      end,
      fun(_) ->
@@ -745,7 +745,7 @@ ensure_table_for_period_test_() ->
 maybe_create_burst_fragment_test_() ->
     {setup,
      fun() ->
-         meck:new(mnesia, [unstick, passthrough]),
+         meck:new(mnesia, [unstick, passthrough, no_passthrough_cover]),
          ok
      end,
      fun(_) ->
@@ -774,8 +774,8 @@ maybe_create_burst_fragment_test_() ->
 create_burst_fragment_test_() ->
     {setup,
      fun() ->
-         meck:new(mnesia, [unstick, passthrough]),
-         meck:new(lager, [non_strict, no_link, passthrough]),
+         meck:new(mnesia, [unstick, passthrough, no_passthrough_cover]),
+         meck:new(lager, [non_strict, no_link, passthrough, no_passthrough_cover]),
          meck:expect(lager, info, fun(_Fmt, _Args) -> ok end),
          ok
      end,
@@ -842,8 +842,8 @@ get_all_job_tables_test_() ->
 perform_maintenance_test_() ->
     {setup,
      fun() ->
-         meck:new(mnesia, [unstick, passthrough]),
-         meck:new(lager, [non_strict, no_link, passthrough]),
+         meck:new(mnesia, [unstick, passthrough, no_passthrough_cover]),
+         meck:new(lager, [non_strict, no_link, passthrough, no_passthrough_cover]),
          meck:expect(lager, info, fun(_Fmt, _Args) -> ok end),
          meck:expect(lager, debug, fun(_Fmt, _Args) -> ok end),
          ok
@@ -884,8 +884,8 @@ perform_maintenance_test_() ->
 age_tables_test_() ->
     {setup,
      fun() ->
-         meck:new(mnesia, [unstick, passthrough]),
-         meck:new(lager, [non_strict, no_link, passthrough]),
+         meck:new(mnesia, [unstick, passthrough, no_passthrough_cover]),
+         meck:new(lager, [non_strict, no_link, passthrough, no_passthrough_cover]),
          meck:expect(lager, info, fun(_Fmt, _Args) -> ok end),
          meck:expect(lager, debug, fun(_Fmt, _Args) -> ok end),
          ok
@@ -923,10 +923,10 @@ age_tables_test_() ->
 archive_old_tables_test_() ->
     {setup,
      fun() ->
-         meck:new(mnesia, [unstick, passthrough]),
-         meck:new(filelib, [unstick, passthrough]),
-         meck:new(application, [unstick, passthrough]),
-         meck:new(lager, [non_strict, no_link, passthrough]),
+         meck:new(mnesia, [unstick, passthrough, no_passthrough_cover]),
+         meck:new(filelib, [unstick, passthrough, no_passthrough_cover]),
+         meck:new(application, [unstick, passthrough, no_passthrough_cover]),
+         meck:new(lager, [non_strict, no_link, passthrough, no_passthrough_cover]),
          meck:expect(lager, info, fun(_Fmt, _Args) -> ok end),
          meck:expect(lager, error, fun(_Fmt, _Args) -> ok end),
          ok
@@ -970,7 +970,7 @@ archive_old_tables_test_() ->
 update_table_sizes_test_() ->
     {setup,
      fun() ->
-         meck:new(mnesia, [unstick, passthrough]),
+         meck:new(mnesia, [unstick, passthrough, no_passthrough_cover]),
          ok
      end,
      fun(_) ->
@@ -1053,8 +1053,8 @@ get_tables_for_range_with_state_test_() ->
 age_table_internal_test_() ->
     {setup,
      fun() ->
-         meck:new(mnesia, [unstick, passthrough]),
-         meck:new(lager, [non_strict, no_link, passthrough]),
+         meck:new(mnesia, [unstick, passthrough, no_passthrough_cover]),
+         meck:new(lager, [non_strict, no_link, passthrough, no_passthrough_cover]),
          meck:expect(lager, info, fun(_Fmt, _Args) -> ok end),
          meck:expect(lager, debug, fun(_Fmt, _Args) -> ok end),
          ok

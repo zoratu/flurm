@@ -801,7 +801,7 @@ mocked_cleanup(#{temp_dir := TempDir}) ->
 
 test_write_file_error() ->
     %% Mock file:write_file to fail
-    meck:new(file, [unstick, passthrough]),
+    meck:new(file, [unstick, passthrough, no_passthrough_cover]),
     meck:expect(file, write_file, fun(Path, _Data) ->
         case lists:suffix(".tmp", Path) of
             true -> {error, enospc};  % Simulate disk full on temp file
@@ -818,7 +818,7 @@ test_write_file_error() ->
 
 test_read_file_error() ->
     %% Mock file:read_file to return a non-enoent error
-    meck:new(file, [unstick, passthrough]),
+    meck:new(file, [unstick, passthrough, no_passthrough_cover]),
     meck:expect(file, read_file, fun(_Path) -> {error, eacces} end),
 
     Result = flurm_state_persistence:load_state(),
@@ -829,7 +829,7 @@ test_read_file_error() ->
 
 test_delete_error() ->
     %% Mock file:delete to return a non-enoent error
-    meck:new(file, [unstick, passthrough]),
+    meck:new(file, [unstick, passthrough, no_passthrough_cover]),
     meck:expect(file, delete, fun(_Path) -> {error, eacces} end),
 
     Result = flurm_state_persistence:clear_state(),

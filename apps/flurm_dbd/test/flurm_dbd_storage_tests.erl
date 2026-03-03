@@ -321,7 +321,7 @@ setup_mnesia_branches() ->
     catch meck:unload(mnesia),
     catch meck:unload(lager),
     meck:new(mnesia, [non_strict, no_link]),
-    meck:new(lager, [non_strict, no_link, passthrough]),
+    meck:new(lager, [non_strict, no_link, passthrough, no_passthrough_cover]),
     meck:expect(lager, md, fun() -> [] end),
     meck:expect(lager, info, fun(_, _) -> ok end),
     meck:expect(lager, error, fun(_, _) -> ok end),

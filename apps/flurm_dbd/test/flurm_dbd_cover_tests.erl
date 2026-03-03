@@ -59,7 +59,7 @@ dbd_delegation_test_() ->
 
 setup_delegation() ->
     catch meck:unload(lager),
-    meck:new(lager, [passthrough, no_link, non_strict]),
+    meck:new(lager, [passthrough, no_passthrough_cover, no_link, non_strict]),
     meck:expect(lager, info,    fun(_) -> ok end),
     meck:expect(lager, info,    fun(_, _) -> ok end),
     meck:expect(lager, debug,   fun(_) -> ok end),
@@ -245,7 +245,7 @@ dbd_app_test_() ->
 
 setup_app() ->
     catch meck:unload(lager),
-    meck:new(lager, [passthrough, no_link, non_strict]),
+    meck:new(lager, [passthrough, no_passthrough_cover, no_link, non_strict]),
     meck:expect(lager, info, fun(_) -> ok end),
     meck:expect(lager, info, fun(_, _) -> ok end),
 
@@ -278,7 +278,7 @@ ra_effects_test_() ->
 
 setup_ra() ->
     catch meck:unload(lager),
-    meck:new(lager, [passthrough, no_link, non_strict]),
+    meck:new(lager, [passthrough, no_passthrough_cover, no_link, non_strict]),
     meck:expect(lager, info,  fun(_, _) -> ok end),
     meck:expect(lager, debug, fun(_, _) -> ok end),
     ok.

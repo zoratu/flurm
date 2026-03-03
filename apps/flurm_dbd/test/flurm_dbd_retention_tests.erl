@@ -34,7 +34,7 @@ setup() ->
 
     %% Mock flurm_dbd_server
     catch meck:unload(flurm_dbd_server),
-    meck:new(flurm_dbd_server, [passthrough, non_strict, no_link]),
+    meck:new(flurm_dbd_server, [passthrough, no_passthrough_cover, non_strict, no_link]),
     meck:expect(flurm_dbd_server, archive_old_records, fun(_Days) -> {ok, 5} end),
     meck:expect(flurm_dbd_server, purge_old_records, fun(_Days) -> {ok, 3} end),
     meck:expect(flurm_dbd_server, archive_old_jobs, fun(_Days) -> {ok, 10} end),
@@ -42,7 +42,7 @@ setup() ->
     meck:expect(flurm_dbd_server, get_stats, fun() -> #{archived_jobs => 100} end),
 
     %% Mock lager to avoid log output during tests
-    meck:new(lager, [non_strict, no_link, passthrough]),
+    meck:new(lager, [non_strict, no_link, passthrough, no_passthrough_cover]),
     meck:expect(lager, info, fun(_Fmt) -> ok end),
     meck:expect(lager, info, fun(_Fmt, _Args) -> ok end),
     meck:expect(lager, warning, fun(_Fmt) -> ok end),

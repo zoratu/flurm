@@ -28,12 +28,12 @@ setup() ->
     catch meck:unload(flurm_config_slurm),
 
     %% Mock dependencies
-    meck:new(lager, [passthrough, non_strict]),
+    meck:new(lager, [passthrough, no_passthrough_cover, non_strict]),
     meck:expect(lager, info, fun(_Fmt) -> ok end),
     meck:expect(lager, info, fun(_Fmt, _Args) -> ok end),
     meck:expect(lager, debug, fun(_Fmt, _Args) -> ok end),
 
-    meck:new(flurm_node, [passthrough, non_strict]),
+    meck:new(flurm_node, [passthrough, no_passthrough_cover, non_strict]),
     meck:expect(flurm_node, get_info, fun(Pid) ->
         %% Return mock node info based on pid
         {ok, #{
@@ -49,7 +49,7 @@ setup() ->
         }}
     end),
 
-    meck:new(flurm_config_slurm, [passthrough, non_strict]),
+    meck:new(flurm_config_slurm, [passthrough, no_passthrough_cover, non_strict]),
     meck:expect(flurm_config_slurm, expand_hostlist, fun(Pattern) ->
         [Pattern]  % Return pattern as-is for testing
     end),

@@ -368,7 +368,7 @@ refresh_expired_get_claims_error_branch_test() ->
     {ok, ExpiredToken} = flurm_jwt:generate(<<"expired_user_2">>),
     application:set_env(flurm_controller, jwt_expiry, 3600),
     catch meck:unload(jsx),
-    meck:new(jsx, [passthrough]),
+    meck:new(jsx, [passthrough, no_passthrough_cover]),
     put(jsx_decode_calls, 0),
     meck:expect(jsx, decode,
         fun(Data, Opts) ->

@@ -24,12 +24,12 @@ setup() ->
     end,
     %% Mock dependencies
     catch meck:unload(flurm_dbd_mysql),
-    meck:new(flurm_dbd_mysql, [passthrough, non_strict, no_link]),
+    meck:new(flurm_dbd_mysql, [passthrough, no_passthrough_cover, non_strict, no_link]),
     meck:expect(flurm_dbd_mysql, is_connected, fun() -> true end),
     meck:expect(flurm_dbd_mysql, sync_job_record, fun(_Job) -> ok end),
     meck:expect(flurm_dbd_mysql, sync_job_records, fun(Jobs) -> {ok, length(Jobs)} end),
     %% Mock lager
-    meck:new(lager, [non_strict, no_link, passthrough]),
+    meck:new(lager, [non_strict, no_link, passthrough, no_passthrough_cover]),
     meck:expect(lager, info, fun(_Fmt) -> ok end),
     meck:expect(lager, info, fun(_Fmt, _Args) -> ok end),
     meck:expect(lager, warning, fun(_Fmt, _Args) -> ok end),
@@ -67,7 +67,7 @@ start_link_test_() ->
      [
          {"start_link/0 starts server with default config", fun() ->
              %% Mock application:get_env
-             meck:new(application, [unstick, passthrough]),
+             meck:new(application, [unstick, passthrough, no_passthrough_cover]),
              meck:expect(application, get_env, fun
                  (flurm_dbd, sync_enabled, _) -> false;
                  (flurm_dbd, sync_batch_size, _) -> 100;
@@ -296,7 +296,9 @@ flush_queue_extended_test_() ->
     {foreach,
      fun() ->
          setup(),
-         Config = #{enabled => true, batch_size => 5, flush_interval => 100000, max_queue_size => 100, max_retries => 1},
+         %% Keep sync disabled so queueing does not trigger background auto-flush
+         %% while these tests are asserting explicit manual flush behavior.
+         Config = #{enabled => false, batch_size => 5, flush_interval => 100000, max_queue_size => 100, max_retries => 1},
          {ok, Pid} = flurm_dbd_sync:start_link(Config),
          Pid
      end,
@@ -319,7 +321,7 @@ flush_queue_extended_test_() ->
          end},
          {"flush_queue respects batch_size", fun() ->
              meck:expect(flurm_dbd_mysql, is_connected, fun() -> true end),
-             BatchSizes = ets:new(batch_sizes, [public, bag]),
+             BatchSizes = ets:new(batch_sizes, [public, duplicate_bag]),
              meck:expect(flurm_dbd_mysql, sync_job_records, fun(Jobs) ->
                  ets:insert(BatchSizes, {batch, length(Jobs)}),
                  {ok, length(Jobs)}
@@ -335,7 +337,10 @@ flush_queue_extended_test_() ->
              %% Third flush gets remaining 2
              {ok, 2} = flurm_dbd_sync:flush_queue(),
              Batches = ets:tab2list(BatchSizes),
-             ?assertEqual([{batch, 5}, {batch, 5}, {batch, 2}], Batches),
+             ?assertEqual(
+                 lists:sort([{batch, 5}, {batch, 5}, {batch, 2}]),
+                 lists:sort(Batches)
+             ),
              ets:delete(BatchSizes)
          end},
          {"flush_queue when mysql disconnected", fun() ->

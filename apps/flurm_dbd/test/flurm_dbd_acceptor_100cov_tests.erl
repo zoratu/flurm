@@ -9,6 +9,7 @@
 -module(flurm_dbd_acceptor_100cov_tests).
 
 -include_lib("eunit/include/eunit.hrl").
+-include_lib("flurm_core/include/flurm_core.hrl").
 
 %%====================================================================
 %% Test Fixtures
@@ -16,7 +17,7 @@
 
 setup() ->
     %% Mock lager
-    meck:new(lager, [non_strict, no_link, passthrough]),
+    meck:new(lager, [non_strict, no_link, passthrough, no_passthrough_cover]),
     meck:expect(lager, info, fun(_Fmt) -> ok end),
     meck:expect(lager, info, fun(_Fmt, _Args) -> ok end),
     meck:expect(lager, warning, fun(_Fmt, _Args) -> ok end),
@@ -171,12 +172,25 @@ job_to_sacct_record_test_() ->
      end,
      [
         {"job_to_sacct_record with full job", fun() ->
-             %% Create a mock job record tuple
-             Job = {job, 123, <<"test_job">>, <<"testuser">>, <<"testaccount">>,
-                    <<"default">>, running, 0, 1000000, 1000100, undefined,
-                    4, 1, 8192, [], 1, undefined, undefined, undefined,
-                    60, undefined, undefined, undefined, undefined,
-                    undefined, undefined, undefined, undefined},
+             Job = #job{
+                 id = 123,
+                 name = <<"test_job">>,
+                 user = <<"testuser">>,
+                 partition = <<"default">>,
+                 state = running,
+                 script = <<"#!/bin/bash">>,
+                 num_nodes = 1,
+                 num_cpus = 4,
+                 memory_mb = 8192,
+                 time_limit = 60,
+                 priority = 100,
+                 submit_time = 1000000,
+                 start_time = 1000100,
+                 end_time = undefined,
+                 allocated_nodes = [],
+                 exit_code = 1,
+                 account = <<"testaccount">>
+             },
              Result = flurm_dbd_acceptor:job_to_sacct_record(Job),
              ?assert(is_map(Result)),
              ?assertEqual(123, maps:get(job_id, Result)),

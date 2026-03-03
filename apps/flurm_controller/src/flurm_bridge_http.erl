@@ -39,7 +39,8 @@
     route_request/3,
     encode_response/1,
     decode_request/1,
-    binary_to_mode/1
+    binary_to_mode/1,
+    set_bridge_mode/1
 ]).
 -endif.
 
@@ -161,11 +162,8 @@ parse_path(<<?API_PREFIX, "/status", _/binary>>) ->
 parse_path(<<?API_PREFIX, "/mode", _/binary>>) ->
     {mode, undefined};
 parse_path(<<?API_PREFIX, "/clusters/", Rest/binary>>) ->
-    %% Extract cluster name, removing any trailing slash or path
-    Name = case binary:split(Rest, <<"/">>) of
-        [ClusterName | _] -> ClusterName;
-        _ -> Rest
-    end,
+    %% Extract cluster name, removing any trailing slash/path segment.
+    Name = hd(binary:split(Rest, <<"/">>, [global])),
     {clusters, Name};
 parse_path(<<?API_PREFIX, "/clusters", _/binary>>) ->
     {clusters, undefined};
@@ -332,8 +330,12 @@ get_bridge_mode() ->
 
 set_bridge_mode(Mode) when Mode =:= shadow; Mode =:= active;
                            Mode =:= primary; Mode =:= standalone ->
-    application:set_env(flurm_controller, bridge_mode, Mode),
-    ok;
+    case application:set_env(flurm_controller, bridge_mode, Mode) of
+        ok ->
+            ok;
+        {error, _} = Error ->
+            Error
+    end;
 set_bridge_mode(_) ->
     {error, invalid_mode}.
 

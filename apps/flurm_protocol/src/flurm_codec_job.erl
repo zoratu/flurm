@@ -23,6 +23,21 @@
     encode_body/2
 ]).
 
+-ifdef(TEST).
+-export([
+    decode_batch_job_request/1,
+    extract_batch_job_fields/1,
+    extract_job_resources/1,
+    extract_uint32_at/3,
+    decode_kill_job_request/1,
+    decode_update_job_request/1,
+    decode_batch_job_response/1,
+    decode_job_info_response/1,
+    strip_null/1,
+    parse_job_id/1
+]).
+-endif.
+
 -include("flurm_protocol.hrl").
 
 %%%===================================================================
@@ -160,21 +175,17 @@ decode_resource_allocation_request(Binary) ->
 %% Decode REQUEST_SUBMIT_BATCH_JOB (4003)
 %% SLURM batch job submission is a complex structure with many fields
 decode_batch_job_request(Binary) ->
-    try
-        %% Parse the job description fields
-        %% This is a simplified version - the full format is very complex
-        case extract_batch_job_fields(Binary) of
-            {ok, Fields} ->
-                {ok, build_batch_job_record(Fields)};
-            {error, _} = Error ->
-                Error
-        end
-    catch
-        _:Reason ->
-            {error, {batch_job_decode_failed, Reason}}
+    %% Parse the job description fields.
+    case extract_batch_job_fields(Binary) of
+        {ok, Fields} when is_map(Fields) ->
+            {ok, build_batch_job_record(Fields)};
+        {error, _} = Error ->
+            Error
     end.
 
 %% Extract batch job fields from binary
+extract_batch_job_fields(Binary) when not is_binary(Binary) ->
+    {error, invalid_batch_job_request};
 extract_batch_job_fields(Binary) when byte_size(Binary) < 32 ->
     {ok, #{}};
 extract_batch_job_fields(Binary) ->
@@ -241,8 +252,8 @@ extract_job_resources(Binary) when byte_size(Binary) < 100 ->
 extract_job_resources(Binary) ->
     %% These fields are at known offsets in the structure
     %% For now, return defaults - full implementation would parse the complete structure
-    Size = byte_size(Binary),
     try
+        Size = byte_size(Binary),
         %% Try to extract from known positions (these may vary by SLURM version)
         MinNodes = extract_uint32_at(Binary, Size - 200, 1),
         MaxNodes = extract_uint32_at(Binary, Size - 196, 1),
@@ -304,7 +315,8 @@ decode_cancel_job_request(Binary) ->
 %% Decode REQUEST_KILL_JOB (5032)
 decode_kill_job_request(Binary) ->
     case Binary of
-        <<JobId:32/big, StepId:32/big, Signal:32/big, Flags:32/big, Rest/binary>> ->
+        <<JobId:32/big, StepId:32/big, Signal:32/big, Flags:32/big, Rest/binary>>
+            when byte_size(Rest) > 0 ->
             {Sibling, _} = unpack_string_safe(Rest),
             {ok, #kill_job_request{
                 job_id = JobId,
@@ -479,7 +491,8 @@ decode_job_will_run_request(Binary) ->
 %% Decode RESPONSE_SUBMIT_BATCH_JOB (4004)
 decode_batch_job_response(Binary) ->
     case Binary of
-        <<JobId:32/big, StepId:32/big, ErrorCode:32/big, Rest/binary>> ->
+        <<JobId:32/big, StepId:32/big, ErrorCode:32/big, Rest/binary>>
+            when byte_size(Rest) > 0 ->
             {JobSubmitUserMsg, _} = unpack_string_safe(Rest),
             {ok, #batch_job_response{
                 job_id = JobId,
@@ -509,7 +522,8 @@ decode_batch_job_response(Binary) ->
 %% Decode RESPONSE_JOB_INFO (2004)
 decode_job_info_response(Binary) ->
     case Binary of
-        <<LastUpdate:64/big, JobCount:32/big, Rest/binary>> ->
+        <<LastUpdate:64/big, JobCount:32/big, Rest/binary>>
+            when byte_size(Rest) > 0 ->
             %% Jobs are encoded after count, parse them
             {ok, #job_info_response{
                 last_update = LastUpdate,

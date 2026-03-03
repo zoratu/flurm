@@ -64,7 +64,11 @@ find_existing_cluster_test_() ->
 %%====================================================================
 
 setup() ->
-    meck:new(lager, [passthrough]),
+    catch meck:unload(lager),
+    catch meck:unload(flurm_db_cluster),
+    catch meck:unload(net_adm),
+    catch meck:unload(ra),
+    meck:new(lager, [non_strict, no_link]),
     meck:expect(lager, info, fun(_, _) -> ok end),
     meck:expect(lager, warning, fun(_, _) -> ok end),
     meck:expect(lager, error, fun(_, _) -> ok end),
@@ -72,7 +76,7 @@ setup() ->
     ok.
 
 cleanup(_) ->
-    meck:unload(lager),
+    catch meck:unload(lager),
     ok.
 
 setup_nonode() ->
@@ -84,15 +88,15 @@ cleanup_nonode(_) ->
 
 setup_distributed() ->
     setup(),
-    meck:new(flurm_db_cluster, [passthrough]),
-    meck:new(net_adm, [passthrough]),
-    meck:new(ra, [passthrough]),
+    meck:new(flurm_db_cluster, [passthrough, no_passthrough_cover, non_strict, no_link]),
+    meck:new(net_adm, [unstick, passthrough, no_passthrough_cover]),
+    meck:new(ra, [passthrough, no_passthrough_cover, non_strict, no_link]),
     ok.
 
 cleanup_distributed(_) ->
-    meck:unload(flurm_db_cluster),
-    meck:unload(net_adm),
-    meck:unload(ra),
+    catch meck:unload(flurm_db_cluster),
+    catch meck:unload(net_adm),
+    catch meck:unload(ra),
     cleanup(ok).
 
 %%====================================================================
@@ -178,17 +182,15 @@ init_cluster_single_node_test() ->
     end.
 
 init_cluster_multi_node_test() ->
-    meck:expect(flurm_db_cluster, init_ra, fun() -> ok end),
-    meck:expect(flurm_db_cluster, server_id, fun(_) -> {flurm_db_ra, node()} end),
-    meck:expect(net_adm, ping, fun(_) -> pang end),  %% Other nodes not reachable
-    meck:expect(flurm_db_cluster, start_cluster, fun(_) -> ok end),
-
-    State = {state, #{cluster_nodes => [node(), 'other@node']}},
-
     case node() of
         nonode@nohost ->
             ok;
         _ ->
+            meck:expect(flurm_db_cluster, init_ra, fun() -> ok end),
+            meck:expect(flurm_db_cluster, server_id, fun(_) -> {flurm_db_ra, node()} end),
+            meck:expect(net_adm, ping, fun(_) -> pang end),  %% Other nodes not reachable
+            meck:expect(flurm_db_cluster, start_cluster, fun(_) -> ok end),
+            State = {state, #{cluster_nodes => [node(), 'other@node']}},
             {stop, normal, State} =
                 flurm_db_ra_starter:handle_info(init_cluster, State)
     end.
@@ -228,16 +230,14 @@ find_cluster_empty_test() ->
     end.
 
 find_cluster_unreachable_test() ->
-    meck:expect(flurm_db_cluster, init_ra, fun() -> ok end),
-    meck:expect(net_adm, ping, fun(_) -> pang end),
-    meck:expect(flurm_db_cluster, start_cluster, fun(_) -> ok end),
-
-    State = {state, #{cluster_nodes => [node(), 'unreachable@node']}},
-
     case node() of
         nonode@nohost ->
             ok;
         _ ->
+            meck:expect(flurm_db_cluster, init_ra, fun() -> ok end),
+            meck:expect(net_adm, ping, fun(_) -> pang end),
+            meck:expect(flurm_db_cluster, start_cluster, fun(_) -> ok end),
+            State = {state, #{cluster_nodes => [node(), 'unreachable@node']}},
             {stop, normal, State} =
                 flurm_db_ra_starter:handle_info(init_cluster, State)
     end.
@@ -275,35 +275,31 @@ init_cluster_start_fails_test() ->
     end.
 
 init_cluster_node_not_in_list_test() ->
-    %% Test when local node is not in cluster_nodes list
-    meck:expect(flurm_db_cluster, init_ra, fun() -> ok end),
-    meck:expect(net_adm, ping, fun(_) -> pang end),  %% Can't reach other nodes
-
-    State = {state, #{cluster_nodes => ['other1@node', 'other2@node']}},
-
     case node() of
         nonode@nohost ->
             ok;
         _ ->
+            %% Test when local node is not in cluster_nodes list
+            meck:expect(flurm_db_cluster, init_ra, fun() -> ok end),
+            meck:expect(net_adm, ping, fun(_) -> pang end),  %% Can't reach other nodes
+            State = {state, #{cluster_nodes => ['other1@node', 'other2@node']}},
             %% Should fail since we can't find any cluster
             {stop, normal, State} =
                 flurm_db_ra_starter:handle_info(init_cluster, State)
     end.
 
 find_cluster_reachable_with_ra_test() ->
-    %% Test when we can reach a node with Ra running
-    meck:expect(flurm_db_cluster, init_ra, fun() -> ok end),
-    meck:expect(net_adm, ping, fun('other@node') -> pong end),
-    meck:expect(flurm_db_cluster, server_id, fun(N) -> {flurm_db_ra, N} end),
-    meck:expect(ra, members, fun(_) -> {ok, [{flurm_db_ra, 'other@node'}], {flurm_db_ra, 'other@node'}} end),
-    meck:expect(flurm_db_cluster, join_cluster, fun(_) -> ok end),
-
-    State = {state, #{cluster_nodes => [node(), 'other@node']}},
-
     case node() of
         nonode@nohost ->
             ok;
         _ ->
+            %% Test when we can reach a node with Ra running
+            meck:expect(flurm_db_cluster, init_ra, fun() -> ok end),
+            meck:expect(net_adm, ping, fun('other@node') -> pong end),
+            meck:expect(flurm_db_cluster, server_id, fun(N) -> {flurm_db_ra, N} end),
+            meck:expect(ra, members, fun(_) -> {ok, [{flurm_db_ra, 'other@node'}], {flurm_db_ra, 'other@node'}} end),
+            meck:expect(flurm_db_cluster, join_cluster, fun(_) -> ok end),
+            State = {state, #{cluster_nodes => [node(), 'other@node']}},
             {stop, normal, State} =
                 flurm_db_ra_starter:handle_info(init_cluster, State)
     end.

@@ -51,7 +51,7 @@ job_registry_test_() ->
 setup() ->
     application:ensure_all_started(sasl),
     catch meck:unload(flurm_job),
-    meck:new(flurm_job, [passthrough, non_strict]),
+    meck:new(flurm_job, [passthrough, no_passthrough_cover, non_strict]),
     meck:expect(flurm_job, get_info, fun(_Pid) ->
         {ok, #{
             user_id => 1000,
@@ -522,7 +522,7 @@ start_link_edge_cases_test_() ->
 setup_edge_cases() ->
     application:ensure_all_started(sasl),
     catch meck:unload(flurm_job),
-    meck:new(flurm_job, [passthrough, non_strict]),
+    meck:new(flurm_job, [passthrough, no_passthrough_cover, non_strict]),
     meck:expect(flurm_job, get_info, fun(_Pid) ->
         {ok, #{
             user_id => 1000,

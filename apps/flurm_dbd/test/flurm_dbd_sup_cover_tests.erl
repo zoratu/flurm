@@ -43,8 +43,9 @@ sup_pure_test_() ->
      ]}.
 
 setup_sup_pure() ->
+    catch meck:unload(flurm_dbd_sup),
     catch meck:unload(lager),
-    meck:new(lager, [passthrough, no_link, non_strict]),
+    meck:new(lager, [passthrough, no_passthrough_cover, no_link, non_strict]),
     meck:expect(lager, info,    fun(_) -> ok end),
     meck:expect(lager, info,    fun(_, _) -> ok end),
     meck:expect(lager, debug,   fun(_, _) -> ok end),
@@ -147,12 +148,14 @@ sup_dynamic_test_() ->
       {"start_ra_cluster/1 error",       fun test_start_ra_error/0},
       {"start_ra_cluster configured nodes", fun test_start_ra_configured/0},
       {"ra_cluster_info success",        fun test_ra_info_success/0},
-      {"ra_cluster_info error",          fun test_ra_info_error/0}
+      {"ra_cluster_info error",          fun test_ra_info_error/0},
+      {"ra_cluster_info catch branch",   fun test_ra_info_catch/0}
      ]}.
 
 setup_sup_dynamic() ->
+    catch meck:unload(flurm_dbd_sup),
     catch meck:unload(lager),
-    meck:new(lager, [passthrough, no_link, non_strict]),
+    meck:new(lager, [passthrough, no_passthrough_cover, no_link, non_strict]),
     meck:expect(lager, info,    fun(_) -> ok end),
     meck:expect(lager, info,    fun(_, _) -> ok end),
     meck:expect(lager, debug,   fun(_, _) -> ok end),
@@ -237,6 +240,10 @@ test_ra_info_error() ->
     meck:expect(ra, members, fun(_) -> {error, noproc} end),
     ?assertMatch({error, _}, flurm_dbd_sup:ra_cluster_info()).
 
+test_ra_info_catch() ->
+    meck:expect(ra, members, fun(_) -> erlang:error(crash) end),
+    ?assertEqual({error, crash}, flurm_dbd_sup:ra_cluster_info()).
+
 %%====================================================================
 %% flurm_dbd_storage gen_server tests
 %%====================================================================
@@ -267,7 +274,7 @@ storage_test_() ->
 
 setup_storage() ->
     catch meck:unload(lager),
-    meck:new(lager, [passthrough, no_link, non_strict]),
+    meck:new(lager, [passthrough, no_passthrough_cover, no_link, non_strict]),
     meck:expect(lager, info,    fun(_) -> ok end),
     meck:expect(lager, info,    fun(_, _) -> ok end),
     meck:expect(lager, debug,   fun(_, _) -> ok end),

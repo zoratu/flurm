@@ -451,14 +451,12 @@ handle_call_heal_partition_success_test() ->
     ok.
 
 handle_call_heal_partition_with_no_autoheal_test() ->
-    %% When auto_heal is false, the timer ref is undefined in partitioned_nodes
-    %% However, the module uses maps:get(Node, Map, undefined) which returns
-    %% undefined for both "key not found" and "key found with undefined value"
-    %% This test documents the actual behavior: undefined value = not partitioned
+    %% When auto_heal is false, the timer ref is undefined in partitioned_nodes.
+    %% We still consider this node partitioned and allow manual healing.
     State = make_state_with_partitions(#{'some@node' => undefined}),
-    {reply, Result, _NewState} = flurm_chaos:handle_call({heal_partition, 'some@node'}, {self(), make_ref()}, State),
-    %% Due to the maps:get behavior, undefined value is treated as not_partitioned
-    ?assertEqual({error, not_partitioned}, Result),
+    {reply, Result, NewState} = flurm_chaos:handle_call({heal_partition, 'some@node'}, {self(), make_ref()}, State),
+    ?assertEqual(ok, Result),
+    ?assertNot(maps:is_key('some@node', NewState#state.partitioned_nodes)),
     ok.
 
 handle_call_heal_all_partitions_test() ->

@@ -41,7 +41,7 @@ setup() ->
     file:make_dir(TmpDir),
 
     %% Mock external dependencies
-    meck:new(flurm_controller_connector, [passthrough, non_strict]),
+    meck:new(flurm_controller_connector, [passthrough, no_passthrough_cover, non_strict]),
     meck:expect(flurm_controller_connector, report_job_complete, fun(_, _, _, _) -> ok end),
     meck:expect(flurm_controller_connector, report_job_failed, fun(_, _, _, _) -> ok end),
 
@@ -457,7 +457,7 @@ setup_prolog_epilog() ->
     ok = file:change_mode(EpilogPath, 8#755),
 
     %% Mock external dependencies
-    meck:new(flurm_controller_connector, [passthrough, non_strict]),
+    meck:new(flurm_controller_connector, [passthrough, no_passthrough_cover, non_strict]),
     meck:expect(flurm_controller_connector, report_job_complete, fun(_, _, _, _) -> ok end),
     meck:expect(flurm_controller_connector, report_job_failed, fun(_, _, _, _) -> ok end),
 
@@ -653,7 +653,7 @@ internal_functions_test_() ->
 
 setup_internal() ->
     catch meck:unload(flurm_controller_connector),
-    meck:new(flurm_controller_connector, [passthrough, non_strict]),
+    meck:new(flurm_controller_connector, [passthrough, no_passthrough_cover, non_strict]),
     meck:expect(flurm_controller_connector, report_job_complete, fun(_, _, _, _) -> ok end),
     meck:expect(flurm_controller_connector, report_job_failed, fun(_, _, _, _) -> ok end),
     catch application:ensure_all_started(lager),

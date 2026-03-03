@@ -571,7 +571,7 @@ test_real_loop_tcp_success_path() ->
     {ok, Pid} = flurm_dbd_acceptor:start_link(fake_ref, acceptor_transport, []),
     Pid ! {tcp, fake_socket, Packet},
     timer:sleep(10),
-    ?assert(is_process_alive(Pid)),
+    ?assert(meck:num_calls(acceptor_transport, send, ['_', '_']) >= 1),
     Pid ! {tcp_closed, fake_socket},
     timer:sleep(10),
     ?assertEqual(false, is_process_alive(Pid)).

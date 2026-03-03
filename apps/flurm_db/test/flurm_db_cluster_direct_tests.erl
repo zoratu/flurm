@@ -70,9 +70,9 @@ init_ra_test_() ->
 %%====================================================================
 
 setup_ra_mock() ->
-    meck:new(ra, [passthrough]),
-    meck:new(ra_system, [passthrough]),
-    meck:new(lager, [passthrough]),
+    meck:new(ra, [passthrough, no_passthrough_cover]),
+    meck:new(ra_system, [passthrough, no_passthrough_cover]),
+    meck:new(lager, [passthrough, no_passthrough_cover]),
     meck:expect(lager, info, fun(_, _) -> ok end),
     meck:expect(lager, warning, fun(_, _) -> ok end),
     meck:expect(lager, error, fun(_, _) -> ok end),
@@ -86,9 +86,9 @@ cleanup_ra_mock(_) ->
     ok.
 
 setup_for_init_ra() ->
-    meck:new(ra, [passthrough]),
-    meck:new(ra_system, [passthrough]),
-    meck:new(lager, [passthrough]),
+    meck:new(ra, [passthrough, no_passthrough_cover]),
+    meck:new(ra_system, [passthrough, no_passthrough_cover]),
+    meck:new(lager, [passthrough, no_passthrough_cover]),
     meck:expect(lager, info, fun(_, _) -> ok end),
     meck:expect(lager, warning, fun(_, _) -> ok end),
     meck:expect(lager, error, fun(_, _) -> ok end),

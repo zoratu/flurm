@@ -18,9 +18,9 @@ init_or_join_cluster_test_() ->
     {"init_or_join_cluster/1 handles various node configurations",
      {foreach,
       fun() ->
-          meck:new(flurm_db_cluster, [passthrough]),
-          meck:new(net_adm, [unstick, passthrough]),
-          meck:new(ra, [unstick, passthrough])
+          meck:new(flurm_db_cluster, [passthrough, no_passthrough_cover]),
+          meck:new(net_adm, [unstick, passthrough, no_passthrough_cover]),
+          meck:new(ra, [unstick, passthrough, no_passthrough_cover])
       end,
       fun(_) ->
           meck:unload(flurm_db_cluster),
@@ -102,9 +102,9 @@ find_existing_cluster_test_() ->
     {"find_existing_cluster/1 searches for existing clusters",
      {foreach,
       fun() ->
-          meck:new(flurm_db_cluster, [passthrough]),
-          meck:new(net_adm, [unstick, passthrough]),
-          meck:new(ra, [unstick, passthrough])
+          meck:new(flurm_db_cluster, [passthrough, no_passthrough_cover]),
+          meck:new(net_adm, [unstick, passthrough, no_passthrough_cover]),
+          meck:new(ra, [unstick, passthrough, no_passthrough_cover])
       end,
       fun(_) ->
           meck:unload(flurm_db_cluster),
@@ -213,9 +213,9 @@ edge_cases_test_() ->
     {"edge cases for cluster functions",
      {foreach,
       fun() ->
-          meck:new(flurm_db_cluster, [passthrough]),
-          meck:new(net_adm, [unstick, passthrough]),
-          meck:new(ra, [unstick, passthrough])
+          meck:new(flurm_db_cluster, [passthrough, no_passthrough_cover]),
+          meck:new(net_adm, [unstick, passthrough, no_passthrough_cover]),
+          meck:new(ra, [unstick, passthrough, no_passthrough_cover])
       end,
       fun(_) ->
           meck:unload(flurm_db_cluster),

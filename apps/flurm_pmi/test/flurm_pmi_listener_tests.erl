@@ -953,7 +953,7 @@ test_init_job_not_found() ->
     _Pid = start_listener(101, 0, 1),
     timer:sleep(100),
     %% Now mock get_job_info to return error
-    meck:new(flurm_pmi_manager, [passthrough]),
+    meck:new(flurm_pmi_manager, [passthrough, no_passthrough_cover]),
     meck:expect(flurm_pmi_manager, get_job_info, fun(_J, _S) -> {error, not_found} end),
     try
         Socket = connect_to_listener(101, 0),
@@ -969,7 +969,7 @@ test_get_maxes_job_not_found() ->
     %% Start listener with real manager first (uses job 102)
     _Pid = start_listener(102, 0, 1),
     timer:sleep(100),
-    meck:new(flurm_pmi_manager, [passthrough]),
+    meck:new(flurm_pmi_manager, [passthrough, no_passthrough_cover]),
     meck:expect(flurm_pmi_manager, get_job_info, fun(_J, _S) -> {error, not_found} end),
     try
         Socket = connect_to_listener(102, 0),
@@ -985,7 +985,7 @@ test_get_kvsname_job_not_found() ->
     %% Start listener with real manager first (uses job 103)
     _Pid = start_listener(103, 0, 1),
     timer:sleep(100),
-    meck:new(flurm_pmi_manager, [passthrough]),
+    meck:new(flurm_pmi_manager, [passthrough, no_passthrough_cover]),
     meck:expect(flurm_pmi_manager, get_kvs_name, fun(_J, _S) -> {error, not_found} end),
     try
         Socket = connect_to_listener(103, 0),
@@ -1003,7 +1003,7 @@ test_barrier_error() ->
     timer:sleep(100),
     Socket = connect_to_listener(104, 0),
     {ok, _} = send_pmi_cmd(Socket, <<"cmd=init pmi_version=1 pmi_subversion=1 rank=0">>),
-    meck:new(flurm_pmi_manager, [passthrough]),
+    meck:new(flurm_pmi_manager, [passthrough, no_passthrough_cover]),
     meck:expect(flurm_pmi_manager, barrier_in, fun(_J, _S, _R) -> {error, barrier_failed} end),
     try
         {ok, RawResp} = send_pmi_cmd(Socket, <<"cmd=barrier_in">>),
@@ -1020,7 +1020,7 @@ test_put_error() ->
     timer:sleep(100),
     Socket = connect_to_listener(105, 0),
     {ok, _} = send_pmi_cmd(Socket, <<"cmd=init pmi_version=1 pmi_subversion=1">>),
-    meck:new(flurm_pmi_manager, [passthrough]),
+    meck:new(flurm_pmi_manager, [passthrough, no_passthrough_cover]),
     meck:expect(flurm_pmi_manager, kvs_put, fun(_J, _S, _K, _V) -> {error, kvs_full} end),
     try
         {ok, RawResp} = send_pmi_cmd(Socket, <<"cmd=put key=k value=v">>),

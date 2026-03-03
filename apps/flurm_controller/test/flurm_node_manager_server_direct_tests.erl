@@ -52,13 +52,13 @@ node_manager_test_() ->
 
 setup() ->
     catch meck:unload(flurm_core),
-    meck:new(flurm_core, [passthrough, non_strict]),
+    meck:new(flurm_core, [passthrough, no_passthrough_cover, non_strict]),
     catch meck:unload(flurm_scheduler),
-    meck:new(flurm_scheduler, [passthrough, non_strict]),
+    meck:new(flurm_scheduler, [passthrough, no_passthrough_cover, non_strict]),
     catch meck:unload(flurm_config_server),
-    meck:new(flurm_config_server, [passthrough, non_strict]),
+    meck:new(flurm_config_server, [passthrough, no_passthrough_cover, non_strict]),
     catch meck:unload(flurm_gres),
-    meck:new(flurm_gres, [passthrough, non_strict]),
+    meck:new(flurm_gres, [passthrough, no_passthrough_cover, non_strict]),
 
     meck:expect(flurm_core, new_node, fun(Spec) ->
         #node{

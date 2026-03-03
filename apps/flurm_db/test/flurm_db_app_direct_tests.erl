@@ -23,9 +23,9 @@ app_callbacks_test_() ->
                  case SetupResult of
                      {ok, _Mocks} ->
                          [
-                          {"Start application", fun start_test/0},
-                          {"Stop application - cluster running", fun stop_cluster_running_test/0},
-                          {"Stop application - cluster not running", fun stop_cluster_not_running_test/0}
+                          {"Start application", fun start_case/0},
+                          {"Stop application - cluster running", fun stop_cluster_running_case/0},
+                          {"Stop application - cluster not running", fun stop_cluster_not_running_case/0}
                          ];
                      {error, Reason} ->
                          [{atom_to_list(?MODULE) ++ " skipped",
@@ -46,12 +46,12 @@ build_config_test_() ->
                  case SetupResult of
                      {ok, _Mocks} ->
                          [
-                          {"Build config - no env", fun build_config_no_env_test/0},
-                          {"Build config - with cluster_nodes", fun build_config_cluster_nodes_test/0},
-                          {"Build config - with join_node", fun build_config_join_node_test/0},
-                          {"Build config - with both", fun build_config_both_test/0},
-                          {"Build config - invalid cluster_nodes", fun build_config_invalid_cluster_nodes_test/0},
-                          {"Build config - invalid join_node", fun build_config_invalid_join_node_test/0}
+                          {"Build config - no env", fun build_config_no_env_case/0},
+                          {"Build config - with cluster_nodes", fun build_config_cluster_nodes_case/0},
+                          {"Build config - with join_node", fun build_config_join_node_case/0},
+                          {"Build config - with both", fun build_config_both_case/0},
+                          {"Build config - invalid cluster_nodes", fun build_config_invalid_cluster_nodes_case/0},
+                          {"Build config - invalid join_node", fun build_config_invalid_join_node_case/0}
                          ];
                      {error, Reason} ->
                          [{atom_to_list(?MODULE) ++ " skipped",
@@ -85,9 +85,9 @@ setup() ->
         application:unset_env(flurm_db, join_node),
 
         %% Create mocks with error handling
-        Mocks1 = safe_meck_new(flurm_db_sup, [passthrough], Mocks),
-        Mocks2 = safe_meck_new(flurm_db_cluster, [passthrough], Mocks1),
-        Mocks3 = safe_meck_new(lager, [passthrough, non_strict, no_link], Mocks2),
+        Mocks1 = safe_meck_new(flurm_db_sup, [passthrough, no_passthrough_cover], Mocks),
+        Mocks2 = safe_meck_new(flurm_db_cluster, [passthrough, no_passthrough_cover], Mocks1),
+        Mocks3 = safe_meck_new(lager, [passthrough, no_passthrough_cover, non_strict, no_link], Mocks2),
 
         %% Setup default expectations for lager (it may be called anywhere)
         case lists:member(lager, Mocks3) of
@@ -151,33 +151,35 @@ cleanup_mocks(Mocks) ->
 %% Application Callback Tests
 %%====================================================================
 
-start_test() ->
+start_case() ->
+    meck:reset(flurm_db_sup),
     meck:expect(flurm_db_sup, start_link, fun(_) -> {ok, self()} end),
 
     {ok, Pid} = flurm_db_app:start(normal, []),
     ?assert(is_pid(Pid)),
     ?assert(meck:called(flurm_db_sup, start_link, '_')).
 
-stop_cluster_running_test() ->
+stop_cluster_running_case() ->
+    meck:reset(flurm_db_cluster),
     meck:expect(flurm_db_cluster, status, fun() -> {ok, #{state => leader}} end),
     meck:expect(flurm_db_cluster, leave_cluster, fun() -> ok end),
 
     ok = flurm_db_app:stop(state),
     ?assert(meck:called(flurm_db_cluster, leave_cluster, [])).
 
-stop_cluster_not_running_test() ->
+stop_cluster_not_running_case() ->
+    meck:reset(flurm_db_cluster),
     meck:expect(flurm_db_cluster, status, fun() -> {error, not_started} end),
+    meck:expect(flurm_db_cluster, leave_cluster, fun() -> ok end),
 
     ok = flurm_db_app:stop(state),
-    %% Reset the expectation to avoid interference with other tests
-    meck:expect(flurm_db_cluster, leave_cluster, fun() -> ok end),
-    ?assertNot(meck:called(flurm_db_cluster, leave_cluster, [])).
+    ?assertEqual(0, meck:num_calls(flurm_db_cluster, leave_cluster, [])).
 
 %%====================================================================
 %% Build Config Tests
 %%====================================================================
 
-build_config_no_env_test() ->
+build_config_no_env_case() ->
     %% Clear env
     application:unset_env(flurm_db, cluster_nodes),
     application:unset_env(flurm_db, join_node),
@@ -190,7 +192,7 @@ build_config_no_env_test() ->
 
     {ok, _} = flurm_db_app:start(normal, []).
 
-build_config_cluster_nodes_test() ->
+build_config_cluster_nodes_case() ->
     application:set_env(flurm_db, cluster_nodes, [node(), 'other@node']),
     application:unset_env(flurm_db, join_node),
 
@@ -202,7 +204,7 @@ build_config_cluster_nodes_test() ->
 
     {ok, _} = flurm_db_app:start(normal, []).
 
-build_config_join_node_test() ->
+build_config_join_node_case() ->
     application:unset_env(flurm_db, cluster_nodes),
     application:set_env(flurm_db, join_node, 'other@node'),
 
@@ -214,7 +216,7 @@ build_config_join_node_test() ->
 
     {ok, _} = flurm_db_app:start(normal, []).
 
-build_config_both_test() ->
+build_config_both_case() ->
     application:set_env(flurm_db, cluster_nodes, [node()]),
     application:set_env(flurm_db, join_node, 'other@node'),
 
@@ -226,7 +228,7 @@ build_config_both_test() ->
 
     {ok, _} = flurm_db_app:start(normal, []).
 
-build_config_invalid_cluster_nodes_test() ->
+build_config_invalid_cluster_nodes_case() ->
     %% Test with invalid cluster_nodes (not a list)
     application:set_env(flurm_db, cluster_nodes, not_a_list),
     application:unset_env(flurm_db, join_node),
@@ -238,7 +240,7 @@ build_config_invalid_cluster_nodes_test() ->
 
     {ok, _} = flurm_db_app:start(normal, []).
 
-build_config_invalid_join_node_test() ->
+build_config_invalid_join_node_case() ->
     %% Test with invalid join_node (not an atom)
     application:unset_env(flurm_db, cluster_nodes),
     application:set_env(flurm_db, join_node, "not_an_atom"),

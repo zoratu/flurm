@@ -110,12 +110,13 @@ init_test_() ->
          ?assertEqual(5, maps:get(intensity, SupFlags)),
          ?assertEqual(10, maps:get(period, SupFlags)),
 
-         %% Check we have 2 children
-         ?assertEqual(2, length(Children)),
+         %% Check we have 3 children
+         ?assertEqual(3, length(Children)),
 
          %% Check child IDs
          ChildIds = [maps:get(id, Child) || Child <- Children],
          ?assert(lists:member(flurm_dbd_storage, ChildIds)),
+         ?assert(lists:member(flurm_dbd_fragment, ChildIds)),
          ?assert(lists:member(flurm_dbd_server, ChildIds))
      end}
     ].

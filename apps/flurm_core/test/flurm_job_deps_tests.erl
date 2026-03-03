@@ -1211,7 +1211,7 @@ release_job_success_test_() ->
     {setup,
      fun() ->
          catch meck:unload(flurm_job_manager),
-         meck:new(flurm_job_manager, [passthrough, non_strict]),
+         meck:new(flurm_job_manager, [passthrough, no_passthrough_cover, non_strict]),
          meck:expect(flurm_job_manager, release_job, fun(_) -> ok end),
          {ok, Pid} = flurm_job_deps:start_link(),
          #{deps_pid => Pid}
@@ -1234,7 +1234,7 @@ release_job_error_test_() ->
     {setup,
      fun() ->
          catch meck:unload(flurm_job_manager),
-         meck:new(flurm_job_manager, [passthrough, non_strict]),
+         meck:new(flurm_job_manager, [passthrough, no_passthrough_cover, non_strict]),
          meck:expect(flurm_job_manager, release_job, fun(_) -> {error, not_found} end),
          {ok, Pid} = flurm_job_deps:start_link(),
          #{deps_pid => Pid}
@@ -1257,7 +1257,7 @@ hold_for_deps_success_test_() ->
     {setup,
      fun() ->
          catch meck:unload(flurm_job_manager),
-         meck:new(flurm_job_manager, [passthrough, non_strict]),
+         meck:new(flurm_job_manager, [passthrough, no_passthrough_cover, non_strict]),
          meck:expect(flurm_job_manager, hold_job, fun(_) -> ok end),
          {ok, Pid} = flurm_job_deps:start_link(),
          #{deps_pid => Pid}
@@ -1281,7 +1281,7 @@ hold_for_deps_error_test_() ->
     {setup,
      fun() ->
          catch meck:unload(flurm_job_manager),
-         meck:new(flurm_job_manager, [passthrough, non_strict]),
+         meck:new(flurm_job_manager, [passthrough, no_passthrough_cover, non_strict]),
          meck:expect(flurm_job_manager, hold_job, fun(_) -> {error, not_found} end),
          {ok, Pid} = flurm_job_deps:start_link(),
          #{deps_pid => Pid}
@@ -1328,8 +1328,8 @@ dependency_already_satisfied_test_() ->
      fun() ->
          catch meck:unload(flurm_job_manager),
          catch meck:unload(flurm_job_registry),
-         meck:new(flurm_job_manager, [passthrough, non_strict]),
-         meck:new(flurm_job_registry, [passthrough, non_strict]),
+         meck:new(flurm_job_manager, [passthrough, no_passthrough_cover, non_strict]),
+         meck:new(flurm_job_registry, [passthrough, no_passthrough_cover, non_strict]),
          %% Mock get_job to return a completed job
          meck:expect(flurm_job_manager, get_job, fun(9999) ->
              {ok, {job, 9999, <<"test">>, <<"user">>, <<"default">>, completed, <<>>, 1, 1, 1024, 3600, 100, 0, 0, 0, [], undefined, <<>>, <<"normal">>}}
@@ -1435,8 +1435,8 @@ check_target_satisfies_with_job_manager_test_() ->
      fun() ->
          catch meck:unload(flurm_job_manager),
          catch meck:unload(flurm_job_registry),
-         meck:new(flurm_job_manager, [passthrough, non_strict]),
-         meck:new(flurm_job_registry, [passthrough, non_strict]),
+         meck:new(flurm_job_manager, [passthrough, no_passthrough_cover, non_strict]),
+         meck:new(flurm_job_registry, [passthrough, no_passthrough_cover, non_strict]),
          %% Mock get_job to return a running job (satisfies after_start)
          meck:expect(flurm_job_manager, get_job, fun(14000) ->
              {ok, {job, 14000, <<"test">>, <<"user">>, <<"default">>, running, <<>>, 1, 1, 1024, 3600, 100, 0, 0, 0, [], undefined, <<>>, <<"normal">>}}
@@ -1467,8 +1467,8 @@ get_job_state_via_registry_test_() ->
      fun() ->
          catch meck:unload(flurm_job_manager),
          catch meck:unload(flurm_job_registry),
-         meck:new(flurm_job_manager, [passthrough, non_strict]),
-         meck:new(flurm_job_registry, [passthrough, non_strict]),
+         meck:new(flurm_job_manager, [passthrough, no_passthrough_cover, non_strict]),
+         meck:new(flurm_job_registry, [passthrough, no_passthrough_cover, non_strict]),
          %% Mock get_job to fail
          meck:expect(flurm_job_manager, get_job, fun(_) -> {error, not_found} end),
          %% Mock job_registry to return a job entry
@@ -1525,8 +1525,8 @@ notify_scheduler_release_success_test_() ->
      fun() ->
          catch meck:unload(flurm_job_manager),
          catch meck:unload(flurm_scheduler),
-         meck:new(flurm_job_manager, [passthrough, non_strict]),
-         meck:new(flurm_scheduler, [passthrough, non_strict]),
+         meck:new(flurm_job_manager, [passthrough, no_passthrough_cover, non_strict]),
+         meck:new(flurm_scheduler, [passthrough, no_passthrough_cover, non_strict]),
          meck:expect(flurm_job_manager, release_job, fun(_) -> ok end),
          meck:expect(flurm_scheduler, job_deps_satisfied, fun(_) -> ok end),
          {ok, Pid} = flurm_job_deps:start_link(),
@@ -1559,8 +1559,8 @@ notify_scheduler_already_pending_test_() ->
      fun() ->
          catch meck:unload(flurm_job_manager),
          catch meck:unload(flurm_scheduler),
-         meck:new(flurm_job_manager, [passthrough, non_strict]),
-         meck:new(flurm_scheduler, [passthrough, non_strict]),
+         meck:new(flurm_job_manager, [passthrough, no_passthrough_cover, non_strict]),
+         meck:new(flurm_scheduler, [passthrough, no_passthrough_cover, non_strict]),
          meck:expect(flurm_job_manager, release_job, fun(_) -> {error, {invalid_state, pending}} end),
          meck:expect(flurm_scheduler, job_deps_satisfied, fun(_) -> ok end),
          {ok, Pid} = flurm_job_deps:start_link(),
@@ -1589,8 +1589,8 @@ notify_scheduler_release_error_test_() ->
      fun() ->
          catch meck:unload(flurm_job_manager),
          catch meck:unload(lager),
-         meck:new(flurm_job_manager, [passthrough, non_strict]),
-         meck:new(lager, [passthrough, non_strict]),
+         meck:new(flurm_job_manager, [passthrough, no_passthrough_cover, non_strict]),
+         meck:new(lager, [passthrough, no_passthrough_cover, non_strict]),
          meck:expect(flurm_job_manager, release_job, fun(_) -> {error, some_other_error} end),
          meck:expect(lager, warning, fun(_, _) -> ok end),
          {ok, Pid} = flurm_job_deps:start_link(),
@@ -1644,8 +1644,8 @@ clear_completed_deps_terminal_test_() ->
      fun() ->
          catch meck:unload(flurm_job_manager),
          catch meck:unload(flurm_job_registry),
-         meck:new(flurm_job_manager, [passthrough, non_strict]),
-         meck:new(flurm_job_registry, [passthrough, non_strict]),
+         meck:new(flurm_job_manager, [passthrough, no_passthrough_cover, non_strict]),
+         meck:new(flurm_job_registry, [passthrough, no_passthrough_cover, non_strict]),
          %% Mock get_job to return a completed job for cleanup
          meck:expect(flurm_job_manager, get_job, fun(21000) ->
              {ok, {job, 21000, <<"test">>, <<"user">>, <<"default">>, completed, <<>>, 1, 1, 1024, 3600, 100, 0, 0, 0, [], undefined, <<>>, <<"normal">>}}
@@ -1676,8 +1676,8 @@ dependency_satisfied_at_add_skip_dependents_test_() ->
      fun() ->
          catch meck:unload(flurm_job_manager),
          catch meck:unload(flurm_job_registry),
-         meck:new(flurm_job_manager, [passthrough, non_strict]),
-         meck:new(flurm_job_registry, [passthrough, non_strict]),
+         meck:new(flurm_job_manager, [passthrough, no_passthrough_cover, non_strict]),
+         meck:new(flurm_job_registry, [passthrough, no_passthrough_cover, non_strict]),
          %% Mock get_job to return a completed job
          meck:expect(flurm_job_manager, get_job, fun(22000) ->
              {ok, {job, 22000, <<"test">>, <<"user">>, <<"default">>, completed, <<>>, 1, 1, 1024, 3600, 100, 0, 0, 0, [], undefined, <<>>, <<"normal">>}}

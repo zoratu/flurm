@@ -58,7 +58,7 @@ setup() ->
         end
     end),
     %% Mock lager to suppress log output
-    meck:new(lager, [non_strict, no_link, passthrough]),
+    meck:new(lager, [non_strict, no_link, passthrough, no_passthrough_cover]),
     meck:expect(lager, info, fun(_Fmt) -> ok end),
     meck:expect(lager, info, fun(_Fmt, _Args) -> ok end),
     meck:expect(lager, warning, fun(_Fmt, _Args) -> ok end),
@@ -765,7 +765,7 @@ advanced_error_handling_test_() ->
          meck:expect(mysql, stop, fun(_Pid) -> ok end),
          meck:expect(mysql, query, fun(_Conn, _Query) -> {ok, [], []} end),
          meck:expect(mysql, query, fun(_Conn, _Query, _Params) -> ok end),
-         meck:new(lager, [non_strict, no_link, passthrough]),
+         meck:new(lager, [non_strict, no_link, passthrough, no_passthrough_cover]),
          meck:expect(lager, info, fun(_Fmt) -> ok end),
          meck:expect(lager, info, fun(_Fmt, _Args) -> ok end),
          meck:expect(lager, warning, fun(_Fmt, _Args) -> ok end),

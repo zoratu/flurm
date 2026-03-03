@@ -270,7 +270,7 @@ setup_hostname() ->
     catch meck:unload(inet),
     catch meck:unload(flurm_pmi_listener),
     catch meck:unload(flurm_pmi_manager),
-    meck:new(inet, [unstick, passthrough]),
+    meck:new(inet, [unstick, passthrough, no_passthrough_cover]),
     meck:new(flurm_pmi_listener, [non_strict]),
     meck:new(flurm_pmi_manager, [non_strict]),
     meck:expect(flurm_pmi_listener, get_socket_path, fun(JobId, StepId) ->

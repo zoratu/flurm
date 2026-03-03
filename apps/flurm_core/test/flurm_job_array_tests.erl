@@ -945,7 +945,7 @@ create_with_invalid_spec_test_() ->
              {"Create array job with binary spec that returns parse error", fun() ->
                  %% Mock parse_array_spec to return an error for specific spec
                  catch meck:unload(flurm_job_array),
-                 meck:new(flurm_job_array, [passthrough]),
+                 meck:new(flurm_job_array, [passthrough, no_passthrough_cover]),
                  meck:expect(flurm_job_array, parse_array_spec,
                      fun(<<"invalid-spec">>) -> {error, invalid_spec};
                         (Other) -> meck:passthrough([Other])
@@ -961,7 +961,7 @@ create_with_invalid_spec_test_() ->
              {"Expand array with binary spec that returns parse error", fun() ->
                  %% Mock parse_array_spec to return an error for specific spec
                  catch meck:unload(flurm_job_array),
-                 meck:new(flurm_job_array, [passthrough]),
+                 meck:new(flurm_job_array, [passthrough, no_passthrough_cover]),
                  meck:expect(flurm_job_array, parse_array_spec,
                      fun(<<"bad-expand-spec">>) -> {error, expand_error};
                         (Other) -> meck:passthrough([Other])
@@ -1058,7 +1058,7 @@ parse_error_throw_test_() ->
              {"Parse spec with throw parse_error triggers catch clause", fun() ->
                  %% Mock do_parse_array_spec to throw parse_error
                  catch meck:unload(flurm_job_array),
-                 meck:new(flurm_job_array, [passthrough]),
+                 meck:new(flurm_job_array, [passthrough, no_passthrough_cover]),
                  meck:expect(flurm_job_array, do_parse_array_spec,
                      fun("throw-error") -> throw({parse_error, mock_parse_error});
                         (Other) -> meck:passthrough([Other])

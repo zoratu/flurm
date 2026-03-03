@@ -25,7 +25,7 @@ setup() ->
     %% Clean up any previous meck state
     catch meck:unload(flurm_dbd_sup),
     %% Mock flurm_dbd_sup to avoid Ranch dependency
-    meck:new(flurm_dbd_sup, [passthrough, no_link]),
+    meck:new(flurm_dbd_sup, [passthrough, no_passthrough_cover, no_link]),
     meck:expect(flurm_dbd_sup, start_listener, fun() -> {ok, self()} end),
     %% Start fresh server
     {ok, NewPid} = flurm_dbd_server:start_link(),
@@ -853,7 +853,7 @@ handle_info_listener_test_() ->
              end,
              %% Mock to return error
              catch meck:unload(flurm_dbd_sup),
-             meck:new(flurm_dbd_sup, [passthrough, no_link]),
+             meck:new(flurm_dbd_sup, [passthrough, no_passthrough_cover, no_link]),
              meck:expect(flurm_dbd_sup, start_listener, fun() -> {error, test_error} end),
 
              %% Start server - should log error but not crash
@@ -880,6 +880,7 @@ targeted_uncovered_branches_test_() ->
           {"archive/purge non-matching branches", fun test_archive_purge_non_matching/0},
           {"get_associations non-match fold branch", fun test_get_associations_non_match_fold_branch/0},
           {"user/account/range matching fold branches", fun test_query_matching_fold_branches/0},
+          {"range fold non-matching branch", fun test_range_non_matching_fold_branch/0},
           {"event end/cancel with zero start_time branch", fun test_event_end_cancel_zero_start/0},
           {"cancel with nonzero start_time branch", fun test_cancel_nonzero_start_time_branch/0},
           {"submit event integer timestamp branch", fun test_submit_event_integer_timestamp_branch/0},
@@ -933,6 +934,29 @@ test_query_matching_fold_branches() ->
     ?assert(length(ByUser) >= 1),
     ?assert(length(ByAccount) >= 1),
     ?assert(length(InRange) >= 1).
+
+test_range_non_matching_fold_branch() ->
+    Now = erlang:system_time(second),
+    ok = flurm_dbd_server:record_job_start(#{
+        job_id => 12021,
+        user_name => <<"range_user">>,
+        account => <<"range_account">>,
+        state => completed,
+        start_time => Now - 50,
+        end_time => Now - 40
+    }),
+    ok = flurm_dbd_server:record_job_start(#{
+        job_id => 12022,
+        user_name => <<"range_user_2">>,
+        account => <<"range_account_2">>,
+        state => completed,
+        start_time => Now - 5000,
+        end_time => Now - 4900
+    }),
+    _ = sys:get_state(flurm_dbd_server),
+    InRange = flurm_dbd_server:get_jobs_in_range(Now - 100, Now),
+    ?assert(length(InRange) >= 1),
+    ?assertEqual(false, lists:any(fun(J) -> maps:get(job_id, J, 0) =:= 12022 end, InRange)).
 
 test_event_end_cancel_zero_start() ->
     %% start_time defaults to 0 via submit path

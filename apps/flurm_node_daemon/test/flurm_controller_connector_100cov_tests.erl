@@ -67,7 +67,7 @@ decode_messages_test_() ->
          end},
         {"decode_messages with one complete message",
          fun() ->
-             meck:new(flurm_protocol, [passthrough]),
+             meck:new(flurm_protocol, [passthrough, no_passthrough_cover]),
              meck:expect(flurm_protocol, decode, fun(_) -> {ok, #{type => test_msg}} end),
 
              MsgData = <<"data">>,
@@ -80,7 +80,7 @@ decode_messages_test_() ->
          end},
         {"decode_messages with multiple complete messages",
          fun() ->
-             meck:new(flurm_protocol, [passthrough]),
+             meck:new(flurm_protocol, [passthrough, no_passthrough_cover]),
 
              Counter = ets:new(counter, [public]),
              ets:insert(Counter, {n, 0}),
@@ -103,7 +103,7 @@ decode_messages_test_() ->
          end},
         {"decode_messages with partial trailing message",
          fun() ->
-             meck:new(flurm_protocol, [passthrough]),
+             meck:new(flurm_protocol, [passthrough, no_passthrough_cover]),
              meck:expect(flurm_protocol, decode, fun(_) -> {ok, #{type => complete}} end),
 
              Complete = <<"done">>,
@@ -117,8 +117,8 @@ decode_messages_test_() ->
          end},
         {"decode_messages handles decode error",
          fun() ->
-             meck:new(flurm_protocol, [passthrough]),
-             meck:new(lager, [passthrough]),
+             meck:new(flurm_protocol, [passthrough, no_passthrough_cover]),
+             meck:new(lager, [passthrough, no_passthrough_cover]),
 
              meck:expect(flurm_protocol, decode, fun(_) -> {error, invalid_msg} end),
              meck:expect(lager, warning, fun(_, _) -> ok end),
@@ -187,8 +187,8 @@ detect_features_test_() ->
      [
         {"detect_features with no hardware",
          fun() ->
-             meck:new(filelib, [passthrough, unstick]),
-             meck:new(file, [passthrough, unstick]),
+             meck:new(filelib, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(file, [passthrough, no_passthrough_cover, unstick]),
 
              meck:expect(filelib, is_file, fun("/dev/nvidia0") -> false end),
              meck:expect(filelib, is_dir, fun("/sys/class/infiniband") -> false end),
@@ -199,8 +199,8 @@ detect_features_test_() ->
          end},
         {"detect_features with GPU",
          fun() ->
-             meck:new(filelib, [passthrough, unstick]),
-             meck:new(file, [passthrough, unstick]),
+             meck:new(filelib, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(file, [passthrough, no_passthrough_cover, unstick]),
 
              meck:expect(filelib, is_file, fun("/dev/nvidia0") -> true end),
              meck:expect(filelib, is_dir, fun("/sys/class/infiniband") -> false end),
@@ -211,8 +211,8 @@ detect_features_test_() ->
          end},
         {"detect_features with InfiniBand",
          fun() ->
-             meck:new(filelib, [passthrough, unstick]),
-             meck:new(file, [passthrough, unstick]),
+             meck:new(filelib, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(file, [passthrough, no_passthrough_cover, unstick]),
 
              meck:expect(filelib, is_file, fun("/dev/nvidia0") -> false end),
              meck:expect(filelib, is_dir, fun("/sys/class/infiniband") -> true end),
@@ -223,8 +223,8 @@ detect_features_test_() ->
          end},
         {"detect_features with AVX",
          fun() ->
-             meck:new(filelib, [passthrough, unstick]),
-             meck:new(file, [passthrough, unstick]),
+             meck:new(filelib, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(file, [passthrough, no_passthrough_cover, unstick]),
 
              meck:expect(filelib, is_file, fun("/dev/nvidia0") -> false end),
              meck:expect(filelib, is_dir, fun("/sys/class/infiniband") -> false end),
@@ -237,8 +237,8 @@ detect_features_test_() ->
          end},
         {"detect_features with all hardware",
          fun() ->
-             meck:new(filelib, [passthrough, unstick]),
-             meck:new(file, [passthrough, unstick]),
+             meck:new(filelib, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(file, [passthrough, no_passthrough_cover, unstick]),
 
              meck:expect(filelib, is_file, fun("/dev/nvidia0") -> true end),
              meck:expect(filelib, is_dir, fun("/sys/class/infiniband") -> true end),
@@ -265,7 +265,7 @@ check_cpu_flag_test_() ->
      [
         {"check_cpu_flag finds flag",
          fun() ->
-             meck:new(file, [passthrough, unstick]),
+             meck:new(file, [passthrough, no_passthrough_cover, unstick]),
              meck:expect(file, read_file, fun("/proc/cpuinfo") ->
                  {ok, <<"model name : Intel\nflags : sse avx avx2\n">>}
              end),
@@ -275,7 +275,7 @@ check_cpu_flag_test_() ->
          end},
         {"check_cpu_flag flag not found",
          fun() ->
-             meck:new(file, [passthrough, unstick]),
+             meck:new(file, [passthrough, no_passthrough_cover, unstick]),
              meck:expect(file, read_file, fun("/proc/cpuinfo") ->
                  {ok, <<"flags : sse sse2\n">>}
              end),
@@ -284,7 +284,7 @@ check_cpu_flag_test_() ->
          end},
         {"check_cpu_flag file not readable",
          fun() ->
-             meck:new(file, [passthrough, unstick]),
+             meck:new(file, [passthrough, no_passthrough_cover, unstick]),
              meck:expect(file, read_file, fun("/proc/cpuinfo") -> {error, enoent} end),
 
              ?assertEqual(false, flurm_controller_connector:check_cpu_flag("avx"))
@@ -385,8 +385,8 @@ init_test_() ->
      [
         {"init sets up state and schedules connect",
          fun() ->
-             meck:new(application, [passthrough, unstick]),
-             meck:new(lager, [passthrough]),
+             meck:new(application, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(lager, [passthrough, no_passthrough_cover]),
 
              meck:expect(application, get_env, fun
                  (flurm_node_daemon, controller_host) -> {ok, "controller.local"};
@@ -421,8 +421,8 @@ handle_call_test_() ->
      [
         {"handle_call send_message when connected",
          fun() ->
-             meck:new(gen_tcp, [passthrough, unstick]),
-             meck:new(flurm_protocol, [passthrough]),
+             meck:new(gen_tcp, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(flurm_protocol, [passthrough, no_passthrough_cover]),
 
              meck:expect(flurm_protocol, encode, fun(_) -> {ok, <<"encoded">>} end),
              meck:expect(gen_tcp, send, fun(_, _) -> ok end),
@@ -486,8 +486,8 @@ handle_cast_test_() ->
      [
         {"handle_cast job_complete reports to controller",
          fun() ->
-             meck:new(gen_tcp, [passthrough, unstick]),
-             meck:new(flurm_protocol, [passthrough]),
+             meck:new(gen_tcp, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(flurm_protocol, [passthrough, no_passthrough_cover]),
 
              meck:expect(flurm_protocol, encode, fun(_) -> {ok, <<>>} end),
              meck:expect(gen_tcp, send, fun(_, _) -> ok end),
@@ -504,7 +504,7 @@ handle_cast_test_() ->
          end},
         {"handle_cast job_complete for unknown job",
          fun() ->
-             meck:new(lager, [passthrough]),
+             meck:new(lager, [passthrough, no_passthrough_cover]),
              meck:expect(lager, warning, fun(_, _) -> ok end),
 
              Socket = make_ref(),
@@ -519,8 +519,8 @@ handle_cast_test_() ->
          end},
         {"handle_cast job_failed reports failure",
          fun() ->
-             meck:new(gen_tcp, [passthrough, unstick]),
-             meck:new(flurm_protocol, [passthrough]),
+             meck:new(gen_tcp, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(flurm_protocol, [passthrough, no_passthrough_cover]),
 
              meck:expect(flurm_protocol, encode, fun(_) -> {ok, <<>>} end),
              meck:expect(gen_tcp, send, fun(_, _) -> ok end),
@@ -555,10 +555,10 @@ handle_info_connect_test_() ->
      [
         {"handle_info connect success",
          fun() ->
-             meck:new(gen_tcp, [passthrough, unstick]),
-             meck:new(flurm_protocol, [passthrough]),
-             meck:new(flurm_system_monitor, [passthrough]),
-             meck:new(lager, [passthrough]),
+             meck:new(gen_tcp, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(flurm_protocol, [passthrough, no_passthrough_cover]),
+             meck:new(flurm_system_monitor, [passthrough, no_passthrough_cover]),
+             meck:new(lager, [passthrough, no_passthrough_cover]),
 
              Socket = make_ref(),
              meck:expect(gen_tcp, connect, fun(_, _, _, _) -> {ok, Socket} end),
@@ -581,8 +581,8 @@ handle_info_connect_test_() ->
          end},
         {"handle_info connect failure retries",
          fun() ->
-             meck:new(gen_tcp, [passthrough, unstick]),
-             meck:new(lager, [passthrough]),
+             meck:new(gen_tcp, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(lager, [passthrough, no_passthrough_cover]),
 
              meck:expect(gen_tcp, connect, fun(_, _, _, _) -> {error, econnrefused} end),
              meck:expect(lager, warning, fun(_, _) -> ok end),
@@ -597,8 +597,8 @@ handle_info_connect_test_() ->
          end},
         {"handle_info connect backs off up to max",
          fun() ->
-             meck:new(gen_tcp, [passthrough, unstick]),
-             meck:new(lager, [passthrough]),
+             meck:new(gen_tcp, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(lager, [passthrough, no_passthrough_cover]),
 
              meck:expect(gen_tcp, connect, fun(_, _, _, _) -> {error, econnrefused} end),
              meck:expect(lager, warning, fun(_, _) -> ok end),
@@ -624,11 +624,11 @@ handle_info_heartbeat_test_() ->
      [
         {"handle_info heartbeat when connected",
          fun() ->
-             meck:new(gen_tcp, [passthrough, unstick]),
-             meck:new(flurm_protocol, [passthrough]),
-             meck:new(flurm_system_monitor, [passthrough]),
-             meck:new(flurm_job_executor, [passthrough]),
-             meck:new(lager, [passthrough]),
+             meck:new(gen_tcp, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(flurm_protocol, [passthrough, no_passthrough_cover]),
+             meck:new(flurm_system_monitor, [passthrough, no_passthrough_cover]),
+             meck:new(flurm_job_executor, [passthrough, no_passthrough_cover]),
+             meck:new(lager, [passthrough, no_passthrough_cover]),
 
              meck:expect(gen_tcp, send, fun(_, _) -> ok end),
              meck:expect(flurm_protocol, encode, fun(_) -> {ok, <<>>} end),
@@ -661,11 +661,11 @@ handle_info_heartbeat_test_() ->
          end},
         {"handle_info heartbeat handles send failure",
          fun() ->
-             meck:new(gen_tcp, [passthrough, unstick]),
-             meck:new(flurm_protocol, [passthrough]),
-             meck:new(flurm_system_monitor, [passthrough]),
-             meck:new(flurm_job_executor, [passthrough]),
-             meck:new(lager, [passthrough]),
+             meck:new(gen_tcp, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(flurm_protocol, [passthrough, no_passthrough_cover]),
+             meck:new(flurm_system_monitor, [passthrough, no_passthrough_cover]),
+             meck:new(flurm_job_executor, [passthrough, no_passthrough_cover]),
+             meck:new(lager, [passthrough, no_passthrough_cover]),
 
              meck:expect(gen_tcp, send, fun(_, _) -> {error, closed} end),
              meck:expect(flurm_protocol, encode, fun(_) -> {ok, <<>>} end),
@@ -698,7 +698,7 @@ handle_info_tcp_events_test_() ->
      [
         {"handle_info tcp_closed schedules reconnect",
          fun() ->
-             meck:new(lager, [passthrough]),
+             meck:new(lager, [passthrough, no_passthrough_cover]),
              meck:expect(lager, warning, fun(_, _) -> ok end),
 
              Timer = erlang:send_after(100000, self(), heartbeat),
@@ -717,7 +717,7 @@ handle_info_tcp_events_test_() ->
          end},
         {"handle_info tcp_error schedules reconnect",
          fun() ->
-             meck:new(lager, [passthrough]),
+             meck:new(lager, [passthrough, no_passthrough_cover]),
              meck:expect(lager, error, fun(_, _) -> ok end),
 
              Socket = make_ref(),
@@ -732,7 +732,7 @@ handle_info_tcp_events_test_() ->
          end},
         {"handle_info tcp data accumulates buffer",
          fun() ->
-             meck:new(flurm_protocol, [passthrough]),
+             meck:new(flurm_protocol, [passthrough, no_passthrough_cover]),
              meck:expect(flurm_protocol, decode, fun(_) -> {ok, #{type => ping}} end),
 
              Socket = make_ref(),
@@ -759,9 +759,9 @@ handle_info_down_test_() ->
      [
         {"handle_info DOWN for job executor reports failure",
          fun() ->
-             meck:new(gen_tcp, [passthrough, unstick]),
-             meck:new(flurm_protocol, [passthrough]),
-             meck:new(lager, [passthrough]),
+             meck:new(gen_tcp, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(flurm_protocol, [passthrough, no_passthrough_cover]),
+             meck:new(lager, [passthrough, no_passthrough_cover]),
 
              meck:expect(gen_tcp, send, fun(_, _) -> ok end),
              meck:expect(flurm_protocol, encode, fun(_) -> {ok, <<>>} end),
@@ -816,7 +816,7 @@ terminate_test_() ->
      [
         {"terminate closes socket",
          fun() ->
-             meck:new(gen_tcp, [passthrough, unstick]),
+             meck:new(gen_tcp, [passthrough, no_passthrough_cover, unstick]),
              meck:expect(gen_tcp, close, fun(_) -> ok end),
 
              Timer = erlang:send_after(100000, self(), heartbeat),

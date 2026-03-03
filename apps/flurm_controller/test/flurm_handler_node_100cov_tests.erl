@@ -253,7 +253,7 @@ setup() ->
     meck:new([flurm_node_manager_server, flurm_controller_cluster, flurm_config_server,
               flurm_config_slurm, flurm_partition_manager, flurm_scheduler,
               flurm_controller_handler],
-             [passthrough, no_link, non_strict]),
+             [passthrough, no_passthrough_cover, no_link, non_strict]),
 
     %% Default mock behaviors
     meck:expect(flurm_node_manager_server, list_nodes, fun() -> [] end),

@@ -165,7 +165,7 @@ setup_meck() ->
     try meck:unload(os) catch _:_ -> ok end,
     %% Small delay to ensure cleanup is complete
     timer:sleep(10),
-    meck:new(os, [unstick, passthrough, no_history]),
+    meck:new(os, [unstick, passthrough, no_passthrough_cover, no_history]),
     ok.
 
 cleanup_meck(_) ->

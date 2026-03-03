@@ -40,7 +40,7 @@ parse_file_test_() ->
      [
         {"parse_file success",
          fun() ->
-             meck:new(file, [passthrough, unstick]),
+             meck:new(file, [passthrough, no_passthrough_cover, unstick]),
              meck:expect(file, read_file, fun("/test/slurm.conf") ->
                  {ok, <<"ClusterName=test\nSlurmctldPort=6817\n">>}
              end),
@@ -51,7 +51,7 @@ parse_file_test_() ->
          end},
         {"parse_file with comments",
          fun() ->
-             meck:new(file, [passthrough, unstick]),
+             meck:new(file, [passthrough, no_passthrough_cover, unstick]),
              meck:expect(file, read_file, fun(_) ->
                  {ok, <<"# This is a comment\nClusterName=test\n# Another comment\n">>}
              end),
@@ -61,7 +61,7 @@ parse_file_test_() ->
          end},
         {"parse_file with empty lines",
          fun() ->
-             meck:new(file, [passthrough, unstick]),
+             meck:new(file, [passthrough, no_passthrough_cover, unstick]),
              meck:expect(file, read_file, fun(_) ->
                  {ok, <<"ClusterName=test\n\n\nSlurmdPort=6818\n\n">>}
              end),
@@ -72,7 +72,7 @@ parse_file_test_() ->
          end},
         {"parse_file error",
          fun() ->
-             meck:new(file, [passthrough, unstick]),
+             meck:new(file, [passthrough, no_passthrough_cover, unstick]),
              meck:expect(file, read_file, fun(_) -> {error, enoent} end),
 
              Result = flurm_config_slurm:parse_file("/nonexistent"),
@@ -80,7 +80,7 @@ parse_file_test_() ->
          end},
         {"parse_file with line continuation",
          fun() ->
-             meck:new(file, [passthrough, unstick]),
+             meck:new(file, [passthrough, no_passthrough_cover, unstick]),
              meck:expect(file, read_file, fun(_) ->
                  {ok, <<"ClusterName=my\\\nvery\\\nlong\\\nname\n">>}
              end),

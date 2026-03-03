@@ -15,7 +15,7 @@
 %%====================================================================
 
 ets_backend_test_() ->
-    {setup,
+    {foreach,
      fun setup_ets/0,
      fun cleanup_ets/1,
      [
@@ -35,7 +35,7 @@ ets_backend_test_() ->
      ]}.
 
 ra_backend_test_() ->
-    {setup,
+    {foreach,
      fun setup_ra_mock/0,
      fun cleanup_ra_mock/1,
      [
@@ -52,7 +52,7 @@ ra_backend_test_() ->
      ]}.
 
 ra_job_conversion_test_() ->
-    {setup,
+    {foreach,
      fun setup_ra_mock/0,
      fun cleanup_ra_mock/1,
      [
@@ -64,31 +64,46 @@ ra_job_conversion_test_() ->
 %%====================================================================
 
 setup_ets() ->
-    %% Create ETS tables for testing
-    ets:new(flurm_db_jobs_ets, [named_table, public, set, {read_concurrency, true}]),
-    ets:new(flurm_db_job_counter_ets, [named_table, public, set]),
-    ets:insert(flurm_db_job_counter_ets, {counter, 0}),
-    ok.
+    Parent = self(),
+    Owner = spawn(fun() ->
+        catch ets:delete(flurm_db_jobs_ets),
+        catch ets:delete(flurm_db_job_counter_ets),
+        ets:new(flurm_db_jobs_ets, [named_table, public, set, {read_concurrency, true}]),
+        ets:new(flurm_db_job_counter_ets, [named_table, public, set]),
+        ets:insert(flurm_db_job_counter_ets, {counter, 0}),
+        Parent ! {ets_ready, self()},
+        receive
+            stop -> ok
+        end
+    end),
+    receive
+        {ets_ready, Owner} -> Owner
+    after 1000 ->
+        erlang:error(ets_setup_timeout)
+    end.
 
-cleanup_ets(_) ->
-    catch ets:delete(flurm_db_jobs_ets),
-    catch ets:delete(flurm_db_job_counter_ets),
+cleanup_ets(Owner) when is_pid(Owner) ->
+    catch Owner ! stop,
     catch dets:close(flurm_db_jobs_dets),
     catch dets:close(flurm_db_counter_dets),
     ok.
 
 setup_ra_mock() ->
-    setup_ets(),
-    meck:new(flurm_db_ra, [passthrough]),
+    DistState = ensure_distributed_node(),
+    Owner = setup_ets(),
+    catch meck:unload(flurm_db_ra),
+    catch meck:unload(ra),
+    meck:new(flurm_db_ra, [non_strict, no_link]),
     %% Mock ra:members to return success so is_ra_available returns true
-    meck:new(ra, [passthrough]),
+    meck:new(ra, [non_strict, no_link]),
     meck:expect(ra, members, fun(_) -> {ok, [{flurm_db_ra, node()}], {flurm_db_ra, node()}} end),
-    ok.
+    {DistState, Owner}.
 
-cleanup_ra_mock(_) ->
-    meck:unload(flurm_db_ra),
-    meck:unload(ra),
-    cleanup_ets(ok).
+cleanup_ra_mock({DistState, Owner}) ->
+    catch meck:unload(flurm_db_ra),
+    catch meck:unload(ra),
+    cleanup_ets(Owner),
+    maybe_stop_distributed_node(DistState).
 
 %%====================================================================
 %% ETS Backend Tests
@@ -110,9 +125,7 @@ persistence_mode_ets_test() ->
 persistence_mode_none_test() ->
     %% Delete the ETS table to simulate no persistence
     ets:delete(flurm_db_jobs_ets),
-    ?assertEqual(none, flurm_db_persist:persistence_mode()),
-    %% Recreate for other tests
-    ets:new(flurm_db_jobs_ets, [named_table, public, set, {read_concurrency, true}]).
+    ?assertEqual(none, flurm_db_persist:persistence_mode()).
 
 store_job_ets_test() ->
     Job = make_test_job(1),
@@ -241,12 +254,12 @@ next_job_id_ets_test() ->
 %%====================================================================
 
 store_job_ra_test() ->
-    meck:expect(flurm_db_ra, submit_job, fun(_) -> {ok, 1} end),
+    meck:expect(flurm_db_ra, store_job, fun(1, _Spec) -> {ok, 1} end),
 
     Job = make_test_job(1),
     ok = flurm_db_persist:store_job(Job),
 
-    ?assert(meck:called(flurm_db_ra, submit_job, '_')).
+    ?assert(meck:called(flurm_db_ra, store_job, [1, '_'])).
 
 update_job_ra_state_test() ->
     meck:expect(flurm_db_ra, update_job_state, fun(1, running) -> ok end),
@@ -372,3 +385,24 @@ make_test_ra_job(Id) ->
         allocated_nodes = [],
         exit_code = undefined
     }.
+
+ensure_distributed_node() ->
+    case node() of
+        nonode@nohost ->
+            Unique = integer_to_list(erlang:unique_integer([positive])),
+            Name = list_to_atom("flurm_persist_direct_" ++ Unique),
+            case net_kernel:start([Name, shortnames]) of
+                {ok, _Pid} -> started_here;
+                {error, {already_started, _Pid}} -> already_named;
+                {error, _Reason} = Error -> erlang:error({net_kernel_start_failed, Error})
+            end;
+        _ ->
+            already_named
+    end.
+
+maybe_stop_distributed_node(started_here) ->
+    catch net_kernel:stop(),
+    timer:sleep(50),
+    ok;
+maybe_stop_distributed_node(already_named) ->
+    ok.

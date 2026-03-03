@@ -777,7 +777,66 @@ execute_scale_down(generic, Config, Count, Options) ->
 
 %% AWS implementation
 execute_aws_scale_up(Config, Count, Options) ->
-    %% Use the EC2 RunInstances API for spot instances
+    %% Check if global optimization is enabled
+    OptimizeGlobally = maps:get(optimize_globally, Options,
+                        maps:get(optimize_globally, Config, false)),
+
+    case OptimizeGlobally of
+        true ->
+            execute_aws_scale_up_optimized(Config, Count, Options);
+        false ->
+            execute_aws_scale_up_fixed(Config, Count, Options)
+    end.
+
+%% Scale up with global spot price optimization
+execute_aws_scale_up_optimized(Config, Count, Options) ->
+    %% Build requirements from options
+    Requirements = #{
+        min_cpus => maps:get(min_cpus, Options, 1),
+        min_memory_gb => maps:get(min_memory_gb, Options, 1),
+        arch => maps:get(arch, Options, any),
+        max_price_per_hour => maps:get(max_price_per_hour, Options, infinity)
+    },
+
+    lager:info("Finding cheapest spot instance globally: ~p", [Requirements]),
+
+    case flurm_spot_optimizer:find_cheapest_spot(Requirements, Config) of
+        {ok, #{region := Region, instance_type := InstanceType,
+               price_per_hour := Price, availability_zone := AZ}} ->
+            lager:info("Optimal spot: ~s in ~s (~s) at $~.4f/hr",
+                      [InstanceType, Region, AZ, Price]),
+
+            %% Get region-specific config
+            RegionConfig = get_region_config(Region, Config),
+
+            %% Merge region config with base config
+            MergedConfig = maps:merge(Config, RegionConfig#{region => Region}),
+
+            %% Launch in optimal region
+            UserData = maps:get(user_data, MergedConfig, <<>>),
+            RunOptions = Options#{user_data => UserData, availability_zone => AZ},
+
+            case aws_ec2_run_instances(MergedConfig, Count, InstanceType, true, RunOptions) of
+                {ok, InstanceIds} ->
+                    lager:info("Launched ~p instances in ~s: ~p", [Count, Region, InstanceIds]),
+                    {ok, #{instance_ids => InstanceIds,
+                           count => length(InstanceIds),
+                           region => Region,
+                           instance_type => InstanceType,
+                           price_per_hour => Price}};
+                {error, Reason} ->
+                    lager:error("Failed to launch in ~s: ~p", [Region, Reason]),
+                    {error, Reason}
+            end;
+        {error, Reason} ->
+            lager:error("Spot optimization failed: ~p", [Reason]),
+            %% Fall back to fixed instance type
+            lager:info("Falling back to fixed instance type"),
+            execute_aws_scale_up_fixed(Config, Count, Options)
+    end.
+
+%% Scale up with fixed instance type (original behavior)
+execute_aws_scale_up_fixed(Config, Count, Options) ->
     InstanceType = maps:get(instance_type, Options, <<"c5.xlarge">>),
     UseSpot = maps:get(spot, Options, true),
 
@@ -793,6 +852,25 @@ execute_aws_scale_up(Config, Count, Options) ->
         {error, Reason} ->
             lager:error("AWS scale_up failed: ~p", [Reason]),
             {error, Reason}
+    end.
+
+%% Get region-specific configuration (AMI, subnet, security groups)
+get_region_config(Region, Config) ->
+    %% Look up in region_configs map
+    RegionConfigs = maps:get(region_configs, Config, #{}),
+    case maps:get(Region, RegionConfigs, undefined) of
+        undefined ->
+            %% Try to find AMI for this region using ami_map
+            AmiMap = maps:get(ami_map, Config, #{}),
+            case maps:get(Region, AmiMap, undefined) of
+                undefined ->
+                    lager:warning("No config for region ~s, using defaults", [Region]),
+                    #{};
+                AmiId ->
+                    #{ami_id => AmiId}
+            end;
+        RegionCfg when is_map(RegionCfg) ->
+            RegionCfg
     end.
 
 execute_aws_scale_down(_Config, _Count, _Options) ->
@@ -1202,9 +1280,15 @@ aws_ec2_run_instances(Config, Count, InstanceType, UseSpot, Options) ->
         {<<"MaxCount">>, integer_to_binary(Count)}
     ],
 
-    Params1 = case SubnetId of
+    %% Add availability zone if specified (for optimal spot placement)
+    Params0a = case maps:get(availability_zone, Options, undefined) of
         undefined -> Params0;
-        _ -> [{<<"SubnetId">>, SubnetId} | Params0]
+        AZ -> [{<<"Placement.AvailabilityZone">>, AZ} | Params0]
+    end,
+
+    Params1 = case SubnetId of
+        undefined -> Params0a;
+        _ -> [{<<"SubnetId">>, SubnetId} | Params0a]
     end,
 
     Params2 = case KeyName of

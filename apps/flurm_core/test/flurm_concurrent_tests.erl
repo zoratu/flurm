@@ -44,7 +44,7 @@ setup() ->
     application:ensure_all_started(lager),
 
     catch meck:unload(flurm_db_persist),
-    meck:new(flurm_db_persist, [passthrough, non_strict]),
+    meck:new(flurm_db_persist, [passthrough, no_passthrough_cover, non_strict]),
     meck:expect(flurm_db_persist, persistence_mode, fun() -> none end),
     meck:expect(flurm_db_persist, store_job, fun(_Job) -> ok end),
     meck:expect(flurm_db_persist, update_job, fun(_JobId, _Updates) -> ok end),
@@ -52,11 +52,11 @@ setup() ->
     meck:expect(flurm_db_persist, list_jobs, fun() -> [] end),
 
     catch meck:unload(flurm_metrics),
-    meck:new(flurm_metrics, [passthrough, non_strict]),
+    meck:new(flurm_metrics, [passthrough, no_passthrough_cover, non_strict]),
     meck:expect(flurm_metrics, increment, fun(_) -> ok end),
 
     catch meck:unload(flurm_job_dispatcher_server),
-    meck:new(flurm_job_dispatcher_server, [passthrough, non_strict]),
+    meck:new(flurm_job_dispatcher_server, [passthrough, no_passthrough_cover, non_strict]),
     meck:expect(flurm_job_dispatcher_server, cancel_job, fun(_, _) -> ok end),
 
     start_if_not_running(flurm_job_registry, fun flurm_job_registry:start_link/0),

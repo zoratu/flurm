@@ -270,7 +270,7 @@ setup() ->
     lists:foreach(fun(M) -> catch meck:unload(M) end, Mocks),
 
     %% Start meck for mocking
-    meck:new(Mocks, [passthrough, no_link, non_strict]),
+    meck:new(Mocks, [passthrough, no_passthrough_cover, no_link, non_strict]),
 
     %% Default mock behaviors
     setup_default_mocks(),

@@ -570,9 +570,9 @@ setup_mocked() ->
     catch meck:unload(flurm_job_sup),
     catch meck:unload(flurm_accounting),
     catch meck:unload(flurm_job_registry),
-    meck:new(flurm_job_sup, [passthrough]),
-    meck:new(flurm_accounting, [passthrough]),
-    meck:new(flurm_job_registry, [passthrough]),
+    meck:new(flurm_job_sup, [passthrough, no_passthrough_cover]),
+    meck:new(flurm_accounting, [passthrough, no_passthrough_cover]),
+    meck:new(flurm_job_registry, [passthrough, no_passthrough_cover]),
     %% Start real registry and supervisor for non-mocked tests
     {ok, RegistryPid} = flurm_job_registry:start_link(),
     {ok, SupPid} = flurm_job_sup:start_link(),

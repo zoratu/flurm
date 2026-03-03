@@ -35,10 +35,12 @@ flurm_dbd_sup_coverage_test_() ->
      ]}.
 
 setup() ->
+    catch meck:unload(flurm_dbd_sup),
     %% Stop existing supervisor if running
     case whereis(flurm_dbd_sup) of
         undefined -> ok;
         Pid -> catch supervisor:terminate_child(Pid, flurm_dbd_storage),
+               catch supervisor:terminate_child(Pid, flurm_dbd_fragment),
                catch supervisor:terminate_child(Pid, flurm_dbd_server),
                flurm_test_utils:kill_and_wait(Pid)
     end,
@@ -70,6 +72,7 @@ cleanup(_) ->
         undefined -> ok;
         Pid -> flurm_test_utils:kill_and_wait(Pid)
     end,
+    catch meck:unload(flurm_dbd_fragment),
     catch meck:unload(lager),
     catch meck:unload(ranch),
     ok.
@@ -81,10 +84,13 @@ cleanup(_) ->
 test_start_link() ->
     %% Mock the child processes to avoid actually starting them
     catch meck:unload(flurm_dbd_storage),
-    meck:new(flurm_dbd_storage, [passthrough, non_strict]),
+    meck:new(flurm_dbd_storage, [passthrough, no_passthrough_cover, non_strict]),
+    catch meck:unload(flurm_dbd_fragment),
+    meck:new(flurm_dbd_fragment, [passthrough, no_passthrough_cover, non_strict]),
     catch meck:unload(flurm_dbd_server),
-    meck:new(flurm_dbd_server, [passthrough, non_strict]),
+    meck:new(flurm_dbd_server, [passthrough, no_passthrough_cover, non_strict]),
     meck:expect(flurm_dbd_storage, start_link, fun() -> {ok, spawn(fun() -> receive stop -> ok end end)} end),
+    meck:expect(flurm_dbd_fragment, start_link, fun() -> {ok, spawn(fun() -> receive stop -> ok end end)} end),
     meck:expect(flurm_dbd_server, start_link, fun() -> {ok, spawn(fun() -> receive stop -> ok end end)} end),
 
     Result = flurm_dbd_sup:start_link(),
@@ -94,6 +100,7 @@ test_start_link() ->
     ?assert(is_process_alive(Pid)),
 
     meck:unload(flurm_dbd_storage),
+    meck:unload(flurm_dbd_fragment),
     meck:unload(flurm_dbd_server).
 
 %%====================================================================
@@ -109,11 +116,15 @@ test_init() ->
     ?assertEqual(10, maps:get(period, SupFlags)),
 
     %% Verify children
-    ?assertEqual(2, length(Children)),
+    ?assertEqual(3, length(Children)),
 
     %% Find storage child spec
     StorageSpec = lists:keyfind(flurm_dbd_storage, 1, [{maps:get(id, C), C} || C <- Children]),
     ?assertNotEqual(false, StorageSpec),
+
+    %% Find fragment child spec
+    FragmentSpec = lists:keyfind(flurm_dbd_fragment, 1, [{maps:get(id, C), C} || C <- Children]),
+    ?assertNotEqual(false, FragmentSpec),
 
     %% Find server child spec
     ServerSpec = lists:keyfind(flurm_dbd_server, 1, [{maps:get(id, C), C} || C <- Children]),

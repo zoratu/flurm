@@ -77,13 +77,13 @@ gen_server_test_() ->
 
 setup_gen_server() ->
     catch meck:unload(application),
-    meck:new(application, [unstick, passthrough]),
+    meck:new(application, [unstick, passthrough, no_passthrough_cover]),
     catch meck:unload(ra),
-    meck:new(ra, [passthrough, non_strict]),
+    meck:new(ra, [passthrough, no_passthrough_cover, non_strict]),
     catch meck:unload(flurm_job_manager),
-    meck:new(flurm_job_manager, [passthrough, non_strict]),
+    meck:new(flurm_job_manager, [passthrough, no_passthrough_cover, non_strict]),
     catch meck:unload(flurm_controller_failover),
-    meck:new(flurm_controller_failover, [passthrough, non_strict]),
+    meck:new(flurm_controller_failover, [passthrough, no_passthrough_cover, non_strict]),
 
     meck:expect(application, get_env, fun
         (flurm_controller, cluster_name, Default) -> Default;

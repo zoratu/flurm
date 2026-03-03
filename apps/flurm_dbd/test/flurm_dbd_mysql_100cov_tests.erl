@@ -30,7 +30,7 @@ setup() ->
     meck:expect(mysql, query, fun(_Conn, _Query, _Params) -> ok end),
     meck:expect(mysql, transaction, fun(_Conn, Fun) -> {atomic, Fun()} end),
     %% Mock lager
-    meck:new(lager, [non_strict, no_link, passthrough]),
+    meck:new(lager, [non_strict, no_link, passthrough, no_passthrough_cover]),
     meck:expect(lager, info, fun(_Fmt) -> ok end),
     meck:expect(lager, info, fun(_Fmt, _Args) -> ok end),
     meck:expect(lager, warning, fun(_Fmt, _Args) -> ok end),
@@ -444,7 +444,7 @@ start_link_test_() ->
      fun cleanup/1,
      [
          {"start_link/0 starts server with default config", fun() ->
-             meck:new(application, [unstick, passthrough]),
+             meck:new(application, [unstick, passthrough, no_passthrough_cover]),
              meck:expect(application, get_env, fun
                  (flurm_dbd, mysql_host, _) -> "localhost";
                  (flurm_dbd, mysql_port, _) -> 3306;

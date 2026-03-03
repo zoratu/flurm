@@ -45,8 +45,8 @@ create_script_file_test_() ->
      [
         {"create_script_file creates executable file",
          fun() ->
-             meck:new(file, [passthrough, unstick]),
-             meck:new(lager, [passthrough]),
+             meck:new(file, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(lager, [passthrough, no_passthrough_cover]),
 
              JobId = 12345,
              Script = <<"#!/bin/bash\necho hello">>,
@@ -70,8 +70,8 @@ create_script_file_test_() ->
          end},
         {"create_script_file logs error on read_file_info failure",
          fun() ->
-             meck:new(file, [passthrough, unstick]),
-             meck:new(lager, [passthrough]),
+             meck:new(file, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(lager, [passthrough, no_passthrough_cover]),
 
              meck:expect(file, write_file, fun(_, _) -> ok end),
              meck:expect(file, change_mode, fun(_, _) -> ok end),
@@ -211,7 +211,7 @@ expand_output_path_test_() ->
      [
         {"expand_output_path expands %j",
          fun() ->
-             meck:new(inet, [passthrough, unstick]),
+             meck:new(inet, [passthrough, no_passthrough_cover, unstick]),
              meck:expect(inet, gethostname, fun() -> {ok, "testhost"} end),
 
              Result = flurm_job_executor:expand_output_path("/output/job-%j.out", 42),
@@ -219,7 +219,7 @@ expand_output_path_test_() ->
          end},
         {"expand_output_path expands %J",
          fun() ->
-             meck:new(inet, [passthrough, unstick]),
+             meck:new(inet, [passthrough, no_passthrough_cover, unstick]),
              meck:expect(inet, gethostname, fun() -> {ok, "testhost"} end),
 
              Result = flurm_job_executor:expand_output_path("/output/job-%J.out", 100),
@@ -227,7 +227,7 @@ expand_output_path_test_() ->
          end},
         {"expand_output_path expands %N",
          fun() ->
-             meck:new(inet, [passthrough, unstick]),
+             meck:new(inet, [passthrough, no_passthrough_cover, unstick]),
              meck:expect(inet, gethostname, fun() -> {ok, "compute01"} end),
 
              Result = flurm_job_executor:expand_output_path("/output/%N/job.out", 1),
@@ -235,7 +235,7 @@ expand_output_path_test_() ->
          end},
         {"expand_output_path expands %n",
          fun() ->
-             meck:new(inet, [passthrough, unstick]),
+             meck:new(inet, [passthrough, no_passthrough_cover, unstick]),
              meck:expect(inet, gethostname, fun() -> {ok, "testhost"} end),
 
              Result = flurm_job_executor:expand_output_path("/output/node%n.out", 1),
@@ -243,7 +243,7 @@ expand_output_path_test_() ->
          end},
         {"expand_output_path expands %t",
          fun() ->
-             meck:new(inet, [passthrough, unstick]),
+             meck:new(inet, [passthrough, no_passthrough_cover, unstick]),
              meck:expect(inet, gethostname, fun() -> {ok, "testhost"} end),
 
              Result = flurm_job_executor:expand_output_path("/output/task%t.out", 1),
@@ -251,7 +251,7 @@ expand_output_path_test_() ->
          end},
         {"expand_output_path expands %%",
          fun() ->
-             meck:new(inet, [passthrough, unstick]),
+             meck:new(inet, [passthrough, no_passthrough_cover, unstick]),
              meck:expect(inet, gethostname, fun() -> {ok, "testhost"} end),
 
              Result = flurm_job_executor:expand_output_path("/output/file%%1.out", 1),
@@ -259,7 +259,7 @@ expand_output_path_test_() ->
          end},
         {"expand_output_path handles multiple placeholders",
          fun() ->
-             meck:new(inet, [passthrough, unstick]),
+             meck:new(inet, [passthrough, no_passthrough_cover, unstick]),
              meck:expect(inet, gethostname, fun() -> {ok, "node1"} end),
 
              Result = flurm_job_executor:expand_output_path("/data/%N/job%j_task%t.out", 99),
@@ -278,7 +278,7 @@ ensure_working_dir_test_() ->
      [
         {"ensure_working_dir returns existing dir",
          fun() ->
-             meck:new(filelib, [passthrough, unstick]),
+             meck:new(filelib, [passthrough, no_passthrough_cover, unstick]),
              meck:expect(filelib, is_dir, fun("/existing/path") -> true end),
 
              Result = flurm_job_executor:ensure_working_dir(<<"/existing/path">>, 1),
@@ -286,9 +286,9 @@ ensure_working_dir_test_() ->
          end},
         {"ensure_working_dir creates missing dir",
          fun() ->
-             meck:new(filelib, [passthrough, unstick]),
-             meck:new(file, [passthrough, unstick]),
-             meck:new(lager, [passthrough]),
+             meck:new(filelib, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(file, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(lager, [passthrough, no_passthrough_cover]),
 
              meck:expect(filelib, is_dir, fun(_) -> false end),
              meck:expect(filelib, ensure_dir, fun(_) -> ok end),
@@ -300,9 +300,9 @@ ensure_working_dir_test_() ->
          end},
         {"ensure_working_dir handles eexist",
          fun() ->
-             meck:new(filelib, [passthrough, unstick]),
-             meck:new(file, [passthrough, unstick]),
-             meck:new(lager, [passthrough]),
+             meck:new(filelib, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(file, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(lager, [passthrough, no_passthrough_cover]),
 
              meck:expect(filelib, is_dir, fun(_) -> false end),
              meck:expect(filelib, ensure_dir, fun(_) -> ok end),
@@ -313,9 +313,9 @@ ensure_working_dir_test_() ->
          end},
         {"ensure_working_dir falls back to /tmp on make_dir error",
          fun() ->
-             meck:new(filelib, [passthrough, unstick]),
-             meck:new(file, [passthrough, unstick]),
-             meck:new(lager, [passthrough]),
+             meck:new(filelib, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(file, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(lager, [passthrough, no_passthrough_cover]),
 
              meck:expect(filelib, is_dir, fun(_) -> false end),
              meck:expect(filelib, ensure_dir, fun(_) -> ok end),
@@ -327,8 +327,8 @@ ensure_working_dir_test_() ->
          end},
         {"ensure_working_dir falls back to /tmp on ensure_dir error",
          fun() ->
-             meck:new(filelib, [passthrough, unstick]),
-             meck:new(lager, [passthrough]),
+             meck:new(filelib, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(lager, [passthrough, no_passthrough_cover]),
 
              meck:expect(filelib, is_dir, fun(_) -> false end),
              meck:expect(filelib, ensure_dir, fun(_) -> {error, enoent} end),
@@ -350,7 +350,7 @@ setup_cgroup_test_() ->
      [
         {"setup_cgroup returns undefined on non-Linux",
          fun() ->
-             meck:new(os, [passthrough, unstick]),
+             meck:new(os, [passthrough, no_passthrough_cover, unstick]),
              meck:expect(os, type, fun() -> {unix, darwin} end),
 
              Result = flurm_job_executor:setup_cgroup(1, 4, 1024),
@@ -358,8 +358,8 @@ setup_cgroup_test_() ->
          end},
         {"setup_cgroup_v2 success",
          fun() ->
-             meck:new(filelib, [passthrough, unstick]),
-             meck:new(file, [passthrough, unstick]),
+             meck:new(filelib, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(file, [passthrough, no_passthrough_cover, unstick]),
 
              meck:expect(filelib, is_dir, fun("/sys/fs/cgroup/cgroup.controllers") -> true;
                                              (_) -> false end),
@@ -372,8 +372,8 @@ setup_cgroup_test_() ->
          end},
         {"setup_cgroup_v2 with fractional CPUs",
          fun() ->
-             meck:new(filelib, [passthrough, unstick]),
-             meck:new(file, [passthrough, unstick]),
+             meck:new(filelib, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(file, [passthrough, no_passthrough_cover, unstick]),
 
              meck:expect(filelib, is_dir, fun("/sys/fs/cgroup/cgroup.controllers") -> true;
                                              (_) -> false end),
@@ -397,7 +397,7 @@ setup_cgroup_test_() ->
          end},
         {"setup_cgroup_v2 not available",
          fun() ->
-             meck:new(filelib, [passthrough, unstick]),
+             meck:new(filelib, [passthrough, no_passthrough_cover, unstick]),
              meck:expect(filelib, is_dir, fun("/sys/fs/cgroup/cgroup.controllers") -> false end),
 
              Result = flurm_job_executor:setup_cgroup_v2("flurm_1", 4, 1024),
@@ -405,8 +405,8 @@ setup_cgroup_test_() ->
          end},
         {"setup_cgroup_v1 success",
          fun() ->
-             meck:new(filelib, [passthrough, unstick]),
-             meck:new(file, [passthrough, unstick]),
+             meck:new(filelib, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(file, [passthrough, no_passthrough_cover, unstick]),
 
              meck:expect(filelib, is_dir, fun("/sys/fs/cgroup/memory") -> true;
                                              (_) -> false end),
@@ -418,8 +418,8 @@ setup_cgroup_test_() ->
          end},
         {"setup_cgroup_v1 with fractional CPUs",
          fun() ->
-             meck:new(filelib, [passthrough, unstick]),
-             meck:new(file, [passthrough, unstick]),
+             meck:new(filelib, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(file, [passthrough, no_passthrough_cover, unstick]),
 
              meck:expect(filelib, is_dir, fun("/sys/fs/cgroup/memory") -> true;
                                              (_) -> false end),
@@ -431,7 +431,7 @@ setup_cgroup_test_() ->
          end},
         {"setup_cgroup_v1 not available",
          fun() ->
-             meck:new(filelib, [passthrough, unstick]),
+             meck:new(filelib, [passthrough, no_passthrough_cover, unstick]),
              meck:expect(filelib, is_dir, fun("/sys/fs/cgroup/memory") -> false end),
 
              Result = flurm_job_executor:setup_cgroup_v1("flurm_1", 4, 1024),
@@ -455,9 +455,9 @@ cleanup_cgroup_test_() ->
          end},
         {"cleanup_cgroup kills processes and removes dir",
          fun() ->
-             meck:new(file, [passthrough, unstick]),
-             meck:new(timer, [passthrough, unstick]),
-             meck:new(os, [passthrough, unstick]),
+             meck:new(file, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(timer, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(os, [passthrough, no_passthrough_cover, unstick]),
 
              meck:expect(file, read_file, fun(_) -> {ok, <<"123\n456\n">>} end),
              meck:expect(file, del_dir, fun(_) -> ok end),
@@ -469,8 +469,8 @@ cleanup_cgroup_test_() ->
          end},
         {"cleanup_cgroup handles read error",
          fun() ->
-             meck:new(file, [passthrough, unstick]),
-             meck:new(timer, [passthrough, unstick]),
+             meck:new(file, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(timer, [passthrough, no_passthrough_cover, unstick]),
 
              meck:expect(file, read_file, fun(_) -> {error, enoent} end),
              meck:expect(file, del_dir, fun(_) -> ok end),
@@ -502,7 +502,7 @@ setup_gpu_isolation_test_() ->
          end},
         {"setup_gpu_isolation on non-Linux",
          fun() ->
-             meck:new(os, [passthrough, unstick]),
+             meck:new(os, [passthrough, no_passthrough_cover, unstick]),
              meck:expect(os, type, fun() -> {unix, darwin} end),
 
              Result = flurm_job_executor:setup_gpu_isolation("/sys/fs/cgroup/test", [0]),
@@ -510,7 +510,7 @@ setup_gpu_isolation_test_() ->
          end},
         {"setup_gpu_isolation_v2 with BPF not supported",
          fun() ->
-             meck:new(filelib, [passthrough, unstick]),
+             meck:new(filelib, [passthrough, no_passthrough_cover, unstick]),
 
              meck:expect(filelib, is_dir, fun(_) -> true end),
              meck:expect(filelib, is_file, fun(_) -> false end),
@@ -520,7 +520,7 @@ setup_gpu_isolation_test_() ->
          end},
         {"setup_gpu_isolation_v2 cgroup not found",
          fun() ->
-             meck:new(filelib, [passthrough, unstick]),
+             meck:new(filelib, [passthrough, no_passthrough_cover, unstick]),
              meck:expect(filelib, is_dir, fun(_) -> false end),
 
              Result = flurm_job_executor:setup_gpu_isolation_v2("/nonexistent", [0]),
@@ -528,9 +528,9 @@ setup_gpu_isolation_test_() ->
          end},
         {"setup_gpu_isolation_v1 success",
          fun() ->
-             meck:new(filelib, [passthrough, unstick]),
-             meck:new(file, [passthrough, unstick]),
-             meck:new(lager, [passthrough]),
+             meck:new(filelib, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(file, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(lager, [passthrough, no_passthrough_cover]),
 
              meck:expect(filelib, is_dir, fun("/sys/fs/cgroup/devices") -> true;
                                              (_) -> false end),
@@ -544,7 +544,7 @@ setup_gpu_isolation_test_() ->
          end},
         {"setup_gpu_isolation_v1 no device cgroup",
          fun() ->
-             meck:new(filelib, [passthrough, unstick]),
+             meck:new(filelib, [passthrough, no_passthrough_cover, unstick]),
              meck:expect(filelib, is_dir, fun("/sys/fs/cgroup/devices") -> false end),
 
              Result = flurm_job_executor:setup_gpu_isolation_v1("/path", [0]),
@@ -563,7 +563,7 @@ allow_basic_devices_test_() ->
      [
         {"allow_basic_devices writes device rules",
          fun() ->
-             meck:new(file, [passthrough, unstick]),
+             meck:new(file, [passthrough, no_passthrough_cover, unstick]),
 
              DeviceRules = [],
              meck:expect(file, write_file, fun(_, Rule) ->
@@ -588,7 +588,7 @@ allow_nvidia_devices_test_() ->
      [
         {"allow_nvidia_devices writes GPU rules",
          fun() ->
-             meck:new(file, [passthrough, unstick]),
+             meck:new(file, [passthrough, no_passthrough_cover, unstick]),
 
              WriteCount = ets:new(write_count, [public]),
              ets:insert(WriteCount, {count, 0}),
@@ -620,10 +620,10 @@ write_output_files_test_() ->
      [
         {"write_output_files with default path",
          fun() ->
-             meck:new(filelib, [passthrough, unstick]),
-             meck:new(file, [passthrough, unstick]),
-             meck:new(inet, [passthrough, unstick]),
-             meck:new(lager, [passthrough]),
+             meck:new(filelib, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(file, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(inet, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(lager, [passthrough, no_passthrough_cover]),
 
              meck:expect(inet, gethostname, fun() -> {ok, "host"} end),
              meck:expect(filelib, ensure_dir, fun(_) -> ok end),
@@ -638,10 +638,10 @@ write_output_files_test_() ->
          end},
         {"write_output_files with custom path",
          fun() ->
-             meck:new(filelib, [passthrough, unstick]),
-             meck:new(file, [passthrough, unstick]),
-             meck:new(inet, [passthrough, unstick]),
-             meck:new(lager, [passthrough]),
+             meck:new(filelib, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(file, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(inet, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(lager, [passthrough, no_passthrough_cover]),
 
              meck:expect(inet, gethostname, fun() -> {ok, "node1"} end),
              meck:expect(filelib, ensure_dir, fun(_) -> ok end),
@@ -655,10 +655,10 @@ write_output_files_test_() ->
          end},
         {"write_output_files handles write error",
          fun() ->
-             meck:new(filelib, [passthrough, unstick]),
-             meck:new(file, [passthrough, unstick]),
-             meck:new(inet, [passthrough, unstick]),
-             meck:new(lager, [passthrough]),
+             meck:new(filelib, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(file, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(inet, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(lager, [passthrough, no_passthrough_cover]),
 
              meck:expect(inet, gethostname, fun() -> {ok, "host"} end),
              meck:expect(filelib, ensure_dir, fun(_) -> ok end),
@@ -670,9 +670,9 @@ write_output_files_test_() ->
          end},
         {"write_output_files handles ensure_dir error",
          fun() ->
-             meck:new(filelib, [passthrough, unstick]),
-             meck:new(inet, [passthrough, unstick]),
-             meck:new(lager, [passthrough]),
+             meck:new(filelib, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(inet, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(lager, [passthrough, no_passthrough_cover]),
 
              meck:expect(inet, gethostname, fun() -> {ok, "host"} end),
              meck:expect(filelib, ensure_dir, fun(_) -> {error, enoent} end),
@@ -694,7 +694,7 @@ report_completion_test_() ->
      [
         {"report_completion for completed job",
          fun() ->
-             meck:new(flurm_controller_connector, [passthrough]),
+             meck:new(flurm_controller_connector, [passthrough, no_passthrough_cover]),
              meck:expect(flurm_controller_connector, report_job_complete, fun(JobId, ExitCode, Output, Energy) ->
                  ?assertEqual(1, JobId),
                  ?assertEqual(0, ExitCode),
@@ -710,7 +710,7 @@ report_completion_test_() ->
          end},
         {"report_completion for cancelled job",
          fun() ->
-             meck:new(flurm_controller_connector, [passthrough]),
+             meck:new(flurm_controller_connector, [passthrough, no_passthrough_cover]),
              meck:expect(flurm_controller_connector, report_job_failed, fun(JobId, Reason, Output, Energy) ->
                  ?assertEqual(2, JobId),
                  ?assertEqual(cancelled, Reason),
@@ -726,7 +726,7 @@ report_completion_test_() ->
          end},
         {"report_completion for timeout",
          fun() ->
-             meck:new(flurm_controller_connector, [passthrough]),
+             meck:new(flurm_controller_connector, [passthrough, no_passthrough_cover]),
              meck:expect(flurm_controller_connector, report_job_failed, fun(JobId, Reason, _, _) ->
                  ?assertEqual(3, JobId),
                  ?assertEqual(timeout, Reason),
@@ -740,7 +740,7 @@ report_completion_test_() ->
          end},
         {"report_completion for failed job",
          fun() ->
-             meck:new(flurm_controller_connector, [passthrough]),
+             meck:new(flurm_controller_connector, [passthrough, no_passthrough_cover]),
              meck:expect(flurm_controller_connector, report_job_failed, fun(JobId, Reason, _, _) ->
                  ?assertEqual(4, JobId),
                  ?assertMatch({exit_code, 1}, Reason),
@@ -754,7 +754,7 @@ report_completion_test_() ->
          end},
         {"report_completion/3 calls report_completion/4 with 0 energy",
          fun() ->
-             meck:new(flurm_controller_connector, [passthrough]),
+             meck:new(flurm_controller_connector, [passthrough, no_passthrough_cover]),
              meck:expect(flurm_controller_connector, report_job_complete, fun(_, _, _, Energy) ->
                  ?assertEqual(0, Energy),
                  ok
@@ -831,7 +831,7 @@ execute_prolog_test_() ->
      [
         {"execute_prolog with no prolog configured",
          fun() ->
-             meck:new(application, [passthrough, unstick]),
+             meck:new(application, [passthrough, no_passthrough_cover, unstick]),
              meck:expect(application, get_env, fun(flurm_node_daemon, prolog_path) -> undefined end),
 
              Result = flurm_job_executor:execute_prolog(1, []),
@@ -839,7 +839,7 @@ execute_prolog_test_() ->
          end},
         {"execute_prolog with empty path",
          fun() ->
-             meck:new(application, [passthrough, unstick]),
+             meck:new(application, [passthrough, no_passthrough_cover, unstick]),
              meck:expect(application, get_env, fun(flurm_node_daemon, prolog_path) -> {ok, ""} end),
 
              Result = flurm_job_executor:execute_prolog(1, []),
@@ -858,7 +858,7 @@ execute_epilog_test_() ->
      [
         {"execute_epilog with no epilog configured",
          fun() ->
-             meck:new(application, [passthrough, unstick]),
+             meck:new(application, [passthrough, no_passthrough_cover, unstick]),
              meck:expect(application, get_env, fun(flurm_node_daemon, epilog_path) -> undefined end),
 
              Result = flurm_job_executor:execute_epilog(1, 0, []),
@@ -877,8 +877,8 @@ execute_script_test_() ->
      [
         {"execute_script with non-existent script",
          fun() ->
-             meck:new(filelib, [passthrough, unstick]),
-             meck:new(lager, [passthrough]),
+             meck:new(filelib, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(lager, [passthrough, no_passthrough_cover]),
 
              meck:expect(filelib, is_regular, fun(_) -> false end),
              meck:expect(lager, warning, fun(_, _) -> ok end),
@@ -899,7 +899,7 @@ read_current_energy_test_() ->
      [
         {"read_current_energy on non-Linux",
          fun() ->
-             meck:new(os, [passthrough, unstick]),
+             meck:new(os, [passthrough, no_passthrough_cover, unstick]),
              meck:expect(os, type, fun() -> {unix, darwin} end),
 
              Result = flurm_job_executor:read_current_energy(),
@@ -918,7 +918,7 @@ read_rapl_energy_test_() ->
      [
         {"read_rapl_energy with no powercap",
          fun() ->
-             meck:new(filelib, [passthrough, unstick]),
+             meck:new(filelib, [passthrough, no_passthrough_cover, unstick]),
              meck:expect(filelib, is_dir, fun("/sys/class/powercap") -> false end),
 
              Result = flurm_job_executor:read_rapl_energy(),
@@ -926,8 +926,8 @@ read_rapl_energy_test_() ->
          end},
         {"read_rapl_energy with powercap",
          fun() ->
-             meck:new(filelib, [passthrough, unstick]),
-             meck:new(file, [passthrough, unstick]),
+             meck:new(filelib, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(file, [passthrough, no_passthrough_cover, unstick]),
 
              meck:expect(filelib, is_dir, fun("/sys/class/powercap") -> true end),
              meck:expect(file, list_dir, fun("/sys/class/powercap") ->
@@ -961,7 +961,7 @@ sum_rapl_energies_test_() ->
          end},
         {"sum_rapl_energies with valid domains",
          fun() ->
-             meck:new(file, [passthrough, unstick]),
+             meck:new(file, [passthrough, no_passthrough_cover, unstick]),
              meck:expect(file, read_file, fun(_) -> {ok, <<"500000\n">>} end),
 
              Result = flurm_job_executor:sum_rapl_energies("/sys/class/powercap",
@@ -970,7 +970,7 @@ sum_rapl_energies_test_() ->
          end},
         {"sum_rapl_energies handles read errors",
          fun() ->
-             meck:new(file, [passthrough, unstick]),
+             meck:new(file, [passthrough, no_passthrough_cover, unstick]),
              meck:expect(file, read_file, fun(_) -> {error, enoent} end),
 
              Result = flurm_job_executor:sum_rapl_energies("/sys/class/powercap",
@@ -979,7 +979,7 @@ sum_rapl_energies_test_() ->
          end},
         {"sum_rapl_energies handles parse errors",
          fun() ->
-             meck:new(file, [passthrough, unstick]),
+             meck:new(file, [passthrough, no_passthrough_cover, unstick]),
              meck:expect(file, read_file, fun(_) -> {ok, <<"invalid\n">>} end),
 
              Result = flurm_job_executor:sum_rapl_energies("/sys/class/powercap",
@@ -999,7 +999,7 @@ get_current_power_test_() ->
      [
         {"get_current_power on non-Linux",
          fun() ->
-             meck:new(os, [passthrough, unstick]),
+             meck:new(os, [passthrough, no_passthrough_cover, unstick]),
              meck:expect(os, type, fun() -> {win32, nt} end),
 
              Result = flurm_job_executor:get_current_power(),
@@ -1018,7 +1018,7 @@ get_rapl_power_test_() ->
      [
         {"get_rapl_power with no powercap",
          fun() ->
-             meck:new(filelib, [passthrough, unstick]),
+             meck:new(filelib, [passthrough, no_passthrough_cover, unstick]),
              meck:expect(filelib, is_dir, fun("/sys/class/powercap") -> false end),
 
              Result = flurm_job_executor:get_rapl_power(),
@@ -1037,7 +1037,7 @@ gen_server_callbacks_test_() ->
      [
         {"get_status returns job info",
          fun() ->
-             meck:new(lager, [passthrough]),
+             meck:new(lager, [passthrough, no_passthrough_cover]),
              meck:expect(lager, info, fun(_, _) -> ok end),
 
              JobSpec = #{
@@ -1060,7 +1060,7 @@ gen_server_callbacks_test_() ->
          end},
         {"get_output returns accumulated output",
          fun() ->
-             meck:new(lager, [passthrough]),
+             meck:new(lager, [passthrough, no_passthrough_cover]),
              meck:expect(lager, info, fun(_, _) -> ok end),
 
              JobSpec = #{
@@ -1080,8 +1080,8 @@ gen_server_callbacks_test_() ->
          end},
         {"cancel sends cancel cast",
          fun() ->
-             meck:new(lager, [passthrough]),
-             meck:new(flurm_controller_connector, [passthrough]),
+             meck:new(lager, [passthrough, no_passthrough_cover]),
+             meck:new(flurm_controller_connector, [passthrough, no_passthrough_cover]),
              meck:expect(lager, info, fun(_, _) -> ok end),
              meck:expect(flurm_controller_connector, report_job_failed, fun(_, _, _, _) -> ok end),
 

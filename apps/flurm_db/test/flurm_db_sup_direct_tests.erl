@@ -48,7 +48,7 @@ get_data_dir_test_() ->
 %%====================================================================
 
 setup() ->
-    meck:new(lager, [passthrough]),
+    meck:new(lager, [passthrough, no_passthrough_cover]),
     meck:expect(lager, md, fun(_) -> ok end),    meck:expect(lager, info, fun(_, _) -> ok end),
     meck:expect(lager, warning, fun(_, _) -> ok end),
     %% Clean up any existing tables

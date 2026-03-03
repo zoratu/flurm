@@ -13,7 +13,7 @@
 
 setup() ->
     %% Mock dependencies
-    meck:new(flurm_protocol_codec, [passthrough, non_strict]),
+    meck:new(flurm_protocol_codec, [passthrough, no_passthrough_cover, non_strict]),
     meck:expect(flurm_protocol_codec, decode, fun(_Binary) ->
         {ok, {request, ping, #{}}}
     end),

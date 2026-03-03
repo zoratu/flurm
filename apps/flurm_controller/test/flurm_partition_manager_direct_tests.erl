@@ -42,7 +42,7 @@ partition_manager_test_() ->
 
 setup() ->
     catch meck:unload(flurm_core),
-    meck:new(flurm_core, [passthrough, non_strict]),
+    meck:new(flurm_core, [passthrough, no_passthrough_cover, non_strict]),
     meck:expect(flurm_core, new_partition, fun(Spec) ->
         #partition{
             name = maps:get(name, Spec, <<"unknown">>),
@@ -230,7 +230,7 @@ api_test_() ->
 
 setup_api() ->
     catch meck:unload(flurm_core),
-    meck:new(flurm_core, [passthrough, non_strict]),
+    meck:new(flurm_core, [passthrough, no_passthrough_cover, non_strict]),
     meck:expect(flurm_core, new_partition, fun(Spec) ->
         #partition{
             name = maps:get(name, Spec, <<"unknown">>),

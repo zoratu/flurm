@@ -83,7 +83,7 @@ update_job_state_transitions_test_() ->
 
 setup() ->
     %% Mock the effects module so effects don't fail during tests
-    meck:new(flurm_db_ra_effects, [passthrough]),
+    meck:new(flurm_db_ra_effects, [passthrough, no_passthrough_cover]),
     meck:expect(flurm_db_ra_effects, job_submitted, fun(_) -> ok end),
     meck:expect(flurm_db_ra_effects, job_cancelled, fun(_) -> ok end),
     meck:expect(flurm_db_ra_effects, job_state_changed, fun(_, _, _) -> ok end),

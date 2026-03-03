@@ -70,7 +70,8 @@
 %% Test exports for internal functions
 -ifdef(TEST).
 -export([
-    calculate_priority_factor/3
+    calculate_priority_factor/3,
+    normalize_start_result/1
 ]).
 -endif.
 
@@ -81,16 +82,16 @@
 %% @doc Start the fair-share server.
 -spec start_link() -> {ok, pid()} | ignore | {error, term()}.
 start_link() ->
-    case gen_server:start_link({local, ?SERVER}, ?MODULE, [], []) of
-        {ok, Pid} ->
-            {ok, Pid};
-        {error, {already_started, Pid}} ->
-            %% Process already running - return existing pid
-            %% This handles race conditions during startup and restarts
-            {ok, Pid};
-        {error, Reason} ->
-            {error, Reason}
-    end.
+    normalize_start_result(gen_server:start_link({local, ?SERVER}, ?MODULE, [], [])).
+
+normalize_start_result({ok, Pid}) ->
+    {ok, Pid};
+normalize_start_result({error, {already_started, Pid}}) ->
+    %% Process already running - return existing pid
+    %% This handles race conditions during startup and restarts
+    {ok, Pid};
+normalize_start_result({error, Reason}) ->
+    {error, Reason}.
 
 %% @doc Get the fair-share priority factor for a user/account.
 %% Returns a float from 0.0 to 1.0 where:

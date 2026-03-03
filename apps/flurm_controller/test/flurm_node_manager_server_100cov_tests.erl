@@ -250,7 +250,7 @@ setup() ->
     catch meck:unload(lager),
 
     meck:new([flurm_config_server, flurm_partition_manager, flurm_gres],
-             [passthrough, no_link, non_strict]),
+             [passthrough, no_passthrough_cover, no_link, non_strict]),
 
     %% Default mock behaviors
     meck:expect(flurm_config_server, subscribe_changes, fun(_) -> ok end),

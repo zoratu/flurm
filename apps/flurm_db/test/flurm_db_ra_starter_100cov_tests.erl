@@ -40,10 +40,12 @@ start_link_test_() ->
      [
         {"start_link starts gen_server",
          fun() ->
-             meck:new(lager, [passthrough]),
-             meck:new(flurm_db_cluster, [passthrough]),
+             meck:new(lager, [non_strict, no_link]),
+             meck:new(flurm_db_cluster, [passthrough, no_passthrough_cover]),
              meck:expect(lager, info, fun(_, _) -> ok end),
              meck:expect(lager, warning, fun(_, _) -> ok end),
+             meck:expect(lager, error, fun(_, _) -> ok end),
+             meck:expect(lager, md, fun(_) -> ok end),
              %% Mock to return normal for non-distributed mode
              meck:expect(flurm_db_cluster, init_ra, fun() -> ok end),
              meck:expect(flurm_db_cluster, start_cluster, fun(_) -> ok end),
@@ -117,7 +119,7 @@ init_or_join_cluster_test_() ->
      [
         {"init_or_join_cluster with empty list starts single node",
          fun() ->
-             meck:new(flurm_db_cluster, [passthrough]),
+             meck:new(flurm_db_cluster, [passthrough, no_passthrough_cover]),
              meck:expect(flurm_db_cluster, start_cluster, fun([Node]) when Node =:= node() -> ok end),
 
              Result = flurm_db_ra_starter:init_or_join_cluster([]),
@@ -125,7 +127,7 @@ init_or_join_cluster_test_() ->
          end},
         {"init_or_join_cluster with only current node",
          fun() ->
-             meck:new(flurm_db_cluster, [passthrough]),
+             meck:new(flurm_db_cluster, [passthrough, no_passthrough_cover]),
              meck:expect(flurm_db_cluster, start_cluster, fun([Node]) when Node =:= node() -> ok end),
 
              Result = flurm_db_ra_starter:init_or_join_cluster([node()]),
@@ -133,9 +135,9 @@ init_or_join_cluster_test_() ->
          end},
         {"init_or_join_cluster joins existing cluster",
          fun() ->
-             meck:new(flurm_db_cluster, [passthrough]),
-             meck:new(net_adm, [passthrough, unstick]),
-             meck:new(ra, [passthrough]),
+             meck:new(flurm_db_cluster, [passthrough, no_passthrough_cover]),
+             meck:new(net_adm, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
 
              OtherNode = 'other@host',
              meck:expect(net_adm, ping, fun(Node) when Node =:= OtherNode -> pong end),
@@ -148,9 +150,9 @@ init_or_join_cluster_test_() ->
          end},
         {"init_or_join_cluster starts new cluster when no existing found",
          fun() ->
-             meck:new(flurm_db_cluster, [passthrough]),
-             meck:new(net_adm, [passthrough, unstick]),
-             meck:new(ra, [passthrough]),
+             meck:new(flurm_db_cluster, [passthrough, no_passthrough_cover]),
+             meck:new(net_adm, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
 
              OtherNode = 'other@host',
              meck:expect(net_adm, ping, fun(Node) when Node =:= OtherNode -> pang end),
@@ -164,9 +166,9 @@ init_or_join_cluster_test_() ->
          end},
         {"init_or_join_cluster when not in cluster list joins first available",
          fun() ->
-             meck:new(flurm_db_cluster, [passthrough]),
-             meck:new(net_adm, [passthrough, unstick]),
-             meck:new(ra, [passthrough]),
+             meck:new(flurm_db_cluster, [passthrough, no_passthrough_cover]),
+             meck:new(net_adm, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
 
              OtherNode = 'other@host',
              meck:expect(net_adm, ping, fun(Node) when Node =:= OtherNode -> pong end),
@@ -180,7 +182,7 @@ init_or_join_cluster_test_() ->
          end},
         {"init_or_join_cluster returns error when no cluster available",
          fun() ->
-             meck:new(net_adm, [passthrough, unstick]),
+             meck:new(net_adm, [passthrough, no_passthrough_cover, unstick]),
 
              OtherNode = 'other@host',
              meck:expect(net_adm, ping, fun(_) -> pang end),
@@ -207,9 +209,9 @@ find_existing_cluster_test_() ->
          end},
         {"find_existing_cluster finds reachable node with Ra",
          fun() ->
-             meck:new(net_adm, [passthrough, unstick]),
-             meck:new(flurm_db_cluster, [passthrough]),
-             meck:new(ra, [passthrough]),
+             meck:new(net_adm, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(flurm_db_cluster, [passthrough, no_passthrough_cover]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
 
              OtherNode = 'other@host',
              meck:expect(net_adm, ping, fun(Node) when Node =:= OtherNode -> pong end),
@@ -221,9 +223,9 @@ find_existing_cluster_test_() ->
          end},
         {"find_existing_cluster skips unreachable nodes",
          fun() ->
-             meck:new(net_adm, [passthrough, unstick]),
-             meck:new(flurm_db_cluster, [passthrough]),
-             meck:new(ra, [passthrough]),
+             meck:new(net_adm, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(flurm_db_cluster, [passthrough, no_passthrough_cover]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
 
              Node1 = 'node1@host',
              Node2 = 'node2@host',
@@ -241,9 +243,9 @@ find_existing_cluster_test_() ->
          end},
         {"find_existing_cluster skips nodes without Ra",
          fun() ->
-             meck:new(net_adm, [passthrough, unstick]),
-             meck:new(flurm_db_cluster, [passthrough]),
-             meck:new(ra, [passthrough]),
+             meck:new(net_adm, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(flurm_db_cluster, [passthrough, no_passthrough_cover]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
 
              Node1 = 'node1@host',
              Node2 = 'node2@host',
@@ -261,9 +263,9 @@ find_existing_cluster_test_() ->
          end},
         {"find_existing_cluster returns not_found when all fail",
          fun() ->
-             meck:new(net_adm, [passthrough, unstick]),
-             meck:new(flurm_db_cluster, [passthrough]),
-             meck:new(ra, [passthrough]),
+             meck:new(net_adm, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(flurm_db_cluster, [passthrough, no_passthrough_cover]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
 
              Node1 = 'node1@host',
              Node2 = 'node2@host',
@@ -284,16 +286,22 @@ handle_info_init_cluster_test_() ->
     {foreach,
      fun() ->
          meck_setup(),
-         meck:new(lager, [passthrough]),
+         DistState = ensure_distributed_node(),
+         meck:new(lager, [non_strict, no_link]),
          meck:expect(lager, info, fun(_, _) -> ok end),
          meck:expect(lager, warning, fun(_, _) -> ok end),
-         ok
+         meck:expect(lager, error, fun(_, _) -> ok end),
+         meck:expect(lager, md, fun(_) -> ok end),
+         DistState
      end,
-     fun meck_cleanup/1,
+     fun(DistState) ->
+         maybe_stop_distributed_node(DistState),
+         meck_cleanup(ok)
+     end,
      [
         {"init_cluster with join_node config",
          fun() ->
-             meck:new(flurm_db_cluster, [passthrough]),
+             meck:new(flurm_db_cluster, [passthrough, no_passthrough_cover]),
              meck:expect(flurm_db_cluster, init_ra, fun() -> ok end),
              meck:expect(flurm_db_cluster, join_cluster, fun('join@node') -> ok end),
 
@@ -302,7 +310,7 @@ handle_info_init_cluster_test_() ->
          end},
         {"init_cluster join fails gracefully",
          fun() ->
-             meck:new(flurm_db_cluster, [passthrough]),
+             meck:new(flurm_db_cluster, [passthrough, no_passthrough_cover]),
              meck:expect(flurm_db_cluster, init_ra, fun() -> ok end),
              meck:expect(flurm_db_cluster, join_cluster, fun(_) -> {error, connection_refused} end),
 
@@ -311,7 +319,7 @@ handle_info_init_cluster_test_() ->
          end},
         {"init_cluster ra init fails gracefully",
          fun() ->
-             meck:new(flurm_db_cluster, [passthrough]),
+             meck:new(flurm_db_cluster, [passthrough, no_passthrough_cover]),
              meck:expect(flurm_db_cluster, init_ra, fun() -> {error, ra_start_failed} end),
 
              State = {state, #{}},
@@ -319,8 +327,8 @@ handle_info_init_cluster_test_() ->
          end},
         {"init_cluster with cluster_nodes config",
          fun() ->
-             meck:new(flurm_db_cluster, [passthrough]),
-             meck:new(net_adm, [passthrough, unstick]),
+             meck:new(flurm_db_cluster, [passthrough, no_passthrough_cover]),
+             meck:new(net_adm, [passthrough, no_passthrough_cover, unstick]),
              meck:expect(flurm_db_cluster, init_ra, fun() -> ok end),
              meck:expect(flurm_db_cluster, start_cluster, fun(_) -> ok end),
              meck:expect(net_adm, ping, fun(_) -> pang end),
@@ -331,8 +339,8 @@ handle_info_init_cluster_test_() ->
          end},
         {"init_cluster cluster init fails",
          fun() ->
-             meck:new(flurm_db_cluster, [passthrough]),
-             meck:new(net_adm, [passthrough, unstick]),
+             meck:new(flurm_db_cluster, [passthrough, no_passthrough_cover]),
+             meck:new(net_adm, [passthrough, no_passthrough_cover, unstick]),
              meck:expect(flurm_db_cluster, init_ra, fun() -> ok end),
              meck:expect(flurm_db_cluster, start_cluster, fun(_) -> {error, cluster_start_failed} end),
              meck:expect(net_adm, ping, fun(_) -> pang end),
@@ -342,3 +350,28 @@ handle_info_init_cluster_test_() ->
              {stop, normal, _NewState} = flurm_db_ra_starter:handle_info(init_cluster, State)
          end}
      ]}.
+
+%%====================================================================
+%% Local Helpers
+%%====================================================================
+
+ensure_distributed_node() ->
+    case node() of
+        nonode@nohost ->
+            Unique = integer_to_list(erlang:unique_integer([positive])),
+            Name = list_to_atom("flurm_ra_cov_" ++ Unique),
+            case net_kernel:start([Name, shortnames]) of
+                {ok, _Pid} -> started_here;
+                {error, {already_started, _Pid}} -> already_named;
+                {error, _Reason} = Error -> erlang:error({net_kernel_start_failed, Error})
+            end;
+        _ ->
+            already_named
+    end.
+
+maybe_stop_distributed_node(started_here) ->
+    catch net_kernel:stop(),
+    timer:sleep(50),
+    ok;
+maybe_stop_distributed_node(already_named) ->
+    ok.

@@ -18,6 +18,10 @@ decode_cmd_only_test() ->
     {ok, {init, Attrs}} = flurm_pmi_protocol:decode(<<"cmd=init\n">>),
     ?assertEqual(#{}, Attrs).
 
+%% Explicitly exercise empty-line -> no_command branch.
+decode_only_newline_no_command_test() ->
+    ?assertEqual({error, no_command}, flurm_pmi_protocol:decode(<<"\n">>)).
+
 %% Test decode with empty parts (multiple spaces)
 decode_extra_spaces_test() ->
     %% Extra spaces result in empty parts that should be skipped
@@ -92,6 +96,11 @@ decode_attrs_format_test() ->
     ?assertEqual(1, maps:get(pmi_version, Attrs)),
     %% cmd should be removed from attrs
     ?assertEqual(error, maps:find(cmd, Attrs)).
+
+%% Explicitly hit fallback decode branch that extracts cmd from attrs map.
+decode_attrs_cmd_fallback_branch_test() ->
+    {ok, {init, Attrs}} = flurm_pmi_protocol:decode(<<"rank=1 cmd=init\n">>),
+    ?assertEqual(1, maps:get(rank, Attrs)).
 
 %% Test decode with zero integer
 decode_zero_integer_test() ->
@@ -192,6 +201,15 @@ parse_attrs_non_integer_test() ->
 parse_attrs_empty_value_test() ->
     Attrs = flurm_pmi_protocol:parse_attrs(<<"key=">>),
     ?assertEqual(<<>>, maps:get(key, Attrs)).
+
+%% Force safe_binary_to_atom/1 catch branch for unseen keys.
+parse_attrs_unknown_key_safe_atom_fallback_test() ->
+    Unique = integer_to_binary(erlang:unique_integer([positive, monotonic])),
+    KeyBin = <<"tail_cov_attr_", Unique/binary>>,
+    Msg = <<KeyBin/binary, "=1">>,
+    Attrs = flurm_pmi_protocol:parse_attrs(Msg),
+    [{DecodedKey, 1}] = maps:to_list(Attrs),
+    ?assert(is_atom(DecodedKey)).
 
 %% Test parse_attrs single part without equals
 parse_attrs_single_no_equals_test() ->

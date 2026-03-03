@@ -80,7 +80,7 @@ setup() ->
     catch meck:unload(flurm_node_connection_manager),
     meck:new([flurm_step_manager, flurm_job_manager, flurm_node_manager_server,
               flurm_controller_cluster, flurm_srun_callback, flurm_node_connection_manager],
-             [passthrough, no_link, non_strict]),
+             [passthrough, no_passthrough_cover, no_link, non_strict]),
 
     %% Default mock behaviors
     meck:expect(flurm_step_manager, create_step, fun(_, _) -> {ok, 0} end),
@@ -613,7 +613,7 @@ dispatch_step_to_nodes_test_() ->
          catch meck:unload(flurm_node_connection_manager),
          catch meck:unload(flurm_srun_callback),
          meck:new([flurm_job_manager, flurm_node_connection_manager, flurm_srun_callback],
-                  [passthrough, no_link, non_strict]),
+                  [passthrough, no_passthrough_cover, no_link, non_strict]),
          ok
      end,
      fun(_) ->
@@ -696,7 +696,7 @@ get_job_cred_info_test_() ->
          catch meck:unload(flurm_job_manager),
          catch meck:unload(flurm_node_manager_server),
          meck:new([flurm_job_manager, flurm_node_manager_server],
-                  [passthrough, no_link, non_strict]),
+                  [passthrough, no_passthrough_cover, no_link, non_strict]),
          ok
      end,
      fun(_) ->
@@ -747,7 +747,7 @@ get_first_registered_node_test_() ->
     {setup,
      fun() ->
          catch meck:unload(flurm_node_manager_server),
-         meck:new(flurm_node_manager_server, [passthrough, no_link, non_strict]),
+         meck:new(flurm_node_manager_server, [passthrough, no_passthrough_cover, no_link, non_strict]),
          ok
      end,
      fun(_) ->
@@ -779,7 +779,7 @@ update_job_prolog_status_test_() ->
     {setup,
      fun() ->
          catch meck:unload(flurm_job_manager),
-         meck:new(flurm_job_manager, [passthrough, no_link, non_strict]),
+         meck:new(flurm_job_manager, [passthrough, no_passthrough_cover, no_link, non_strict]),
          ok
      end,
      fun(_) ->
@@ -801,7 +801,7 @@ update_job_epilog_status_test_() ->
     {setup,
      fun() ->
          catch meck:unload(flurm_job_manager),
-         meck:new(flurm_job_manager, [passthrough, no_link, non_strict]),
+         meck:new(flurm_job_manager, [passthrough, no_passthrough_cover, no_link, non_strict]),
          ok
      end,
      fun(_) ->
@@ -830,7 +830,7 @@ edge_cases_test_() ->
          catch meck:unload(flurm_job_manager),
          catch meck:unload(flurm_node_connection_manager),
          meck:new([flurm_step_manager, flurm_job_manager, flurm_node_connection_manager],
-                  [passthrough, no_link, non_strict]),
+                  [passthrough, no_passthrough_cover, no_link, non_strict]),
          ok
      end,
      fun(_) ->

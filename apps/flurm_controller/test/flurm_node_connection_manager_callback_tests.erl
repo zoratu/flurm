@@ -29,7 +29,7 @@ make_state_with_connections(Conns) ->
 setup() ->
     catch meck:unload(error_logger),
     catch meck:unload(flurm_node_manager_server),
-    meck:new(error_logger, [passthrough, unstick, no_link]),
+    meck:new(error_logger, [passthrough, no_passthrough_cover, unstick, no_link]),
     meck:expect(error_logger, info_msg, fun(_Fmt, _Args) -> ok end),
     meck:expect(error_logger, warning_msg, fun(_Fmt, _Args) -> ok end),
     meck:expect(error_logger, error_msg, fun(_Fmt, _Args) -> ok end),

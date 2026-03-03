@@ -46,7 +46,10 @@ decode(Data) ->
     end,
 
     %% Split into command and attributes
-    Parts = binary:split(Line, <<" ">>, [global]),
+    Parts = case Line of
+        <<>> -> [];
+        _ -> binary:split(Line, <<" ">>, [global])
+    end,
     case Parts of
         [] ->
             {error, no_command};

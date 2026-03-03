@@ -35,9 +35,9 @@ node_daemon_test_() ->
 
 setup() ->
     %% Start meck for external dependencies only
-    meck:new(flurm_controller_connector, [passthrough, non_strict]),
-    meck:new(flurm_system_monitor, [passthrough, non_strict]),
-    meck:new(flurm_job_executor, [passthrough, non_strict]),
+    meck:new(flurm_controller_connector, [passthrough, no_passthrough_cover, non_strict]),
+    meck:new(flurm_system_monitor, [passthrough, no_passthrough_cover, non_strict]),
+    meck:new(flurm_job_executor, [passthrough, no_passthrough_cover, non_strict]),
     ok.
 
 cleanup(_) ->

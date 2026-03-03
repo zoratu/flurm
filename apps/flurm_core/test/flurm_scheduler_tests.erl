@@ -1042,7 +1042,7 @@ mocked_scheduler_test_() ->
 setup_with_mocks() ->
     %% Start meck for modules we want to mock
     meck:new([flurm_backfill, flurm_reservation, flurm_job_deps,
-              flurm_node_manager, flurm_job_dispatcher], [passthrough, no_link]),
+              flurm_node_manager, flurm_job_dispatcher], [passthrough, no_passthrough_cover, no_link]),
 
     %% Default mock behaviors
     meck:expect(flurm_backfill, is_backfill_enabled, fun() -> false end),
@@ -1086,7 +1086,7 @@ test_schedule_cycle_mocked() ->
 test_license_check() ->
     %% Test that license checking returns available
     catch meck:unload(flurm_license),
-    meck:new(flurm_license, [passthrough, no_link]),
+    meck:new(flurm_license, [passthrough, no_passthrough_cover, no_link]),
     meck:expect(flurm_license, check_availability, fun(_Licenses) -> true end),
 
     ?assert(flurm_license:check_availability([{<<"matlab">>, 1}])),
@@ -1123,7 +1123,7 @@ test_reservation_check() ->
 
 test_preemption_attempt() ->
     catch meck:unload(flurm_preemption),
-    meck:new(flurm_preemption, [passthrough, no_link]),
+    meck:new(flurm_preemption, [passthrough, no_passthrough_cover, no_link]),
     meck:expect(flurm_preemption, get_priority_threshold, fun() -> 1000 end),
     meck:expect(flurm_preemption, find_preemptable_jobs,
                 fun(_JobInfo, _Resources) -> {error, no_preemptable_jobs} end),

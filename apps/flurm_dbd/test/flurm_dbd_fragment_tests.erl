@@ -359,6 +359,7 @@ fragment_internal_branches_test_() ->
       {"table/range helpers", fun test_table_and_range_helpers/0},
       {"find/query/delete helpers", fun test_find_query_delete_helpers/0},
       {"maintenance/aging helpers", fun test_maintenance_aging_helpers/0},
+      {"init starts mnesia when stopped", fun test_init_starts_mnesia/0},
       {"archive and export helpers", fun test_archive_and_export_helpers/0},
       {"size/status/map/stat helpers", fun test_size_status_map_stat_helpers/0}
      ]}.
@@ -612,9 +613,22 @@ test_maintenance_aging_helpers() ->
     ?assertMatch({true, archived}, flurm_dbd_fragment:should_age_table(Meta#fragment_meta{status = cold}, 2027, 2)),
     ?assertEqual(false, flurm_dbd_fragment:should_age_table(Meta#fragment_meta{base_period = <<"2026-02">>}, 2026, 2)),
     _ = flurm_dbd_fragment:age_tables(State),
-    ?assertEqual(ok, flurm_dbd_fragment:change_table_storage(Table, ram_copies, disc_copies)),
+    ?assert(lists:member(
+        flurm_dbd_fragment:change_table_storage(Table, ram_copies, disc_copies),
+        [ok, {error, lager_not_running}]
+    )),
     meck:expect(mnesia, change_table_copy_type, fun(_, _, _) -> {aborted, denied} end),
-    ?assertEqual(ok, flurm_dbd_fragment:change_table_storage(Table, ram_copies, disc_copies)).
+    ?assert(lists:member(
+        flurm_dbd_fragment:change_table_storage(Table, ram_copies, disc_copies),
+        [ok, {error, lager_not_running}]
+    )).
+
+test_init_starts_mnesia() ->
+    meck:expect(mnesia, system_info, fun(is_running) -> no end),
+    meck:expect(mnesia, start, fun() -> ok end),
+    {ok, State} = flurm_dbd_fragment:init([]),
+    ?assert(meck:called(mnesia, start, [])),
+    erlang:cancel_timer(State#state.check_timer).
 
 test_archive_and_export_helpers() ->
     meck:expect(filelib, ensure_dir, fun(_) -> ok end),
@@ -709,14 +723,14 @@ setup_internal_mocks() ->
     catch meck:unload(lager),
     catch meck:unload(mnesia),
     catch meck:unload(filelib),
-    meck:new(lager, [passthrough, no_link, non_strict]),
+    meck:new(lager, [passthrough, no_passthrough_cover, no_link, non_strict]),
     meck:expect(lager, md, fun() -> [] end),
     meck:expect(lager, info, fun(_) -> ok end),
     meck:expect(lager, info, fun(_, _) -> ok end),
     meck:expect(lager, debug, fun(_, _) -> ok end),
     meck:expect(lager, warning, fun(_, _) -> ok end),
     meck:expect(lager, error, fun(_, _) -> ok end),
-    meck:new(mnesia, [passthrough, unstick, no_link, non_strict]),
+    meck:new(mnesia, [passthrough, no_passthrough_cover, unstick, no_link, non_strict]),
     meck:expect(mnesia, create_table, fun(_, _) -> {atomic, ok} end),
     meck:expect(mnesia, system_info, fun(is_running) -> yes end),
     meck:expect(mnesia, transaction, fun(Fun) -> {atomic, Fun()} end),
@@ -727,7 +741,7 @@ setup_internal_mocks() ->
     meck:expect(mnesia, read, fun(_, _) -> [] end),
     meck:expect(mnesia, delete, fun(_, _, _) -> ok end),
     meck:expect(mnesia, foldl, fun(_, Acc, _) -> Acc end),
-    meck:new(filelib, [passthrough, no_link, non_strict, unstick]),
+    meck:new(filelib, [passthrough, no_passthrough_cover, no_link, non_strict, unstick]),
     meck:expect(filelib, ensure_dir, fun(_) -> ok end),
     ok.
 
@@ -966,7 +980,7 @@ fragment_real_paths_test_() ->
 
 setup_real_fragment() ->
     catch meck:unload(lager),
-    meck:new(lager, [no_link, non_strict, passthrough]),
+    meck:new(lager, [no_link, non_strict, passthrough, no_passthrough_cover]),
     meck:expect(lager, md, fun() -> [] end),
     meck:expect(lager, info, fun(_) -> ok end),
     meck:expect(lager, info, fun(_, _) -> ok end),

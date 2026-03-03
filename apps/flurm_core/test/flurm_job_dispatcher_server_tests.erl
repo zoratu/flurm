@@ -44,7 +44,7 @@ setup() ->
     catch meck:unload(flurm_node_connection_manager),
 
     %% Mock the node connection manager
-    meck:new(flurm_node_connection_manager, [passthrough, non_strict]),
+    meck:new(flurm_node_connection_manager, [passthrough, no_passthrough_cover, non_strict]),
     meck:expect(flurm_node_connection_manager, send_to_nodes,
                 fun(Nodes, _Msg) ->
                     [{N, ok} || N <- Nodes]
@@ -400,7 +400,7 @@ signal_test_() ->
 test_signal_conversions() ->
     Self = self(),
     catch meck:unload(flurm_node_connection_manager),
-    meck:new(flurm_node_connection_manager, [passthrough, non_strict]),
+    meck:new(flurm_node_connection_manager, [passthrough, no_passthrough_cover, non_strict]),
     meck:expect(flurm_node_connection_manager, send_to_nodes,
                 fun(Nodes, Msg) ->
                     Self ! {signal_msg, Msg},
@@ -454,7 +454,7 @@ job_launch_message_test_() ->
 
 setup_launch() ->
     catch meck:unload(flurm_node_connection_manager),
-    meck:new(flurm_node_connection_manager, [passthrough, non_strict]),
+    meck:new(flurm_node_connection_manager, [passthrough, no_passthrough_cover, non_strict]),
     ok.
 
 cleanup_launch(_) ->
@@ -596,7 +596,7 @@ live_server_test_() ->
 
 setup_live() ->
     catch meck:unload(flurm_node_connection_manager),
-    meck:new(flurm_node_connection_manager, [passthrough, non_strict]),
+    meck:new(flurm_node_connection_manager, [passthrough, no_passthrough_cover, non_strict]),
     meck:expect(flurm_node_connection_manager, send_to_nodes,
                 fun(Nodes, _Msg) -> [{N, ok} || N <- Nodes] end),
     meck:expect(flurm_node_connection_manager, send_to_node,
@@ -724,7 +724,7 @@ preempt_explicit_nodes_test_() ->
 
 setup_explicit() ->
     catch meck:unload(flurm_node_connection_manager),
-    meck:new(flurm_node_connection_manager, [passthrough, non_strict]),
+    meck:new(flurm_node_connection_manager, [passthrough, no_passthrough_cover, non_strict]),
     ok.
 
 cleanup_explicit(_) ->

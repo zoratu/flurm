@@ -136,6 +136,10 @@
     increment_stat/2,
     is_system_process/1,
     is_supervisor/1,
+    is_killable/3,
+    find_killable_process/2,
+    execute_scenario/2,
+    do_suspend_schedulers/2,
     shuffle_list/1,
     map_to_delay_config/1,
     map_to_kill_config/1,
@@ -576,7 +580,7 @@ handle_call({unmark_protected, Pid}, _From, State) ->
 
 %% Partition operations
 handle_call({partition_node, Node, Opts}, _From, State) ->
-    case lists:member(Node, nodes()) orelse maps:is_key(Node, State#state.partitioned_nodes) of
+    case lists:member(Node, chaos_nodes()) orelse maps:is_key(Node, State#state.partitioned_nodes) of
         false ->
             {reply, {error, node_not_connected}, State};
         true ->
@@ -585,7 +589,7 @@ handle_call({partition_node, Node, Opts}, _From, State) ->
             AutoHeal = maps:get(auto_heal, Opts, Config#partition_config.auto_heal),
 
             logger:warning("[CHAOS] Creating partition from node ~p for ~pms", [Node, Duration]),
-            erlang:disconnect_node(Node),
+            chaos_disconnect_node(Node),
 
             NewState = case AutoHeal of
                 true ->
@@ -598,16 +602,16 @@ handle_call({partition_node, Node, Opts}, _From, State) ->
     end;
 
 handle_call({heal_partition, Node}, _From, State) ->
-    case maps:get(Node, State#state.partitioned_nodes, undefined) of
-        undefined ->
+    case maps:find(Node, State#state.partitioned_nodes) of
+        error ->
             {reply, {error, not_partitioned}, State};
-        TimerRef ->
+        {ok, TimerRef} ->
             case TimerRef of
                 undefined -> ok;
                 _ -> erlang:cancel_timer(TimerRef)
             end,
             logger:info("[CHAOS] Healing partition from node ~p", [Node]),
-            net_adm:ping(Node),
+            chaos_ping(Node),
             NewPartitions = maps:remove(Node, State#state.partitioned_nodes),
             {reply, ok, State#state{partitioned_nodes = NewPartitions}}
     end;
@@ -619,7 +623,7 @@ handle_call(heal_all_partitions, _From, State) ->
             _ -> erlang:cancel_timer(TimerRef)
         end,
         logger:info("[CHAOS] Healing partition from node ~p", [Node]),
-        net_adm:ping(Node)
+        chaos_ping(Node)
     end, State#state.partitioned_nodes),
     {reply, ok, State#state{partitioned_nodes = #{}}};
 
@@ -637,9 +641,9 @@ handle_call(get_partition_config, _From, State) ->
 
 %% GC operations
 handle_call(gc_all_processes, _From, State) ->
-    Procs = erlang:processes(),
+    Procs = chaos_processes(),
     Count = lists:foldl(fun(Pid, Acc) ->
-        case catch erlang:garbage_collect(Pid) of
+        case catch chaos_garbage_collect(Pid) of
             true -> Acc + 1;
             _ -> Acc
         end
@@ -648,7 +652,7 @@ handle_call(gc_all_processes, _From, State) ->
     {reply, {ok, Count}, State};
 
 handle_call({gc_process, Pid}, _From, State) ->
-    case catch erlang:garbage_collect(Pid) of
+    case catch chaos_garbage_collect(Pid) of
         true -> {reply, ok, State};
         _ -> {reply, {error, process_not_found}, State}
     end;
@@ -687,7 +691,7 @@ handle_info(tick, State) ->
 
 handle_info({heal_partition, Node}, State) ->
     logger:info("[CHAOS] Auto-healing partition from node ~p", [Node]),
-    net_adm:ping(Node),
+    chaos_ping(Node),
     NewPartitions = maps:remove(Node, State#state.partitioned_nodes),
     {noreply, State#state{partitioned_nodes = NewPartitions}};
 
@@ -697,7 +701,7 @@ handle_info(_Info, State) ->
 terminate(_Reason, State) ->
     %% Heal all partitions on shutdown
     maps:foreach(fun(Node, _) ->
-        net_adm:ping(Node)
+        chaos_ping(Node)
     end, State#state.partitioned_nodes),
     ok.
 
@@ -753,13 +757,13 @@ execute_scenario(kill_random_process, State) ->
 
 execute_scenario(trigger_gc, _State) ->
     %% Force garbage collection on random processes
-    Procs = erlang:processes(),
+    Procs = chaos_processes(),
     case Procs of
         [] -> ok;
         _ ->
             Target = lists:nth(rand:uniform(length(Procs)), Procs),
             logger:debug("[CHAOS] Forcing GC on ~p", [Target]),
-            catch erlang:garbage_collect(Target),
+            catch chaos_garbage_collect(Target),
             ok
     end;
 
@@ -769,7 +773,7 @@ execute_scenario(gc_pressure, State) ->
     MaxProcs = Config#gc_config.max_processes_per_tick,
     Aggressive = Config#gc_config.aggressive,
 
-    Procs = erlang:processes(),
+    Procs = chaos_processes(),
     NumToGC = min(MaxProcs, length(Procs)),
     Shuffled = shuffle_list(Procs),
     Targets = lists:sublist(Shuffled, NumToGC),
@@ -778,11 +782,11 @@ execute_scenario(gc_pressure, State) ->
         case Aggressive of
             true ->
                 %% Force multiple GC passes for aggressive mode
-                catch erlang:garbage_collect(Pid),
-                catch erlang:garbage_collect(Pid),
-                catch erlang:garbage_collect(Pid);
+                catch chaos_garbage_collect(Pid),
+                catch chaos_garbage_collect(Pid),
+                catch chaos_garbage_collect(Pid);
             false ->
-                catch erlang:garbage_collect(Pid)
+                catch chaos_garbage_collect(Pid)
         end
     end, Targets),
 
@@ -836,7 +840,7 @@ execute_scenario(drop_message, _State) ->
 
 execute_scenario(network_partition, State) ->
     %% Simulate network partition by disconnecting from random node
-    Nodes = nodes(),
+    Nodes = chaos_nodes(),
     PartitionedNodes = maps:keys(State#state.partitioned_nodes),
     AvailableNodes = Nodes -- PartitionedNodes,
 
@@ -849,12 +853,12 @@ execute_scenario(network_partition, State) ->
             Duration = Config#partition_config.duration_ms,
 
             logger:warning("[CHAOS] Creating random partition from ~p for ~pms", [Node, Duration]),
-            erlang:disconnect_node(Node),
+            chaos_disconnect_node(Node),
 
             spawn(fun() ->
                 timer:sleep(Duration),
                 logger:info("[CHAOS] Auto-healing partition from ~p", [Node]),
-                net_adm:ping(Node)
+                chaos_ping(Node)
             end),
             ok
     end;
@@ -875,7 +879,7 @@ execute_scenario(Unknown, _State) ->
 
 %% Find a process that can be safely killed
 find_killable_process(ProtectedApps, ProtectedPids) ->
-    Procs = erlang:processes(),
+    Procs = chaos_processes(),
     Killable = lists:filter(fun(P) ->
         is_killable(P, ProtectedApps, ProtectedPids)
     end, Procs),
@@ -955,10 +959,7 @@ do_suspend_schedulers(DurationMs, _Config) ->
 
     %% Spawn processes on each scheduler to create busy-wait pause
     Pids = lists:map(fun(SchedId) ->
-        spawn_opt(fun() ->
-            EndTime = erlang:system_time(millisecond) + DurationMs,
-            scheduler_pause_loop(EndTime)
-        end, [{scheduler, SchedId}])
+        spawn_scheduler_worker(SchedId, DurationMs)
     end, lists:seq(1, NumSchedulers)),
 
     %% Wait for all pause processes to complete
@@ -979,6 +980,57 @@ scheduler_pause_loop(EndTime) ->
             %% Busy wait - consumes scheduler time
             erlang:yield(),
             scheduler_pause_loop(EndTime)
+    end.
+
+spawn_scheduler_worker(SchedId, DurationMs) ->
+    case application:get_env(flurm_core, chaos_spawn_scheduler_fun) of
+        {ok, Fun} when is_function(Fun, 2) ->
+            Fun(SchedId, DurationMs);
+        _ ->
+            spawn_opt(fun() ->
+                EndTime = erlang:system_time(millisecond) + DurationMs,
+                scheduler_pause_loop(EndTime)
+            end, [{scheduler, SchedId}])
+    end.
+
+chaos_nodes() ->
+    case application:get_env(flurm_core, chaos_nodes_fun) of
+        {ok, Fun} when is_function(Fun, 0) ->
+            Fun();
+        _ ->
+            nodes()
+    end.
+
+chaos_processes() ->
+    case application:get_env(flurm_core, chaos_processes_fun) of
+        {ok, Fun} when is_function(Fun, 0) ->
+            Fun();
+        _ ->
+            erlang:processes()
+    end.
+
+chaos_garbage_collect(Pid) ->
+    case application:get_env(flurm_core, chaos_gc_fun) of
+        {ok, Fun} when is_function(Fun, 1) ->
+            Fun(Pid);
+        _ ->
+            erlang:garbage_collect(Pid)
+    end.
+
+chaos_disconnect_node(Node) ->
+    case application:get_env(flurm_core, chaos_disconnect_fun) of
+        {ok, Fun} when is_function(Fun, 1) ->
+            Fun(Node);
+        _ ->
+            erlang:disconnect_node(Node)
+    end.
+
+chaos_ping(Node) ->
+    case application:get_env(flurm_core, chaos_ping_fun) of
+        {ok, Fun} when is_function(Fun, 1) ->
+            Fun(Node);
+        _ ->
+            net_adm:ping(Node)
     end.
 
 should_delay_module(undefined, _Config) ->

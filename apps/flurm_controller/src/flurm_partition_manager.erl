@@ -18,7 +18,8 @@
 %% Test exports - internal helpers for direct callback testing
 -ifdef(TEST).
 -export([
-    apply_partition_updates/2
+    apply_partition_updates/2,
+    normalize_start_result/1
 ]).
 -endif.
 
@@ -34,7 +35,10 @@
 
 -spec start_link() -> {ok, pid()} | ignore | {error, term()}.
 start_link() ->
-    case gen_server:start_link({local, ?MODULE}, ?MODULE, [], []) of
+    normalize_start_result(gen_server:start_link({local, ?MODULE}, ?MODULE, [], [])).
+
+normalize_start_result(Result) ->
+    case Result of
         {ok, Pid} ->
             {ok, Pid};
         {error, {already_started, Pid}} ->

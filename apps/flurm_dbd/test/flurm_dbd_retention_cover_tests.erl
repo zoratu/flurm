@@ -67,7 +67,7 @@ retention_test_() ->
 
 setup() ->
     catch meck:unload(lager),
-    meck:new(lager, [passthrough, no_link, non_strict]),
+    meck:new(lager, [passthrough, no_passthrough_cover, no_link, non_strict]),
     meck:expect(lager, info,    fun(_) -> ok end),
     meck:expect(lager, info,    fun(_, _) -> ok end),
     meck:expect(lager, debug,   fun(_, _) -> ok end),
@@ -166,14 +166,11 @@ test_prune_usage_records() ->
     ?assertEqual([], maps:get(errors, Result)).
 
 test_prune_usage_records_failure() ->
-    %% lager:info crash is intercepted by meck passthrough, so the
-    %% catch clause in prune_usage_records does not trigger.
-    %% Verify the function still returns a valid result.
-    meck:expect(lager, info, fun(_, _) -> error(log_crash) end),
-    CutoffTime = erlang:system_time(second) - 86400 * 30,
+    %% Force timestamp conversion failure inside the try/catch path.
+    CutoffTime = -999999999999999,
     Result = flurm_dbd_retention:prune_usage_records(CutoffTime),
     ?assertEqual(0, maps:get(count, Result)),
-    ?assert(is_list(maps:get(errors, Result))).
+    ?assertMatch([{usage_prune_error, _}], maps:get(errors, Result)).
 
 %% --- archive_records ---
 

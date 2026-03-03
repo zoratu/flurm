@@ -51,7 +51,7 @@ format_test_() ->
 
 setup_lager() ->
     catch meck:unload(lager),
-    meck:new(lager, [passthrough, no_link, non_strict]),
+    meck:new(lager, [passthrough, no_passthrough_cover, no_link, non_strict]),
     meck:expect(lager, info,    fun(_) -> ok end),
     meck:expect(lager, info,    fun(_, _) -> ok end),
     meck:expect(lager, debug,   fun(_, _) -> ok end),
@@ -250,7 +250,7 @@ query_test_() ->
 
 setup_query() ->
     catch meck:unload(lager),
-    meck:new(lager, [passthrough, no_link, non_strict]),
+    meck:new(lager, [passthrough, no_passthrough_cover, no_link, non_strict]),
     meck:expect(lager, info,    fun(_) -> ok end),
     meck:expect(lager, info,    fun(_, _) -> ok end),
     meck:expect(lager, debug,   fun(_, _) -> ok end),

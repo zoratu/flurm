@@ -273,10 +273,6 @@ decode_reconfigure_with_config_empty_test() ->
     ?assertMatch(#reconfigure_with_config_request{}, Body).
 
 decode_reconfigure_with_config_full_test() ->
-    %% Note: The current implementation of decode_reconfigure_with_config_request has a pattern
-    %% matching issue with unpack_string (expects {Value, Rest} but gets {ok, Value, Rest}).
-    %% As a result, non-empty binaries fall through to catch and return empty record.
-    %% This test validates the actual current behavior.
     ConfigFile = <<"/etc/slurm/slurm.conf">>,
     ConfigLen = byte_size(ConfigFile) + 1,
     Binary = <<
@@ -285,8 +281,10 @@ decode_reconfigure_with_config_full_test() ->
         0:32/big   % SettingsCount
     >>,
     {ok, Body} = flurm_codec_system:decode_body(?REQUEST_RECONFIGURE_WITH_CONFIG, Binary),
-    %% Due to the pattern matching issue, config_file is not extracted
-    ?assertEqual(#reconfigure_with_config_request{}, Body).
+    ?assertEqual(ConfigFile, Body#reconfigure_with_config_request.config_file),
+    ?assertEqual(#{}, Body#reconfigure_with_config_request.settings),
+    ?assertEqual(true, Body#reconfigure_with_config_request.force),
+    ?assertEqual(true, Body#reconfigure_with_config_request.notify_nodes).
 
 %%%===================================================================
 %%% decode_body/2 Tests - Other Requests

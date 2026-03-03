@@ -74,13 +74,13 @@ setup() ->
     catch meck:unload(flurm_federation_sync),
 
     %% Setup mocks
-    meck:new(flurm_metrics, [passthrough, non_strict]),
+    meck:new(flurm_metrics, [passthrough, no_passthrough_cover, non_strict]),
     meck:expect(flurm_metrics, increment, fun(_) -> ok end),
     meck:expect(flurm_metrics, histogram, fun(_, _) -> ok end),
 
-    meck:new(flurm_scheduler, [passthrough, non_strict]),
-    meck:new(flurm_job_registry, [passthrough, non_strict]),
-    meck:new(flurm_federation_sync, [passthrough, non_strict]),
+    meck:new(flurm_scheduler, [passthrough, no_passthrough_cover, non_strict]),
+    meck:new(flurm_job_registry, [passthrough, no_passthrough_cover, non_strict]),
+    meck:new(flurm_federation_sync, [passthrough, no_passthrough_cover, non_strict]),
 
     ok.
 

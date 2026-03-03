@@ -13,7 +13,7 @@
 
 setup() ->
     %% Mock flurm_diagnostics
-    meck:new(flurm_diagnostics, [passthrough, non_strict]),
+    meck:new(flurm_diagnostics, [passthrough, no_passthrough_cover, non_strict]),
     meck:expect(flurm_diagnostics, start_leak_detector, fun(_Interval) -> ok end),
     meck:expect(flurm_diagnostics, stop_leak_detector, fun() -> ok end),
     meck:expect(flurm_diagnostics, full_report, fun() ->
@@ -27,7 +27,7 @@ setup() ->
     end),
 
     %% Mock flurm_job_manager (not running)
-    meck:new(flurm_job_manager, [passthrough, non_strict]),
+    meck:new(flurm_job_manager, [passthrough, no_passthrough_cover, non_strict]),
     meck:expect(flurm_job_manager, submit_job, fun(_Spec) ->
         {ok, erlang:unique_integer([positive])}
     end),
@@ -323,7 +323,7 @@ test_no_job_manager() ->
     ?assertEqual(3, maps:get(succeeded, Report)),
 
     %% Re-create mock for cleanup
-    meck:new(flurm_job_manager, [passthrough, non_strict]),
+    meck:new(flurm_job_manager, [passthrough, no_passthrough_cover, non_strict]),
     meck:expect(flurm_job_manager, submit_job, fun(_) -> {ok, 1} end),
     meck:expect(flurm_job_manager, cancel_job, fun(_) -> {ok, cancelled} end).
 

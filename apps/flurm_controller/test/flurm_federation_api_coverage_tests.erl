@@ -264,3 +264,63 @@ array_in_json_test() ->
     {Code, Response} = flurm_federation_api:handle(<<"POST">>, <<"/api/v1/federation/clusters">>, Body),
     ?assert(is_integer(Code)),
     ?assert(is_binary(Response)).
+
+%%====================================================================
+%% Targeted Branch Coverage
+%%====================================================================
+
+remove_cluster_binary_error_branch_test() ->
+    with_federation_mock(fun() ->
+        meck:expect(flurm_federation, remove_cluster, fun(_) -> <<"binary_error">> end),
+        {Code, Body} = flurm_federation_api:handle(
+                         <<"DELETE">>,
+                         <<"/api/v1/federation/clusters/cluster_a">>,
+                         <<>>),
+        ?assertEqual(500, Code),
+        Decoded = jsx:decode(Body, [return_maps]),
+        ?assertEqual(<<"binary_error">>, maps:get(<<"error">>, Decoded))
+    end).
+
+submit_job_route_unexpected_error_branch_test() ->
+    with_federation_mock(fun() ->
+        meck:expect(flurm_federation, route_job, fun(_) -> unexpected_route_error end),
+        Body = jsx:encode(#{
+            <<"name">> => <<"route_test">>,
+            <<"script">> => <<"#!/bin/bash\ntrue">>
+        }),
+        {Code, Resp} = flurm_federation_api:handle(
+                         <<"POST">>,
+                         <<"/api/v1/federation/jobs">>,
+                         Body),
+        ?assertEqual(500, Code),
+        Decoded = jsx:decode(Resp, [return_maps]),
+        ?assertEqual(<<"unexpected_route_error">>, maps:get(<<"error">>, Decoded))
+    end).
+
+submit_job_catch_non_badarg_branch_test() ->
+    %% Missing required <<"script">> triggers an error that falls into the
+    %% generic catch branch (not error:badarg).
+    Body = jsx:encode(#{<<"name">> => <<"missing_script">>}),
+    {Code, Resp} = flurm_federation_api:handle(<<"POST">>, <<"/api/v1/federation/jobs">>, Body),
+    ?assertEqual(500, Code),
+    Decoded = jsx:decode(Resp, [return_maps]),
+    ?assert(maps:is_key(<<"error">>, Decoded)).
+
+list_clusters_unknown_formatter_branch_test() ->
+    with_federation_mock(fun() ->
+        meck:expect(flurm_federation, list_clusters, fun() -> [<<"unexpected_cluster_shape">>] end),
+        {Code, Body} = flurm_federation_api:handle(<<"GET">>, <<"/api/v1/federation/clusters">>, <<>>),
+        ?assertEqual(200, Code),
+        Decoded = jsx:decode(Body, [return_maps]),
+        [First | _] = maps:get(<<"clusters">>, Decoded),
+        ?assertEqual(<<"unknown">>, maps:get(<<"cluster">>, First))
+    end).
+
+with_federation_mock(Fun) ->
+    catch meck:unload(flurm_federation),
+    meck:new(flurm_federation, [non_strict]),
+    try
+        Fun()
+    after
+        catch meck:unload(flurm_federation)
+    end.

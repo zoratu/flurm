@@ -86,7 +86,7 @@ setup_mocked_supervisor() ->
     %% Unload any existing mocks to prevent conflicts in parallel tests
     catch meck:unload(flurm_node),
     %% Mock the flurm_node module to avoid starting real processes
-    meck:new(flurm_node, [passthrough, non_strict]),
+    meck:new(flurm_node, [passthrough, no_passthrough_cover, non_strict]),
     meck:expect(flurm_node, start_link, fun(_NodeSpec) ->
         %% Use spawn (not spawn_link) to avoid linked exits affecting test runner
         Pid = spawn(fun() -> mock_node_loop() end),

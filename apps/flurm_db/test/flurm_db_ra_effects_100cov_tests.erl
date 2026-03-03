@@ -9,17 +9,23 @@
 -module(flurm_db_ra_effects_100cov_tests).
 
 -include_lib("eunit/include/eunit.hrl").
+-include_lib("flurm_db/include/flurm_db.hrl").
 
 %%====================================================================
 %% Test Fixtures
 %%====================================================================
 
 setup() ->
+    %% Ensure clean meck state when tests run in parallel with other suites
+    catch meck:unload(error_logger),
+    catch meck:unload(pg),
+    catch meck:unload(flurm_db_ra),
+    catch meck:unload(flurm_controller_failover),
     %% Mock error_logger
-    meck:new(error_logger, [unstick, passthrough]),
+    meck:new(error_logger, [unstick, passthrough, no_passthrough_cover]),
     meck:expect(error_logger, info_msg, fun(_Fmt, _Args) -> ok end),
     %% Mock pg (process groups)
-    meck:new(pg, [non_strict, no_link]),
+    meck:new(pg, [unstick, non_strict, no_link]),
     meck:expect(pg, start, fun(_Scope) -> {ok, spawn(fun() -> receive stop -> ok end end)} end),
     meck:expect(pg, join, fun(_Group, _Pid) -> ok end),
     meck:expect(pg, leave, fun(_Group, _Pid) -> ok end),
@@ -766,6 +772,7 @@ subscribe_test_() ->
                  meck:expect(pg, start, fun(_Scope) ->
                      {error, {already_started, spawn(fun() -> ok end)}}
                  end),
+                 meck:expect(pg, join, fun(_Group, _Pid) -> ok end),
                  Result = flurm_db_ra_effects:subscribe(self()),
                  ?assertEqual(ok, Result)
              end}
@@ -994,76 +1001,100 @@ notify_subscribers_test_() ->
 %%====================================================================
 
 make_job(Id) ->
-    %% ra_job record structure
-    {ra_job,
-     Id,                      %% id
-     <<"test_job">>,         %% name
-     <<"testuser">>,         %% user
-     <<"default">>,          %% partition
-     pending,                %% state
-     1,                      %% num_nodes
-     4,                      %% num_cpus
-     8192,                   %% memory_mb
-     100,                    %% priority
-     undefined,              %% start_time
-     undefined,              %% end_time
-     [],                     %% allocated_nodes
-     undefined,              %% script
-     #{}                     %% extra
+    #ra_job{
+        id = Id,
+        name = <<"test_job">>,
+        user = <<"testuser">>,
+        group = <<"testgroup">>,
+        partition = <<"default">>,
+        state = pending,
+        script = <<"#!/bin/bash\necho test">>,
+        num_nodes = 1,
+        num_cpus = 4,
+        num_tasks = 1,
+        cpus_per_task = 4,
+        memory_mb = 8192,
+        time_limit = 3600,
+        priority = 100,
+        submit_time = erlang:system_time(second),
+        start_time = undefined,
+        end_time = undefined,
+        allocated_nodes = [],
+        exit_code = undefined,
+        array_job_id = 0,
+        array_task_id = undefined
     }.
 
 make_job_with_nodes(Id, Nodes) ->
-    %% ra_job record with allocated nodes
-    {ra_job,
-     Id,                      %% id
-     <<"test_job">>,         %% name
-     <<"testuser">>,         %% user
-     <<"default">>,          %% partition
-     running,                %% state
-     length(Nodes),          %% num_nodes
-     4,                      %% num_cpus
-     8192,                   %% memory_mb
-     100,                    %% priority
-     undefined,              %% start_time
-     undefined,              %% end_time
-     Nodes,                  %% allocated_nodes
-     undefined,              %% script
-     #{}                     %% extra
+    #ra_job{
+        id = Id,
+        name = <<"test_job">>,
+        user = <<"testuser">>,
+        group = <<"testgroup">>,
+        partition = <<"default">>,
+        state = running,
+        script = <<"#!/bin/bash\necho test">>,
+        num_nodes = length(Nodes),
+        num_cpus = 4,
+        num_tasks = 1,
+        cpus_per_task = 4,
+        memory_mb = 8192,
+        time_limit = 3600,
+        priority = 100,
+        submit_time = erlang:system_time(second),
+        start_time = undefined,
+        end_time = undefined,
+        allocated_nodes = Nodes,
+        exit_code = undefined,
+        array_job_id = 0,
+        array_task_id = undefined
     }.
 
 make_node(Name) ->
-    %% ra_node record structure
-    {ra_node,
-     Name,                   %% name
-     <<"host1">>,           %% hostname
-     16,                     %% cpus
-     65536,                  %% memory_mb
-     up,                     %% state
-     [],                     %% running_jobs
-     #{},                    %% extra
-     erlang:system_time(second)  %% last_heartbeat
+    #ra_node{
+        name = Name,
+        hostname = <<"host1">>,
+        port = 6817,
+        cpus = 16,
+        cpus_used = 0,
+        memory_mb = 65536,
+        memory_used = 0,
+        gpus = 0,
+        gpus_used = 0,
+        state = up,
+        features = [],
+        partitions = [<<"default">>],
+        running_jobs = [],
+        last_heartbeat = erlang:system_time(second)
     }.
 
 make_node_with_jobs(Name, Jobs) ->
-    {ra_node,
-     Name,                   %% name
-     <<"host1">>,           %% hostname
-     16,                     %% cpus
-     65536,                  %% memory_mb
-     up,                     %% state
-     Jobs,                   %% running_jobs
-     #{},                    %% extra
-     erlang:system_time(second)  %% last_heartbeat
+    #ra_node{
+        name = Name,
+        hostname = <<"host1">>,
+        port = 6817,
+        cpus = 16,
+        cpus_used = 0,
+        memory_mb = 65536,
+        memory_used = 0,
+        gpus = 0,
+        gpus_used = 0,
+        state = up,
+        features = [],
+        partitions = [<<"default">>],
+        running_jobs = Jobs,
+        last_heartbeat = erlang:system_time(second)
     }.
 
 make_partition(Name) ->
-    %% ra_partition record structure
-    {ra_partition,
-     Name,                   %% name
-     [],                     %% nodes
-     #{},                    %% constraints
-     #{},                    %% extra
-     erlang:system_time(second)  %% created_at
+    #ra_partition{
+        name = Name,
+        state = up,
+        nodes = [],
+        max_time = 7200,
+        default_time = 3600,
+        max_nodes = 100,
+        priority = 1
     }.
 
 receive_all(Acc) ->

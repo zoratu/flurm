@@ -169,7 +169,7 @@ node_unregistered_no_jobs_test() ->
 node_unregistered_with_jobs_test() ->
     Node = (make_test_node())#ra_node{running_jobs = [1, 2, 3]},
     %% Mock flurm_db_ra:update_job_state to avoid actual Ra calls
-    meck:new(flurm_db_ra, [passthrough]),
+    meck:new(flurm_db_ra, [passthrough, no_passthrough_cover]),
     meck:expect(flurm_db_ra, update_job_state, fun(_, _) -> ok end),
     ok = flurm_db_ra_effects:node_unregistered(Node),
     ?assert(meck:called(flurm_db_ra, update_job_state, [1, node_fail])),

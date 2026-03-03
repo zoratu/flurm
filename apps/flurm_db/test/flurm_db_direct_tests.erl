@@ -83,7 +83,7 @@ cleanup(_) ->
           flurm_db_test_table]).
 
 setup_with_ra_mock() ->
-    meck:new(flurm_db_ra, [passthrough]),
+    meck:new(flurm_db_ra, [passthrough, no_passthrough_cover]),
     ok.
 
 cleanup_with_ra_mock(_) ->
@@ -91,7 +91,7 @@ cleanup_with_ra_mock(_) ->
     cleanup(ok).
 
 setup_with_cluster_mock() ->
-    meck:new(flurm_db_cluster, [passthrough]),
+    meck:new(flurm_db_cluster, [passthrough, no_passthrough_cover]),
     ok.
 
 cleanup_with_cluster_mock(_) ->
@@ -105,6 +105,9 @@ cleanup_with_cluster_mock(_) ->
 legacy_ets_api_test() ->
     %% Test init/0
     ok = flurm_db:init(),
+    ets:delete_all_objects(flurm_db_jobs),
+    ets:delete_all_objects(flurm_db_nodes),
+    ets:delete_all_objects(flurm_db_partitions),
 
     %% Test put/3
     ok = flurm_db:put(jobs, 1, #{name => <<"test_job">>}),

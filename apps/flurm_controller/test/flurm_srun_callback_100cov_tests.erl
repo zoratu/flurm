@@ -199,7 +199,7 @@ setup() ->
     catch meck:unload(flurm_protocol_codec),
 
     %% Start meck for mocking
-    meck:new(gen_tcp, [unstick, passthrough]),
+    meck:new(gen_tcp, [unstick, passthrough, no_passthrough_cover]),
     meck:new(flurm_protocol_codec, [non_strict]),
 
     %% Default mock behaviors

@@ -75,7 +75,7 @@ cleanup(_) ->
 setup_with_meck() ->
     setup(),
     %% Start meck for httpc
-    meck:new(httpc, [unstick, passthrough]),
+    meck:new(httpc, [unstick, passthrough, no_passthrough_cover]),
     %% Start meck for flurm_metrics
     meck:new(flurm_metrics, [non_strict]),
     meck:expect(flurm_metrics, increment, fun(_) -> ok end),

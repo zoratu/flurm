@@ -26,9 +26,9 @@ app_start_test_() ->
      ]}.
 
 setup_app_start() ->
-    meck:new(lager, [non_strict, passthrough]),
-    meck:new(flurm_state_persistence, [passthrough, non_strict]),
-    meck:new(flurm_node_daemon_sup, [passthrough, non_strict]),
+    meck:new(lager, [non_strict, passthrough, no_passthrough_cover]),
+    meck:new(flurm_state_persistence, [passthrough, no_passthrough_cover, non_strict]),
+    meck:new(flurm_node_daemon_sup, [passthrough, no_passthrough_cover, non_strict]),
     %% Set up required environment
     application:set_env(flurm_node_daemon, controller_host, "localhost"),
     application:set_env(flurm_node_daemon, controller_port, 6818),
@@ -114,7 +114,7 @@ app_stop_test_() ->
      ]}.
 
 setup_app_stop() ->
-    meck:new(lager, [non_strict, passthrough]),
+    meck:new(lager, [non_strict, passthrough, no_passthrough_cover]),
     ok.
 
 cleanup_app_stop(_) ->
@@ -144,10 +144,10 @@ prep_stop_test_() ->
      ]}.
 
 setup_prep_stop() ->
-    meck:new(lager, [non_strict, passthrough]),
-    meck:new(flurm_state_persistence, [passthrough, non_strict]),
-    meck:new(flurm_controller_connector, [passthrough, non_strict]),
-    meck:new(flurm_system_monitor, [passthrough, non_strict]),
+    meck:new(lager, [non_strict, passthrough, no_passthrough_cover]),
+    meck:new(flurm_state_persistence, [passthrough, no_passthrough_cover, non_strict]),
+    meck:new(flurm_controller_connector, [passthrough, no_passthrough_cover, non_strict]),
+    meck:new(flurm_system_monitor, [passthrough, no_passthrough_cover, non_strict]),
     ok.
 
 cleanup_prep_stop(_) ->
@@ -220,11 +220,11 @@ lifecycle_test_() ->
      ]}.
 
 setup_lifecycle() ->
-    meck:new(lager, [non_strict, passthrough]),
-    meck:new(flurm_state_persistence, [passthrough, non_strict]),
-    meck:new(flurm_node_daemon_sup, [passthrough, non_strict]),
-    meck:new(flurm_controller_connector, [passthrough, non_strict]),
-    meck:new(flurm_system_monitor, [passthrough, non_strict]),
+    meck:new(lager, [non_strict, passthrough, no_passthrough_cover]),
+    meck:new(flurm_state_persistence, [passthrough, no_passthrough_cover, non_strict]),
+    meck:new(flurm_node_daemon_sup, [passthrough, no_passthrough_cover, non_strict]),
+    meck:new(flurm_controller_connector, [passthrough, no_passthrough_cover, non_strict]),
+    meck:new(flurm_system_monitor, [passthrough, no_passthrough_cover, non_strict]),
     application:set_env(flurm_node_daemon, controller_host, "localhost"),
     application:set_env(flurm_node_daemon, controller_port, 6818),
     ok.

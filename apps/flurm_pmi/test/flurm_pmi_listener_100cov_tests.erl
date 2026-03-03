@@ -16,6 +16,20 @@
 
 -include_lib("eunit/include/eunit.hrl").
 
+-record(connection_state, {
+    rank = undefined,
+    buffer = <<>>,
+    initialized = false
+}).
+
+-record(state, {
+    job_id,
+    step_id,
+    socket_path,
+    listen_socket = undefined,
+    connections = #{}
+}).
+
 %%%===================================================================
 %%% Test Setup/Teardown
 %%%===================================================================
@@ -33,7 +47,7 @@ setup() ->
     timer:sleep(50),
     %% Only mock non-sticky application modules
     meck:new([flurm_pmi_manager, flurm_pmi_protocol, lager],
-             [passthrough, non_strict]),
+             [passthrough, no_passthrough_cover, non_strict]),
     %% Default meck expectations
     meck:expect(lager, info, fun(_Fmt, _Args) -> ok end),
     meck:expect(lager, info, fun(_Fmt) -> ok end),
@@ -118,17 +132,25 @@ flurm_pmi_listener_test_() ->
         {"manager finalize_rank called", fun test_manager_finalize_rank/0},
         {"manager init_job called", fun test_manager_init_job/0},
 
-        %% Error handling tests
-        {"manager error handling for register_rank", fun test_manager_register_rank_error/0},
-        {"manager error handling for get_job_info", fun test_manager_get_job_info_error/0},
-        {"manager error handling for barrier_in", fun test_manager_barrier_in_error/0},
-        {"manager error handling for kvs_get", fun test_manager_kvs_get_error/0},
-        {"manager error handling for kvs_getbyidx", fun test_manager_kvs_getbyidx_error/0},
-        {"manager error handling for get_kvsname", fun test_manager_get_kvsname_error/0},
+	        %% Error handling tests
+	        {"manager error handling for register_rank", fun test_manager_register_rank_error/0},
+	        {"manager error handling for get_job_info", fun test_manager_get_job_info_error/0},
+	        {"manager error handling for barrier_in", fun test_manager_barrier_in_error/0},
+	        {"manager error handling for kvs_get", fun test_manager_kvs_get_error/0},
+	        {"manager error handling for kvs_getbyidx", fun test_manager_kvs_getbyidx_error/0},
+	        {"manager error handling for get_kvsname", fun test_manager_get_kvsname_error/0},
 
-        %% Additional manager tests
-        {"manager multiple operations", fun test_manager_operations_combined/0}
-     ]}.
+	        %% Additional manager tests
+	        {"manager multiple operations", fun test_manager_operations_combined/0},
+
+	        %% Tail coverage branches
+	        {"init socket error branch", fun test_init_socket_error_branch/0},
+	        {"accept error branch", fun test_accept_error_branch/0},
+	        {"unknown socket data branch", fun test_unknown_socket_data_branch/0},
+	        {"terminate undefined listen socket branch", fun test_terminate_undefined_socket_branch/0},
+	        {"incomplete buffer + undefined response branch", fun test_incomplete_buffer_branch/0},
+	        {"buffer rest branch after full line", fun test_buffer_rest_branch/0}
+	     ]}.
 
 %%%===================================================================
 %%% Additional standalone tests - provide comprehensive coverage
@@ -171,6 +193,83 @@ standalone_listener_name_various() ->
     ?assertEqual(ok, flurm_pmi_listener:stop(100, 0)),
     ?assertEqual(ok, flurm_pmi_listener:stop(100, 1)),
     ?assertEqual(ok, flurm_pmi_listener:stop(100, 99)).
+
+test_init_socket_error_branch() ->
+    %% Unix domain paths beyond OS limits force listen error.
+    HugeJobId = list_to_integer(lists:duplicate(220, $9)),
+    ?assertMatch({stop, {socket_error, _}}, flurm_pmi_listener:init([HugeJobId, 0, 1])).
+
+test_accept_error_branch() ->
+    {ok, ListenSock} = gen_tcp:listen(0, [binary, {active, false}]),
+    ok = gen_tcp:close(ListenSock),
+    State = #state{
+        job_id = 1,
+        step_id = 0,
+        socket_path = "/tmp/flurm_pmi_accept_error.sock",
+        listen_socket = ListenSock,
+        connections = #{}
+    },
+    ?assertMatch({noreply, _}, flurm_pmi_listener:handle_info(accept, State)).
+
+test_unknown_socket_data_branch() ->
+    State = #state{
+        job_id = 1,
+        step_id = 0,
+        socket_path = "/tmp/flurm_pmi_unknown_socket.sock",
+        listen_socket = undefined,
+        connections = #{}
+    },
+    ?assertMatch({noreply, _}, flurm_pmi_listener:handle_info({tcp, fake_socket, <<"cmd=init\n">>}, State)).
+
+test_terminate_undefined_socket_branch() ->
+    State = #state{
+        job_id = 1,
+        step_id = 0,
+        socket_path = "/tmp/flurm_pmi_terminate_branch.sock",
+        listen_socket = undefined,
+        connections = #{}
+    },
+    ?assertEqual(ok, flurm_pmi_listener:terminate(normal, State)).
+
+test_incomplete_buffer_branch() ->
+    Socket = fake_socket,
+    State = #state{
+        job_id = 1,
+        step_id = 0,
+        socket_path = "/tmp/flurm_pmi_incomplete.sock",
+        listen_socket = undefined,
+        connections = #{Socket => #connection_state{}}
+    },
+    {noreply, NewState} = flurm_pmi_listener:handle_info({tcp, Socket, <<"cmd=unknown">>}, State),
+    #connection_state{buffer = Buffer} = maps:get(Socket, NewState#state.connections),
+    ?assertEqual(<<"cmd=unknown">>, Buffer).
+
+test_buffer_rest_branch() ->
+    {Client, Server} = tcp_pair(),
+    try
+        State = #state{
+            job_id = 1,
+            step_id = 0,
+            socket_path = "/tmp/flurm_pmi_buffer_rest.sock",
+            listen_socket = undefined,
+            connections = #{Server => #connection_state{}}
+        },
+        {noreply, NewState} =
+            flurm_pmi_listener:handle_info({tcp, Server, <<"cmd=unknown\ntail">>}, State),
+        #connection_state{buffer = Buffer} = maps:get(Server, NewState#state.connections),
+        ?assertEqual(<<"tail">>, Buffer)
+    after
+        catch gen_tcp:close(Client),
+        catch gen_tcp:close(Server)
+    end.
+
+tcp_pair() ->
+    {ok, Listen} = gen_tcp:listen(0, [binary, {active, false}, {packet, raw}, {reuseaddr, true}]),
+    {ok, {Addr, Port}} = inet:sockname(Listen),
+    {ok, Client} = gen_tcp:connect(Addr, Port, [binary, {active, false}, {packet, raw}]),
+    {ok, Server} = gen_tcp:accept(Listen),
+    ok = gen_tcp:close(Listen),
+    {Client, Server}.
 
 %%%===================================================================
 %%% API Tests

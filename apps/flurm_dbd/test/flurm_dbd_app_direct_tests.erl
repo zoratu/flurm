@@ -42,7 +42,7 @@ setup() ->
 
     %% Mock flurm_dbd_sup to avoid starting actual supervisor
     catch meck:unload(flurm_dbd_sup),
-    meck:new(flurm_dbd_sup, [passthrough, no_link]),
+    meck:new(flurm_dbd_sup, [passthrough, no_passthrough_cover, no_link]),
     meck:expect(flurm_dbd_sup, start_link, fun() -> {ok, self()} end),
     ok.
 
@@ -100,7 +100,7 @@ supervisor_failure_test_() ->
     meck:expect(lager, md, fun(_) -> ok end),
 
          catch meck:unload(flurm_dbd_sup),
-         meck:new(flurm_dbd_sup, [passthrough, no_link]),
+         meck:new(flurm_dbd_sup, [passthrough, no_passthrough_cover, no_link]),
          meck:expect(flurm_dbd_sup, start_link, fun() ->
              {error, {shutdown, {failed_to_start_child, flurm_dbd_server, reason}}}
          end),

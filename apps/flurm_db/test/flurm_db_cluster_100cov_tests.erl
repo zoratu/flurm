@@ -132,11 +132,11 @@ start_cluster_test_() ->
      [
         {"start_cluster/0 calls start_cluster/1 with current node",
          fun() ->
-             meck:new(ra, [passthrough]),
-             meck:new(ra_system, [passthrough]),
-             meck:new(application, [passthrough, unstick]),
-             meck:new(filelib, [passthrough, unstick]),
-             meck:new(lager, [passthrough]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
+             meck:new(ra_system, [passthrough, no_passthrough_cover]),
+             meck:new(application, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(filelib, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(lager, [passthrough, no_passthrough_cover, non_strict, no_link]),
 
              meck:expect(application, get_env, fun(flurm_db, data_dir, _Default) -> "/tmp/test_data";
                                                   (ra, data_dir, _D) -> undefined;
@@ -159,12 +159,12 @@ start_cluster_test_() ->
          end},
         {"start_cluster/1 success with all nodes started",
          fun() ->
-             meck:new(ra, [passthrough]),
-             meck:new(ra_system, [passthrough]),
-             meck:new(application, [passthrough, unstick]),
-             meck:new(filelib, [passthrough, unstick]),
-             meck:new(lager, [passthrough]),
-             meck:new(error_logger, [passthrough, unstick]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
+             meck:new(ra_system, [passthrough, no_passthrough_cover]),
+             meck:new(application, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(filelib, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(lager, [passthrough, no_passthrough_cover, non_strict, no_link]),
+             meck:new(error_logger, [passthrough, no_passthrough_cover, unstick]),
 
              meck:expect(application, get_env, fun(flurm_db, data_dir, _) -> "/tmp/test";
                                                   (ra, data_dir, _D) -> undefined;
@@ -188,12 +188,12 @@ start_cluster_test_() ->
          end},
         {"start_cluster/1 success with partial failure",
          fun() ->
-             meck:new(ra, [passthrough]),
-             meck:new(ra_system, [passthrough]),
-             meck:new(application, [passthrough, unstick]),
-             meck:new(filelib, [passthrough, unstick]),
-             meck:new(lager, [passthrough]),
-             meck:new(error_logger, [passthrough, unstick]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
+             meck:new(ra_system, [passthrough, no_passthrough_cover]),
+             meck:new(application, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(filelib, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(lager, [passthrough, no_passthrough_cover, non_strict, no_link]),
+             meck:new(error_logger, [passthrough, no_passthrough_cover, unstick]),
 
              meck:expect(application, get_env, fun(flurm_db, data_dir, _) -> "/tmp/test";
                                                   (ra, data_dir, _D) -> undefined;
@@ -217,12 +217,12 @@ start_cluster_test_() ->
          end},
         {"start_cluster/1 failure returns error",
          fun() ->
-             meck:new(ra, [passthrough]),
-             meck:new(ra_system, [passthrough]),
-             meck:new(application, [passthrough, unstick]),
-             meck:new(filelib, [passthrough, unstick]),
-             meck:new(lager, [passthrough]),
-             meck:new(error_logger, [passthrough, unstick]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
+             meck:new(ra_system, [passthrough, no_passthrough_cover]),
+             meck:new(application, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(filelib, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(lager, [passthrough, no_passthrough_cover, non_strict, no_link]),
+             meck:new(error_logger, [passthrough, no_passthrough_cover, unstick]),
 
              meck:expect(application, get_env, fun(flurm_db, data_dir, _) -> "/tmp/test";
                                                   (ra, data_dir, _D) -> undefined;
@@ -243,9 +243,9 @@ start_cluster_test_() ->
          end},
         {"start_cluster/1 fails when init_ra fails",
          fun() ->
-             meck:new(application, [passthrough, unstick]),
-             meck:new(filelib, [passthrough, unstick]),
-             meck:new(lager, [passthrough]),
+             meck:new(application, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(filelib, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(lager, [passthrough, no_passthrough_cover, non_strict, no_link]),
 
              meck:expect(application, get_env, fun(flurm_db, data_dir, _) -> "/nonexistent/path";
                                                   (_, _, D) -> D end),
@@ -255,6 +255,24 @@ start_cluster_test_() ->
 
              %% This should throw an error due to data_dir_error
              ?assertError({data_dir_error, _}, flurm_db_cluster:start_cluster([node()]))
+         end},
+        {"start_cluster/1 returns init_ra error tuple",
+         fun() ->
+             meck:new(application, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(filelib, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(lager, [passthrough, no_passthrough_cover, non_strict, no_link]),
+
+             meck:expect(application, get_env, fun(flurm_db, data_dir, _) -> "/tmp/test";
+                                                  (ra, data_dir, _D) -> undefined;
+                                                  (_, _, D) -> D end),
+             meck:expect(application, set_env, fun(_, _, _) -> ok end),
+             meck:expect(filelib, ensure_dir, fun(_) -> ok end),
+             meck:expect(application, ensure_all_started, fun(ra) -> {error, ra_boot_failed} end),
+             meck:expect(lager, info, fun(_, _) -> ok end),
+             meck:expect(lager, warning, fun(_, _) -> ok end),
+
+             Result = flurm_db_cluster:start_cluster([node()]),
+             ?assertEqual({error, ra_boot_failed}, Result)
          end}
      ]}.
 
@@ -269,10 +287,10 @@ init_ra_test_() ->
      [
         {"init_ra with configured data_dir success",
          fun() ->
-             meck:new(application, [passthrough, unstick]),
-             meck:new(filelib, [passthrough, unstick]),
-             meck:new(ra_system, [passthrough]),
-             meck:new(lager, [passthrough]),
+             meck:new(application, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(filelib, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(ra_system, [passthrough, no_passthrough_cover]),
+             meck:new(lager, [passthrough, no_passthrough_cover, non_strict, no_link]),
 
              meck:expect(application, get_env, fun(flurm_db, data_dir, _) -> "/tmp/flurm_test";
                                                   (ra, data_dir, _D) -> undefined;
@@ -288,10 +306,10 @@ init_ra_test_() ->
          end},
         {"init_ra with ra already started",
          fun() ->
-             meck:new(application, [passthrough, unstick]),
-             meck:new(filelib, [passthrough, unstick]),
-             meck:new(ra_system, [passthrough]),
-             meck:new(lager, [passthrough]),
+             meck:new(application, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(filelib, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(ra_system, [passthrough, no_passthrough_cover]),
+             meck:new(lager, [passthrough, no_passthrough_cover, non_strict, no_link]),
 
              meck:expect(application, get_env, fun(flurm_db, data_dir, _) -> "/tmp/test";
                                                   (ra, data_dir, _D) -> {ok, "/existing"};
@@ -307,9 +325,9 @@ init_ra_test_() ->
          end},
         {"init_ra with ra start failure",
          fun() ->
-             meck:new(application, [passthrough, unstick]),
-             meck:new(filelib, [passthrough, unstick]),
-             meck:new(lager, [passthrough]),
+             meck:new(application, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(filelib, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(lager, [passthrough, no_passthrough_cover, non_strict, no_link]),
 
              meck:expect(application, get_env, fun(flurm_db, data_dir, _) -> "/tmp/test";
                                                   (ra, data_dir, _D) -> undefined;
@@ -325,10 +343,10 @@ init_ra_test_() ->
          end},
         {"init_ra fallback to temp directory",
          fun() ->
-             meck:new(application, [passthrough, unstick]),
-             meck:new(filelib, [passthrough, unstick]),
-             meck:new(ra_system, [passthrough]),
-             meck:new(lager, [passthrough]),
+             meck:new(application, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(filelib, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(ra_system, [passthrough, no_passthrough_cover]),
+             meck:new(lager, [passthrough, no_passthrough_cover, non_strict, no_link]),
 
              %% First call fails, second succeeds (fallback to /tmp/flurm_db)
              meck:expect(application, get_env, fun(flurm_db, data_dir, _) -> "/nonexistent/path";
@@ -359,8 +377,8 @@ start_default_system_test_() ->
      [
         {"start_default_system when not running",
          fun() ->
-             meck:new(ra_system, [passthrough]),
-             meck:new(lager, [passthrough]),
+             meck:new(ra_system, [passthrough, no_passthrough_cover]),
+             meck:new(lager, [passthrough, no_passthrough_cover, non_strict, no_link]),
 
              meck:expect(ra_system, fetch, fun(default) -> undefined end),
              meck:expect(ra_system, start_default, fun() -> {ok, self()} end),
@@ -371,8 +389,8 @@ start_default_system_test_() ->
          end},
         {"start_default_system when already running",
          fun() ->
-             meck:new(ra_system, [passthrough]),
-             meck:new(lager, [passthrough]),
+             meck:new(ra_system, [passthrough, no_passthrough_cover]),
+             meck:new(lager, [passthrough, no_passthrough_cover, non_strict, no_link]),
 
              meck:expect(ra_system, fetch, fun(default) -> some_config end),
              meck:expect(lager, info, fun(_, _) -> ok end),
@@ -382,8 +400,8 @@ start_default_system_test_() ->
          end},
         {"start_default_system already_started error",
          fun() ->
-             meck:new(ra_system, [passthrough]),
-             meck:new(lager, [passthrough]),
+             meck:new(ra_system, [passthrough, no_passthrough_cover]),
+             meck:new(lager, [passthrough, no_passthrough_cover, non_strict, no_link]),
 
              meck:expect(ra_system, fetch, fun(default) -> undefined end),
              meck:expect(ra_system, start_default, fun() -> {error, {already_started, self()}} end),
@@ -394,8 +412,8 @@ start_default_system_test_() ->
          end},
         {"start_default_system other error",
          fun() ->
-             meck:new(ra_system, [passthrough]),
-             meck:new(lager, [passthrough]),
+             meck:new(ra_system, [passthrough, no_passthrough_cover]),
+             meck:new(lager, [passthrough, no_passthrough_cover, non_strict, no_link]),
 
              meck:expect(ra_system, fetch, fun(default) -> undefined end),
              meck:expect(ra_system, start_default, fun() -> {error, some_error} end),
@@ -418,12 +436,12 @@ join_cluster_test_() ->
      [
         {"join_cluster success",
          fun() ->
-             meck:new(ra, [passthrough]),
-             meck:new(ra_system, [passthrough]),
-             meck:new(application, [passthrough, unstick]),
-             meck:new(filelib, [passthrough, unstick]),
-             meck:new(lager, [passthrough]),
-             meck:new(error_logger, [passthrough, unstick]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
+             meck:new(ra_system, [passthrough, no_passthrough_cover]),
+             meck:new(application, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(filelib, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(lager, [passthrough, no_passthrough_cover, non_strict, no_link]),
+             meck:new(error_logger, [passthrough, no_passthrough_cover, unstick]),
 
              setup_init_ra_mocks(),
 
@@ -436,12 +454,12 @@ join_cluster_test_() ->
          end},
         {"join_cluster already_member",
          fun() ->
-             meck:new(ra, [passthrough]),
-             meck:new(ra_system, [passthrough]),
-             meck:new(application, [passthrough, unstick]),
-             meck:new(filelib, [passthrough, unstick]),
-             meck:new(lager, [passthrough]),
-             meck:new(error_logger, [passthrough, unstick]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
+             meck:new(ra_system, [passthrough, no_passthrough_cover]),
+             meck:new(application, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(filelib, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(lager, [passthrough, no_passthrough_cover, non_strict, no_link]),
+             meck:new(error_logger, [passthrough, no_passthrough_cover, unstick]),
 
              setup_init_ra_mocks(),
 
@@ -454,11 +472,11 @@ join_cluster_test_() ->
          end},
         {"join_cluster timeout",
          fun() ->
-             meck:new(ra, [passthrough]),
-             meck:new(ra_system, [passthrough]),
-             meck:new(application, [passthrough, unstick]),
-             meck:new(filelib, [passthrough, unstick]),
-             meck:new(lager, [passthrough]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
+             meck:new(ra_system, [passthrough, no_passthrough_cover]),
+             meck:new(application, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(filelib, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(lager, [passthrough, no_passthrough_cover, non_strict, no_link]),
 
              setup_init_ra_mocks(),
 
@@ -471,11 +489,11 @@ join_cluster_test_() ->
          end},
         {"join_cluster server already started, then add_member succeeds",
          fun() ->
-             meck:new(ra, [passthrough]),
-             meck:new(ra_system, [passthrough]),
-             meck:new(application, [passthrough, unstick]),
-             meck:new(filelib, [passthrough, unstick]),
-             meck:new(lager, [passthrough]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
+             meck:new(ra_system, [passthrough, no_passthrough_cover]),
+             meck:new(application, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(filelib, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(lager, [passthrough, no_passthrough_cover, non_strict, no_link]),
 
              setup_init_ra_mocks(),
 
@@ -487,11 +505,11 @@ join_cluster_test_() ->
          end},
         {"join_cluster server already started, already_member",
          fun() ->
-             meck:new(ra, [passthrough]),
-             meck:new(ra_system, [passthrough]),
-             meck:new(application, [passthrough, unstick]),
-             meck:new(filelib, [passthrough, unstick]),
-             meck:new(lager, [passthrough]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
+             meck:new(ra_system, [passthrough, no_passthrough_cover]),
+             meck:new(application, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(filelib, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(lager, [passthrough, no_passthrough_cover, non_strict, no_link]),
 
              setup_init_ra_mocks(),
 
@@ -501,13 +519,29 @@ join_cluster_test_() ->
              Result = flurm_db_cluster:join_cluster('existing@node'),
              ?assertEqual(ok, Result)
          end},
+        {"join_cluster server already started, add_member error",
+         fun() ->
+             meck:new(ra, [passthrough, no_passthrough_cover]),
+             meck:new(ra_system, [passthrough, no_passthrough_cover]),
+             meck:new(application, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(filelib, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(lager, [passthrough, no_passthrough_cover, non_strict, no_link]),
+
+             setup_init_ra_mocks(),
+
+             meck:expect(ra, start_server, fun(_, _, _, _, _) -> {error, {already_started, self()}} end),
+             meck:expect(ra, add_member, fun(_, _) -> {error, member_add_failed} end),
+
+             Result = flurm_db_cluster:join_cluster('existing@node'),
+             ?assertEqual({error, member_add_failed}, Result)
+         end},
         {"join_cluster server start fails",
          fun() ->
-             meck:new(ra, [passthrough]),
-             meck:new(ra_system, [passthrough]),
-             meck:new(application, [passthrough, unstick]),
-             meck:new(filelib, [passthrough, unstick]),
-             meck:new(lager, [passthrough]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
+             meck:new(ra_system, [passthrough, no_passthrough_cover]),
+             meck:new(application, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(filelib, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(lager, [passthrough, no_passthrough_cover, non_strict, no_link]),
 
              setup_init_ra_mocks(),
 
@@ -518,11 +552,11 @@ join_cluster_test_() ->
          end},
         {"join_cluster add_member fails with error",
          fun() ->
-             meck:new(ra, [passthrough]),
-             meck:new(ra_system, [passthrough]),
-             meck:new(application, [passthrough, unstick]),
-             meck:new(filelib, [passthrough, unstick]),
-             meck:new(lager, [passthrough]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
+             meck:new(ra_system, [passthrough, no_passthrough_cover]),
+             meck:new(application, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(filelib, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(lager, [passthrough, no_passthrough_cover, non_strict, no_link]),
 
              setup_init_ra_mocks(),
 
@@ -535,9 +569,9 @@ join_cluster_test_() ->
          end},
         {"join_cluster init_ra fails",
          fun() ->
-             meck:new(application, [passthrough, unstick]),
-             meck:new(filelib, [passthrough, unstick]),
-             meck:new(lager, [passthrough]),
+             meck:new(application, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(filelib, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(lager, [passthrough, no_passthrough_cover, non_strict, no_link]),
 
              meck:expect(application, get_env, fun(flurm_db, data_dir, _) -> "/tmp/test";
                                                   (ra, data_dir, _D) -> undefined;
@@ -564,8 +598,8 @@ leave_cluster_test_() ->
      [
         {"leave_cluster success (not leader)",
          fun() ->
-             meck:new(ra, [passthrough]),
-             meck:new(error_logger, [passthrough, unstick]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
+             meck:new(error_logger, [passthrough, no_passthrough_cover, unstick]),
 
              LocalServerId = {?RA_CLUSTER_NAME, node()},
              LeaderId = {?RA_CLUSTER_NAME, 'other@node'},
@@ -586,30 +620,42 @@ leave_cluster_test_() ->
          end},
         {"leave_cluster as leader with multiple members",
          fun() ->
-             meck:new(ra, [passthrough]),
-             meck:new(timer, [passthrough, unstick]),
-             meck:new(error_logger, [passthrough, unstick]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
+             meck:new(timer, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(error_logger, [passthrough, no_passthrough_cover, unstick]),
 
              LocalServerId = {?RA_CLUSTER_NAME, node()},
              OtherId = {?RA_CLUSTER_NAME, 'other@node'},
 
-             %% First call: we are leader
-             %% After transfer and sleep, we are no longer leader
+             %% First get_leader/get_members calls see us as leader.
+             %% After leadership transfer and recursive retry, we are no longer leader.
+             Counter = ets:new(members_counter, [public]),
+             ets:insert(Counter, {count, 0}),
              meck:expect(ra, members, fun(ServerId) when ServerId =:= LocalServerId ->
-                 {ok, [LocalServerId, OtherId], OtherId}  %% Now other is leader
+                 [{count, C}] = ets:lookup(Counter, count),
+                 ets:insert(Counter, {count, C + 1}),
+                 case C of
+                     0 -> {ok, [LocalServerId, OtherId], LocalServerId}; %% get_leader
+                     1 -> {ok, [LocalServerId, OtherId], LocalServerId}; %% get_members
+                     _ -> {ok, [LocalServerId, OtherId], OtherId}        %% recursive get_leader
+                 end
              end),
              meck:expect(ra, transfer_leadership, fun(_, _) -> ok end),
-             meck:expect(ra, remove_member, fun(_, _) -> {ok, [], OtherId} end),
+             meck:expect(ra, remove_member, fun(Leader, Member)
+                 when Leader =:= OtherId, Member =:= LocalServerId ->
+                 {ok, [], OtherId}
+             end),
              meck:expect(ra, stop_server, fun(default, _) -> ok end),
              meck:expect(timer, sleep, fun(_) -> ok end),
              meck:expect(error_logger, info_msg, fun(_, _) -> ok end),
 
              Result = flurm_db_cluster:leave_cluster(),
+             ets:delete(Counter),
              ?assertEqual(ok, Result)
          end},
         {"leave_cluster as only member",
          fun() ->
-             meck:new(ra, [passthrough]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
 
              LocalServerId = {?RA_CLUSTER_NAME, node()},
 
@@ -623,7 +669,7 @@ leave_cluster_test_() ->
          end},
         {"leave_cluster remove_member timeout",
          fun() ->
-             meck:new(ra, [passthrough]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
 
              LocalServerId = {?RA_CLUSTER_NAME, node()},
              LeaderId = {?RA_CLUSTER_NAME, 'other@node'},
@@ -634,9 +680,22 @@ leave_cluster_test_() ->
              Result = flurm_db_cluster:leave_cluster(),
              ?assertEqual({error, timeout}, Result)
          end},
+        {"leave_cluster remove_member error",
+         fun() ->
+             meck:new(ra, [passthrough, no_passthrough_cover]),
+
+             LocalServerId = {?RA_CLUSTER_NAME, node()},
+             LeaderId = {?RA_CLUSTER_NAME, 'other@node'},
+
+             meck:expect(ra, members, fun(_) -> {ok, [LocalServerId, LeaderId], LeaderId} end),
+             meck:expect(ra, remove_member, fun(_, _) -> {error, remove_failed} end),
+
+             Result = flurm_db_cluster:leave_cluster(),
+             ?assertEqual({error, remove_failed}, Result)
+         end},
         {"leave_cluster get_leader fails",
          fun() ->
-             meck:new(ra, [passthrough]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
 
              meck:expect(ra, members, fun(_) -> {error, noproc} end),
 
@@ -645,7 +704,7 @@ leave_cluster_test_() ->
          end},
         {"leave_cluster transfer_leadership fails",
          fun() ->
-             meck:new(ra, [passthrough]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
 
              LocalServerId = {?RA_CLUSTER_NAME, node()},
              OtherId = {?RA_CLUSTER_NAME, 'other@node'},
@@ -660,7 +719,7 @@ leave_cluster_test_() ->
          end},
         {"leave_cluster transfer_leadership already_leader",
          fun() ->
-             meck:new(ra, [passthrough]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
 
              LocalServerId = {?RA_CLUSTER_NAME, node()},
              OtherId = {?RA_CLUSTER_NAME, 'other@node'},
@@ -675,7 +734,7 @@ leave_cluster_test_() ->
          end},
         {"leave_cluster get_members fails when leader",
          fun() ->
-             meck:new(ra, [passthrough]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
 
              LocalServerId = {?RA_CLUSTER_NAME, node()},
 
@@ -710,7 +769,7 @@ get_leader_test_() ->
      [
         {"get_leader success",
          fun() ->
-             meck:new(ra, [passthrough]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
 
              LeaderId = {?RA_CLUSTER_NAME, 'leader@node'},
              meck:expect(ra, members, fun(_) -> {ok, [LeaderId], LeaderId} end),
@@ -720,7 +779,7 @@ get_leader_test_() ->
          end},
         {"get_leader no leader",
          fun() ->
-             meck:new(ra, [passthrough]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
 
              meck:expect(ra, members, fun(_) -> {ok, [], undefined} end),
 
@@ -729,7 +788,7 @@ get_leader_test_() ->
          end},
         {"get_leader timeout",
          fun() ->
-             meck:new(ra, [passthrough]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
 
              meck:expect(ra, members, fun(_) -> {timeout, some_state} end),
 
@@ -738,7 +797,7 @@ get_leader_test_() ->
          end},
         {"get_leader error",
          fun() ->
-             meck:new(ra, [passthrough]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
 
              meck:expect(ra, members, fun(_) -> {error, noproc} end),
 
@@ -758,7 +817,7 @@ get_members_test_() ->
      [
         {"get_members success",
          fun() ->
-             meck:new(ra, [passthrough]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
 
              Members = [{?RA_CLUSTER_NAME, node()}, {?RA_CLUSTER_NAME, 'other@node'}],
              meck:expect(ra, members, fun(_) -> {ok, Members, {?RA_CLUSTER_NAME, node()}} end),
@@ -768,7 +827,7 @@ get_members_test_() ->
          end},
         {"get_members timeout",
          fun() ->
-             meck:new(ra, [passthrough]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
 
              meck:expect(ra, members, fun(_) -> {timeout, some_state} end),
 
@@ -777,7 +836,7 @@ get_members_test_() ->
          end},
         {"get_members error",
          fun() ->
-             meck:new(ra, [passthrough]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
 
              meck:expect(ra, members, fun(_) -> {error, not_found} end),
 
@@ -797,7 +856,7 @@ is_leader_test_() ->
      [
         {"is_leader returns true when leader",
          fun() ->
-             meck:new(ra, [passthrough]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
 
              LocalServerId = {?RA_CLUSTER_NAME, node()},
              meck:expect(ra, members, fun(_) -> {ok, [LocalServerId], LocalServerId} end),
@@ -807,7 +866,7 @@ is_leader_test_() ->
          end},
         {"is_leader returns false when not leader",
          fun() ->
-             meck:new(ra, [passthrough]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
 
              LocalServerId = {?RA_CLUSTER_NAME, node()},
              OtherId = {?RA_CLUSTER_NAME, 'other@node'},
@@ -818,7 +877,7 @@ is_leader_test_() ->
          end},
         {"is_leader returns false on error",
          fun() ->
-             meck:new(ra, [passthrough]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
 
              meck:expect(ra, members, fun(_) -> {error, noproc} end),
 
@@ -838,7 +897,7 @@ status_test_() ->
      [
         {"status success",
          fun() ->
-             meck:new(ra, [passthrough]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
 
              Overview = #{
                  state => leader,
@@ -854,7 +913,7 @@ status_test_() ->
          end},
         {"status error",
          fun() ->
-             meck:new(ra, [passthrough]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
 
              meck:expect(ra, member_overview, fun(_) -> {error, noproc} end),
 
@@ -863,7 +922,7 @@ status_test_() ->
          end},
         {"status exception returns not_started",
          fun() ->
-             meck:new(ra, [passthrough]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
 
              meck:expect(ra, member_overview, fun(_) -> error(badarg) end),
 
@@ -883,7 +942,7 @@ force_election_test_() ->
      [
         {"force_election success",
          fun() ->
-             meck:new(ra, [passthrough]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
 
              meck:expect(ra, trigger_election, fun(_) -> ok end),
 
@@ -892,7 +951,7 @@ force_election_test_() ->
          end},
         {"force_election error",
          fun() ->
-             meck:new(ra, [passthrough]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
 
              meck:expect(ra, trigger_election, fun(_) -> {error, not_leader} end),
 

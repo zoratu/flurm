@@ -43,7 +43,28 @@
     extract_message/1,
     calculate_duration/2,
     get_munge_auth_mode/0,
-    verify_munge_credential/1
+    verify_munge_credential/1,
+    loop/1,
+    process_buffer/2,
+    handle_message/2,
+    call_handler_with_timeout/2,
+    send_response/4,
+    do_verify_munge_credential/2,
+    verify_munge_credential_binary/2,
+    format_ip/1,
+    try_callback_silent_sync/3,
+    spawn_callback_handler/2,
+    callback_handler_loop/2,
+    parse_callback_response/2,
+    try_callback_silent/3,
+    try_callback_connection/3,
+    try_callback_connection/4,
+    callback_socket_loop/2,
+    send_srun_ping_message/2,
+    close_connection/1,
+    cleanup_interactive_jobs/1,
+    get_peer_host/1,
+    drain_late_handler_result/1
 ]).
 -endif.
 
@@ -55,8 +76,21 @@
 %% SLURM messages should never exceed a few MB; this protects against
 %% malicious or malformed clients sending unbounded data
 -define(MAX_BUFFER_SIZE, 10_000_000).
+
+%% Timeout tuning: keep production defaults high while allowing deterministic
+%% timeout branch coverage in test builds.
+-ifdef(TEST).
+-define(HANDLER_TIMEOUT, 100).
+-define(CALLBACK_HANDLER_TAKE_TIMEOUT, 100).
+-define(CALLBACK_HANDLER_IDLE_TIMEOUT, 100).
+-define(CALLBACK_SOCKET_IDLE_TIMEOUT, 100).
+-else.
 %% Handler timeout (60 seconds) - prevents handlers from blocking forever
 -define(HANDLER_TIMEOUT, 60000).
+-define(CALLBACK_HANDLER_TAKE_TIMEOUT, 5000).
+-define(CALLBACK_HANDLER_IDLE_TIMEOUT, 300000).
+-define(CALLBACK_SOCKET_IDLE_TIMEOUT, 300000).
+-endif.
 
 %%====================================================================
 %% Ranch Protocol Callbacks
@@ -337,12 +371,15 @@ call_handler_with_timeout(Header, Body) ->
         lager:error("Handler timeout after ~p ms, killing handler process", [?HANDLER_TIMEOUT]),
         exit(Pid, kill),
         erlang:demonitor(MonRef, [flush]),
-        %% Drain the result message if it arrives late
-        receive
-            {handler_result, Ref, _} -> ok
-        after 0 -> ok
-        end,
+        %% Drain any late handler result that may already be queued.
+        drain_late_handler_result(Ref),
         {error, handler_timeout}
+    end.
+
+drain_late_handler_result(Ref) ->
+    receive
+        {handler_result, Ref, _} -> ok
+    after 0 -> ok
     end.
 
 %% @doc Send a response message back to the client.
@@ -588,7 +625,7 @@ spawn_callback_handler(Socket, JobId) ->
                 lager:info("Callback handler ~p received socket for job ~p", [self(), JobId]),
                 inet:setopts(S, [{active, true}]),
                 callback_handler_loop(S, JobId)
-        after 5000 ->
+        after ?CALLBACK_HANDLER_TAKE_TIMEOUT ->
             lager:warning("Callback handler timeout waiting for socket for job ~p", [JobId])
         end
     end),
@@ -615,7 +652,7 @@ callback_handler_loop(Socket, JobId) ->
             lager:info("Callback handler: socket closed for job ~p", [JobId]);
         {tcp_error, Socket, Reason} ->
             lager:warning("Callback handler: socket error for job ~p: ~p", [JobId, Reason])
-    after 300000 ->  %% 5 minute timeout
+    after ?CALLBACK_HANDLER_IDLE_TIMEOUT ->
         lager:debug("Callback handler timeout for job ~p", [JobId]),
         gen_tcp:close(Socket)
     end.
@@ -736,7 +773,7 @@ callback_socket_loop(Socket, JobId) ->
         stop ->
             gen_tcp:close(Socket),
             ok
-    after 300000 ->  %% 5 minute timeout
+    after ?CALLBACK_SOCKET_IDLE_TIMEOUT ->
         lager:debug("Callback socket timeout for job ~p", [JobId]),
         gen_tcp:close(Socket),
         ok

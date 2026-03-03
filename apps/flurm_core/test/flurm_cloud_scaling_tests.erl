@@ -32,7 +32,7 @@ setup() ->
 
     %% Unload any existing httpc mock and create a new one
     catch meck:unload(httpc),
-    meck:new(httpc, [unstick, passthrough]),
+    meck:new(httpc, [unstick, passthrough, no_passthrough_cover]),
 
     %% Default mock for AWS API calls - returns successful responses
     meck:expect(httpc, request, fun

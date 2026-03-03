@@ -45,9 +45,9 @@ setup() ->
     catch meck:unload(lager),
     meck:new(lager, [non_strict]),
     catch meck:unload(flurm_protocol_codec),
-    meck:new(flurm_protocol_codec, [passthrough, non_strict]),
+    meck:new(flurm_protocol_codec, [passthrough, no_passthrough_cover, non_strict]),
     catch meck:unload(flurm_dbd_server),
-    meck:new(flurm_dbd_server, [passthrough, non_strict]),
+    meck:new(flurm_dbd_server, [passthrough, no_passthrough_cover, non_strict]),
 
     meck:expect(lager, debug, fun(_) -> ok end),
     meck:expect(lager, debug, fun(_, _) -> ok end),
@@ -192,7 +192,7 @@ test_send_response_encode_error() ->
 
 test_peername() ->
     MockTransport = ranch_tcp,
-    meck:new(MockTransport, [non_strict, passthrough]),
+    meck:new(MockTransport, [non_strict, passthrough, no_passthrough_cover]),
     meck:expect(MockTransport, peername, fun(_Socket) ->
         {ok, {{127, 0, 0, 1}, 12345}}
     end),

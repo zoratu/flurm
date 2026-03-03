@@ -72,13 +72,14 @@ init_includes_required_children() ->
 
     %% Verify required children are present
     ?assert(lists:member(flurm_dbd_storage, ChildIds)),
+    ?assert(lists:member(flurm_dbd_fragment, ChildIds)),
     ?assert(lists:member(flurm_dbd_server, ChildIds)).
 
 init_children_count_is_correct() ->
     {ok, {_SupFlags, Children}} = flurm_dbd_sup:init([]),
 
-    %% DBD should have exactly 2 children: storage and server
-    ?assertEqual(2, length(Children)).
+    %% DBD should have exactly 3 children: storage, fragment, and server
+    ?assertEqual(3, length(Children)).
 
 %%====================================================================
 %% Child Spec Validation Tests

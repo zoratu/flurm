@@ -145,7 +145,7 @@ setup_mocks() ->
     %% Unload any existing mocks to prevent conflicts in parallel tests
     lists:foreach(fun(M) -> catch meck:unload(M) end, Modules),
     lists:foreach(fun(M) ->
-        meck:new(M, [passthrough, non_strict, no_link])
+        meck:new(M, [passthrough, no_passthrough_cover, non_strict, no_link])
     end, Modules),
 
     %% flurm_config_server - subscribe_changes is a no-op

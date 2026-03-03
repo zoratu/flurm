@@ -25,7 +25,7 @@ start_stop_test_() ->
              undefined -> ok;
              Pid ->
                  catch unlink(Pid),
-                 catch gen_server:stop(Pid, shutdown, 1000)
+                 catch gen_server:stop(Pid, normal, 1000)
          end,
          timer:sleep(50)
      end,
@@ -33,7 +33,7 @@ start_stop_test_() ->
          case whereis(flurm_srun_callback) of
              undefined -> ok;
              Pid ->
-                 catch gen_server:stop(Pid, shutdown, 1000)
+                 catch gen_server:stop(Pid, normal, 1000)
          end
      end,
      fun(_) ->
@@ -56,14 +56,14 @@ srun_callback_api_test_() ->
      fun() ->
          case whereis(flurm_srun_callback) of
              undefined -> ok;
-             P -> catch gen_server:stop(P, shutdown, 1000)
+             P -> catch gen_server:stop(P, normal, 1000)
          end,
          timer:sleep(50),
          {ok, Pid} = flurm_srun_callback:start_link(),
          Pid
      end,
      fun(Pid) ->
-         catch gen_server:stop(Pid, shutdown, 1000)
+         catch gen_server:stop(Pid, normal, 1000)
      end,
      fun(_Pid) ->
          [
@@ -95,14 +95,14 @@ register_callback_invalid_port_test_() ->
      fun() ->
          case whereis(flurm_srun_callback) of
              undefined -> ok;
-             P -> catch gen_server:stop(P, shutdown, 1000)
+             P -> catch gen_server:stop(P, normal, 1000)
          end,
          timer:sleep(50),
          {ok, Pid} = flurm_srun_callback:start_link(),
          Pid
      end,
      fun(Pid) ->
-         catch gen_server:stop(Pid, shutdown, 1000)
+         catch gen_server:stop(Pid, normal, 1000)
      end,
      fun(_) ->
          [
@@ -127,14 +127,14 @@ register_existing_socket_test_() ->
      fun() ->
          case whereis(flurm_srun_callback) of
              undefined -> ok;
-             P -> catch gen_server:stop(P, shutdown, 1000)
+             P -> catch gen_server:stop(P, normal, 1000)
          end,
          timer:sleep(50),
          {ok, Pid} = flurm_srun_callback:start_link(),
          Pid
      end,
      fun(Pid) ->
-         catch gen_server:stop(Pid, shutdown, 1000)
+         catch gen_server:stop(Pid, normal, 1000)
      end,
      fun(_) ->
          [
@@ -174,14 +174,14 @@ tcp_closed_handling_test_() ->
      fun() ->
          case whereis(flurm_srun_callback) of
              undefined -> ok;
-             P -> catch gen_server:stop(P, shutdown, 1000)
+             P -> catch gen_server:stop(P, normal, 1000)
          end,
          timer:sleep(50),
          {ok, Pid} = flurm_srun_callback:start_link(),
          Pid
      end,
      fun(Pid) ->
-         catch gen_server:stop(Pid, shutdown, 1000)
+         catch gen_server:stop(Pid, normal, 1000)
      end,
      fun(Pid) ->
          [
@@ -216,14 +216,14 @@ tcp_error_handling_test_() ->
      fun() ->
          case whereis(flurm_srun_callback) of
              undefined -> ok;
-             P -> catch gen_server:stop(P, shutdown, 1000)
+             P -> catch gen_server:stop(P, normal, 1000)
          end,
          timer:sleep(50),
          {ok, Pid} = flurm_srun_callback:start_link(),
          Pid
      end,
      fun(Pid) ->
-         catch gen_server:stop(Pid, shutdown, 1000)
+         catch gen_server:stop(Pid, normal, 1000)
      end,
      fun(Pid) ->
          [
@@ -261,14 +261,14 @@ unknown_request_test_() ->
      fun() ->
          case whereis(flurm_srun_callback) of
              undefined -> ok;
-             P -> catch gen_server:stop(P, shutdown, 1000)
+             P -> catch gen_server:stop(P, normal, 1000)
          end,
          timer:sleep(50),
          {ok, Pid} = flurm_srun_callback:start_link(),
          Pid
      end,
      fun(Pid) ->
-         catch gen_server:stop(Pid, shutdown, 1000)
+         catch gen_server:stop(Pid, normal, 1000)
      end,
      fun(Pid) ->
          [
@@ -299,7 +299,7 @@ terminate_closes_sockets_test_() ->
      fun() ->
          case whereis(flurm_srun_callback) of
              undefined -> ok;
-             P -> catch gen_server:stop(P, shutdown, 1000)
+             P -> catch gen_server:stop(P, normal, 1000)
          end,
          timer:sleep(50)
      end,
@@ -340,14 +340,14 @@ multiple_jobs_test_() ->
      fun() ->
          case whereis(flurm_srun_callback) of
              undefined -> ok;
-             P -> catch gen_server:stop(P, shutdown, 1000)
+             P -> catch gen_server:stop(P, normal, 1000)
          end,
          timer:sleep(50),
          {ok, Pid} = flurm_srun_callback:start_link(),
          Pid
      end,
      fun(Pid) ->
-         catch gen_server:stop(Pid, shutdown, 1000)
+         catch gen_server:stop(Pid, normal, 1000)
      end,
      fun(_) ->
          [

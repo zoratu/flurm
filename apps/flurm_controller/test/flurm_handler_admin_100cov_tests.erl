@@ -304,7 +304,7 @@ setup() ->
     meck:new([flurm_reservation, flurm_license, flurm_burst_buffer,
               flurm_controller_cluster, flurm_config_slurm,
               flurm_controller_handler],
-             [passthrough, no_link, non_strict]),
+             [passthrough, no_passthrough_cover, no_link, non_strict]),
 
     %% Default mock behaviors
     meck:expect(flurm_reservation, list, fun() -> [] end),

@@ -33,7 +33,7 @@ setup_mocks() ->
     %% Don't mock lager - it causes conflicts with parallel tests
     %% Just mock flurm_dbd_sup to avoid starting the full supervisor tree
     catch meck:unload(flurm_dbd_sup),
-    meck:new(flurm_dbd_sup, [passthrough, no_link]),
+    meck:new(flurm_dbd_sup, [passthrough, no_passthrough_cover, no_link]),
     meck:expect(flurm_dbd_sup, start_link, fun() -> {ok, spawn(fun() -> ok end)} end),
     ok.
 

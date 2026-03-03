@@ -12,7 +12,7 @@
 -export([init/3]).
 
 -ifdef(TEST).
--export([process_buffer/1, handle_message/1, job_to_map/1]).
+-export([process_buffer/1, handle_message/1, job_to_map/1, loop/3]).
 -endif.
 
 -include_lib("flurm_protocol/include/flurm_protocol.hrl").

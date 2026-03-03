@@ -72,10 +72,9 @@ check-coverage-advanced:
 	./scripts/check-coverage-advanced.sh
 
 # Fast deterministic DBD-only test loop:
-# - Runs only the flurm_dbd app tests with cover enabled
+# - Runs merged flurm_dbd coverage (baseline + tail wrapper modules)
 # - Enforces 100% on the key DBD modules
 test-dbd-fast:
-	$(REBAR3) as test eunit --app=flurm_dbd --cover
 	./scripts/check-coverage-dbd-100.sh
 
 # Targeted quality/fault suites for regression coverage beyond line coverage.

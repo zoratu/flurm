@@ -36,7 +36,7 @@ metrics_http_test_() ->
 
 setup() ->
     catch meck:unload(application),
-    meck:new(application, [unstick, passthrough]),
+    meck:new(application, [unstick, passthrough, no_passthrough_cover]),
     meck:expect(application, get_env, fun
         (flurm_controller, metrics_port, Default) -> Default;
         (_, _, Default) -> Default
@@ -229,8 +229,8 @@ http_request_placeholder_test_() ->
 integration_test_() ->
     {setup,
      fun() ->
-         meck:new(application, [unstick, passthrough]),
-         meck:new(flurm_metrics, [passthrough, non_strict]),
+         meck:new(application, [unstick, passthrough, no_passthrough_cover]),
+         meck:new(flurm_metrics, [passthrough, no_passthrough_cover, non_strict]),
 
          Port = 49850 + rand:uniform(100),
          meck:expect(application, get_env, fun

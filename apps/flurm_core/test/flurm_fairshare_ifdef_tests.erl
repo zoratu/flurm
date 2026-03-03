@@ -207,6 +207,42 @@ priority_factor_formula_test_() ->
       ]}}.
 
 %%====================================================================
+%% Callback Tail Coverage Tests
+%%====================================================================
+
+callback_tail_coverage_test_() ->
+    {"Tail branch coverage for callbacks/start_link",
+     {setup,
+      fun setup_ets/0,
+      fun(_) -> cleanup_ets() end,
+      [
+       {"terminate handles undefined timer", fun() ->
+            ?assertEqual(ok, flurm_fairshare:terminate(normal, mock_state(0, 0.0)))
+        end},
+       {"code_change passthrough", fun() ->
+            State = mock_state(7, 11.0),
+            ?assertEqual({ok, State}, flurm_fairshare:code_change(old, State, []))
+        end},
+       {"decay removes tiny stale usage", fun() ->
+            Key = {<<"tail_user">>, <<"tail_acct">>},
+            OldTs = erlang:system_time(second) - (365 * 24 * 60 * 60),
+            ets:insert(?USAGE_TABLE, {Key, 0.001, OldTs}),
+            {noreply, NewState} =
+                flurm_fairshare:handle_cast(decay_usage, mock_state(0, 0.001)),
+            ?assertEqual([], ets:lookup(?USAGE_TABLE, Key)),
+            %% Tuple field 4 is total_usage in #state{}
+            ?assertEqual(0.0, element(4, NewState))
+        end}
+      ]}}.
+
+start_link_result_normalization_test() ->
+    Pid = self(),
+    ?assertEqual({ok, Pid}, flurm_fairshare:normalize_start_result({ok, Pid})),
+    ?assertEqual({ok, Pid},
+        flurm_fairshare:normalize_start_result({error, {already_started, Pid}})),
+    ?assertEqual({error, boom}, flurm_fairshare:normalize_start_result({error, boom})).
+
+%%====================================================================
 %% Helper Functions
 %%====================================================================
 

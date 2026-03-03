@@ -70,7 +70,7 @@ init_test_() ->
         {"init with app env config_file loads file",
          fun() ->
              setup_basic_mocks(),
-             meck:new(application, [passthrough, unstick]),
+             meck:new(application, [passthrough, no_passthrough_cover, unstick]),
              meck:expect(application, get_env, fun(flurm_config, config_file) ->
                  {ok, "/app/env/path.conf"}
              end),
@@ -85,7 +85,7 @@ init_test_() ->
         {"init without config_file uses defaults",
          fun() ->
              setup_basic_mocks(),
-             meck:new(application, [passthrough, unstick]),
+             meck:new(application, [passthrough, no_passthrough_cover, unstick]),
              meck:expect(application, get_env, fun(flurm_config, config_file) -> undefined end),
              meck:expect(filelib, is_file, fun(_) -> false end),
 
@@ -108,7 +108,7 @@ init_test_() ->
         {"init finds default config file",
          fun() ->
              setup_basic_mocks(),
-             meck:new(application, [passthrough, unstick]),
+             meck:new(application, [passthrough, no_passthrough_cover, unstick]),
              meck:expect(application, get_env, fun(flurm_config, config_file) -> undefined end),
              meck:expect(filelib, is_file, fun
                  ("/etc/flurm/flurm.conf") -> false;
@@ -310,7 +310,7 @@ reconfigure_test_() ->
          end},
         {"reconfigure with valid .config file",
          fun() ->
-             meck:new(file, [passthrough, unstick]),
+             meck:new(file, [passthrough, no_passthrough_cover, unstick]),
              meck:expect(file, consult, fun("/test.config") ->
                  {ok, [#{clustername => <<"erlang_config">>}]}
              end),
@@ -389,7 +389,7 @@ file_loading_test_() ->
      [
         {"load .config file as list terms",
          fun() ->
-             meck:new(file, [passthrough, unstick]),
+             meck:new(file, [passthrough, no_passthrough_cover, unstick]),
              meck:expect(file, consult, fun("/list.config") ->
                  {ok, [{key1, value1}, {key2, value2}]}
              end),
@@ -411,7 +411,7 @@ file_loading_test_() ->
          end},
         {"load file without extension falls back to erlang format",
          fun() ->
-             meck:new(file, [passthrough, unstick]),
+             meck:new(file, [passthrough, no_passthrough_cover, unstick]),
              meck:expect(flurm_config_slurm, parse_file, fun("/noext_erlang") ->
                  {error, invalid_format}
              end),
@@ -425,7 +425,7 @@ file_loading_test_() ->
          end},
         {"load .config file consult error",
          fun() ->
-             meck:new(file, [passthrough, unstick]),
+             meck:new(file, [passthrough, no_passthrough_cover, unstick]),
              meck:expect(file, consult, fun("/bad.config") ->
                  {error, {1, erl_parse, "syntax error"}}
              end),
@@ -793,7 +793,7 @@ find_default_config_direct_test_() ->
     {foreach,
      fun() ->
          meck_setup(),
-         meck:new(filelib, [passthrough, unstick])
+         meck:new(filelib, [passthrough, no_passthrough_cover, unstick])
      end,
      fun meck_cleanup/1,
      [
@@ -890,10 +890,10 @@ apply_changes_test_() ->
 %%====================================================================
 
 setup_basic_mocks() ->
-    meck:new(filelib, [passthrough, unstick]),
-    meck:new(flurm_config_slurm, [passthrough]),
-    meck:new(flurm_config_defaults, [passthrough]),
-    meck:new(error_logger, [passthrough, unstick]),
+    meck:new(filelib, [passthrough, no_passthrough_cover, unstick]),
+    meck:new(flurm_config_slurm, [passthrough, no_passthrough_cover]),
+    meck:new(flurm_config_defaults, [passthrough, no_passthrough_cover]),
+    meck:new(error_logger, [passthrough, no_passthrough_cover, unstick]),
 
     meck:expect(filelib, is_file, fun(_) -> false end),
     meck:expect(flurm_config_defaults, apply_defaults, fun(C) -> C end),

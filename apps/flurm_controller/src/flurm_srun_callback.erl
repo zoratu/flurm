@@ -25,6 +25,10 @@
 -export([get_callback/1, send_task_output/3]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
+-ifdef(TEST).
+-export([binary_to_hex/1]).
+-endif.
+
 -include_lib("flurm_protocol/include/flurm_protocol.hrl").
 
 -define(SERVER, ?MODULE).

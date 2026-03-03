@@ -15,8 +15,13 @@
 %%====================================================================
 
 setup() ->
+    catch meck:unload(flurm_dbd_ra),
+    catch meck:unload(lager),
+    catch meck:unload(ra),
+    catch meck:unload(flurm_dbd_ra_effects),
+    catch meck:unload(flurm_tres),
     %% Mock lager
-    meck:new(lager, [non_strict, no_link, passthrough]),
+    meck:new(lager, [non_strict, no_link, passthrough, no_passthrough_cover]),
     meck:expect(lager, info, fun(_Fmt) -> ok end),
     meck:expect(lager, info, fun(_Fmt, _Args) -> ok end),
     meck:expect(lager, warning, fun(_Fmt, _Args) -> ok end),

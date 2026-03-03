@@ -29,14 +29,14 @@ setup() ->
     catch meck:unload(flurm_priority),
     catch meck:unload(flurm_fairshare),
     %% Start meck for mocking external dependencies
-    meck:new(flurm_job_registry, [passthrough, no_link]),
-    meck:new(flurm_node_registry, [passthrough, no_link]),
-    meck:new(flurm_job, [passthrough, no_link]),
-    meck:new(flurm_node, [passthrough, no_link]),
-    meck:new(flurm_backfill, [passthrough, no_link]),
-    meck:new(flurm_preemption, [passthrough, no_link]),
-    meck:new(flurm_priority, [passthrough, no_link]),
-    meck:new(flurm_fairshare, [passthrough, no_link]),
+    meck:new(flurm_job_registry, [passthrough, no_passthrough_cover, no_link]),
+    meck:new(flurm_node_registry, [passthrough, no_passthrough_cover, no_link]),
+    meck:new(flurm_job, [passthrough, no_passthrough_cover, no_link]),
+    meck:new(flurm_node, [passthrough, no_passthrough_cover, no_link]),
+    meck:new(flurm_backfill, [passthrough, no_passthrough_cover, no_link]),
+    meck:new(flurm_preemption, [passthrough, no_passthrough_cover, no_link]),
+    meck:new(flurm_priority, [passthrough, no_passthrough_cover, no_link]),
+    meck:new(flurm_fairshare, [passthrough, no_passthrough_cover, no_link]),
 
     %% Default mocks
     meck:expect(flurm_priority, calculate_priority, fun(_) -> 100 end),

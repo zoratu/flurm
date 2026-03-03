@@ -56,7 +56,7 @@ setup() ->
     %% Ensure meck is not already mocking
     catch meck:unload(flurm_dbd_server),
     %% Mock flurm_dbd_server (the external dependency)
-    meck:new(flurm_dbd_server, [passthrough, no_link]),
+    meck:new(flurm_dbd_server, [passthrough, no_passthrough_cover, no_link]),
     ok.
 
 cleanup(_) ->

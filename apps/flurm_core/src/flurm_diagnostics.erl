@@ -100,8 +100,8 @@ memory_report() ->
 %% @doc Get process statistics
 -spec process_report() -> map().
 process_report() ->
-    ProcessCount = erlang:system_info(process_count),
-    ProcessLimit = erlang:system_info(process_limit),
+    ProcessCount = diag_system_info(process_count),
+    ProcessLimit = diag_system_info(process_limit),
     #{
         count => ProcessCount,
         limit => ProcessLimit,
@@ -131,9 +131,9 @@ ets_report() ->
 %% @doc Find processes with large message queues
 -spec message_queue_report() -> [map()].
 message_queue_report() ->
-    Processes = erlang:processes(),
+    Processes = diag_processes(),
     WithQueues = lists:filtermap(fun(Pid) ->
-        case erlang:process_info(Pid, [message_queue_len, registered_name, current_function]) of
+        case diag_process_info(Pid, [message_queue_len, registered_name, current_function]) of
             undefined -> false;
             Info ->
                 QueueLen = proplists:get_value(message_queue_len, Info, 0),
@@ -157,9 +157,9 @@ message_queue_report() ->
 %% @doc Check for binary memory leaks (large binaries held by processes)
 -spec binary_leak_check() -> [map()].
 binary_leak_check() ->
-    Processes = erlang:processes(),
+    Processes = diag_processes(),
     WithBinaries = lists:filtermap(fun(Pid) ->
-        case erlang:process_info(Pid, [binary, registered_name, memory]) of
+        case diag_process_info(Pid, [binary, registered_name, memory]) of
             undefined -> false;
             Info ->
                 Binaries = proplists:get_value(binary, Info, []),
@@ -189,9 +189,9 @@ top_memory_processes() ->
 
 -spec top_memory_processes(pos_integer()) -> [map()].
 top_memory_processes(N) ->
-    Processes = erlang:processes(),
+    Processes = diag_processes(),
     WithMemory = lists:filtermap(fun(Pid) ->
-        case erlang:process_info(Pid, [memory, registered_name, current_function, message_queue_len]) of
+        case diag_process_info(Pid, [memory, registered_name, current_function, message_queue_len]) of
             undefined -> false;
             Info ->
                 {true, #{
@@ -215,9 +215,9 @@ top_message_queue_processes() ->
 
 -spec top_message_queue_processes(pos_integer()) -> [map()].
 top_message_queue_processes(N) ->
-    Processes = erlang:processes(),
+    Processes = diag_processes(),
     WithQueues = lists:filtermap(fun(Pid) ->
-        case erlang:process_info(Pid, [message_queue_len, registered_name, current_function]) of
+        case diag_process_info(Pid, [message_queue_len, registered_name, current_function]) of
             undefined -> false;
             Info ->
                 {true, #{
@@ -277,8 +277,8 @@ health_check() ->
     end,
 
     %% Check process count
-    ProcCount = erlang:system_info(process_count),
-    ProcLimit = erlang:system_info(process_limit),
+    ProcCount = diag_system_info(process_count),
+    ProcLimit = diag_system_info(process_limit),
     ProcWarnings = case ProcCount > ProcLimit * 0.8 of
         true -> [{high_process_count, ProcCount, ProcLimit}];
         false -> []
@@ -394,11 +394,11 @@ take_snapshot() ->
     #snapshot{
         timestamp = erlang:system_time(millisecond),
         total_memory = proplists:get_value(total, Memory),
-        process_count = erlang:system_info(process_count),
+        process_count = diag_system_info(process_count),
         ets_memory = proplists:get_value(ets, Memory),
         binary_memory = proplists:get_value(binary, Memory),
-        atom_count = erlang:system_info(atom_count),
-        port_count = erlang:system_info(port_count)
+        atom_count = diag_system_info(atom_count),
+        port_count = diag_system_info(port_count)
     }.
 
 check_for_leaks(_Current, []) ->
@@ -458,3 +458,27 @@ check_for_leaks(Current, History) ->
     end,
 
     Alerts ++ MemAlerts ++ ProcAlerts ++ BinAlerts.
+
+diag_processes() ->
+    case application:get_env(flurm_core, diagnostics_processes_fun) of
+        {ok, Fun} when is_function(Fun, 0) ->
+            Fun();
+        _ ->
+            erlang:processes()
+    end.
+
+diag_process_info(Pid, Items) ->
+    case application:get_env(flurm_core, diagnostics_process_info_fun) of
+        {ok, Fun} when is_function(Fun, 2) ->
+            Fun(Pid, Items);
+        _ ->
+            erlang:process_info(Pid, Items)
+    end.
+
+diag_system_info(Key) ->
+    case application:get_env(flurm_core, diagnostics_system_info_fun) of
+        {ok, Fun} when is_function(Fun, 1) ->
+            Fun(Key);
+        _ ->
+            erlang:system_info(Key)
+    end.

@@ -862,11 +862,11 @@ coverage_mocked_test_() ->
          catch meck:unload(flurm_rate_limiter),
          catch meck:unload(flurm_federation),
          catch meck:unload(flurm_account_manager),
-         meck:new(flurm_job_registry, [passthrough, non_strict]),
-         meck:new(flurm_node_registry, [passthrough, non_strict]),
-         meck:new(flurm_rate_limiter, [passthrough, non_strict]),
-         meck:new(flurm_federation, [passthrough, non_strict]),
-         meck:new(flurm_account_manager, [passthrough, non_strict]),
+         meck:new(flurm_job_registry, [passthrough, no_passthrough_cover, non_strict]),
+         meck:new(flurm_node_registry, [passthrough, no_passthrough_cover, non_strict]),
+         meck:new(flurm_rate_limiter, [passthrough, no_passthrough_cover, non_strict]),
+         meck:new(flurm_federation, [passthrough, no_passthrough_cover, non_strict]),
+         meck:new(flurm_account_manager, [passthrough, no_passthrough_cover, non_strict]),
          setup()
      end,
      fun(SetupResult) ->
@@ -1234,11 +1234,11 @@ coverage_error_branches_test_() ->
          catch meck:unload(flurm_rate_limiter),
          catch meck:unload(flurm_federation),
          catch meck:unload(flurm_account_manager),
-         meck:new(flurm_job_registry, [passthrough, non_strict]),
-         meck:new(flurm_node_registry, [passthrough, non_strict]),
-         meck:new(flurm_rate_limiter, [passthrough, non_strict]),
-         meck:new(flurm_federation, [passthrough, non_strict]),
-         meck:new(flurm_account_manager, [passthrough, non_strict]),
+         meck:new(flurm_job_registry, [passthrough, no_passthrough_cover, non_strict]),
+         meck:new(flurm_node_registry, [passthrough, no_passthrough_cover, non_strict]),
+         meck:new(flurm_rate_limiter, [passthrough, no_passthrough_cover, non_strict]),
+         meck:new(flurm_federation, [passthrough, no_passthrough_cover, non_strict]),
+         meck:new(flurm_account_manager, [passthrough, no_passthrough_cover, non_strict]),
          setup()
      end,
      fun(SetupResult) ->

@@ -776,10 +776,12 @@ calculate_tres_from_job(#job_record{} = Job) ->
 %% @private Update entity (user/account) running totals.
 %% Uses flurm_tres:add/2 for consistent aggregation
 update_entity_totals(EntityId, TresUsage, Totals) when is_binary(EntityId) ->
-    Existing = maps:get(EntityId, Totals, flurm_tres:zero()),
-    Updated = flurm_tres:add(Existing, TresUsage),
-    maps:put(EntityId, Updated, Totals);
-update_entity_totals(<<>>, _TresUsage, Totals) ->
-    %% Empty entity ID, don't update
-    Totals.
-
+    case EntityId of
+        <<>> ->
+            %% Empty entity ID, don't update
+            Totals;
+        _ ->
+            Existing = maps:get(EntityId, Totals, flurm_tres:zero()),
+            Updated = flurm_tres:add(Existing, TresUsage),
+            maps:put(EntityId, Updated, Totals)
+    end.

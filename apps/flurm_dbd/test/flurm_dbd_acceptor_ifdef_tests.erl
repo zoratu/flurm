@@ -93,7 +93,7 @@ handle_dbd_request_dbd_init_test() ->
 handle_dbd_request_get_jobs_test() ->
     %% DBD_GET_JOBS_COND = 1444 (sacct query)
     Result = flurm_dbd_acceptor:handle_dbd_request(1444, <<>>),
-    ?assertMatch({rc, 0}, Result).
+    ?assertMatch({jobs, _}, Result).
 
 handle_dbd_request_register_test() ->
     %% DBD_REGISTER_CTLD = 1434

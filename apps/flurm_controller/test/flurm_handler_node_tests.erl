@@ -75,7 +75,7 @@ setup() ->
     catch meck:unload(flurm_config_slurm),
     meck:new([flurm_node_manager_server, flurm_config_server, flurm_partition_manager,
               flurm_controller_cluster, flurm_scheduler, flurm_config_slurm],
-             [passthrough, no_link, non_strict]),
+             [passthrough, no_passthrough_cover, no_link, non_strict]),
 
     %% Default mock behaviors
     meck:expect(flurm_node_manager_server, list_nodes, fun() -> [] end),
@@ -541,7 +541,7 @@ do_reconfigure_test_() ->
     {setup,
      fun() ->
          meck:new([flurm_config_server, flurm_scheduler, flurm_node_manager_server],
-                  [passthrough, no_link, non_strict]),
+                  [passthrough, no_passthrough_cover, no_link, non_strict]),
          meck:expect(flurm_config_server, reconfigure, fun() -> ok end),
          meck:expect(flurm_config_server, get_version, fun() -> 1 end),
          meck:expect(flurm_config_server, get_nodes, fun() -> [] end),
@@ -569,7 +569,7 @@ do_partial_reconfigure_test_() ->
     {setup,
      fun() ->
          meck:new([flurm_config_server, flurm_scheduler, flurm_node_manager_server],
-                  [passthrough, no_link, non_strict]),
+                  [passthrough, no_passthrough_cover, no_link, non_strict]),
          meck:expect(flurm_config_server, reconfigure, fun(_) -> ok end),
          meck:expect(flurm_config_server, get_version, fun() -> 1 end),
          meck:expect(flurm_config_server, get_nodes, fun() -> [] end),
@@ -608,7 +608,7 @@ apply_node_changes_test_() ->
     {setup,
      fun() ->
          meck:new([flurm_config_server, flurm_node_manager_server, flurm_config_slurm],
-                  [passthrough, no_link, non_strict]),
+                  [passthrough, no_passthrough_cover, no_link, non_strict]),
          meck:expect(flurm_config_slurm, expand_hostlist, fun(Pattern) -> [Pattern] end),
          ok
      end,
@@ -645,7 +645,7 @@ apply_partition_changes_test_() ->
     {setup,
      fun() ->
          meck:new([flurm_config_server, flurm_partition_manager, flurm_config_slurm],
-                  [passthrough, no_link, non_strict]),
+                  [passthrough, no_passthrough_cover, no_link, non_strict]),
          meck:expect(flurm_config_slurm, expand_hostlist, fun(Pattern) -> [Pattern] end),
          ok
      end,
@@ -684,7 +684,7 @@ edge_cases_test_() ->
     {setup,
      fun() ->
          meck:new([flurm_node_manager_server, flurm_config_server],
-                  [passthrough, no_link, non_strict]),
+                  [passthrough, no_passthrough_cover, no_link, non_strict]),
          ok
      end,
      fun(_) ->
@@ -722,7 +722,7 @@ cluster_forwarding_test_() ->
     {setup,
      fun() ->
          meck:new([flurm_controller_cluster, flurm_config_server],
-                  [passthrough, no_link, non_strict]),
+                  [passthrough, no_passthrough_cover, no_link, non_strict]),
          application:set_env(flurm_controller, cluster_nodes, [node1, node2]),
          ok
      end,
@@ -774,7 +774,7 @@ cluster_forwarding_test_() ->
 apply_settings_test_() ->
     {setup,
      fun() ->
-         meck:new(flurm_config_server, [passthrough, no_link, non_strict]),
+         meck:new(flurm_config_server, [passthrough, no_passthrough_cover, no_link, non_strict]),
          ok
      end,
      fun(_) ->
@@ -814,7 +814,7 @@ scheduler_settings_test_() ->
     {setup,
      fun() ->
          meck:new([flurm_config_server, flurm_scheduler, flurm_node_manager_server],
-                  [passthrough, no_link, non_strict]),
+                  [passthrough, no_passthrough_cover, no_link, non_strict]),
          meck:expect(flurm_config_server, get_version, fun() -> 1 end),
          meck:expect(flurm_config_server, get_nodes, fun() -> [] end),
          meck:expect(flurm_config_server, get_partitions, fun() -> [] end),
@@ -852,7 +852,7 @@ raw_body_test_() ->
     {setup,
      fun() ->
          meck:new([flurm_config_server, flurm_node_manager_server],
-                  [passthrough, no_link, non_strict]),
+                  [passthrough, no_passthrough_cover, no_link, non_strict]),
          meck:expect(flurm_config_server, reconfigure, fun() -> ok end),
          meck:expect(flurm_config_server, get_version, fun() -> 1 end),
          meck:expect(flurm_config_server, get_nodes, fun() -> [] end),
@@ -914,7 +914,7 @@ node_manager_exception_test_() ->
     {setup,
      fun() ->
          meck:new([flurm_node_manager_server, flurm_config_server],
-                  [passthrough, no_link, non_strict]),
+                  [passthrough, no_passthrough_cover, no_link, non_strict]),
          ok
      end,
      fun(_) ->
@@ -941,7 +941,7 @@ partition_manager_exception_test_() ->
     {setup,
      fun() ->
          meck:new([flurm_config_server, flurm_partition_manager, flurm_config_slurm],
-                  [passthrough, no_link, non_strict]),
+                  [passthrough, no_passthrough_cover, no_link, non_strict]),
          ok
      end,
      fun(_) ->
@@ -983,7 +983,7 @@ broadcast_reconfigure_extended_test_() ->
     {setup,
      fun() ->
          meck:new([flurm_node_manager_server, flurm_config_server, flurm_scheduler],
-                  [passthrough, no_link, non_strict]),
+                  [passthrough, no_passthrough_cover, no_link, non_strict]),
          meck:expect(flurm_config_server, get_version, fun() -> 1 end),
          meck:expect(flurm_config_server, get_nodes, fun() -> [] end),
          meck:expect(flurm_config_server, get_partitions, fun() -> [] end),
@@ -1029,7 +1029,7 @@ apply_settings_force_test_() ->
     {setup,
      fun() ->
          meck:new([flurm_config_server, flurm_node_manager_server, flurm_scheduler],
-                  [passthrough, no_link, non_strict]),
+                  [passthrough, no_passthrough_cover, no_link, non_strict]),
          meck:expect(flurm_config_server, get_version, fun() -> 1 end),
          meck:expect(flurm_config_server, get_nodes, fun() -> [] end),
          meck:expect(flurm_config_server, get_partitions, fun() -> [] end),
@@ -1065,7 +1065,7 @@ cluster_forwarding_extended_test_() ->
     {setup,
      fun() ->
          meck:new([flurm_controller_cluster, flurm_config_server],
-                  [passthrough, no_link, non_strict]),
+                  [passthrough, no_passthrough_cover, no_link, non_strict]),
          application:set_env(flurm_controller, cluster_nodes, [node1, node2]),
          ok
      end,
@@ -1109,7 +1109,7 @@ reconfigure_version_exception_test_() ->
     {setup,
      fun() ->
          meck:new([flurm_config_server, flurm_scheduler, flurm_node_manager_server],
-                  [passthrough, no_link, non_strict]),
+                  [passthrough, no_passthrough_cover, no_link, non_strict]),
          meck:expect(flurm_config_server, reconfigure, fun() -> ok end),
          meck:expect(flurm_config_server, get_nodes, fun() -> [] end),
          meck:expect(flurm_config_server, get_partitions, fun() -> [] end),
@@ -1137,7 +1137,7 @@ scheduler_exception_test_() ->
     {setup,
      fun() ->
          meck:new([flurm_config_server, flurm_scheduler, flurm_node_manager_server],
-                  [passthrough, no_link, non_strict]),
+                  [passthrough, no_passthrough_cover, no_link, non_strict]),
          meck:expect(flurm_config_server, reconfigure, fun() -> ok end),
          meck:expect(flurm_config_server, get_version, fun() -> 1 end),
          meck:expect(flurm_config_server, get_nodes, fun() -> [] end),
@@ -1165,7 +1165,7 @@ node_definition_edge_cases_test_() ->
     {setup,
      fun() ->
          meck:new([flurm_config_server, flurm_node_manager_server, flurm_config_slurm],
-                  [passthrough, no_link, non_strict]),
+                  [passthrough, no_passthrough_cover, no_link, non_strict]),
          meck:expect(flurm_config_slurm, expand_hostlist, fun(P) -> [P] end),
          ok
      end,
@@ -1196,7 +1196,7 @@ partition_definition_edge_cases_test_() ->
     {setup,
      fun() ->
          meck:new([flurm_config_server, flurm_partition_manager, flurm_config_slurm],
-                  [passthrough, no_link, non_strict]),
+                  [passthrough, no_passthrough_cover, no_link, non_strict]),
          meck:expect(flurm_config_slurm, expand_hostlist, fun(_) -> [] end),
          ok
      end,

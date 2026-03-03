@@ -127,11 +127,10 @@ prune_job_records(CutoffTime) when is_integer(CutoffTime) ->
 %% @doc Prune usage records older than the cutoff timestamp.
 -spec prune_usage_records(non_neg_integer()) -> #{count => non_neg_integer(), errors => [term()]}.
 prune_usage_records(CutoffTime) when is_integer(CutoffTime) ->
-    %% Usage records are keyed by period (YYYY-MM)
-    %% Calculate the cutoff period
-    CutoffPeriod = timestamp_to_period(CutoffTime),
-
     try
+        %% Usage records are keyed by period (YYYY-MM)
+        %% Calculate the cutoff period
+        CutoffPeriod = timestamp_to_period(CutoffTime),
         %% For now, usage pruning would need to be implemented in flurm_dbd_server
         %% This is a placeholder that returns 0 pruned
         lager:info("Would prune usage records older than period ~s", [CutoffPeriod]),

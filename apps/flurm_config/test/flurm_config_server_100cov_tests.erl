@@ -42,7 +42,7 @@ find_default_config_test_() ->
      [
         {"find_default_config finds first existing file",
          fun() ->
-             meck:new(filelib, [passthrough, unstick]),
+             meck:new(filelib, [passthrough, no_passthrough_cover, unstick]),
              meck:expect(filelib, is_file, fun
                  ("/etc/flurm/flurm.conf") -> false;
                  ("/etc/flurm/slurm.conf") -> true;
@@ -54,7 +54,7 @@ find_default_config_test_() ->
          end},
         {"find_default_config returns undefined when none exist",
          fun() ->
-             meck:new(filelib, [passthrough, unstick]),
+             meck:new(filelib, [passthrough, no_passthrough_cover, unstick]),
              meck:expect(filelib, is_file, fun(_) -> false end),
 
              Result = flurm_config_server:find_default_config(),
@@ -62,7 +62,7 @@ find_default_config_test_() ->
          end},
         {"find_default_config checks all candidates in order",
          fun() ->
-             meck:new(filelib, [passthrough, unstick]),
+             meck:new(filelib, [passthrough, no_passthrough_cover, unstick]),
 
              CheckedFiles = ets:new(checked, [public, bag]),
              meck:expect(filelib, is_file, fun(Path) ->
@@ -299,7 +299,7 @@ find_node_test_() ->
      [
         {"find_node with exact match",
          fun() ->
-             meck:new(flurm_config_slurm, [passthrough]),
+             meck:new(flurm_config_slurm, [passthrough, no_passthrough_cover]),
              meck:expect(flurm_config_slurm, expand_hostlist, fun(P) -> [P] end),
 
              Nodes = [
@@ -311,7 +311,7 @@ find_node_test_() ->
          end},
         {"find_node with pattern expansion",
          fun() ->
-             meck:new(flurm_config_slurm, [passthrough]),
+             meck:new(flurm_config_slurm, [passthrough, no_passthrough_cover]),
              meck:expect(flurm_config_slurm, expand_hostlist, fun(<<"node[01-03]">>) ->
                  [<<"node01">>, <<"node02">>, <<"node03">>]
              end),
@@ -322,7 +322,7 @@ find_node_test_() ->
          end},
         {"find_node not found",
          fun() ->
-             meck:new(flurm_config_slurm, [passthrough]),
+             meck:new(flurm_config_slurm, [passthrough, no_passthrough_cover]),
              meck:expect(flurm_config_slurm, expand_hostlist, fun(P) -> [P] end),
 
              Nodes = [#{nodename => <<"node1">>, cpus => 4}],
@@ -394,10 +394,10 @@ gen_server_test_() ->
     {foreach,
      fun() ->
          meck_setup(),
-         meck:new(filelib, [passthrough, unstick]),
-         meck:new(flurm_config_slurm, [passthrough]),
-         meck:new(flurm_config_defaults, [passthrough]),
-         meck:new(error_logger, [passthrough, unstick]),
+         meck:new(filelib, [passthrough, no_passthrough_cover, unstick]),
+         meck:new(flurm_config_slurm, [passthrough, no_passthrough_cover]),
+         meck:new(flurm_config_defaults, [passthrough, no_passthrough_cover]),
+         meck:new(error_logger, [passthrough, no_passthrough_cover, unstick]),
 
          meck:expect(filelib, is_file, fun(_) -> false end),
          meck:expect(flurm_config_defaults, apply_defaults, fun(C) -> C end),
@@ -497,9 +497,9 @@ subscription_test_() ->
     {foreach,
      fun() ->
          meck_setup(),
-         meck:new(filelib, [passthrough, unstick]),
-         meck:new(flurm_config_defaults, [passthrough]),
-         meck:new(error_logger, [passthrough, unstick]),
+         meck:new(filelib, [passthrough, no_passthrough_cover, unstick]),
+         meck:new(flurm_config_defaults, [passthrough, no_passthrough_cover]),
+         meck:new(error_logger, [passthrough, no_passthrough_cover, unstick]),
 
          meck:expect(filelib, is_file, fun(_) -> false end),
          meck:expect(flurm_config_defaults, apply_defaults, fun(C) -> C end),
@@ -597,11 +597,11 @@ reconfigure_test_() ->
     {foreach,
      fun() ->
          meck_setup(),
-         meck:new(file, [passthrough, unstick]),
-         meck:new(filelib, [passthrough, unstick]),
-         meck:new(flurm_config_slurm, [passthrough]),
-         meck:new(flurm_config_defaults, [passthrough]),
-         meck:new(error_logger, [passthrough, unstick]),
+         meck:new(file, [passthrough, no_passthrough_cover, unstick]),
+         meck:new(filelib, [passthrough, no_passthrough_cover, unstick]),
+         meck:new(flurm_config_slurm, [passthrough, no_passthrough_cover]),
+         meck:new(flurm_config_defaults, [passthrough, no_passthrough_cover]),
+         meck:new(error_logger, [passthrough, no_passthrough_cover, unstick]),
 
          meck:expect(filelib, is_file, fun(_) -> false end),
          meck:expect(flurm_config_defaults, apply_defaults, fun(C) -> C end),
@@ -666,9 +666,9 @@ handle_info_test_() ->
     {foreach,
      fun() ->
          meck_setup(),
-         meck:new(filelib, [passthrough, unstick]),
-         meck:new(flurm_config_defaults, [passthrough]),
-         meck:new(error_logger, [passthrough, unstick]),
+         meck:new(filelib, [passthrough, no_passthrough_cover, unstick]),
+         meck:new(flurm_config_defaults, [passthrough, no_passthrough_cover]),
+         meck:new(error_logger, [passthrough, no_passthrough_cover, unstick]),
 
          meck:expect(filelib, is_file, fun(_) -> false end),
          meck:expect(flurm_config_defaults, apply_defaults, fun(C) -> C end),

@@ -82,13 +82,13 @@ setup() ->
     catch meck:unload(flurm_scheduler),
 
     %% Setup mocks
-    meck:new(flurm_metrics, [passthrough, non_strict]),
+    meck:new(flurm_metrics, [passthrough, no_passthrough_cover, non_strict]),
     meck:expect(flurm_metrics, increment, fun(_) -> ok end),
     meck:expect(flurm_metrics, histogram, fun(_, _) -> ok end),
 
-    meck:new(httpc, [passthrough, unstick]),
+    meck:new(httpc, [passthrough, no_passthrough_cover, unstick]),
 
-    meck:new(jsx, [passthrough]),
+    meck:new(jsx, [passthrough, no_passthrough_cover]),
     meck:expect(jsx, decode, fun(Bin, _) ->
         case Bin of
             <<"{\"error\":\"test_error\"}">> -> #{<<"error">> => <<"test_error">>};
@@ -98,10 +98,10 @@ setup() ->
     end),
     meck:expect(jsx, encode, fun(_) -> <<"{}">> end),
 
-    meck:new(flurm_node_registry, [passthrough, non_strict]),
-    meck:new(flurm_job_registry, [passthrough, non_strict]),
-    meck:new(flurm_protocol_codec, [passthrough, non_strict]),
-    meck:new(flurm_scheduler, [passthrough, non_strict]),
+    meck:new(flurm_node_registry, [passthrough, no_passthrough_cover, non_strict]),
+    meck:new(flurm_job_registry, [passthrough, no_passthrough_cover, non_strict]),
+    meck:new(flurm_protocol_codec, [passthrough, no_passthrough_cover, non_strict]),
+    meck:new(flurm_scheduler, [passthrough, no_passthrough_cover, non_strict]),
 
     ok.
 

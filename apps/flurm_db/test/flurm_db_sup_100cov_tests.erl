@@ -55,11 +55,11 @@ start_link_test_() ->
      [
         {"start_link/0 calls start_link/1 with empty map",
          fun() ->
-             meck:new(filelib, [passthrough, unstick]),
-             meck:new(file, [passthrough, unstick]),
-             meck:new(dets, [passthrough]),
-             meck:new(lager, [passthrough]),
-             meck:new(application, [passthrough, unstick]),
+             meck:new(filelib, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(file, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(dets, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(lager, [non_strict]),
+             meck:new(application, [passthrough, no_passthrough_cover, unstick]),
 
              meck:expect(application, get_env, fun(flurm_db, data_dir) -> undefined end),
              meck:expect(filelib, is_dir, fun("/var/lib/flurm") -> false end),
@@ -79,11 +79,11 @@ start_link_test_() ->
          end},
         {"start_link/1 with custom config",
          fun() ->
-             meck:new(filelib, [passthrough, unstick]),
-             meck:new(file, [passthrough, unstick]),
-             meck:new(dets, [passthrough]),
-             meck:new(lager, [passthrough]),
-             meck:new(application, [passthrough, unstick]),
+             meck:new(filelib, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(file, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(dets, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(lager, [non_strict]),
+             meck:new(application, [passthrough, no_passthrough_cover, unstick]),
 
              meck:expect(application, get_env, fun(flurm_db, data_dir) -> undefined end),
              meck:expect(filelib, is_dir, fun("/var/lib/flurm") -> false end),
@@ -114,7 +114,7 @@ get_data_dir_test_() ->
      [
         {"get_data_dir from application env",
          fun() ->
-             meck:new(application, [passthrough, unstick]),
+             meck:new(application, [passthrough, no_passthrough_cover, unstick]),
              meck:expect(application, get_env, fun(flurm_db, data_dir) -> {ok, "/custom/data"} end),
 
              Result = flurm_db_sup:get_data_dir(),
@@ -122,8 +122,8 @@ get_data_dir_test_() ->
          end},
         {"get_data_dir fallback to /var/lib/flurm",
          fun() ->
-             meck:new(application, [passthrough, unstick]),
-             meck:new(filelib, [passthrough, unstick]),
+             meck:new(application, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(filelib, [passthrough, no_passthrough_cover, unstick]),
 
              meck:expect(application, get_env, fun(flurm_db, data_dir) -> undefined end),
              meck:expect(filelib, is_dir, fun("/var/lib/flurm") -> true end),
@@ -133,9 +133,9 @@ get_data_dir_test_() ->
          end},
         {"get_data_dir fallback to cwd/data",
          fun() ->
-             meck:new(application, [passthrough, unstick]),
-             meck:new(filelib, [passthrough, unstick]),
-             meck:new(file, [passthrough, unstick]),
+             meck:new(application, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(filelib, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(file, [passthrough, no_passthrough_cover, unstick]),
 
              meck:expect(application, get_env, fun(flurm_db, data_dir) -> undefined end),
              meck:expect(filelib, is_dir, fun("/var/lib/flurm") -> false end),
@@ -157,11 +157,11 @@ init_test_() ->
      [
         {"init creates ETS tables",
          fun() ->
-             meck:new(filelib, [passthrough, unstick]),
-             meck:new(file, [passthrough, unstick]),
-             meck:new(dets, [passthrough]),
-             meck:new(lager, [passthrough]),
-             meck:new(application, [passthrough, unstick]),
+             meck:new(filelib, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(file, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(dets, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(lager, [non_strict]),
+             meck:new(application, [passthrough, no_passthrough_cover, unstick]),
 
              meck:expect(application, get_env, fun(flurm_db, data_dir) -> {ok, "/tmp/test"} end),
              meck:expect(filelib, ensure_dir, fun(_) -> ok end),
@@ -171,11 +171,11 @@ init_test_() ->
              meck:expect(dets, insert, fun(_, _) -> ok end),
              meck:expect(lager, info, fun(_, _) -> ok end),
 
-             {ok, {{Strategy, Intensity, Period}, Children}} = flurm_db_sup:init(#{}),
+             {ok, {SupFlags, Children}} = flurm_db_sup:init(#{}),
 
-             ?assertEqual(one_for_one, Strategy),
-             ?assertEqual(5, Intensity),
-             ?assertEqual(10, Period),
+             ?assertEqual(one_for_one, maps:get(strategy, SupFlags)),
+             ?assertEqual(5, maps:get(intensity, SupFlags)),
+             ?assertEqual(10, maps:get(period, SupFlags)),
              ?assertEqual(1, length(Children)),
 
              %% Verify ETS tables were created
@@ -192,10 +192,10 @@ init_test_() ->
              ets:new(flurm_db_partitions_ets, [named_table, public, set]),
              ets:new(flurm_db_job_counter_ets, [named_table, public, set]),
 
-             meck:new(filelib, [passthrough, unstick]),
-             meck:new(dets, [passthrough]),
-             meck:new(lager, [passthrough]),
-             meck:new(application, [passthrough, unstick]),
+             meck:new(filelib, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(dets, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(lager, [non_strict]),
+             meck:new(application, [passthrough, no_passthrough_cover, unstick]),
 
              meck:expect(application, get_env, fun(flurm_db, data_dir) -> {ok, "/tmp/test"} end),
              meck:expect(filelib, ensure_dir, fun(_) -> ok end),
@@ -210,10 +210,10 @@ init_test_() ->
          end},
         {"init opens DETS tables",
          fun() ->
-             meck:new(filelib, [passthrough, unstick]),
-             meck:new(dets, [passthrough]),
-             meck:new(lager, [passthrough]),
-             meck:new(application, [passthrough, unstick]),
+             meck:new(filelib, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(dets, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(lager, [non_strict]),
+             meck:new(application, [passthrough, no_passthrough_cover, unstick]),
 
              meck:expect(application, get_env, fun(flurm_db, data_dir) -> {ok, "/tmp/test"} end),
              meck:expect(filelib, ensure_dir, fun(_) -> ok end),
@@ -231,10 +231,10 @@ init_test_() ->
          end},
         {"init handles DETS open failure for jobs",
          fun() ->
-             meck:new(filelib, [passthrough, unstick]),
-             meck:new(dets, [passthrough]),
-             meck:new(lager, [passthrough]),
-             meck:new(application, [passthrough, unstick]),
+             meck:new(filelib, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(dets, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(lager, [non_strict]),
+             meck:new(application, [passthrough, no_passthrough_cover, unstick]),
 
              meck:expect(application, get_env, fun(flurm_db, data_dir) -> {ok, "/tmp/test"} end),
              meck:expect(filelib, ensure_dir, fun(_) -> ok end),
@@ -251,10 +251,10 @@ init_test_() ->
          end},
         {"init handles DETS open failure for counter",
          fun() ->
-             meck:new(filelib, [passthrough, unstick]),
-             meck:new(dets, [passthrough]),
-             meck:new(lager, [passthrough]),
-             meck:new(application, [passthrough, unstick]),
+             meck:new(filelib, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(dets, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(lager, [non_strict]),
+             meck:new(application, [passthrough, no_passthrough_cover, unstick]),
 
              meck:expect(application, get_env, fun(flurm_db, data_dir) -> {ok, "/tmp/test"} end),
              meck:expect(filelib, ensure_dir, fun(_) -> ok end),
@@ -271,10 +271,10 @@ init_test_() ->
          end},
         {"init loads jobs from DETS",
          fun() ->
-             meck:new(filelib, [passthrough, unstick]),
-             meck:new(dets, [passthrough]),
-             meck:new(lager, [passthrough]),
-             meck:new(application, [passthrough, unstick]),
+             meck:new(filelib, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(dets, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(lager, [non_strict]),
+             meck:new(application, [passthrough, no_passthrough_cover, unstick]),
 
              TestJob = {1, {job, 1, <<"test">>, <<"user">>, undefined, pending, undefined, 1, 1, 1, 1, 1024, 3600, 100, undefined, undefined, undefined, [], undefined, 0, undefined, <<>>, <<"normal">>}},
 
@@ -295,10 +295,10 @@ init_test_() ->
          end},
         {"init restores counter from DETS",
          fun() ->
-             meck:new(filelib, [passthrough, unstick]),
-             meck:new(dets, [passthrough]),
-             meck:new(lager, [passthrough]),
-             meck:new(application, [passthrough, unstick]),
+             meck:new(filelib, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(dets, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(lager, [non_strict]),
+             meck:new(application, [passthrough, no_passthrough_cover, unstick]),
 
              meck:expect(application, get_env, fun(flurm_db, data_dir) -> {ok, "/tmp/test"} end),
              meck:expect(filelib, ensure_dir, fun(_) -> ok end),
@@ -316,10 +316,10 @@ init_test_() ->
          end},
         {"init calculates counter from jobs when no DETS counter",
          fun() ->
-             meck:new(filelib, [passthrough, unstick]),
-             meck:new(dets, [passthrough]),
-             meck:new(lager, [passthrough]),
-             meck:new(application, [passthrough, unstick]),
+             meck:new(filelib, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(dets, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(lager, [non_strict]),
+             meck:new(application, [passthrough, no_passthrough_cover, unstick]),
 
              meck:expect(application, get_env, fun(flurm_db, data_dir) -> {ok, "/tmp/test"} end),
              meck:expect(filelib, ensure_dir, fun(_) -> ok end),
@@ -339,10 +339,10 @@ init_test_() ->
          end},
         {"init with empty jobs sets counter to 0",
          fun() ->
-             meck:new(filelib, [passthrough, unstick]),
-             meck:new(dets, [passthrough]),
-             meck:new(lager, [passthrough]),
-             meck:new(application, [passthrough, unstick]),
+             meck:new(filelib, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(dets, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(lager, [non_strict]),
+             meck:new(application, [passthrough, no_passthrough_cover, unstick]),
 
              meck:expect(application, get_env, fun(flurm_db, data_dir) -> {ok, "/tmp/test"} end),
              meck:expect(filelib, ensure_dir, fun(_) -> ok end),
@@ -370,10 +370,10 @@ child_spec_test_() ->
      [
         {"child spec includes ra_starter",
          fun() ->
-             meck:new(filelib, [passthrough, unstick]),
-             meck:new(dets, [passthrough]),
-             meck:new(lager, [passthrough]),
-             meck:new(application, [passthrough, unstick]),
+             meck:new(filelib, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(dets, [passthrough, no_passthrough_cover, unstick]),
+             meck:new(lager, [non_strict]),
+             meck:new(application, [passthrough, no_passthrough_cover, unstick]),
 
              meck:expect(application, get_env, fun(flurm_db, data_dir) -> {ok, "/tmp/test"} end),
              meck:expect(filelib, ensure_dir, fun(_) -> ok end),

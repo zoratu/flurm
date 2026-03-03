@@ -38,7 +38,7 @@ setup() ->
     catch meck:unload(flurm_controller_connector),
 
     %% Suppress lager output during tests
-    meck:new(lager, [non_strict, passthrough]),
+    meck:new(lager, [non_strict, passthrough, no_passthrough_cover]),
     meck:expect(lager, info, fun(_Fmt) -> ok end),
     meck:expect(lager, info, fun(_Fmt, _Args) -> ok end),
     meck:expect(lager, debug, fun(_Fmt, _Args) -> ok end),
@@ -47,7 +47,7 @@ setup() ->
     meck:expect(lager, md, fun(_) -> ok end),
 
     %% Mock the controller connector
-    meck:new(flurm_controller_connector, [passthrough, non_strict]),
+    meck:new(flurm_controller_connector, [passthrough, no_passthrough_cover, non_strict]),
     meck:expect(flurm_controller_connector, report_job_complete,
                 fun(_JobId, _ExitCode, _Output, _Energy) -> ok end),
     meck:expect(flurm_controller_connector, report_job_failed,
@@ -247,7 +247,7 @@ data_accumulation_test_() ->
      ]}.
 
 setup_data_test() ->
-    meck:new(lager, [non_strict, passthrough]),
+    meck:new(lager, [non_strict, passthrough, no_passthrough_cover]),
     meck:expect(lager, info, fun(_Fmt) -> ok end),
     meck:expect(lager, info, fun(_Fmt, _Args) -> ok end),
     ok.
@@ -305,7 +305,7 @@ setup_completion() ->
     catch meck:unload(lager),
     catch meck:unload(flurm_controller_connector),
 
-    meck:new(lager, [non_strict, passthrough]),
+    meck:new(lager, [non_strict, passthrough, no_passthrough_cover]),
     meck:expect(lager, info, fun(_Fmt) -> ok end),
     meck:expect(lager, info, fun(_Fmt, _Args) -> ok end),
     meck:expect(lager, debug, fun(_Fmt, _Args) -> ok end),
@@ -313,7 +313,7 @@ setup_completion() ->
     meck:expect(lager, error, fun(_Fmt, _Args) -> ok end),
     meck:expect(lager, md, fun(_) -> ok end),
 
-    meck:new(flurm_controller_connector, [passthrough, non_strict]),
+    meck:new(flurm_controller_connector, [passthrough, no_passthrough_cover, non_strict]),
     meck:expect(flurm_controller_connector, report_job_complete,
                 fun(_JobId, _ExitCode, _Output, _Energy) -> ok end),
     meck:expect(flurm_controller_connector, report_job_failed,
@@ -369,7 +369,7 @@ setup_timeout() ->
     catch meck:unload(lager),
     catch meck:unload(flurm_controller_connector),
 
-    meck:new(lager, [non_strict, passthrough]),
+    meck:new(lager, [non_strict, passthrough, no_passthrough_cover]),
     meck:expect(lager, info, fun(_Fmt) -> ok end),
     meck:expect(lager, info, fun(_Fmt, _Args) -> ok end),
     meck:expect(lager, debug, fun(_Fmt, _Args) -> ok end),
@@ -377,7 +377,7 @@ setup_timeout() ->
     meck:expect(lager, error, fun(_Fmt, _Args) -> ok end),
     meck:expect(lager, md, fun(_) -> ok end),
 
-    meck:new(flurm_controller_connector, [passthrough, non_strict]),
+    meck:new(flurm_controller_connector, [passthrough, no_passthrough_cover, non_strict]),
     meck:expect(flurm_controller_connector, report_job_complete,
                 fun(_JobId, _ExitCode, _Output, _Energy) -> ok end),
     meck:expect(flurm_controller_connector, report_job_failed,
@@ -425,7 +425,7 @@ setup_live() ->
     %% Start the job executor supervisor
     application:ensure_all_started(sasl),
 
-    meck:new(lager, [non_strict, passthrough]),
+    meck:new(lager, [non_strict, passthrough, no_passthrough_cover]),
     meck:expect(lager, info, fun(_Fmt) -> ok end),
     meck:expect(lager, info, fun(_Fmt, _Args) -> ok end),
     meck:expect(lager, debug, fun(_Fmt, _Args) -> ok end),
@@ -433,7 +433,7 @@ setup_live() ->
     meck:expect(lager, error, fun(_Fmt, _Args) -> ok end),
     meck:expect(lager, md, fun(_) -> ok end),
 
-    meck:new(flurm_controller_connector, [passthrough, non_strict]),
+    meck:new(flurm_controller_connector, [passthrough, no_passthrough_cover, non_strict]),
     meck:expect(flurm_controller_connector, report_job_complete,
                 fun(_JobId, _ExitCode, _Output, _Energy) -> ok end),
     meck:expect(flurm_controller_connector, report_job_failed,

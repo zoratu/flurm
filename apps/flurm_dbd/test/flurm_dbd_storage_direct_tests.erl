@@ -265,7 +265,7 @@ setup_mnesia_mock() ->
     meck:expect(lager, md, fun(_) -> ok end),
     %% Mock mnesia
     catch meck:unload(mnesia),
-    meck:new(mnesia, [passthrough, unstick, no_link]),
+    meck:new(mnesia, [passthrough, no_passthrough_cover, unstick, no_link]),
     meck:expect(mnesia, create_table, fun(_, _) -> {atomic, ok} end),
     meck:expect(mnesia, dirty_write, fun(_, _) -> ok end),
     meck:expect(mnesia, dirty_read, fun(_, Key) ->

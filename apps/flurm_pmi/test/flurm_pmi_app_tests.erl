@@ -135,7 +135,7 @@ start_with_mock_test_() ->
              MgrPid -> catch gen_server:stop(MgrPid, normal, 1000)
          end,
          timer:sleep(50),
-         meck:new(flurm_pmi_sup, [passthrough, non_strict]),
+         meck:new(flurm_pmi_sup, [passthrough, no_passthrough_cover, non_strict]),
          meck:expect(flurm_pmi_sup, start_link, fun() ->
              {ok, spawn(fun() -> timer:sleep(60000) end)}
          end),
@@ -187,7 +187,7 @@ start_error_handling_test_() ->
              MgrPid -> catch gen_server:stop(MgrPid, normal, 1000)
          end,
          timer:sleep(50),
-         meck:new(flurm_pmi_sup, [passthrough, non_strict]),
+         meck:new(flurm_pmi_sup, [passthrough, no_passthrough_cover, non_strict]),
          meck:expect(flurm_pmi_sup, start_link, fun() ->
              {error, {already_started, self()}}
          end),
@@ -356,7 +356,7 @@ full_lifecycle_test_() ->
          end,
          timer:sleep(50),
          catch meck:unload(flurm_pmi_sup),
-         meck:new(flurm_pmi_sup, [passthrough, non_strict]),
+         meck:new(flurm_pmi_sup, [passthrough, no_passthrough_cover, non_strict]),
          %% Create a real process that can be stopped
          Pid = spawn(fun() ->
              receive stop -> ok end

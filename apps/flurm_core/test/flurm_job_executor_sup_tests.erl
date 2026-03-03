@@ -87,7 +87,7 @@ setup_supervisor() ->
     catch meck:unload(flurm_controller_connector),
 
     %% Mock lager
-    meck:new(lager, [non_strict, passthrough]),
+    meck:new(lager, [non_strict, passthrough, no_passthrough_cover]),
     meck:expect(lager, info, fun(_Fmt) -> ok end),
     meck:expect(lager, info, fun(_Fmt, _Args) -> ok end),
     meck:expect(lager, debug, fun(_Fmt, _Args) -> ok end),
@@ -96,7 +96,7 @@ setup_supervisor() ->
     meck:expect(lager, md, fun(_) -> ok end),
 
     %% Mock controller connector
-    meck:new(flurm_controller_connector, [passthrough, non_strict]),
+    meck:new(flurm_controller_connector, [passthrough, no_passthrough_cover, non_strict]),
     meck:expect(flurm_controller_connector, report_job_complete,
                 fun(_JobId, _ExitCode, _Output, _Energy) -> ok end),
     meck:expect(flurm_controller_connector, report_job_failed,
@@ -276,7 +276,7 @@ setup_restart() ->
     catch meck:unload(lager),
     catch meck:unload(flurm_controller_connector),
 
-    meck:new(lager, [non_strict, passthrough]),
+    meck:new(lager, [non_strict, passthrough, no_passthrough_cover]),
     meck:expect(lager, info, fun(_Fmt) -> ok end),
     meck:expect(lager, info, fun(_Fmt, _Args) -> ok end),
     meck:expect(lager, debug, fun(_Fmt, _Args) -> ok end),
@@ -284,7 +284,7 @@ setup_restart() ->
     meck:expect(lager, error, fun(_Fmt, _Args) -> ok end),
     meck:expect(lager, md, fun(_) -> ok end),
 
-    meck:new(flurm_controller_connector, [passthrough, non_strict]),
+    meck:new(flurm_controller_connector, [passthrough, no_passthrough_cover, non_strict]),
     meck:expect(flurm_controller_connector, report_job_complete,
                 fun(_JobId, _ExitCode, _Output, _Energy) -> ok end),
     meck:expect(flurm_controller_connector, report_job_failed,
@@ -376,7 +376,7 @@ setup_edge_cases() ->
     catch meck:unload(lager),
     catch meck:unload(flurm_controller_connector),
 
-    meck:new(lager, [non_strict, passthrough]),
+    meck:new(lager, [non_strict, passthrough, no_passthrough_cover]),
     meck:expect(lager, info, fun(_Fmt) -> ok end),
     meck:expect(lager, info, fun(_Fmt, _Args) -> ok end),
     meck:expect(lager, debug, fun(_Fmt, _Args) -> ok end),
@@ -384,7 +384,7 @@ setup_edge_cases() ->
     meck:expect(lager, error, fun(_Fmt, _Args) -> ok end),
     meck:expect(lager, md, fun(_) -> ok end),
 
-    meck:new(flurm_controller_connector, [passthrough, non_strict]),
+    meck:new(flurm_controller_connector, [passthrough, no_passthrough_cover, non_strict]),
     meck:expect(flurm_controller_connector, report_job_complete,
                 fun(_JobId, _ExitCode, _Output, _Energy) -> ok end),
     meck:expect(flurm_controller_connector, report_job_failed,

@@ -69,7 +69,7 @@ setup() ->
     application:ensure_all_started(sasl),
     catch meck:unload(gen_tcp),
     catch meck:unload(flurm_protocol_codec),
-    meck:new(gen_tcp, [unstick, passthrough]),
+    meck:new(gen_tcp, [unstick, passthrough, no_passthrough_cover]),
     meck:new(flurm_protocol_codec, [non_strict]),
     %% Default mock: connect succeeds with a fake socket
     meck:expect(gen_tcp, connect, fun(_Host, _Port, _Opts, _Timeout) ->

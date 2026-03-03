@@ -245,7 +245,9 @@ mode_validation_test_() ->
       {"binary_to_mode rejects invalid",
        fun mode_invalid/0},
       {"binary_to_mode rejects case variations",
-       fun mode_case_variations/0}
+       fun mode_case_variations/0},
+      {"set_bridge_mode rejects invalid atom directly",
+       fun mode_set_bridge_mode_invalid/0}
      ]}.
 
 mode_shadow() ->
@@ -273,6 +275,9 @@ mode_case_variations() ->
     ?assertEqual(invalid, flurm_bridge_http:binary_to_mode(<<"ACTIVE">>)),
     ?assertEqual(invalid, flurm_bridge_http:binary_to_mode(<<"PRIMARY">>)),
     ?assertEqual(invalid, flurm_bridge_http:binary_to_mode(<<"STANDALONE">>)).
+
+mode_set_bridge_mode_invalid() ->
+    ?assertEqual({error, invalid_mode}, flurm_bridge_http:set_bridge_mode(invalid_mode)).
 
 %%====================================================================
 %% Routes Configuration Tests
@@ -410,7 +415,7 @@ route_request_get_test_() ->
      fun() ->
          %% Start meck for flurm_federation
          catch meck:unload(flurm_federation),
-         meck:new(flurm_federation, [passthrough, non_strict]),
+         meck:new(flurm_federation, [passthrough, no_passthrough_cover, non_strict]),
          meck:expect(flurm_federation, get_federation_stats, fun() ->
              #{clusters_total => 2, clusters_healthy => 2, clusters_unhealthy => 0}
          end),
@@ -524,7 +529,7 @@ route_request_mutation_test_() ->
     {setup,
      fun() ->
          catch meck:unload(flurm_federation),
-         meck:new(flurm_federation, [passthrough, non_strict]),
+         meck:new(flurm_federation, [passthrough, no_passthrough_cover, non_strict]),
          meck:expect(flurm_federation, add_cluster, fun(Name, _Config) ->
              case Name of
                  <<"newcluster">> -> ok;
@@ -536,6 +541,7 @@ route_request_mutation_test_() ->
              case Name of
                  <<"cluster1">> -> ok;
                  <<"local">> -> {error, cannot_remove_local};
+                 <<"error">> -> {error, backend_down};
                  _ -> {error, not_found}
              end
          end),
@@ -553,6 +559,8 @@ route_request_mutation_test_() ->
        fun route_put_mode_transitions/0},
       {"PUT /mode rejects invalid mode",
        fun route_put_mode_invalid/0},
+      {"PUT /mode propagates set_env failure",
+       fun route_put_mode_set_env_error/0},
       {"PUT /mode requires mode field",
        fun route_put_mode_missing_field/0},
       {"POST /clusters adds new cluster",
@@ -568,7 +576,9 @@ route_request_mutation_test_() ->
       {"DELETE /clusters/:name cannot remove local",
        fun route_delete_cluster_local/0},
       {"DELETE /clusters/:name handles not found",
-       fun route_delete_cluster_not_found/0}
+       fun route_delete_cluster_not_found/0},
+      {"DELETE /clusters/:name handles generic backend error",
+       fun route_delete_cluster_generic_error/0}
      ]}.
 
 route_put_mode() ->
@@ -593,6 +603,19 @@ route_put_mode_invalid() ->
     ?assertMatch({error, #{reason := _}}, Result),
     {error, #{reason := Reason}} = Result,
     ?assert(binary:match(Reason, <<"invalid mode">>) =/= nomatch).
+
+route_put_mode_set_env_error() ->
+    catch meck:unload(application),
+    meck:new(application, [passthrough, no_passthrough_cover, unstick]),
+    meck:expect(application, set_env, fun(flurm_controller, bridge_mode, _Mode) ->
+        {error, env_failure};
+       (App, Key, Value) ->
+        meck:passthrough([App, Key, Value])
+    end),
+    Data = #{<<"mode">> => <<"shadow">>},
+    Result = flurm_bridge_http:route_request(<<"PUT">>, <<"/api/v1/bridge/mode">>, {undefined, Data}),
+    meck:unload(application),
+    ?assertMatch({error, #{reason := <<"env_failure">>}}, Result).
 
 route_put_mode_missing_field() ->
     Data = #{<<"other">> => <<"value">>},
@@ -653,6 +676,10 @@ route_delete_cluster_not_found() ->
     Result = flurm_bridge_http:route_request(<<"DELETE">>, <<"/api/v1/bridge/clusters/nonexistent">>, undefined),
     ?assertMatch({error, #{reason := <<"cluster not found">>}}, Result).
 
+route_delete_cluster_generic_error() ->
+    Result = flurm_bridge_http:route_request(<<"DELETE">>, <<"/api/v1/bridge/clusters/error">>, undefined),
+    ?assertMatch({error, #{reason := <<"backend_down">>}}, Result).
+
 %%====================================================================
 %% Error Handling Tests
 %%====================================================================
@@ -695,7 +722,7 @@ status_error_test_() ->
     {setup,
      fun() ->
          catch meck:unload(flurm_federation),
-         meck:new(flurm_federation, [passthrough, non_strict]),
+         meck:new(flurm_federation, [passthrough, no_passthrough_cover, non_strict]),
          ok
      end,
      fun(_) ->
@@ -724,7 +751,7 @@ cowboy_callback_test_() ->
          catch meck:unload(cowboy_req),
          catch meck:unload(flurm_federation),
          meck:new(cowboy_req, [non_strict]),
-         meck:new(flurm_federation, [passthrough, non_strict]),
+         meck:new(flurm_federation, [passthrough, no_passthrough_cover, non_strict]),
          ok
      end,
      fun(_) ->
@@ -736,12 +763,20 @@ cowboy_callback_test_() ->
        fun test_init/0},
       {"allowed_methods returns correct methods for each path",
        fun test_allowed_methods/0},
+      {"allowed_methods falls back for unknown path",
+       fun test_allowed_methods_unknown/0},
       {"content_types_provided returns JSON",
        fun test_content_types_provided/0},
       {"content_types_accepted returns JSON",
        fun test_content_types_accepted/0},
       {"resource_exists checks path correctly",
-       fun test_resource_exists/0}
+       fun test_resource_exists/0},
+      {"to_json callback builds JSON body",
+       fun test_to_json_callback/0},
+      {"from_json callback decodes request and sets response body",
+       fun test_from_json_callback/0},
+      {"delete_resource callback sets response body",
+       fun test_delete_resource_callback/0}
      ]}.
 
 test_init() ->
@@ -770,6 +805,11 @@ test_allowed_methods() ->
     meck:expect(cowboy_req, path, fun(_) -> <<"/api/v1/bridge/clusters/test">> end),
     {Methods4, _, _} = flurm_bridge_http:allowed_methods(mock_req, #{}),
     ?assertEqual([<<"GET">>, <<"DELETE">>, <<"OPTIONS">>], Methods4).
+
+test_allowed_methods_unknown() ->
+    meck:expect(cowboy_req, path, fun(_) -> <<"/api/v1/bridge/unknown">> end),
+    {Methods, _, _} = flurm_bridge_http:allowed_methods(mock_req, #{}),
+    ?assertEqual([<<"GET">>, <<"OPTIONS">>], Methods).
 
 test_content_types_provided() ->
     {Types, _, _} = flurm_bridge_http:content_types_provided(mock_req, #{}),
@@ -808,10 +848,73 @@ test_resource_exists() ->
     {Exists5, _, _} = flurm_bridge_http:resource_exists(mock_req, #{}),
     ?assertEqual(false, Exists5),
 
+    %% GET path uses same lookup behavior
+    meck:expect(cowboy_req, method, fun(_) -> <<"GET">> end),
+    meck:expect(flurm_federation, get_cluster_status, fun(<<"test">>) -> {ok, #{}} end),
+    {ExistsGet, _, _} = flurm_bridge_http:resource_exists(mock_req, #{}),
+    ?assertEqual(true, ExistsGet),
+
+    %% GET + not_found branch
+    meck:expect(flurm_federation, get_cluster_status, fun(<<"test">>) -> {error, not_found} end),
+    {ExistsGetNotFound, _, _} = flurm_bridge_http:resource_exists(mock_req, #{}),
+    ?assertEqual(false, ExistsGetNotFound),
+
+    %% Non-GET/DELETE method on named cluster falls through to true
+    meck:expect(cowboy_req, method, fun(_) -> <<"POST">> end),
+    {ExistsOtherMethod, _, _} = flurm_bridge_http:resource_exists(mock_req, #{}),
+    ?assertEqual(true, ExistsOtherMethod),
+
     %% Unknown path
     meck:expect(cowboy_req, path, fun(_) -> <<"/api/v2/unknown">> end),
     {Exists6, _, _} = flurm_bridge_http:resource_exists(mock_req, #{}),
     ?assertEqual(false, Exists6).
+
+test_to_json_callback() ->
+    meck:expect(cowboy_req, path, fun(_) -> <<"/api/v1/bridge/status">> end),
+    meck:expect(cowboy_req, method, fun(_) -> <<"GET">> end),
+    meck:expect(flurm_federation, get_federation_stats, fun() ->
+        #{clusters_total => 1}
+    end),
+    meck:expect(flurm_federation, get_federation_resources, fun() ->
+        #{total_nodes => 2}
+    end),
+    meck:expect(flurm_federation, is_federated, fun() -> false end),
+    meck:expect(flurm_federation, get_local_cluster, fun() -> <<"local">> end),
+    {Body, _Req, State} = flurm_bridge_http:to_json(mock_req, #{}),
+    ?assert(is_binary(Body)),
+    ?assertEqual(#{}, State),
+    Decoded = jsx:decode(Body, [return_maps]),
+    ?assertEqual(true, maps:get(<<"success">>, Decoded)).
+
+test_from_json_callback() ->
+    Json = jsx:encode(#{<<"mode">> => <<"standalone">>}),
+    meck:expect(cowboy_req, path, fun(_) -> <<"/api/v1/bridge/mode">> end),
+    meck:expect(cowboy_req, method, fun(_) -> <<"PUT">> end),
+    meck:expect(cowboy_req, read_body, fun(_) -> {ok, Json, mock_req2} end),
+    meck:expect(cowboy_req, set_resp_body, fun(Body, Req) ->
+        put(from_json_resp_body, Body),
+        {resp_set, Req}
+    end),
+    {true, {resp_set, mock_req2}, State} = flurm_bridge_http:from_json(mock_req, #{}),
+    ?assertEqual(#{}, State),
+    Body = get(from_json_resp_body),
+    ?assert(is_binary(Body)),
+    Decoded = jsx:decode(Body, [return_maps]),
+    ?assertEqual(true, maps:get(<<"success">>, Decoded)).
+
+test_delete_resource_callback() ->
+    meck:expect(cowboy_req, path, fun(_) -> <<"/api/v1/bridge/clusters/test">> end),
+    meck:expect(cowboy_req, set_resp_body, fun(Body, Req) ->
+        put(delete_resp_body, Body),
+        {resp_set, Req}
+    end),
+    meck:expect(flurm_federation, remove_cluster, fun(<<"test">>) -> ok end),
+    {true, {resp_set, mock_req}, State} = flurm_bridge_http:delete_resource(mock_req, #{}),
+    ?assertEqual(#{}, State),
+    Body = get(delete_resp_body),
+    ?assert(is_binary(Body)),
+    Decoded = jsx:decode(Body, [return_maps]),
+    ?assertEqual(true, maps:get(<<"success">>, Decoded)).
 
 %%====================================================================
 %% JWT Authentication Middleware Tests (with mocked cowboy_req)
@@ -823,7 +926,7 @@ jwt_auth_middleware_test_() ->
          catch meck:unload(cowboy_req),
          catch meck:unload(flurm_jwt),
          meck:new(cowboy_req, [non_strict]),
-         meck:new(flurm_jwt, [passthrough, non_strict]),
+         meck:new(flurm_jwt, [passthrough, no_passthrough_cover, non_strict]),
          application:set_env(flurm_controller, jwt_secret, <<"test-secret">>),
          ok
      end,
@@ -916,7 +1019,7 @@ integration_test_() ->
     {setup,
      fun() ->
          catch meck:unload(flurm_federation),
-         meck:new(flurm_federation, [passthrough, non_strict]),
+         meck:new(flurm_federation, [passthrough, no_passthrough_cover, non_strict]),
          %% Setup cluster storage for integration tests
          ClusterTable = ets:new(test_clusters, [set, public, named_table]),
          ets:insert(ClusterTable, {<<"existing">>, #{state => up, host => <<"host.example.com">>}}),
@@ -1031,7 +1134,7 @@ edge_case_test_() ->
     {setup,
      fun() ->
          catch meck:unload(flurm_federation),
-         meck:new(flurm_federation, [passthrough, non_strict]),
+         meck:new(flurm_federation, [passthrough, no_passthrough_cover, non_strict]),
          meck:expect(flurm_federation, add_cluster, fun(_, _) -> ok end),
          ok
      end,
@@ -1088,7 +1191,7 @@ default_values_test_() ->
     {setup,
      fun() ->
          catch meck:unload(flurm_federation),
-         meck:new(flurm_federation, [passthrough, non_strict]),
+         meck:new(flurm_federation, [passthrough, no_passthrough_cover, non_strict]),
          meck:expect(flurm_federation, add_cluster, fun(_Name, Config) ->
              %% Verify default values are applied
              ?assertEqual(6817, maps:get(port, Config)),

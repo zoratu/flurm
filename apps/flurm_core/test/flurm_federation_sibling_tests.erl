@@ -71,11 +71,11 @@ setup() ->
     catch meck:unload(httpc),
 
     %% Setup meck for external dependencies
-    meck:new(flurm_scheduler, [passthrough, non_strict, no_link]),
-    meck:new(flurm_job_manager, [passthrough, non_strict, no_link]),
-    meck:new(flurm_config_server, [passthrough, non_strict, no_link]),
-    meck:new(flurm_metrics, [passthrough, non_strict, no_link]),
-    meck:new(httpc, [passthrough, non_strict, no_link]),
+    meck:new(flurm_scheduler, [passthrough, no_passthrough_cover, non_strict, no_link]),
+    meck:new(flurm_job_manager, [passthrough, no_passthrough_cover, non_strict, no_link]),
+    meck:new(flurm_config_server, [passthrough, no_passthrough_cover, non_strict, no_link]),
+    meck:new(flurm_metrics, [passthrough, no_passthrough_cover, non_strict, no_link]),
+    meck:new(httpc, [passthrough, no_passthrough_cover, non_strict, no_link]),
 
     %% Default mock expectations
     meck:expect(flurm_config_server, get, fun(Key) ->

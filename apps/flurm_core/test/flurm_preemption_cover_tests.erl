@@ -39,7 +39,7 @@ setup() ->
             flurm_scheduler, flurm_qos, flurm_metrics, flurm_job_dispatcher],
     lists:foreach(fun(M) ->
         catch meck:unload(M),
-        meck:new(M, [passthrough, non_strict, no_link])
+        meck:new(M, [passthrough, no_passthrough_cover, non_strict, no_link])
     end, Mods),
 
     %% Default mocks

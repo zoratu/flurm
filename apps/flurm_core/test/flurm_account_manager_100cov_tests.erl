@@ -24,23 +24,23 @@ setup() ->
     catch meck:unload(flurm_tres),
 
     %% Mock lager
-    meck:new(lager, [passthrough, non_strict]),
+    meck:new(lager, [passthrough, no_passthrough_cover, non_strict]),
     meck:expect(lager, info, fun(_, _) -> ok end),
     meck:expect(lager, warning, fun(_, _) -> ok end),
 
     %% Mock flurm_limits
-    meck:new(flurm_limits, [passthrough, non_strict]),
+    meck:new(flurm_limits, [passthrough, no_passthrough_cover, non_strict]),
     meck:expect(flurm_limits, get_usage, fun(_, _) ->
         {usage, {user, <<"test">>}, 0, 0, #{}, #{}}
     end),
 
     %% Mock flurm_qos
-    meck:new(flurm_qos, [passthrough, non_strict]),
+    meck:new(flurm_qos, [passthrough, no_passthrough_cover, non_strict]),
     meck:expect(flurm_qos, check_limits, fun(_, _) -> ok end),
     meck:expect(flurm_qos, check_tres_limits, fun(_, _, _) -> ok end),
 
     %% Mock flurm_tres
-    meck:new(flurm_tres, [passthrough, non_strict]),
+    meck:new(flurm_tres, [passthrough, no_passthrough_cover, non_strict]),
     meck:expect(flurm_tres, add, fun(M1, M2) ->
         maps:merge_with(fun(_, V1, V2) -> V1 + V2 end, M1, M2)
     end),

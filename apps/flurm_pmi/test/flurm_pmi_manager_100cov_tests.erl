@@ -29,7 +29,7 @@ setup() ->
         MgrPid -> catch gen_server:stop(MgrPid, normal, 1000)
     end,
     timer:sleep(50),
-    meck:new([lager, flurm_pmi_kvs], [passthrough, non_strict]),
+    meck:new([lager, flurm_pmi_kvs], [passthrough, no_passthrough_cover, non_strict]),
     meck:expect(lager, info, fun(_Fmt, _Args) -> ok end),
     meck:expect(lager, info, fun(_Msg) -> ok end),
     meck:expect(lager, debug, fun(_Fmt, _Args) -> ok end),

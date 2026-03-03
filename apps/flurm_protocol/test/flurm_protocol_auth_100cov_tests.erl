@@ -605,7 +605,7 @@ default_hostname_error_test_() ->
     {"default_hostname error path covers line 71",
      {setup,
       fun() ->
-          meck:new(inet, [unstick, passthrough]),
+          meck:new(inet, [unstick, passthrough, no_passthrough_cover]),
           meck:expect(inet, gethostname, fun() -> {error, nxdomain} end)
       end,
       fun(_) ->

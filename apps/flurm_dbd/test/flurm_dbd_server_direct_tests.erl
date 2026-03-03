@@ -84,7 +84,7 @@ setup() ->
 
     %% Mock flurm_dbd_sup to prevent listener startup
     catch meck:unload(flurm_dbd_sup),
-    meck:new(flurm_dbd_sup, [passthrough, no_link]),
+    meck:new(flurm_dbd_sup, [passthrough, no_passthrough_cover, no_link]),
     meck:expect(flurm_dbd_sup, start_listener, fun() -> {ok, self()} end),
     ok.
 
@@ -523,7 +523,7 @@ test_terminate() ->
     {ok, Pid} = flurm_dbd_server:start_link(),
     %% Calling stop triggers terminate/2
     gen_server:stop(Pid, normal, 5000),
-    _ = sys:get_state(flurm_dbd_server),
+    ?assertNot(is_process_alive(Pid)),
     ?assertEqual(undefined, whereis(flurm_dbd_server)).
 
 %%====================================================================
@@ -606,7 +606,7 @@ listener_error_test_() ->
     meck:expect(lager, md, fun(_) -> ok end),
          %% Mock flurm_dbd_sup to fail listener start
          catch meck:unload(flurm_dbd_sup),
-         meck:new(flurm_dbd_sup, [passthrough, no_link]),
+         meck:new(flurm_dbd_sup, [passthrough, no_passthrough_cover, no_link]),
          meck:expect(flurm_dbd_sup, start_listener, fun() -> {error, eaddrinuse} end),
          ok
      end,

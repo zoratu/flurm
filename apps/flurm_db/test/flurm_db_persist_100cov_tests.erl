@@ -24,6 +24,7 @@ meck_setup() ->
     catch meck:unload(flurm_db_ra),
     catch meck:unload(dets),
     catch meck:unload(ets),
+    ensure_distributed_node(),
     %% Create ETS tables for testing
     catch ets:delete(flurm_db_jobs_ets),
     catch ets:delete(flurm_db_job_counter_ets),
@@ -106,7 +107,7 @@ is_ra_available_test_() ->
          end},
         {"is_ra_available returns false when Ra not running",
          fun() ->
-             meck:new(ra, [passthrough]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
              meck:expect(ra, members, fun(_) -> {error, noproc} end),
 
              Result = flurm_db_persist:is_ra_available(),
@@ -114,7 +115,7 @@ is_ra_available_test_() ->
          end},
         {"is_ra_available returns true when Ra running",
          fun() ->
-             meck:new(ra, [passthrough]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
              meck:expect(ra, members, fun(_) -> {ok, [], node()} end),
 
              Result = flurm_db_persist:is_ra_available(),
@@ -133,7 +134,7 @@ persistence_mode_test_() ->
      [
         {"persistence_mode returns ra when available",
          fun() ->
-             meck:new(ra, [passthrough]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
              meck:expect(ra, members, fun(_) -> {ok, [], node()} end),
 
              Result = flurm_db_persist:persistence_mode(),
@@ -141,7 +142,7 @@ persistence_mode_test_() ->
          end},
         {"persistence_mode returns ets when ETS available",
          fun() ->
-             meck:new(ra, [passthrough]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
              meck:expect(ra, members, fun(_) -> {error, noproc} end),
              %% ETS table already exists from setup
 
@@ -150,7 +151,7 @@ persistence_mode_test_() ->
          end},
         {"persistence_mode returns none when nothing available",
          fun() ->
-             meck:new(ra, [passthrough]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
              meck:expect(ra, members, fun(_) -> {error, noproc} end),
              %% Delete ETS table
              ets:delete(flurm_db_jobs_ets),
@@ -173,8 +174,8 @@ store_job_ets_test_() ->
      [
         {"store_job stores in ETS when Ra unavailable",
          fun() ->
-             meck:new(ra, [passthrough]),
-             meck:new(dets, [passthrough]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
+             meck:new(dets, [unstick, passthrough, no_passthrough_cover]),
              meck:expect(ra, members, fun(_) -> {error, noproc} end),
              meck:expect(dets, info, fun(_) -> undefined end),
 
@@ -188,8 +189,8 @@ store_job_ets_test_() ->
          end},
         {"store_job persists to DETS when available",
          fun() ->
-             meck:new(ra, [passthrough]),
-             meck:new(dets, [passthrough]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
+             meck:new(dets, [unstick, passthrough, no_passthrough_cover]),
              meck:expect(ra, members, fun(_) -> {error, noproc} end),
              meck:expect(dets, info, fun(_) -> [{size, 0}] end),
              meck:expect(dets, insert, fun(_, _) -> ok end),
@@ -214,8 +215,8 @@ store_job_ra_test_() ->
      [
         {"store_job stores via Ra when available",
          fun() ->
-             meck:new(ra, [passthrough]),
-             meck:new(flurm_db_ra, [passthrough]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
+             meck:new(flurm_db_ra, [passthrough, no_passthrough_cover]),
              meck:expect(ra, members, fun(_) -> {ok, [], node()} end),
              meck:expect(flurm_db_ra, store_job, fun(_Id, _JobSpec) -> {ok, 1} end),
 
@@ -225,8 +226,8 @@ store_job_ra_test_() ->
          end},
         {"store_job returns error from Ra",
          fun() ->
-             meck:new(ra, [passthrough]),
-             meck:new(flurm_db_ra, [passthrough]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
+             meck:new(flurm_db_ra, [passthrough, no_passthrough_cover]),
              meck:expect(ra, members, fun(_) -> {ok, [], node()} end),
              meck:expect(flurm_db_ra, store_job, fun(_Id, _JobSpec) -> {error, ra_timeout} end),
 
@@ -247,8 +248,8 @@ update_job_ets_test_() ->
      [
         {"update_job updates state in ETS",
          fun() ->
-             meck:new(ra, [passthrough]),
-             meck:new(dets, [passthrough]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
+             meck:new(dets, [unstick, passthrough, no_passthrough_cover]),
              meck:expect(ra, members, fun(_) -> {error, noproc} end),
              meck:expect(dets, info, fun(_) -> undefined end),
 
@@ -266,8 +267,8 @@ update_job_ets_test_() ->
          end},
         {"update_job sets start_time when running",
          fun() ->
-             meck:new(ra, [passthrough]),
-             meck:new(dets, [passthrough]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
+             meck:new(dets, [unstick, passthrough, no_passthrough_cover]),
              meck:expect(ra, members, fun(_) -> {error, noproc} end),
              meck:expect(dets, info, fun(_) -> undefined end),
 
@@ -281,8 +282,8 @@ update_job_ets_test_() ->
          end},
         {"update_job sets end_time for terminal states",
          fun() ->
-             meck:new(ra, [passthrough]),
-             meck:new(dets, [passthrough]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
+             meck:new(dets, [unstick, passthrough, no_passthrough_cover]),
              meck:expect(ra, members, fun(_) -> {error, noproc} end),
              meck:expect(dets, info, fun(_) -> undefined end),
 
@@ -323,8 +324,8 @@ update_job_ets_test_() ->
          end},
         {"update_job updates allocated_nodes",
          fun() ->
-             meck:new(ra, [passthrough]),
-             meck:new(dets, [passthrough]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
+             meck:new(dets, [unstick, passthrough, no_passthrough_cover]),
              meck:expect(ra, members, fun(_) -> {error, noproc} end),
              meck:expect(dets, info, fun(_) -> undefined end),
 
@@ -339,8 +340,8 @@ update_job_ets_test_() ->
          end},
         {"update_job updates exit_code",
          fun() ->
-             meck:new(ra, [passthrough]),
-             meck:new(dets, [passthrough]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
+             meck:new(dets, [unstick, passthrough, no_passthrough_cover]),
              meck:expect(ra, members, fun(_) -> {error, noproc} end),
              meck:expect(dets, info, fun(_) -> undefined end),
 
@@ -354,8 +355,8 @@ update_job_ets_test_() ->
          end},
         {"update_job updates start_time and end_time directly",
          fun() ->
-             meck:new(ra, [passthrough]),
-             meck:new(dets, [passthrough]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
+             meck:new(dets, [unstick, passthrough, no_passthrough_cover]),
              meck:expect(ra, members, fun(_) -> {error, noproc} end),
              meck:expect(dets, info, fun(_) -> undefined end),
 
@@ -370,7 +371,7 @@ update_job_ets_test_() ->
          end},
         {"update_job returns not_found for missing job",
          fun() ->
-             meck:new(ra, [passthrough]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
              meck:expect(ra, members, fun(_) -> {error, noproc} end),
 
              Result = flurm_db_persist:update_job(999, #{state => running}),
@@ -389,8 +390,8 @@ update_job_ra_test_() ->
      [
         {"update_job via Ra with state change",
          fun() ->
-             meck:new(ra, [passthrough]),
-             meck:new(flurm_db_ra, [passthrough]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
+             meck:new(flurm_db_ra, [passthrough, no_passthrough_cover]),
              meck:expect(ra, members, fun(_) -> {ok, [], node()} end),
              meck:expect(flurm_db_ra, update_job_state, fun(_JobId, _State) -> ok end),
 
@@ -399,8 +400,8 @@ update_job_ra_test_() ->
          end},
         {"update_job via Ra with allocated_nodes",
          fun() ->
-             meck:new(ra, [passthrough]),
-             meck:new(flurm_db_ra, [passthrough]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
+             meck:new(flurm_db_ra, [passthrough, no_passthrough_cover]),
              meck:expect(ra, members, fun(_) -> {ok, [], node()} end),
              meck:expect(flurm_db_ra, allocate_job, fun(_JobId, _Nodes) -> ok end),
 
@@ -409,8 +410,8 @@ update_job_ra_test_() ->
          end},
         {"update_job via Ra with allocated_nodes and configuring state",
          fun() ->
-             meck:new(ra, [passthrough]),
-             meck:new(flurm_db_ra, [passthrough]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
+             meck:new(flurm_db_ra, [passthrough, no_passthrough_cover]),
              meck:expect(ra, members, fun(_) -> {ok, [], node()} end),
              meck:expect(flurm_db_ra, allocate_job, fun(_JobId, _Nodes) -> ok end),
              %% Should NOT call update_job_state for configuring since allocate_job handles it
@@ -425,8 +426,8 @@ update_job_ra_test_() ->
          end},
         {"update_job via Ra with exit_code",
          fun() ->
-             meck:new(ra, [passthrough]),
-             meck:new(flurm_db_ra, [passthrough]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
+             meck:new(flurm_db_ra, [passthrough, no_passthrough_cover]),
              meck:expect(ra, members, fun(_) -> {ok, [], node()} end),
              meck:expect(flurm_db_ra, set_job_exit_code, fun(_JobId, _Code) -> ok end),
 
@@ -435,8 +436,8 @@ update_job_ra_test_() ->
          end},
         {"update_job via Ra with field updates",
          fun() ->
-             meck:new(ra, [passthrough]),
-             meck:new(flurm_db_ra, [passthrough]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
+             meck:new(flurm_db_ra, [passthrough, no_passthrough_cover]),
              meck:expect(ra, members, fun(_) -> {ok, [], node()} end),
              meck:expect(flurm_db_ra, update_job_fields, fun(_JobId, _Fields) -> ok end),
 
@@ -460,7 +461,7 @@ get_job_test_() ->
      [
         {"get_job from ETS",
          fun() ->
-             meck:new(ra, [passthrough]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
              meck:expect(ra, members, fun(_) -> {error, noproc} end),
 
              Job = create_test_job(1),
@@ -471,7 +472,7 @@ get_job_test_() ->
          end},
         {"get_job not found in ETS",
          fun() ->
-             meck:new(ra, [passthrough]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
              meck:expect(ra, members, fun(_) -> {error, noproc} end),
 
              Result = flurm_db_persist:get_job(999),
@@ -479,8 +480,8 @@ get_job_test_() ->
          end},
         {"get_job from Ra",
          fun() ->
-             meck:new(ra, [passthrough]),
-             meck:new(flurm_db_ra, [passthrough]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
+             meck:new(flurm_db_ra, [passthrough, no_passthrough_cover]),
              meck:expect(ra, members, fun(_) -> {ok, [], node()} end),
 
              RaJob = create_test_ra_job(1),
@@ -494,8 +495,8 @@ get_job_test_() ->
          end},
         {"get_job not found via Ra",
          fun() ->
-             meck:new(ra, [passthrough]),
-             meck:new(flurm_db_ra, [passthrough]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
+             meck:new(flurm_db_ra, [passthrough, no_passthrough_cover]),
              meck:expect(ra, members, fun(_) -> {ok, [], node()} end),
              meck:expect(flurm_db_ra, get_job, fun(_) -> {error, not_found} end),
 
@@ -515,8 +516,8 @@ delete_job_test_() ->
      [
         {"delete_job from ETS",
          fun() ->
-             meck:new(ra, [passthrough]),
-             meck:new(dets, [passthrough]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
+             meck:new(dets, [unstick, passthrough, no_passthrough_cover]),
              meck:expect(ra, members, fun(_) -> {error, noproc} end),
              meck:expect(dets, info, fun(_) -> undefined end),
 
@@ -531,7 +532,7 @@ delete_job_test_() ->
          end},
         {"delete_job via Ra (no-op)",
          fun() ->
-             meck:new(ra, [passthrough]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
              meck:expect(ra, members, fun(_) -> {ok, [], node()} end),
 
              %% Ra delete is a no-op
@@ -540,8 +541,8 @@ delete_job_test_() ->
          end},
         {"delete_job removes from DETS when available",
          fun() ->
-             meck:new(ra, [passthrough]),
-             meck:new(dets, [passthrough]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
+             meck:new(dets, [unstick, passthrough, no_passthrough_cover]),
              meck:expect(ra, members, fun(_) -> {error, noproc} end),
              meck:expect(dets, info, fun(_) -> [{size, 1}] end),
              meck:expect(dets, delete, fun(_, _) -> ok end),
@@ -566,7 +567,7 @@ list_jobs_test_() ->
      [
         {"list_jobs from ETS",
          fun() ->
-             meck:new(ra, [passthrough]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
              meck:expect(ra, members, fun(_) -> {error, noproc} end),
 
              Job1 = create_test_job(1),
@@ -581,7 +582,7 @@ list_jobs_test_() ->
          end},
         {"list_jobs empty ETS",
          fun() ->
-             meck:new(ra, [passthrough]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
              meck:expect(ra, members, fun(_) -> {error, noproc} end),
 
              Result = flurm_db_persist:list_jobs(),
@@ -589,8 +590,8 @@ list_jobs_test_() ->
          end},
         {"list_jobs from Ra",
          fun() ->
-             meck:new(ra, [passthrough]),
-             meck:new(flurm_db_ra, [passthrough]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
+             meck:new(flurm_db_ra, [passthrough, no_passthrough_cover]),
              meck:expect(ra, members, fun(_) -> {ok, [], node()} end),
 
              RaJob1 = create_test_ra_job(1),
@@ -602,8 +603,8 @@ list_jobs_test_() ->
          end},
         {"list_jobs Ra error returns empty",
          fun() ->
-             meck:new(ra, [passthrough]),
-             meck:new(flurm_db_ra, [passthrough]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
+             meck:new(flurm_db_ra, [passthrough, no_passthrough_cover]),
              meck:expect(ra, members, fun(_) -> {ok, [], node()} end),
              meck:expect(flurm_db_ra, list_jobs, fun() -> {error, timeout} end),
 
@@ -612,7 +613,7 @@ list_jobs_test_() ->
          end},
         {"list_jobs with undefined ETS table returns empty",
          fun() ->
-             meck:new(ra, [passthrough]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
              meck:expect(ra, members, fun(_) -> {error, noproc} end),
 
              %% Delete the ETS table
@@ -637,8 +638,8 @@ next_job_id_test_() ->
      [
         {"next_job_id from ETS",
          fun() ->
-             meck:new(ra, [passthrough]),
-             meck:new(dets, [passthrough]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
+             meck:new(dets, [unstick, passthrough, no_passthrough_cover]),
              meck:expect(ra, members, fun(_) -> {error, noproc} end),
              meck:expect(dets, info, fun(_) -> undefined end),
 
@@ -652,8 +653,8 @@ next_job_id_test_() ->
          end},
         {"next_job_id from Ra",
          fun() ->
-             meck:new(ra, [passthrough]),
-             meck:new(flurm_db_ra, [passthrough]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
+             meck:new(flurm_db_ra, [passthrough, no_passthrough_cover]),
              meck:expect(ra, members, fun(_) -> {ok, [], node()} end),
              meck:expect(flurm_db_ra, allocate_job_id, fun() -> {ok, 42} end),
 
@@ -662,10 +663,10 @@ next_job_id_test_() ->
          end},
         {"next_job_id Ra error falls back to ETS",
          fun() ->
-             meck:new(ra, [passthrough]),
-             meck:new(flurm_db_ra, [passthrough]),
-             meck:new(dets, [passthrough]),
-             meck:new(error_logger, [passthrough, unstick]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
+             meck:new(flurm_db_ra, [passthrough, no_passthrough_cover]),
+             meck:new(dets, [unstick, passthrough, no_passthrough_cover]),
+             meck:new(error_logger, [passthrough, no_passthrough_cover, unstick]),
              meck:expect(ra, members, fun(_) -> {ok, [], node()} end),
              meck:expect(flurm_db_ra, allocate_job_id, fun() -> {error, timeout} end),
              meck:expect(dets, info, fun(_) -> undefined end),
@@ -676,8 +677,8 @@ next_job_id_test_() ->
          end},
         {"next_job_id persists counter to DETS",
          fun() ->
-             meck:new(ra, [passthrough]),
-             meck:new(dets, [passthrough]),
+             meck:new(ra, [passthrough, no_passthrough_cover]),
+             meck:new(dets, [unstick, passthrough, no_passthrough_cover]),
              meck:expect(ra, members, fun(_) -> {error, noproc} end),
              meck:expect(dets, info, fun(_) -> [{size, 1}] end),
              meck:expect(dets, insert, fun(_, _) -> ok end),
@@ -757,6 +758,24 @@ ra_job_to_job_test_() ->
              ?assertEqual(5, Job#job.array_task_id)
          end}
      ]}.
+
+%%====================================================================
+%% Local Helpers
+%%====================================================================
+
+ensure_distributed_node() ->
+    case node() of
+        nonode@nohost ->
+            Unique = integer_to_list(erlang:unique_integer([positive])),
+            Name = list_to_atom("flurm_persist_cov_" ++ Unique),
+            case net_kernel:start([Name, shortnames]) of
+                {ok, _Pid} -> ok;
+                {error, {already_started, _Pid}} -> ok;
+                {error, _Reason} = Error -> erlang:error({net_kernel_start_failed, Error})
+            end;
+        _ ->
+            ok
+    end.
 
 %%====================================================================
 %% Apply Job Updates Tests

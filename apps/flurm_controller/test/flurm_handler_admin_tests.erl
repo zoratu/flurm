@@ -98,7 +98,7 @@ setup() ->
     catch meck:unload(flurm_config_slurm),
     meck:new([flurm_reservation, flurm_license, flurm_burst_buffer,
               flurm_controller_cluster, flurm_config_slurm],
-             [passthrough, no_link, non_strict]),
+             [passthrough, no_passthrough_cover, no_link, non_strict]),
 
     %% Default mock behaviors
     meck:expect(flurm_reservation, list, fun() -> [] end),
@@ -1023,7 +1023,7 @@ do_graceful_shutdown_test_() ->
 cluster_forwarding_extended_test_() ->
     {setup,
      fun() ->
-         meck:new([flurm_controller_cluster, flurm_reservation], [passthrough, no_link, non_strict]),
+         meck:new([flurm_controller_cluster, flurm_reservation], [passthrough, no_passthrough_cover, no_link, non_strict]),
          ok
      end,
      fun(_) ->
@@ -1125,7 +1125,7 @@ cluster_forwarding_extended_test_() ->
 reservation_info_exception_test_() ->
     {setup,
      fun() ->
-         meck:new(flurm_reservation, [passthrough, no_link, non_strict]),
+         meck:new(flurm_reservation, [passthrough, no_passthrough_cover, no_link, non_strict]),
          ok
      end,
      fun(_) ->
@@ -1149,7 +1149,7 @@ reservation_info_exception_test_() ->
 license_info_exception_test_() ->
     {setup,
      fun() ->
-         meck:new(flurm_license, [passthrough, no_link, non_strict]),
+         meck:new(flurm_license, [passthrough, no_passthrough_cover, no_link, non_strict]),
          ok
      end,
      fun(_) ->
@@ -1173,7 +1173,7 @@ license_info_exception_test_() ->
 burst_buffer_exception_test_() ->
     {setup,
      fun() ->
-         meck:new(flurm_burst_buffer, [passthrough, no_link, non_strict]),
+         meck:new(flurm_burst_buffer, [passthrough, no_passthrough_cover, no_link, non_strict]),
          ok
      end,
      fun(_) ->
@@ -1228,7 +1228,7 @@ determine_reservation_type_extended_test_() ->
 create_reservation_spec_extended_test_() ->
     {setup,
      fun() ->
-         meck:new(flurm_config_slurm, [passthrough, no_link, non_strict]),
+         meck:new(flurm_config_slurm, [passthrough, no_passthrough_cover, no_link, non_strict]),
          ok
      end,
      fun(_) ->
@@ -1321,7 +1321,7 @@ create_reservation_spec_extended_test_() ->
 update_reservation_updates_extended_test_() ->
     {setup,
      fun() ->
-         meck:new(flurm_config_slurm, [passthrough, no_link, non_strict]),
+         meck:new(flurm_config_slurm, [passthrough, no_passthrough_cover, no_link, non_strict]),
          ok
      end,
      fun(_) ->

@@ -31,9 +31,11 @@ flurm_dbd_sup_test_() ->
      ]}.
 
 setup() ->
+    catch meck:unload(flurm_dbd_sup),
     %% Ensure meck is not already mocking
     catch meck:unload(lager),
     catch meck:unload(flurm_dbd_storage),
+    catch meck:unload(flurm_dbd_fragment),
     catch meck:unload(flurm_dbd_server),
 
     %% Mock lager for logging
@@ -48,11 +50,15 @@ setup() ->
 
     %% Mock child processes to avoid starting actual servers
     catch meck:unload(flurm_dbd_storage),
-    meck:new(flurm_dbd_storage, [passthrough, no_link]),
+    meck:new(flurm_dbd_storage, [passthrough, no_passthrough_cover, no_link]),
     meck:expect(flurm_dbd_storage, start_link, fun() -> {ok, spawn(fun() -> receive stop -> ok end end)} end),
 
+    catch meck:unload(flurm_dbd_fragment),
+    meck:new(flurm_dbd_fragment, [passthrough, no_passthrough_cover, no_link]),
+    meck:expect(flurm_dbd_fragment, start_link, fun() -> {ok, spawn(fun() -> receive stop -> ok end end)} end),
+
     catch meck:unload(flurm_dbd_server),
-    meck:new(flurm_dbd_server, [passthrough, no_link]),
+    meck:new(flurm_dbd_server, [passthrough, no_passthrough_cover, no_link]),
     meck:expect(flurm_dbd_server, start_link, fun() -> {ok, spawn(fun() -> receive stop -> ok end end)} end),
 
     %% Set default config
@@ -68,10 +74,12 @@ cleanup(_) ->
         undefined -> ok;
         Pid ->
             catch supervisor:terminate_child(Pid, flurm_dbd_server),
+            catch supervisor:terminate_child(Pid, flurm_dbd_fragment),
             catch supervisor:terminate_child(Pid, flurm_dbd_storage),
             flurm_test_utils:kill_and_wait(Pid)
     end,
     catch meck:unload(flurm_dbd_server),
+    catch meck:unload(flurm_dbd_fragment),
     catch meck:unload(flurm_dbd_storage),
     catch meck:unload(lager),
     ok.
@@ -86,7 +94,7 @@ test_start_link() ->
     ?assert(is_process_alive(Pid)),
     %% Verify children were started
     Children = supervisor:which_children(Pid),
-    ?assertEqual(2, length(Children)).
+    ?assertEqual(3, length(Children)).
 
 test_init() ->
     %% Call init directly to verify child specs
@@ -98,17 +106,26 @@ test_init() ->
     ?assertEqual(10, maps:get(period, SupFlags)),
 
     %% Check child specs
-    ?assertEqual(2, length(Children)),
+    ?assertEqual(3, length(Children)),
+
+    ChildMap = maps:from_list([{maps:get(id, C), C} || C <- Children]),
 
     %% Verify storage child spec
-    [StorageChild | _] = Children,
+    StorageChild = maps:get(flurm_dbd_storage, ChildMap),
     ?assertEqual(flurm_dbd_storage, maps:get(id, StorageChild)),
     ?assertEqual({flurm_dbd_storage, start_link, []}, maps:get(start, StorageChild)),
     ?assertEqual(permanent, maps:get(restart, StorageChild)),
     ?assertEqual(worker, maps:get(type, StorageChild)),
 
+    %% Verify fragment child spec
+    FragmentChild = maps:get(flurm_dbd_fragment, ChildMap),
+    ?assertEqual(flurm_dbd_fragment, maps:get(id, FragmentChild)),
+    ?assertEqual({flurm_dbd_fragment, start_link, []}, maps:get(start, FragmentChild)),
+    ?assertEqual(permanent, maps:get(restart, FragmentChild)),
+    ?assertEqual(worker, maps:get(type, FragmentChild)),
+
     %% Verify server child spec
-    [_, ServerChild] = Children,
+    ServerChild = maps:get(flurm_dbd_server, ChildMap),
     ?assertEqual(flurm_dbd_server, maps:get(id, ServerChild)),
     ?assertEqual({flurm_dbd_server, start_link, []}, maps:get(start, ServerChild)),
     ?assertEqual(permanent, maps:get(restart, ServerChild)).
@@ -120,7 +137,7 @@ test_init() ->
 test_start_listener() ->
     %% Mock ranch
     catch meck:unload(ranch),
-    meck:new(ranch, [passthrough, unstick, no_link]),
+    meck:new(ranch, [passthrough, no_passthrough_cover, unstick, no_link]),
     ListenerPid = spawn(fun() -> receive stop -> ok end end),
     meck:expect(ranch, start_listener, fun(_, _, _, _, _) -> {ok, ListenerPid} end),
 
@@ -134,7 +151,7 @@ test_start_listener() ->
 
 test_start_listener_already_started() ->
     catch meck:unload(ranch),
-    meck:new(ranch, [passthrough, unstick, no_link]),
+    meck:new(ranch, [passthrough, no_passthrough_cover, unstick, no_link]),
     ExistingPid = spawn(fun() -> receive stop -> ok end end),
     meck:expect(ranch, start_listener, fun(_, _, _, _, _) -> {error, {already_started, ExistingPid}} end),
 
@@ -147,7 +164,7 @@ test_start_listener_already_started() ->
 
 test_start_listener_error() ->
     catch meck:unload(ranch),
-    meck:new(ranch, [passthrough, unstick, no_link]),
+    meck:new(ranch, [passthrough, no_passthrough_cover, unstick, no_link]),
     meck:expect(ranch, start_listener, fun(_, _, _, _, _) -> {error, eaddrinuse} end),
 
     {ok, _} = flurm_dbd_sup:start_link(),
@@ -159,7 +176,7 @@ test_start_listener_error() ->
 
 test_stop_listener() ->
     catch meck:unload(ranch),
-    meck:new(ranch, [passthrough, unstick, no_link]),
+    meck:new(ranch, [passthrough, no_passthrough_cover, unstick, no_link]),
     meck:expect(ranch, stop_listener, fun(_) -> ok end),
 
     Result = flurm_dbd_sup:stop_listener(),
@@ -170,7 +187,7 @@ test_stop_listener() ->
 
 test_listener_info() ->
     catch meck:unload(ranch),
-    meck:new(ranch, [passthrough, unstick, no_link]),
+    meck:new(ranch, [passthrough, no_passthrough_cover, unstick, no_link]),
     meck:expect(ranch, get_port, fun(_) -> 6819 end),
     meck:expect(ranch, get_max_connections, fun(_) -> 100 end),
     meck:expect(ranch, procs, fun(_, _) -> 5 end),
@@ -186,7 +203,7 @@ test_listener_info() ->
 
 test_listener_info_not_found() ->
     catch meck:unload(ranch),
-    meck:new(ranch, [passthrough, unstick, no_link]),
+    meck:new(ranch, [passthrough, no_passthrough_cover, unstick, no_link]),
     meck:expect(ranch, get_port, fun(_) -> error(not_found) end),
 
     Result = flurm_dbd_sup:listener_info(),
@@ -235,7 +252,7 @@ test_parse_address_any_ipv4() ->
     application:set_env(flurm_dbd, listen_address, "0.0.0.0"),
 
     catch meck:unload(ranch),
-    meck:new(ranch, [passthrough, unstick, no_link]),
+    meck:new(ranch, [passthrough, no_passthrough_cover, unstick, no_link]),
     meck:expect(ranch, start_listener, fun(_, _, TransportOpts, _, _) ->
         SocketOpts = maps:get(socket_opts, TransportOpts),
         IP = proplists:get_value(ip, SocketOpts),
@@ -249,7 +266,7 @@ test_parse_address_any_ipv6() ->
     application:set_env(flurm_dbd, listen_address, "::"),
 
     catch meck:unload(ranch),
-    meck:new(ranch, [passthrough, unstick, no_link]),
+    meck:new(ranch, [passthrough, no_passthrough_cover, unstick, no_link]),
     meck:expect(ranch, start_listener, fun(_, _, TransportOpts, _, _) ->
         SocketOpts = maps:get(socket_opts, TransportOpts),
         IP = proplists:get_value(ip, SocketOpts),
@@ -263,7 +280,7 @@ test_parse_address_valid() ->
     application:set_env(flurm_dbd, listen_address, "192.168.1.100"),
 
     catch meck:unload(ranch),
-    meck:new(ranch, [passthrough, unstick, no_link]),
+    meck:new(ranch, [passthrough, no_passthrough_cover, unstick, no_link]),
     meck:expect(ranch, start_listener, fun(_, _, TransportOpts, _, _) ->
         SocketOpts = maps:get(socket_opts, TransportOpts),
         IP = proplists:get_value(ip, SocketOpts),
@@ -277,7 +294,7 @@ test_parse_address_invalid() ->
     application:set_env(flurm_dbd, listen_address, "not.valid.ip.address"),
 
     catch meck:unload(ranch),
-    meck:new(ranch, [passthrough, unstick, no_link]),
+    meck:new(ranch, [passthrough, no_passthrough_cover, unstick, no_link]),
     meck:expect(ranch, start_listener, fun(_, _, TransportOpts, _, _) ->
         SocketOpts = maps:get(socket_opts, TransportOpts),
         IP = proplists:get_value(ip, SocketOpts),
@@ -292,7 +309,7 @@ test_parse_address_tuple() ->
     application:set_env(flurm_dbd, listen_address, {10, 0, 0, 1}),
 
     catch meck:unload(ranch),
-    meck:new(ranch, [passthrough, unstick, no_link]),
+    meck:new(ranch, [passthrough, no_passthrough_cover, unstick, no_link]),
     meck:expect(ranch, start_listener, fun(_, _, TransportOpts, _, _) ->
         SocketOpts = maps:get(socket_opts, TransportOpts),
         IP = proplists:get_value(ip, SocketOpts),
@@ -310,7 +327,7 @@ test_config_from_env() ->
     application:set_env(flurm_dbd, max_connections, 200),
 
     catch meck:unload(ranch),
-    meck:new(ranch, [passthrough, unstick, no_link]),
+    meck:new(ranch, [passthrough, no_passthrough_cover, unstick, no_link]),
     meck:expect(ranch, start_listener, fun(_, _, TransportOpts, _, _) ->
         SocketOpts = maps:get(socket_opts, TransportOpts),
         Port = proplists:get_value(port, SocketOpts),
@@ -358,7 +375,7 @@ socket_options_test_() ->
 
 test_socket_options() ->
     catch meck:unload(ranch),
-    meck:new(ranch, [passthrough, unstick, no_link]),
+    meck:new(ranch, [passthrough, no_passthrough_cover, unstick, no_link]),
     meck:expect(ranch, start_listener, fun(_, _, TransportOpts, _, _) ->
         SocketOpts = maps:get(socket_opts, TransportOpts),
 

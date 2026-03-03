@@ -8,6 +8,7 @@
 -module(flurm_cloud_scaler_ifdef_tests).
 
 -include_lib("eunit/include/eunit.hrl").
+-include("flurm_core.hrl").
 
 %%====================================================================
 %% Metrics Collection Tests
@@ -229,3 +230,152 @@ test_state_custom_values_test() ->
     ?assertEqual(aws, element(3, State)),
     ?assertEqual(10, element(8, State)),
     ?assertEqual(50, element(9, State)).
+
+%%====================================================================
+%% Tail Coverage Tests
+%%====================================================================
+
+code_change_passthrough_test() ->
+    State = flurm_cloud_scaler:test_state([{enabled, true}, {provider, aws}]),
+    ?assertEqual({ok, State}, flurm_cloud_scaler:code_change(old, State, [])).
+
+collect_resource_utilization_non_list_fallback_test() ->
+    with_meck([flurm_node_registry], fun() ->
+        meck:expect(flurm_node_registry, list_nodes, fun() -> bad_nodes end),
+        ?assertEqual({0, 0, 0, 0}, flurm_cloud_scaler:collect_resource_utilization())
+    end).
+
+estimate_pending_demand_non_list_fallback_test() ->
+    with_meck([flurm_job_registry], fun() ->
+        meck:expect(flurm_job_registry, list_jobs_by_state, fun(_) -> bad_jobs end),
+        ?assertEqual(0, flurm_cloud_scaler:estimate_pending_demand())
+    end).
+
+find_idle_nodes_non_list_fallback_test() ->
+    with_meck([flurm_node_registry], fun() ->
+        meck:expect(flurm_node_registry, list_nodes, fun() -> bad_nodes end),
+        ?assertEqual([], flurm_cloud_scaler:find_idle_nodes(3))
+    end).
+
+provider_missing_config_tail_branches_test() ->
+    StateAws = flurm_cloud_scaler:test_state([{provider, aws}, {config, #{}}]),
+    {reply, {error, missing_asg_name}, _} =
+        flurm_cloud_scaler:handle_call({scale_down, 1}, {self(), make_ref()}, StateAws),
+
+    StateGcp = flurm_cloud_scaler:test_state([{provider, gcp}, {config, #{}}]),
+    {reply, {error, missing_mig_name}, _} =
+        flurm_cloud_scaler:handle_call({scale_down, 1}, {self(), make_ref()}, StateGcp),
+
+    StateAzure = flurm_cloud_scaler:test_state(
+        [{provider, azure}, {config, #{vmss_name => <<"vmss">>}}]),
+    {reply, {error, missing_resource_group}, _} =
+        flurm_cloud_scaler:handle_call({scale_up, 1}, {self(), make_ref()}, StateAzure).
+
+handle_info_scale_up_cooldown_expired_error_branch_test() ->
+    with_scale_up_metrics(fun() ->
+        Now = erlang:monotonic_time(millisecond),
+        State = flurm_cloud_scaler:test_state([
+            {enabled, true},
+            {provider, undefined},
+            {last_scale_up, Now - 120001}
+        ]),
+        {noreply, NewState} = flurm_cloud_scaler:handle_info(evaluate_scaling, State),
+        cancel_eval_timer(NewState)
+    end).
+
+handle_info_scale_up_cooldown_active_branch_test() ->
+    with_scale_up_metrics(fun() ->
+        Now = erlang:monotonic_time(millisecond),
+        State = flurm_cloud_scaler:test_state([
+            {enabled, true},
+            {provider, undefined},
+            {last_scale_up, Now}
+        ]),
+        {noreply, NewState} = flurm_cloud_scaler:handle_info(evaluate_scaling, State),
+        cancel_eval_timer(NewState)
+    end).
+
+handle_info_scale_down_cooldown_expired_error_branch_test() ->
+    with_scale_down_metrics(fun() ->
+        Now = erlang:monotonic_time(millisecond),
+        State = flurm_cloud_scaler:test_state([
+            {enabled, true},
+            {provider, undefined},
+            {last_scale_down, Now - 300001},
+            {min_nodes, 0},
+            {max_nodes, 100}
+        ]),
+        {noreply, NewState} = flurm_cloud_scaler:handle_info(evaluate_scaling, State),
+        cancel_eval_timer(NewState)
+    end).
+
+handle_info_scale_down_cooldown_active_branch_test() ->
+    with_scale_down_metrics(fun() ->
+        Now = erlang:monotonic_time(millisecond),
+        State = flurm_cloud_scaler:test_state([
+            {enabled, true},
+            {provider, undefined},
+            {last_scale_down, Now},
+            {min_nodes, 0},
+            {max_nodes, 100}
+        ]),
+        {noreply, NewState} = flurm_cloud_scaler:handle_info(evaluate_scaling, State),
+        cancel_eval_timer(NewState)
+    end).
+
+with_scale_up_metrics(Fun) ->
+    with_meck([flurm_job_registry, flurm_node_registry], fun() ->
+        meck:expect(flurm_job_registry, count_by_state, fun() -> #{pending => 15} end),
+        meck:expect(flurm_job_registry, list_jobs_by_state, fun(_) -> [] end),
+        meck:expect(flurm_node_registry, count_by_state, fun() ->
+            #{up => 1, down => 0, drain => 0}
+        end),
+        meck:expect(flurm_node_registry, list_nodes, fun() -> [] end),
+        Fun()
+    end).
+
+with_scale_down_metrics(Fun) ->
+    with_meck([flurm_job_registry, flurm_node_registry], fun() ->
+        meck:expect(flurm_job_registry, count_by_state, fun() -> #{pending => 0} end),
+        meck:expect(flurm_job_registry, list_jobs_by_state, fun(_) -> [] end),
+        meck:expect(flurm_node_registry, count_by_state, fun() ->
+            #{up => 6, down => 0, drain => 0}
+        end),
+        meck:expect(flurm_node_registry, list_nodes, fun() -> [{<<"n1">>, self()}] end),
+        meck:expect(flurm_node_registry, get_node_entry, fun(<<"n1">>) ->
+            {ok, #node_entry{
+                name = <<"n1">>,
+                pid = self(),
+                hostname = <<"host1">>,
+                state = up,
+                partitions = [],
+                cpus_total = 10,
+                cpus_avail = 10,
+                memory_total = 1000,
+                memory_avail = 1000,
+                gpus_total = 0,
+                gpus_avail = 0
+            }}
+        end),
+        Fun()
+    end).
+
+cancel_eval_timer(State) ->
+    case element(5, State) of
+        Timer when is_reference(Timer) ->
+            erlang:cancel_timer(Timer),
+            ok;
+        _ ->
+            ok
+    end.
+
+with_meck(Modules, Fun) ->
+    lists:foreach(fun(M) ->
+        catch meck:unload(M),
+        meck:new(M, [non_strict])
+    end, Modules),
+    try
+        Fun()
+    after
+        lists:foreach(fun(M) -> catch meck:unload(M) end, Modules)
+    end.

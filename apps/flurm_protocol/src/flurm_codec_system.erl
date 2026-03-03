@@ -27,6 +27,15 @@
     encode_reconfigure_response/1
 ]).
 
+-ifdef(TEST).
+-export([
+    decode_slurm_rc_response/1,
+    decode_reconfigure_with_config_request/1,
+    decode_settings/3,
+    ensure_binary/1
+]).
+-endif.
+
 -include("flurm_protocol.hrl").
 
 %%%===================================================================
@@ -156,7 +165,7 @@ encode_body(_MsgType, _Body) ->
 %% Decode RESPONSE_SLURM_RC (8001)
 decode_slurm_rc_response(Binary) ->
     case Binary of
-        <<ReturnCode:32/signed-big, _Rest/binary>> ->
+        <<ReturnCode:32/signed-big, Rest/binary>> when byte_size(Rest) > 0 ->
             {ok, #slurm_rc_response{return_code = ReturnCode}};
         <<ReturnCode:32/signed-big>> ->
             {ok, #slurm_rc_response{return_code = ReturnCode}};
@@ -240,21 +249,25 @@ decode_reconfigure_request(_Binary) ->
 decode_reconfigure_with_config_request(<<>>) ->
     {ok, #reconfigure_with_config_request{}};
 decode_reconfigure_with_config_request(Binary) ->
-    try
-        {ConfigFile, Rest1} = flurm_protocol_pack:unpack_string(Binary),
-        <<Flags:32/big, Rest2/binary>> = Rest1,
-        Force = (Flags band 1) =/= 0,
-        NotifyNodes = (Flags band 2) =/= 0,
-        <<SettingsCount:32/big, Rest3/binary>> = Rest2,
-        {Settings, _Remaining} = decode_settings(SettingsCount, Rest3, #{}),
-        {ok, #reconfigure_with_config_request{
-            config_file = ConfigFile,
-            settings = Settings,
-            force = Force,
-            notify_nodes = NotifyNodes
-        }}
-    catch
-        _:_ ->
+    case safe_unpack_string(Binary) of
+        {ok, ConfigFile, Rest1} ->
+            try
+                <<Flags:32/big, Rest2/binary>> = Rest1,
+                Force = (Flags band 1) =/= 0,
+                NotifyNodes = (Flags band 2) =/= 0,
+                <<SettingsCount:32/big, Rest3/binary>> = Rest2,
+                {Settings, _Remaining} = decode_settings(SettingsCount, Rest3, #{}),
+                {ok, #reconfigure_with_config_request{
+                    config_file = ConfigFile,
+                    settings = Settings,
+                    force = Force,
+                    notify_nodes = NotifyNodes
+                }}
+            catch
+                _:_ ->
+                    {ok, #reconfigure_with_config_request{}}
+            end;
+        error ->
             {ok, #reconfigure_with_config_request{}}
     end.
 
@@ -263,12 +276,14 @@ decode_settings(0, Binary, Acc) ->
     {Acc, Binary};
 decode_settings(Count, Binary, Acc) when Count > 0 ->
     try
-        {Key, Rest1} = flurm_protocol_pack:unpack_string(Binary),
-        {Value, Rest2} = flurm_protocol_pack:unpack_string(Rest1),
-        KeyAtom = try binary_to_existing_atom(Key, utf8)
-                  catch _:_ -> binary_to_atom(Key, utf8)
+        {ok, Key, Rest1} = flurm_protocol_pack:unpack_string(Binary),
+        {ok, Value, Rest2} = flurm_protocol_pack:unpack_string(Rest1),
+        KeyBin = ensure_binary(Key),
+        ValueBin = ensure_binary(Value),
+        KeyAtom = try binary_to_existing_atom(KeyBin, utf8)
+                  catch _:_ -> binary_to_atom(KeyBin, utf8)
                   end,
-        decode_settings(Count - 1, Rest2, Acc#{KeyAtom => Value})
+        decode_settings(Count - 1, Rest2, Acc#{KeyAtom => ValueBin})
     catch
         _:_ ->
             {Acc, <<>>}
@@ -645,3 +660,14 @@ ensure_binary(null) -> <<>>;
 ensure_binary(Bin) when is_binary(Bin) -> Bin;
 ensure_binary(List) when is_list(List) -> list_to_binary(List);
 ensure_binary(_) -> <<>>.
+
+safe_unpack_string(Binary) ->
+    try flurm_protocol_pack:unpack_string(Binary) of
+        {ok, Value, Rest} ->
+            {ok, ensure_binary(Value), Rest};
+        _ ->
+            error
+    catch
+        _:_ ->
+            error
+    end.

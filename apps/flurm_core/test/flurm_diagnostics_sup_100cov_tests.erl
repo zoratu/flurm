@@ -19,7 +19,7 @@ setup() ->
     timer:sleep(50),
 
     %% Mock flurm_diagnostics to avoid starting real leak detector
-    meck:new(flurm_diagnostics, [passthrough, non_strict]),
+    meck:new(flurm_diagnostics, [passthrough, no_passthrough_cover, non_strict]),
     meck:expect(flurm_diagnostics, start_link, fun([_Interval]) ->
         Pid = spawn_link(fun() ->
             register(flurm_leak_detector, self()),
