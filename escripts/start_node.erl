@@ -1,50 +1,55 @@
 #!/usr/bin/env escript
 -mode(compile).
 
+%% Usage:
+%%   escript start_node.erl host1 port1 [host2:port2 host3:port3 ...]
+%%   escript start_node.erl host1            (uses default port 6818)
+%%   FLURM_CONTROLLERS=h1:p1,h2:p2 escript start_node.erl
+
 main(Args) ->
     io:format("Starting FLURM node daemon...~n"),
     code:add_paths(filelib:wildcard("_build/default/lib/*/ebin")),
 
-    %% Parse controller host and port from args or environment
-    {ControllerHost, ControllerPort} = case Args of
-        [Host, Port | _] ->
-            {Host, list_to_integer(Port)};
-        [Host | _] ->
-            PortFromEnv = case os:getenv("FLURM_CONTROLLER_PORT") of
-                false -> 6818;
-                P -> list_to_integer(P)
-            end,
-            {Host, PortFromEnv};
+    %% Parse primary controller from first two args
+    {ControllerHost, ControllerPort, ExtraArgs} = case Args of
+        [Host, Port | Rest] ->
+            case catch list_to_integer(Port) of
+                P when is_integer(P) -> {Host, P, Rest};
+                _ -> {Host, 6818, [Port | Rest]}  % Port wasn't a number, treat as extra controller
+            end;
+        [Host | Rest] ->
+            {Host, 6818, Rest};
         [] ->
-            {os:getenv("FLURM_CONTROLLER_HOST", "localhost"),
-             case os:getenv("FLURM_CONTROLLER_PORT") of
-                 false -> 6818;
-                 P2 -> list_to_integer(P2)
-             end}
+            {os:getenv("FLURM_CONTROLLER_HOST", "localhost"), 6818, []}
     end,
 
-    %% Set the controller host/port before starting
+    %% Build controller list from:
+    %% 1. Primary host:port
+    %% 2. Extra args (host:port pairs)
+    %% 3. FLURM_CONTROLLERS env var
+    ExtraControllers = lists:map(fun(Entry) ->
+        parse_host_port(Entry, ControllerPort)
+    end, ExtraArgs),
+
+    EnvControllers = case os:getenv("FLURM_CONTROLLERS") of
+        false -> [];
+        ControllersStr ->
+            lists:map(fun(Entry) ->
+                parse_host_port(string:trim(Entry), ControllerPort)
+            end, string:split(ControllersStr, ",", all))
+    end,
+
+    %% Deduplicate: primary + extra args + env var
+    Primary = {ControllerHost, ControllerPort},
+    AllControllers = dedupe([Primary] ++ ExtraControllers ++ EnvControllers),
+
+    %% Set config
     application:load(flurm_node_daemon),
     application:set_env(flurm_node_daemon, controller_host, ControllerHost),
     application:set_env(flurm_node_daemon, controller_port, ControllerPort),
+    application:set_env(flurm_node_daemon, controllers, AllControllers),
 
-    %% Parse backup controllers from FLURM_CONTROLLERS env var
-    %% Format: "host1:port1,host2:port2,..."
-    case os:getenv("FLURM_CONTROLLERS") of
-        false ->
-            ok;
-        ControllersStr ->
-            Controllers = lists:map(fun(Entry) ->
-                case string:split(string:trim(Entry), ":") of
-                    [H, P] -> {H, list_to_integer(P)};
-                    [H] -> {H, ControllerPort}
-                end
-            end, string:split(ControllersStr, ",", all)),
-            application:set_env(flurm_node_daemon, controllers, Controllers),
-            io:format("Backup controllers: ~p~n", [Controllers])
-    end,
-
-    io:format("Connecting to controller at ~s:~p~n", [ControllerHost, ControllerPort]),
+    io:format("Controllers: ~p~n", [AllControllers]),
 
     application:ensure_all_started(lager),
     lager:set_loglevel(lager_console_backend, info),
@@ -53,3 +58,12 @@ main(Args) ->
     io:format("FLURM node daemon started~n"),
     io:format("Press Ctrl+C to stop~n"),
     receive stop -> ok end.
+
+parse_host_port(Entry, DefaultPort) ->
+    case string:split(string:trim(Entry), ":") of
+        [H, P] -> {H, list_to_integer(P)};
+        [H] -> {H, DefaultPort}
+    end.
+
+dedupe(List) ->
+    lists:usort(List).

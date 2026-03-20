@@ -494,7 +494,7 @@ get_disk_info() ->
     maps:from_list(lists:filtermap(fun get_mount_usage/1, MountPoints)).
 
 get_mount_usage(MountPoint) ->
-    case os:cmd("df -m " ++ MountPoint ++ " 2>/dev/null | tail -1") of
+    try os:cmd("df -m " ++ MountPoint ++ " 2>/dev/null | tail -1") of
         [] ->
             false;
         Result ->
@@ -523,4 +523,6 @@ get_mount_usage(MountPoint) ->
                 _ ->
                     false
             end
+    catch
+        _:_ -> false
     end.
