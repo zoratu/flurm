@@ -391,19 +391,22 @@ init_test_() ->
              meck:expect(application, get_env, fun
                  (flurm_node_daemon, controller_host) -> {ok, "controller.local"};
                  (flurm_node_daemon, controller_port) -> {ok, 6818};
-                 (flurm_node_daemon, heartbeat_interval) -> {ok, 30000}
+                 (flurm_node_daemon, heartbeat_interval) -> {ok, 30000};
+                 (flurm_node_daemon, controllers) -> undefined
              end),
              meck:expect(lager, info, fun(_, _) -> ok end),
 
              {ok, State} = flurm_controller_connector:init([]),
 
-             %% Verify state fields
+             %% Verify state fields (record positions shifted by 2 for controllers, controller_index)
              ?assertEqual("controller.local", element(3, State)),  %% host
              ?assertEqual(6818, element(4, State)),  %% port
-             ?assertEqual(30000, element(5, State)),  %% heartbeat_interval
-             ?assertEqual(false, element(8, State)),  %% connected
-             ?assertEqual(false, element(9, State)),  %% registered
-             ?assertEqual(#{}, element(12, State)),  %% running_jobs
+             ?assertEqual([{"controller.local", 6818}], element(5, State)),  %% controllers
+             ?assertEqual(0, element(6, State)),  %% controller_index
+             ?assertEqual(30000, element(7, State)),  %% heartbeat_interval
+             ?assertEqual(false, element(9, State)),  %% connected
+             ?assertEqual(false, element(10, State)),  %% registered
+             ?assertEqual(#{}, element(14, State)),  %% running_jobs
 
              %% Clean up - a connect message was scheduled
              receive connect -> ok after 100 -> ok end
@@ -438,7 +441,7 @@ handle_call_test_() ->
          end},
         {"handle_call send_message when not connected",
          fun() ->
-             State = {state, undefined, "host", 6818, 30000, undefined, false, false,
+             State = {state, undefined, "host", 6818, [{"host", 6818}], 0, 30000, undefined, false, false,
                       undefined, 1000, <<>>, #{}, false, undefined},
 
              {reply, Result, _NewState} = flurm_controller_connector:handle_call(
@@ -465,7 +468,7 @@ handle_call_test_() ->
          end},
         {"handle_call unknown request",
          fun() ->
-             State = {state, undefined, "host", 6818, 30000, undefined, false, false,
+             State = {state, undefined, "host", 6818, [{"host", 6818}], 0, 30000, undefined, false, false,
                       undefined, 1000, <<>>, #{}, false, undefined},
 
              {reply, Result, _NewState} = flurm_controller_connector:handle_call(
@@ -493,14 +496,14 @@ handle_cast_test_() ->
              meck:expect(gen_tcp, send, fun(_, _) -> ok end),
 
              Socket = make_ref(),
-             State = {state, Socket, "host", 6818, 30000, undefined, true, true,
+             State = {state, Socket, "host", 6818, [{"host", 6818}], 0, 30000, undefined, true, true,
                       undefined, 1000, <<>>, #{1 => self()}, false, undefined},
 
              {noreply, NewState} = flurm_controller_connector:handle_cast(
                  {job_complete, 1, 0, <<"output">>, 500}, State),
 
              %% Job should be removed from running_jobs
-             ?assertEqual(#{}, element(12, NewState))
+             ?assertEqual(#{}, element(14, NewState))
          end},
         {"handle_cast job_complete for unknown job",
          fun() ->
@@ -508,7 +511,7 @@ handle_cast_test_() ->
              meck:expect(lager, warning, fun(_, _) -> ok end),
 
              Socket = make_ref(),
-             State = {state, Socket, "host", 6818, 30000, undefined, true, true,
+             State = {state, Socket, "host", 6818, [{"host", 6818}], 0, 30000, undefined, true, true,
                       undefined, 1000, <<>>, #{}, false, undefined},
 
              {noreply, NewState} = flurm_controller_connector:handle_cast(
@@ -526,17 +529,17 @@ handle_cast_test_() ->
              meck:expect(gen_tcp, send, fun(_, _) -> ok end),
 
              Socket = make_ref(),
-             State = {state, Socket, "host", 6818, 30000, undefined, true, true,
+             State = {state, Socket, "host", 6818, [{"host", 6818}], 0, 30000, undefined, true, true,
                       undefined, 1000, <<>>, #{2 => self()}, false, undefined},
 
              {noreply, NewState} = flurm_controller_connector:handle_cast(
                  {job_failed, 2, timeout, <<"timed out">>, 100}, State),
 
-             ?assertEqual(#{}, element(12, NewState))
+             ?assertEqual(#{}, element(14, NewState))
          end},
         {"handle_cast unknown message",
          fun() ->
-             State = {state, undefined, "host", 6818, 30000, undefined, false, false,
+             State = {state, undefined, "host", 6818, [{"host", 6818}], 0, 30000, undefined, false, false,
                       undefined, 1000, <<>>, #{}, false, undefined},
 
              {noreply, NewState} = flurm_controller_connector:handle_cast(unknown_msg, State),
@@ -570,14 +573,14 @@ handle_info_connect_test_() ->
              meck:expect(flurm_system_monitor, get_gpus, fun() -> [] end),
              meck:expect(lager, info, fun(_, _) -> ok end),
 
-             State = {state, undefined, "host", 6818, 30000, undefined, false, false,
+             State = {state, undefined, "host", 6818, [{"host", 6818}], 0, 30000, undefined, false, false,
                       undefined, 1000, <<>>, #{}, false, undefined},
 
              {noreply, NewState} = flurm_controller_connector:handle_info(connect, State),
 
              ?assertEqual(Socket, element(2, NewState)),
-             ?assertEqual(true, element(7, NewState)),  %% connected
-             ?assertEqual(1000, element(10, NewState))  %% reconnect_interval reset
+             ?assertEqual(true, element(9, NewState)),  %% connected
+             ?assertEqual(1000, element(12, NewState))  %% reconnect_interval reset
          end},
         {"handle_info connect failure retries",
          fun() ->
@@ -587,13 +590,13 @@ handle_info_connect_test_() ->
              meck:expect(gen_tcp, connect, fun(_, _, _, _) -> {error, econnrefused} end),
              meck:expect(lager, warning, fun(_, _) -> ok end),
 
-             State = {state, undefined, "host", 6818, 30000, undefined, false, false,
+             State = {state, undefined, "host", 6818, [{"host", 6818}], 0, 30000, undefined, false, false,
                       undefined, 1000, <<>>, #{}, false, undefined},
 
              {noreply, NewState} = flurm_controller_connector:handle_info(connect, State),
 
-             ?assertEqual(false, element(7, NewState)),  %% still not connected
-             ?assertEqual(2000, element(10, NewState))  %% doubled reconnect interval
+             ?assertEqual(false, element(9, NewState)),  %% still not connected
+             ?assertEqual(2000, element(12, NewState))  %% doubled reconnect interval
          end},
         {"handle_info connect backs off up to max",
          fun() ->
@@ -604,12 +607,12 @@ handle_info_connect_test_() ->
              meck:expect(lager, warning, fun(_, _) -> ok end),
 
              %% Start with 30s, should cap at 60s
-             State = {state, undefined, "host", 6818, 30000, undefined, false, false,
+             State = {state, undefined, "host", 6818, [{"host", 6818}], 0, 30000, undefined, false, false,
                       undefined, 30000, <<>>, #{}, false, undefined},
 
              {noreply, NewState} = flurm_controller_connector:handle_info(connect, State),
 
-             ?assertEqual(60000, element(10, NewState))  %% capped at max
+             ?assertEqual(60000, element(12, NewState))  %% capped at max
          end}
      ]}.
 
@@ -643,17 +646,17 @@ handle_info_heartbeat_test_() ->
              meck:expect(lager, warning, fun(_, _) -> ok end),
 
              Socket = make_ref(),
-             State = {state, Socket, "host", 6818, 30000, undefined, true, true,
+             State = {state, Socket, "host", 6818, [{"host", 6818}], 0, 30000, undefined, true, true,
                       undefined, 1000, <<>>, #{}, false, undefined},
 
              {noreply, NewState} = flurm_controller_connector:handle_info(heartbeat, State),
 
              %% New heartbeat timer should be set
-             ?assertNotEqual(undefined, element(6, NewState))
+             ?assertNotEqual(undefined, element(8, NewState))
          end},
         {"handle_info heartbeat when not connected is skipped",
          fun() ->
-             State = {state, undefined, "host", 6818, 30000, undefined, false, false,
+             State = {state, undefined, "host", 6818, [{"host", 6818}], 0, 30000, undefined, false, false,
                       undefined, 1000, <<>>, #{}, false, undefined},
 
              {noreply, NewState} = flurm_controller_connector:handle_info(heartbeat, State),
@@ -679,7 +682,7 @@ handle_info_heartbeat_test_() ->
              meck:expect(lager, warning, fun(_, _) -> ok end),
 
              Socket = make_ref(),
-             State = {state, Socket, "host", 6818, 30000, undefined, true, true,
+             State = {state, Socket, "host", 6818, [{"host", 6818}], 0, 30000, undefined, true, true,
                       undefined, 1000, <<>>, #{}, false, undefined},
 
              %% Should not crash
@@ -703,17 +706,17 @@ handle_info_tcp_events_test_() ->
 
              Timer = erlang:send_after(100000, self(), heartbeat),
              Socket = make_ref(),
-             State = {state, Socket, "host", 6818, 30000, Timer, true, true,
+             State = {state, Socket, "host", 6818, [{"host", 6818}], 0, 30000, Timer, true, true,
                       undefined, 1000, <<>>, #{}, false, undefined},
 
              {noreply, NewState} = flurm_controller_connector:handle_info(
                  {tcp_closed, Socket}, State),
 
              ?assertEqual(undefined, element(2, NewState)),  %% socket
-             ?assertEqual(false, element(7, NewState)),  %% connected
-             ?assertEqual(false, element(8, NewState)),  %% registered
-             ?assertEqual(undefined, element(6, NewState)),  %% heartbeat_timer
-             ?assertEqual(<<>>, element(11, NewState))  %% buffer cleared
+             ?assertEqual(false, element(9, NewState)),  %% connected
+             ?assertEqual(false, element(10, NewState)),  %% registered
+             ?assertEqual(undefined, element(8, NewState)),  %% heartbeat_timer
+             ?assertEqual(<<>>, element(13, NewState))  %% buffer cleared
          end},
         {"handle_info tcp_error schedules reconnect",
          fun() ->
@@ -721,14 +724,14 @@ handle_info_tcp_events_test_() ->
              meck:expect(lager, error, fun(_, _) -> ok end),
 
              Socket = make_ref(),
-             State = {state, Socket, "host", 6818, 30000, undefined, true, true,
+             State = {state, Socket, "host", 6818, [{"host", 6818}], 0, 30000, undefined, true, true,
                       undefined, 1000, <<>>, #{}, false, undefined},
 
              {noreply, NewState} = flurm_controller_connector:handle_info(
                  {tcp_error, Socket, econnreset}, State),
 
              ?assertEqual(undefined, element(2, NewState)),
-             ?assertEqual(false, element(7, NewState))
+             ?assertEqual(false, element(9, NewState))
          end},
         {"handle_info tcp data accumulates buffer",
          fun() ->
@@ -736,7 +739,7 @@ handle_info_tcp_events_test_() ->
              meck:expect(flurm_protocol, decode, fun(_) -> {ok, #{type => ping}} end),
 
              Socket = make_ref(),
-             State = {state, Socket, "host", 6818, 30000, undefined, true, true,
+             State = {state, Socket, "host", 6818, [{"host", 6818}], 0, 30000, undefined, true, true,
                       undefined, 1000, <<>>, #{}, false, undefined},
 
              %% Send incomplete message
@@ -744,7 +747,7 @@ handle_info_tcp_events_test_() ->
              {noreply, NewState} = flurm_controller_connector:handle_info(
                  {tcp, Socket, Data}, State),
 
-             ?assertEqual(Data, element(11, NewState))  %% buffer
+             ?assertEqual(Data, element(13, NewState))  %% buffer
          end}
      ]}.
 
@@ -769,19 +772,19 @@ handle_info_down_test_() ->
 
              JobPid = spawn(fun() -> ok end),
              Socket = make_ref(),
-             State = {state, Socket, "host", 6818, 30000, undefined, true, true,
+             State = {state, Socket, "host", 6818, [{"host", 6818}], 0, 30000, undefined, true, true,
                       undefined, 1000, <<>>, #{42 => JobPid}, false, undefined},
 
              {noreply, NewState} = flurm_controller_connector:handle_info(
                  {'DOWN', make_ref(), process, JobPid, normal}, State),
 
              %% Job should be removed
-             ?assertEqual(#{}, element(12, NewState))
+             ?assertEqual(#{}, element(14, NewState))
          end},
         {"handle_info DOWN for unknown process ignored",
          fun() ->
              UnknownPid = spawn(fun() -> ok end),
-             State = {state, undefined, "host", 6818, 30000, undefined, false, false,
+             State = {state, undefined, "host", 6818, [{"host", 6818}], 0, 30000, undefined, false, false,
                       undefined, 1000, <<>>, #{}, false, undefined},
 
              {noreply, NewState} = flurm_controller_connector:handle_info(
@@ -821,7 +824,7 @@ terminate_test_() ->
 
              Timer = erlang:send_after(100000, self(), heartbeat),
              Socket = make_ref(),
-             State = {state, Socket, "host", 6818, 30000, Timer, true, true,
+             State = {state, Socket, "host", 6818, [{"host", 6818}], 0, 30000, Timer, true, true,
                       undefined, 1000, <<>>, #{}, false, undefined},
 
              Result = flurm_controller_connector:terminate(normal, State),
@@ -830,7 +833,7 @@ terminate_test_() ->
          end},
         {"terminate handles undefined socket",
          fun() ->
-             State = {state, undefined, "host", 6818, 30000, undefined, false, false,
+             State = {state, undefined, "host", 6818, [{"host", 6818}], 0, 30000, undefined, false, false,
                       undefined, 1000, <<>>, #{}, false, undefined},
 
              Result = flurm_controller_connector:terminate(shutdown, State),

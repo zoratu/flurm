@@ -68,6 +68,9 @@ content_types_accepted(Req, State) ->
         {<<"application/json">>, from_json}
     ], Req, State}.
 
+is_authorized(Req, #{resource := health} = State) ->
+    %% Health endpoint is always public (no auth required)
+    {true, Req, State};
 is_authorized(Req, State) ->
     %% Check for valid JWT token in Authorization header
     case cowboy_req:header(<<"authorization">>, Req) of
@@ -126,6 +129,7 @@ delete_resource(Req, State) ->
 
 get_allowed_methods(Path) ->
     case parse_path(Path) of
+        {health, _} -> [<<"GET">>, <<"OPTIONS">>];
         {status, _} -> [<<"GET">>, <<"OPTIONS">>];
         {mode, _} -> [<<"GET">>, <<"PUT">>, <<"OPTIONS">>];
         {clusters, undefined} -> [<<"GET">>, <<"POST">>, <<"OPTIONS">>];
@@ -135,6 +139,7 @@ get_allowed_methods(Path) ->
 
 check_resource_exists(Path, Method) ->
     case parse_path(Path) of
+        {health, _} -> true;
         {status, _} -> true;
         {mode, _} -> true;
         {clusters, undefined} -> true;
@@ -157,6 +162,8 @@ check_resource_exists(Path, Method) ->
         _ -> false
     end.
 
+parse_path(<<"/health">>) ->
+    {health, undefined};
 parse_path(<<?API_PREFIX, "/status", _/binary>>) ->
     {status, undefined};
 parse_path(<<?API_PREFIX, "/mode", _/binary>>) ->
@@ -172,6 +179,8 @@ parse_path(_) ->
 
 route_request(<<"GET">>, Path, _Req) ->
     case parse_path(Path) of
+        {health, _} ->
+            handle_health();
         {status, _} ->
             handle_get_status();
         {mode, _} ->
@@ -214,6 +223,19 @@ route_request(_, _, _) ->
 %%%===================================================================
 %%% Internal Functions - Handlers
 %%%===================================================================
+
+handle_health() ->
+    %% Lightweight health check for load balancers and monitoring
+    try
+        IsLeader = flurm_controller_cluster:is_leader(),
+        ClusterStatus = flurm_controller_cluster:cluster_status(),
+        NodesUp = length(maps:get(cluster_nodes, ClusterStatus, [])),
+        {ok, #{status => <<"healthy">>, leader => IsLeader, nodes_up => NodesUp}}
+    catch
+        _:_ ->
+            %% Even if cluster info is unavailable, the HTTP server is up
+            {ok, #{status => <<"healthy">>, leader => false, nodes_up => 0}}
+    end.
 
 handle_get_status() ->
     %% Get bridge/federation status
@@ -384,6 +406,7 @@ decode_request(Body) ->
 routes() ->
     [
         {'_', [
+            {"/health", ?MODULE, #{resource => health}},
             {"/api/v1/bridge/status", ?MODULE, #{}},
             {"/api/v1/bridge/mode", ?MODULE, #{}},
             {"/api/v1/bridge/clusters", ?MODULE, #{}},

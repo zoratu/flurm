@@ -13,7 +13,7 @@
     ]},
     {env, [
         {controller_host, "localhost"},
-        {controller_port, 6819},
+        {controller_port, 6818},
         {srun_port, 6818},           % Port for srun connections
         {heartbeat_interval, 30000},  % 30 seconds
         %% Prolog/Epilog scripts - uncomment to enable

@@ -11,14 +11,14 @@ main(Args) ->
             {Host, list_to_integer(Port)};
         [Host | _] ->
             PortFromEnv = case os:getenv("FLURM_CONTROLLER_PORT") of
-                false -> 6817;
+                false -> 6818;
                 P -> list_to_integer(P)
             end,
             {Host, PortFromEnv};
         [] ->
             {os:getenv("FLURM_CONTROLLER_HOST", "localhost"),
              case os:getenv("FLURM_CONTROLLER_PORT") of
-                 false -> 6817;
+                 false -> 6818;
                  P2 -> list_to_integer(P2)
              end}
     end,

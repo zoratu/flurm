@@ -24,7 +24,8 @@
 
 -ifdef(TEST).
 -export([decode_messages/2, find_job_by_pid/2, cancel_timer/1,
-         detect_features/0, check_cpu_flag/1]).
+         detect_features/0, check_cpu_flag/1,
+         next_controller/2]).
 -endif.
 
 -define(INITIAL_RECONNECT_INTERVAL, 1000).  % 1 second
@@ -35,6 +36,8 @@
     socket :: gen_tcp:socket() | undefined,
     host :: string(),
     port :: pos_integer(),
+    controllers :: [{string(), pos_integer()}],  % List of {Host, Port} controllers
+    controller_index :: non_neg_integer(),        % Current index in controllers list
     heartbeat_interval :: pos_integer(),
     heartbeat_timer :: reference() | undefined,
     connected :: boolean(),
@@ -95,13 +98,27 @@ init([]) ->
     {ok, Port} = application:get_env(flurm_node_daemon, controller_port),
     {ok, HeartbeatInterval} = application:get_env(flurm_node_daemon, heartbeat_interval),
 
+    %% Build the controller list: use 'controllers' config if available,
+    %% otherwise fall back to single controller_host/controller_port
+    Controllers = case application:get_env(flurm_node_daemon, controllers) of
+        {ok, List} when is_list(List), length(List) > 0 -> List;
+        _ -> [{Host, Port}]
+    end,
+
+    %% Start with first controller in the list
+    {FirstHost, FirstPort} = hd(Controllers),
+    lager:info("Controller list: ~p (starting with ~s:~p)",
+               [Controllers, FirstHost, FirstPort]),
+
     %% Try to connect immediately
     self() ! connect,
 
     {ok, #state{
         socket = undefined,
-        host = Host,
-        port = Port,
+        host = FirstHost,
+        port = FirstPort,
+        controllers = Controllers,
+        controller_index = 0,
         heartbeat_interval = HeartbeatInterval,
         heartbeat_timer = undefined,
         connected = false,
@@ -148,7 +165,8 @@ handle_cast({job_failed, JobId, Reason, Output, EnergyUsed}, State) ->
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
-handle_info(connect, #state{host = Host, port = Port, reconnect_interval = Interval} = State) ->
+handle_info(connect, #state{host = Host, port = Port, reconnect_interval = Interval,
+                           controllers = Controllers, controller_index = Index} = State) ->
     case gen_tcp:connect(Host, Port, [binary, {active, true}, {packet, raw}], 5000) of
         {ok, Socket} ->
             lager:info("Connected to controller at ~s:~p", [Host, Port]),
@@ -164,12 +182,34 @@ handle_info(connect, #state{host = Host, port = Port, reconnect_interval = Inter
                 buffer = <<>>
             }};
         {error, Reason} ->
-            lager:warning("Failed to connect to controller: ~p, retrying in ~pms",
-                         [Reason, Interval]),
-            erlang:send_after(Interval, self(), connect),
-            %% Exponential backoff
-            NewInterval = min(Interval * ?BACKOFF_MULTIPLIER, ?MAX_RECONNECT_INTERVAL),
-            {noreply, State#state{connected = false, reconnect_interval = NewInterval}}
+            %% Try the next controller in round-robin order
+            {NextIndex, NextHost, NextPort} = next_controller(Index, Controllers),
+            %% Only apply backoff after we've tried all controllers (full cycle)
+            NewInterval = case NextIndex of
+                0 ->
+                    %% Wrapped around - all controllers failed, apply backoff
+                    min(Interval * ?BACKOFF_MULTIPLIER, ?MAX_RECONNECT_INTERVAL);
+                _ ->
+                    %% Still trying other controllers, no backoff delay
+                    Interval
+            end,
+            %% Delay before retry: use backoff only when wrapping, otherwise try immediately
+            Delay = case NextIndex of
+                0 -> NewInterval;
+                _ -> 0
+            end,
+            lager:warning("Failed to connect to controller ~s:~p: ~p, "
+                         "trying next controller ~s:~p~s",
+                         [Host, Port, Reason, NextHost, NextPort,
+                          case Delay of 0 -> ""; D -> io_lib:format(" in ~pms", [D]) end]),
+            erlang:send_after(Delay, self(), connect),
+            {noreply, State#state{
+                connected = false,
+                host = NextHost,
+                port = NextPort,
+                controller_index = NextIndex,
+                reconnect_interval = NewInterval
+            }}
     end;
 
 handle_info(heartbeat, #state{socket = Socket, connected = true, heartbeat_interval = Interval} = State) ->
@@ -237,28 +277,43 @@ handle_info({tcp, Socket, Data}, #state{socket = Socket, buffer = Buffer} = Stat
 
     {noreply, NewState};
 
-handle_info({tcp_closed, _Socket}, #state{host = Host, port = Port, heartbeat_timer = Timer} = State) ->
-    lager:warning("Connection to controller ~s:~p closed, reconnecting...", [Host, Port]),
+handle_info({tcp_closed, _Socket}, #state{host = Host, port = Port, heartbeat_timer = Timer,
+                                           controllers = Controllers, controller_index = Index} = State) ->
+    lager:warning("Connection to controller ~s:~p closed, failing over...", [Host, Port]),
     cancel_timer(Timer),
-    erlang:send_after(State#state.reconnect_interval, self(), connect),
+    %% Move to the next controller immediately for failover
+    {NextIndex, NextHost, NextPort} = next_controller(Index, Controllers),
+    erlang:send_after(0, self(), connect),
     {noreply, State#state{
         socket = undefined,
         connected = false,
         registered = false,
         heartbeat_timer = undefined,
-        buffer = <<>>
+        buffer = <<>>,
+        host = NextHost,
+        port = NextPort,
+        controller_index = NextIndex,
+        reconnect_interval = ?INITIAL_RECONNECT_INTERVAL
     }};
 
-handle_info({tcp_error, _Socket, Reason}, #state{heartbeat_timer = Timer} = State) ->
-    lager:error("TCP error: ~p", [Reason]),
+handle_info({tcp_error, _Socket, Reason}, #state{heartbeat_timer = Timer,
+                                                 controllers = Controllers,
+                                                 controller_index = Index} = State) ->
+    lager:error("TCP error: ~p, failing over...", [Reason]),
     cancel_timer(Timer),
-    erlang:send_after(State#state.reconnect_interval, self(), connect),
+    %% Move to the next controller immediately for failover
+    {NextIndex, NextHost, NextPort} = next_controller(Index, Controllers),
+    erlang:send_after(0, self(), connect),
     {noreply, State#state{
         socket = undefined,
         connected = false,
         registered = false,
         heartbeat_timer = undefined,
-        buffer = <<>>
+        buffer = <<>>,
+        host = NextHost,
+        port = NextPort,
+        controller_index = NextIndex,
+        reconnect_interval = ?INITIAL_RECONNECT_INTERVAL
     }};
 
 handle_info({'DOWN', _Ref, process, Pid, Reason}, State) ->
@@ -510,6 +565,15 @@ report_job_to_controller(Socket, JobId, Status, ExitCode, Output, EnergyUsed) ->
     },
 
     send_protocol_message(Socket, Msg).
+
+%% @doc Get the next controller in round-robin order.
+%% Returns {NextIndex, Host, Port}.
+-spec next_controller(non_neg_integer(), [{string(), pos_integer()}]) ->
+    {non_neg_integer(), string(), pos_integer()}.
+next_controller(CurrentIndex, Controllers) ->
+    NextIndex = (CurrentIndex + 1) rem length(Controllers),
+    {Host, Port} = lists:nth(NextIndex + 1, Controllers),
+    {NextIndex, Host, Port}.
 
 find_job_by_pid(Pid, Jobs) ->
     case [JobId || {JobId, P} <- maps:to_list(Jobs), P =:= Pid] of
