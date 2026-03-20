@@ -431,7 +431,7 @@ handle_call_test_() ->
              meck:expect(gen_tcp, send, fun(_, _) -> ok end),
 
              Socket = make_ref(),
-             State = {state, Socket, "host", 6818, 30000, undefined, true, false,
+             State = {state, Socket, "host", 6818, [{"host", 6818}], 0, 30000, undefined, true, false,
                       undefined, 1000, <<>>, #{}, false, undefined},
 
              {reply, Result, _NewState} = flurm_controller_connector:handle_call(
@@ -451,7 +451,7 @@ handle_call_test_() ->
          end},
         {"handle_call get_state returns info map",
          fun() ->
-             State = {state, make_ref(), "myhost", 6818, 30000, undefined, true, true,
+             State = {state, make_ref(), "myhost", 6818, [{"myhost", 6818}], 0, 30000, undefined, true, true,
                       <<"node1">>, 1000, <<>>, #{1 => self()}, true, <<"maintenance">>},
 
              {reply, Info, _NewState} = flurm_controller_connector:handle_call(
@@ -801,7 +801,7 @@ handle_info_down_test_() ->
 handle_info_unknown_test_() ->
     {"handle_info unknown message",
      fun() ->
-         State = {state, undefined, "host", 6818, 30000, undefined, false, false,
+         State = {state, undefined, "host", 6818, [{"host", 6818}], 0, 30000, undefined, false, false,
                   undefined, 1000, <<>>, #{}, false, undefined},
 
          {noreply, NewState} = flurm_controller_connector:handle_info(unknown_msg, State),
