@@ -141,16 +141,16 @@ init(Ref, Transport, Opts) ->
                             %% Peer has too many connections
                             lager:warning("Rejecting connection from ~s: per-peer limit exceeded",
                                          [inet:ntoa(PeerIP)]),
-                            Transport:close(Socket),
+                            catch Transport:close(Socket),
                             {error, peer_limit_exceeded}
                     end;
                 {error, Reason} ->
                     lager:warning("Failed to get peer address: ~p", [Reason]),
-                    Transport:close(Socket),
+                    catch Transport:close(Socket),
                     {error, Reason};
                 {'EXIT', _} ->
                     lager:warning("Socket invalid during peername lookup"),
-                    Transport:close(Socket),
+                    catch Transport:close(Socket),
                     {error, invalid_socket}
             end;
         {error, Reason} ->
