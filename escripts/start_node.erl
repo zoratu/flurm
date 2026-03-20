@@ -28,6 +28,22 @@ main(Args) ->
     application:set_env(flurm_node_daemon, controller_host, ControllerHost),
     application:set_env(flurm_node_daemon, controller_port, ControllerPort),
 
+    %% Parse backup controllers from FLURM_CONTROLLERS env var
+    %% Format: "host1:port1,host2:port2,..."
+    case os:getenv("FLURM_CONTROLLERS") of
+        false ->
+            ok;
+        ControllersStr ->
+            Controllers = lists:map(fun(Entry) ->
+                case string:split(string:trim(Entry), ":") of
+                    [H, P] -> {H, list_to_integer(P)};
+                    [H] -> {H, ControllerPort}
+                end
+            end, string:split(ControllersStr, ",", all)),
+            application:set_env(flurm_node_daemon, controllers, Controllers),
+            io:format("Backup controllers: ~p~n", [Controllers])
+    end,
+
     io:format("Connecting to controller at ~s:~p~n", [ControllerHost, ControllerPort]),
 
     application:ensure_all_started(lager),
