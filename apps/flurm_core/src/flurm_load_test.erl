@@ -250,7 +250,7 @@ soak_loop(EndTime, Stats) ->
             end,
 
             %% Small delay to avoid overwhelming the system
-            timer:sleep(10),
+            test_sleep(10),
             soak_loop(EndTime, NewStats)
     end.
 
@@ -265,7 +265,7 @@ memory_stability_test(NumJobs) ->
 
     %% Force GC and get baseline
     [garbage_collect(P) || P <- processes()],
-    timer:sleep(1000),
+    test_sleep(1000),
     BaselineMemory = erlang:memory(total),
     BaselineProcs = erlang:system_info(process_count),
 
@@ -290,11 +290,11 @@ memory_stability_test(NumJobs) ->
     LoadProcs = erlang:system_info(process_count),
 
     %% Wait for jobs to complete
-    timer:sleep(5000),
+    test_sleep(5000),
 
     %% Force GC again
     [garbage_collect(P) || P <- processes()],
-    timer:sleep(1000),
+    test_sleep(1000),
 
     %% Final state
     FinalMemory = erlang:memory(total),
@@ -366,7 +366,7 @@ job_lifecycle_test(NumJobs) ->
     io:format("  Submitted ~p jobs~n", [length(ValidJobIds)]),
 
     %% Wait for completion
-    timer:sleep(3000),
+    test_sleep(3000),
 
     %% Get final process list
     FinalProcs = sets:from_list(processes()),
@@ -436,7 +436,7 @@ concurrent_cancel_test(NumJobs) ->
     io:format("  Submitted ~p jobs~n", [length(JobIds)]),
 
     %% Wait a bit for jobs to start
-    timer:sleep(500),
+    test_sleep(500),
 
     %% Cancel all jobs concurrently
     Self = self(),
@@ -454,7 +454,7 @@ concurrent_cancel_test(NumJobs) ->
     Failed = length([R || R <- CancelResults, element(1, R) == error]),
 
     %% Wait for cleanup
-    timer:sleep(1000),
+    test_sleep(1000),
 
     Report = #{
         num_jobs => NumJobs,
@@ -516,7 +516,7 @@ rapid_submit_cancel_test(NumCycles) ->
 
     %% Force GC and check for leaked memory
     [garbage_collect(P) || P <- processes()],
-    timer:sleep(500),
+    test_sleep(500),
 
     Report = #{
         num_cycles => NumCycles,
@@ -563,4 +563,11 @@ cancel_test_job(JobId) ->
             catch
                 _:_ -> {ok, cancelled}
             end
+    end.
+
+%% Sleep helper that skips delays in test fast mode
+test_sleep(Ms) ->
+    case application:get_env(flurm_core, test_fast_mode, false) of
+        true -> ok;
+        false -> timer:sleep(Ms)
     end.

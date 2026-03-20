@@ -22,11 +22,21 @@
 
 setup() ->
     application:ensure_all_started(meck),
+    mock_timer_sleep(),
     ok.
 
 cleanup(_) ->
+
     catch meck:unload(flurm_job_manager),
     catch meck:unload(flurm_diagnostics),
+    ok.
+
+%% Speed up load tests by setting the TEST_FAST_SLEEP process flag.
+%% The flurm_load_test module checks this flag to use shorter delays.
+mock_timer_sleep() ->
+    %% Don't mock timer globally - it breaks other parallel tests.
+    %% Instead, set an env var that flurm_load_test can check.
+    application:set_env(flurm_core, test_fast_mode, true),
     ok.
 
 %%====================================================================
@@ -77,6 +87,7 @@ stress_test_fallback_test_() ->
      fun() ->
          %% Ensure flurm_job_manager is NOT registered
          %% so the fallback code path is used
+         mock_timer_sleep(),
          catch meck:unload(flurm_job_manager),
          ok
      end,
@@ -106,6 +117,7 @@ stress_test_fallback_test_() ->
 concurrent_cancel_fallback_test_() ->
     {setup,
      fun() ->
+         mock_timer_sleep(),
          catch meck:unload(flurm_job_manager),
          ok
      end,
@@ -127,6 +139,7 @@ concurrent_cancel_fallback_test_() ->
 rapid_submit_cancel_fallback_test_() ->
     {setup,
      fun() ->
+         mock_timer_sleep(),
          catch meck:unload(flurm_job_manager),
          ok
      end,
@@ -149,6 +162,7 @@ rapid_submit_cancel_fallback_test_() ->
 job_lifecycle_fallback_test_() ->
     {setup,
      fun() ->
+         mock_timer_sleep(),
          catch meck:unload(flurm_job_manager),
          ok
      end,
@@ -199,6 +213,7 @@ module_info_test_() ->
 report_keys_test_() ->
     {setup,
      fun() ->
+         mock_timer_sleep(),
          catch meck:unload(flurm_job_manager),
          ok
      end,
@@ -237,6 +252,7 @@ report_keys_test_() ->
 edge_cases_test_() ->
     {setup,
      fun() ->
+         mock_timer_sleep(),
          catch meck:unload(flurm_job_manager),
          ok
      end,
@@ -261,6 +277,7 @@ edge_cases_test_() ->
 cancel_counting_test_() ->
     {setup,
      fun() ->
+         mock_timer_sleep(),
          catch meck:unload(flurm_job_manager),
          ok
      end,
@@ -287,6 +304,7 @@ cancel_counting_test_() ->
 passed_flag_test_() ->
     {setup,
      fun() ->
+         mock_timer_sleep(),
          catch meck:unload(flurm_job_manager),
          ok
      end,
@@ -319,6 +337,7 @@ passed_flag_test_() ->
 memory_stability_test_() ->
     {setup,
      fun() ->
+         mock_timer_sleep(),
          catch meck:unload(flurm_job_manager),
          ok
      end,
@@ -371,6 +390,7 @@ memory_stability_test_() ->
 stress_test_report_test_() ->
     {setup,
      fun() ->
+         mock_timer_sleep(),
          catch meck:unload(flurm_job_manager),
          ok
      end,
@@ -420,6 +440,7 @@ stress_test_report_test_() ->
 stress_worker_test_() ->
     {setup,
      fun() ->
+         mock_timer_sleep(),
          catch meck:unload(flurm_job_manager),
          ok
      end,
@@ -468,6 +489,7 @@ stress_worker_test_() ->
 job_lifecycle_extended_test_() ->
     {setup,
      fun() ->
+         mock_timer_sleep(),
          catch meck:unload(flurm_job_manager),
          ok
      end,
@@ -499,6 +521,7 @@ job_lifecycle_extended_test_() ->
 concurrent_cancel_extended_test_() ->
     {setup,
      fun() ->
+         mock_timer_sleep(),
          catch meck:unload(flurm_job_manager),
          ok
      end,
@@ -526,6 +549,7 @@ concurrent_cancel_extended_test_() ->
 rapid_submit_cancel_extended_test_() ->
     {setup,
      fun() ->
+         mock_timer_sleep(),
          catch meck:unload(flurm_job_manager),
          ok
      end,
@@ -554,6 +578,7 @@ rapid_submit_cancel_extended_test_() ->
 error_handling_test_() ->
     {setup,
      fun() ->
+         mock_timer_sleep(),
          catch meck:unload(flurm_job_manager),
          ok
      end,
@@ -595,6 +620,7 @@ module_attributes_test_() ->
 integration_smoke_test_() ->
     {setup,
      fun() ->
+         mock_timer_sleep(),
          catch meck:unload(flurm_job_manager),
          ok
      end,
@@ -620,6 +646,7 @@ integration_smoke_test_() ->
 additional_coverage_test_() ->
     {setup,
      fun() ->
+         mock_timer_sleep(),
          catch meck:unload(flurm_job_manager),
          ok
      end,
@@ -819,6 +846,7 @@ additional_coverage_test_() ->
 parameter_validation_test_() ->
     {setup,
      fun() ->
+         mock_timer_sleep(),
          catch meck:unload(flurm_job_manager),
          ok
      end,
@@ -863,6 +891,7 @@ parameter_validation_test_() ->
 report_structure_test_() ->
     {setup,
      fun() ->
+         mock_timer_sleep(),
          catch meck:unload(flurm_job_manager),
          ok
      end,
@@ -912,6 +941,7 @@ report_structure_test_() ->
 value_range_test_() ->
     {setup,
      fun() ->
+         mock_timer_sleep(),
          catch meck:unload(flurm_job_manager),
          ok
      end,
@@ -953,6 +983,7 @@ value_range_test_() ->
 edge_case_handling_test_() ->
     {setup,
      fun() ->
+         mock_timer_sleep(),
          catch meck:unload(flurm_job_manager),
          ok
      end,
@@ -987,6 +1018,7 @@ edge_case_handling_test_() ->
 return_type_test_() ->
     {setup,
      fun() ->
+         mock_timer_sleep(),
          catch meck:unload(flurm_job_manager),
          ok
      end,
@@ -1017,6 +1049,7 @@ return_type_test_() ->
 consistency_test_() ->
     {setup,
      fun() ->
+         mock_timer_sleep(),
          catch meck:unload(flurm_job_manager),
          ok
      end,
@@ -1051,6 +1084,7 @@ consistency_test_() ->
 passed_logic_test_() ->
     {setup,
      fun() ->
+         mock_timer_sleep(),
          catch meck:unload(flurm_job_manager),
          ok
      end,
@@ -1113,6 +1147,7 @@ module_info_extended_test_() ->
 timing_test_() ->
     {setup,
      fun() ->
+         mock_timer_sleep(),
          catch meck:unload(flurm_job_manager),
          ok
      end,

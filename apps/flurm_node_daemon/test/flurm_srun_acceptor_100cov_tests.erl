@@ -46,7 +46,7 @@ start_link_test_() ->
      [
         {"start_link starts gen_server",
          fun() ->
-             meck:new(lager, [passthrough, no_passthrough_cover]),
+             meck:new(lager, [non_strict, no_passthrough_cover]),
              meck:new(gen_tcp, [passthrough, no_passthrough_cover, unstick]),
              meck:new(inet, [passthrough, no_passthrough_cover, unstick]),
 
@@ -78,7 +78,7 @@ init_test_() ->
      [
         {"init sets up state and activates socket",
          fun() ->
-             meck:new(lager, [passthrough, no_passthrough_cover]),
+             meck:new(lager, [non_strict, no_passthrough_cover]),
              meck:new(inet, [passthrough, no_passthrough_cover, unstick]),
 
              meck:expect(lager, info, fun(_, _) -> ok end),
@@ -110,7 +110,7 @@ handle_tcp_data_test_() ->
      [
         {"handle_info tcp with incomplete message",
          fun() ->
-             meck:new(lager, [passthrough, no_passthrough_cover]),
+             meck:new(lager, [non_strict, no_passthrough_cover]),
              meck:expect(lager, debug, fun(_, _) -> ok end),
 
              Socket = make_ref(),
@@ -124,7 +124,7 @@ handle_tcp_data_test_() ->
          end},
         {"handle_info tcp with complete message",
          fun() ->
-             meck:new(lager, [passthrough, no_passthrough_cover]),
+             meck:new(lager, [non_strict, no_passthrough_cover]),
              meck:new(flurm_protocol, [passthrough, no_passthrough_cover]),
              meck:new(gen_tcp, [passthrough, no_passthrough_cover, unstick]),
 
@@ -158,7 +158,7 @@ handle_tcp_closed_test_() ->
      [
         {"handle_info tcp_closed stops acceptor",
          fun() ->
-             meck:new(lager, [passthrough, no_passthrough_cover]),
+             meck:new(lager, [non_strict, no_passthrough_cover]),
              meck:expect(lager, info, fun(_, _) -> ok end),
 
              Socket = make_ref(),
@@ -168,7 +168,7 @@ handle_tcp_closed_test_() ->
          end},
         {"handle_info tcp_closed cleans up PTY",
          fun() ->
-             meck:new(lager, [passthrough, no_passthrough_cover]),
+             meck:new(lager, [non_strict, no_passthrough_cover]),
              meck:new(flurm_srun_pty, [passthrough, no_passthrough_cover]),
 
              meck:expect(lager, info, fun(_, _) -> ok end),
@@ -194,7 +194,7 @@ handle_tcp_error_test_() ->
      [
         {"handle_info tcp_error stops acceptor",
          fun() ->
-             meck:new(lager, [passthrough, no_passthrough_cover]),
+             meck:new(lager, [non_strict, no_passthrough_cover]),
              meck:expect(lager, error, fun(_, _) -> ok end),
 
              Socket = make_ref(),
@@ -236,7 +236,7 @@ handle_message_test_() ->
          fun() ->
              meck:new(gen_tcp, [passthrough, no_passthrough_cover, unstick]),
              meck:new(flurm_protocol, [passthrough, no_passthrough_cover]),
-             meck:new(lager, [passthrough, no_passthrough_cover]),
+             meck:new(lager, [non_strict, no_passthrough_cover]),
 
              meck:expect(gen_tcp, send, fun(_, _) -> ok end),
              meck:expect(flurm_protocol, encode, fun(_) -> {ok, <<>>} end),
@@ -262,7 +262,7 @@ handle_message_test_() ->
              meck:new(gen_tcp, [passthrough, no_passthrough_cover, unstick]),
              meck:new(flurm_protocol, [passthrough, no_passthrough_cover]),
              meck:new(flurm_srun_pty, [passthrough, no_passthrough_cover]),
-             meck:new(lager, [passthrough, no_passthrough_cover]),
+             meck:new(lager, [non_strict, no_passthrough_cover]),
 
              meck:expect(gen_tcp, send, fun(_, _) -> ok end),
              meck:expect(flurm_protocol, encode, fun(_) -> {ok, <<>>} end),
@@ -329,7 +329,7 @@ handle_message_test_() ->
         {"handle_message srun_signal sends signal",
          fun() ->
              meck:new(flurm_srun_pty, [passthrough, no_passthrough_cover]),
-             meck:new(lager, [passthrough, no_passthrough_cover]),
+             meck:new(lager, [non_strict, no_passthrough_cover]),
 
              meck:expect(flurm_srun_pty, send_signal, fun(_, Signal) ->
                  ?assertEqual(sigint, Signal),
@@ -346,7 +346,7 @@ handle_message_test_() ->
          end},
         {"handle_message srun_env sets environment",
          fun() ->
-             meck:new(lager, [passthrough, no_passthrough_cover]),
+             meck:new(lager, [non_strict, no_passthrough_cover]),
              meck:expect(lager, debug, fun(_, _) -> ok end),
 
              Socket = make_ref(),
@@ -359,7 +359,7 @@ handle_message_test_() ->
          end},
         {"handle_message unknown type",
          fun() ->
-             meck:new(lager, [passthrough, no_passthrough_cover]),
+             meck:new(lager, [non_strict, no_passthrough_cover]),
              meck:expect(lager, warning, fun(_, _) -> ok end),
 
              Socket = make_ref(),
@@ -384,7 +384,7 @@ handle_pty_output_test_() ->
          fun() ->
              meck:new(gen_tcp, [passthrough, no_passthrough_cover, unstick]),
              meck:new(flurm_protocol, [passthrough, no_passthrough_cover]),
-             meck:new(lager, [passthrough, no_passthrough_cover]),
+             meck:new(lager, [non_strict, no_passthrough_cover]),
 
              meck:expect(gen_tcp, send, fun(_, _) -> ok end),
              meck:expect(flurm_protocol, encode, fun(#{type := srun_output, data := Data}) ->
@@ -415,7 +415,7 @@ handle_pty_exit_test_() ->
          fun() ->
              meck:new(gen_tcp, [passthrough, no_passthrough_cover, unstick]),
              meck:new(flurm_protocol, [passthrough, no_passthrough_cover]),
-             meck:new(lager, [passthrough, no_passthrough_cover]),
+             meck:new(lager, [non_strict, no_passthrough_cover]),
 
              meck:expect(gen_tcp, send, fun(_, _) -> ok end),
              meck:expect(gen_tcp, close, fun(_) -> ok end),
@@ -475,7 +475,7 @@ handle_port_exit_test_() ->
          fun() ->
              meck:new(gen_tcp, [passthrough, no_passthrough_cover, unstick]),
              meck:new(flurm_protocol, [passthrough, no_passthrough_cover]),
-             meck:new(lager, [passthrough, no_passthrough_cover]),
+             meck:new(lager, [non_strict, no_passthrough_cover]),
 
              meck:expect(gen_tcp, send, fun(_, _) -> ok end),
              meck:expect(gen_tcp, close, fun(_) -> ok end),
@@ -507,7 +507,7 @@ execute_step_test_() ->
          fun() ->
              meck:new(file, [passthrough, no_passthrough_cover, unstick]),
              meck:new(filelib, [passthrough, no_passthrough_cover, unstick]),
-             meck:new(lager, [passthrough, no_passthrough_cover]),
+             meck:new(lager, [non_strict, no_passthrough_cover]),
 
              meck:expect(file, write_file, fun(_, _) -> ok end),
              meck:expect(file, change_mode, fun(_, _) -> ok end),
@@ -544,7 +544,7 @@ execute_interactive_test_() ->
         {"execute_interactive allocates PTY",
          fun() ->
              meck:new(flurm_srun_pty, [passthrough, no_passthrough_cover]),
-             meck:new(lager, [passthrough, no_passthrough_cover]),
+             meck:new(lager, [non_strict, no_passthrough_cover]),
 
              PtyInfo = #{pid => self(), master_fd => 5, slave_name => "/dev/pts/10"},
              meck:expect(flurm_srun_pty, open, fun(_) -> {ok, PtyInfo} end),
@@ -562,7 +562,7 @@ execute_interactive_test_() ->
         {"execute_interactive handles PTY failure",
          fun() ->
              meck:new(flurm_srun_pty, [passthrough, no_passthrough_cover]),
-             meck:new(lager, [passthrough, no_passthrough_cover]),
+             meck:new(lager, [non_strict, no_passthrough_cover]),
 
              meck:expect(flurm_srun_pty, open, fun(_) -> {error, pty_not_available} end),
              meck:expect(lager, error, fun(_, _) -> ok end),
@@ -610,7 +610,7 @@ send_response_test_() ->
         {"send_response handles encode error",
          fun() ->
              meck:new(flurm_protocol, [passthrough, no_passthrough_cover]),
-             meck:new(lager, [passthrough, no_passthrough_cover]),
+             meck:new(lager, [non_strict, no_passthrough_cover]),
 
              meck:expect(flurm_protocol, encode, fun(_) -> {error, invalid_message} end),
              meck:expect(lager, error, fun(_, _) -> ok end),
@@ -623,7 +623,7 @@ send_response_test_() ->
          fun() ->
              meck:new(gen_tcp, [passthrough, no_passthrough_cover, unstick]),
              meck:new(flurm_protocol, [passthrough, no_passthrough_cover]),
-             meck:new(lager, [passthrough, no_passthrough_cover]),
+             meck:new(lager, [non_strict, no_passthrough_cover]),
 
              meck:expect(flurm_protocol, encode, fun(_) -> {ok, <<>>} end),
              meck:expect(gen_tcp, send, fun(_, _) -> {error, closed} end),
@@ -819,7 +819,7 @@ decode_messages_test_() ->
         {"decode_messages handles decode error",
          fun() ->
              meck:new(flurm_protocol, [passthrough, no_passthrough_cover]),
-             meck:new(lager, [passthrough, no_passthrough_cover]),
+             meck:new(lager, [non_strict, no_passthrough_cover]),
 
              meck:expect(flurm_protocol, decode, fun(_) -> {error, invalid} end),
              meck:expect(lager, warning, fun(_, _) -> ok end),
