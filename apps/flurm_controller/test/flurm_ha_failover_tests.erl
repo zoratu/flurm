@@ -630,7 +630,8 @@ test_recovery_with_missing_deps() ->
 
     %% Trigger start_recovery when dependencies are not available
     Pid ! start_recovery,
-    _ = sys:get_state(flurm_controller_cluster),
+    %% Wait for message to be processed (use failover, not cluster which isn't started)
+    _ = sys:get_state(flurm_controller_failover),
 
     %% Process should still be alive (recovery may fail but shouldn't crash)
     ?assert(is_process_alive(Pid)),
