@@ -89,7 +89,15 @@ init(Config) ->
 init_ets_tables() ->
     %% Ensure data directory exists
     DataDir = get_data_dir(),
-    ok = filelib:ensure_dir(filename:join(DataDir, "dummy")),
+    %% Create the data directory; handle errors gracefully
+    case filelib:ensure_dir(filename:join(DataDir, "dummy")) of
+        ok -> ok;
+        {error, enoent} ->
+            %% Parent path issue - try creating with file:make_dir
+            _ = file:make_dir(DataDir),
+            ok;
+        {error, _} -> ok
+    end,
 
     %% Create ETS tables
     Tables = [flurm_db_jobs_ets, flurm_db_nodes_ets, flurm_db_partitions_ets,

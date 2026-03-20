@@ -110,7 +110,8 @@ init(Ref, Transport, Opts) ->
     case ranch:handshake(Ref) of
         {ok, Socket} ->
             %% Get peer IP for connection limiting
-            case inet:peername(Socket) of
+            %% Use try-catch: socket may become invalid between handshake and peername
+            case catch inet:peername(Socket) of
                 {ok, {PeerIP, _PeerPort}} ->
                     %% Check if this peer is allowed (under connection limit)
                     case flurm_connection_limiter:connection_allowed(PeerIP) of
@@ -146,7 +147,11 @@ init(Ref, Transport, Opts) ->
                 {error, Reason} ->
                     lager:warning("Failed to get peer address: ~p", [Reason]),
                     Transport:close(Socket),
-                    {error, Reason}
+                    {error, Reason};
+                {'EXIT', _} ->
+                    lager:warning("Socket invalid during peername lookup"),
+                    Transport:close(Socket),
+                    {error, invalid_socket}
             end;
         {error, Reason} ->
             lager:warning("Ranch handshake failed: ~p", [Reason]),
