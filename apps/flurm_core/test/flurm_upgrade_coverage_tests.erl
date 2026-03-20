@@ -8,6 +8,13 @@
 -include_lib("eunit/include/eunit.hrl").
 
 %%====================================================================
+%% Helpers
+%%====================================================================
+
+%% Create a pid from a string at runtime (avoids OTP 25 compile-time check)
+make_test_pid(Str) -> list_to_pid(Str).
+
+%%====================================================================
 %% API Function Tests
 %%====================================================================
 
@@ -173,7 +180,7 @@ get_process_modules_self_test() ->
 %% Test get_process_modules with undefined pid
 get_process_modules_undefined_test() ->
     %% Create a pid that doesn't exist
-    FakePid = list_to_pid("<0.99999.0>"),
+    FakePid = make_test_pid("<0.99999.0>"),
     Result = flurm_upgrade:get_process_modules(FakePid),
     ?assert(is_list(Result)).
 

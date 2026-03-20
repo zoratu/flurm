@@ -171,7 +171,9 @@ unsubscribe_removes_pid() ->
 
 unsubscribe_nonexistent() ->
     State = make_test_state(),
-    NonExistentPid = list_to_pid("<0.99999.0>"),
+    NonExistentPid = spawn(fun() -> ok end),
+    %% Wait for spawned process to die so it's non-existent
+    timer:sleep(10),
     {reply, ok, NewState} = flurm_config_server:handle_call({unsubscribe, NonExistentPid}, {self(), ref}, State),
     ?assertEqual([], NewState#state.subscribers).
 

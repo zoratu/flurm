@@ -93,6 +93,13 @@ ets_lookup_test_() ->
      ]}.
 
 %%====================================================================
+%% Helpers
+%%====================================================================
+
+%% Create a pid from a string at runtime (avoids OTP 25 compile-time check)
+make_test_pid(Str) -> list_to_pid(Str).
+
+%%====================================================================
 %% Setup / Cleanup
 %%====================================================================
 
@@ -145,7 +152,7 @@ setup_tables_with_data() ->
     %% Insert test data
     Node1 = #node_entry{
         name = <<"node1">>,
-        pid = list_to_pid("<0.100.0>"),
+        pid = make_test_pid("<0.100.0>"),
         hostname = <<"node1.example.com">>,
         state = up,
         partitions = [<<"compute">>, <<"batch">>],
@@ -158,7 +165,7 @@ setup_tables_with_data() ->
     },
     Node2 = #node_entry{
         name = <<"node2">>,
-        pid = list_to_pid("<0.101.0>"),
+        pid = make_test_pid("<0.101.0>"),
         hostname = <<"node2.example.com">>,
         state = up,
         partitions = [<<"gpu">>],
@@ -171,7 +178,7 @@ setup_tables_with_data() ->
     },
     Node3 = #node_entry{
         name = <<"node3">>,
-        pid = list_to_pid("<0.102.0>"),
+        pid = make_test_pid("<0.102.0>"),
         hostname = <<"node3.example.com">>,
         state = down,
         partitions = [<<"compute">>],
