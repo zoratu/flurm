@@ -278,32 +278,34 @@ encode_response(MsgType, Body) ->
             lager:info("encode_response: auth=~p, body=~p (msg_type=~p)",
                        [AuthSize, BodySize, MsgType]),
 
-            %% body_length = message body only (auth is read separately by SLURM)
+            %% Determine if we have real MUNGE credentials
+            {Flags, FinalAuth} = case AuthSection of
+                <<100:32/big>> ->
+                    %% auth/none (plugin_id=100 only) - set SLURM_NO_AUTH_CRED flag
+                    %% and send NO auth section. The client skips auth_g_unpack entirely
+                    %% when this flag is set, so body_length == remaining_buf(buffer).
+                    {?SLURM_NO_AUTH_CRED, <<>>};
+                _ ->
+                    %% Real MUNGE credential - include auth section
+                    %% body_length must equal remaining_buf AFTER auth_g_unpack consumes the credential
+                    {0, AuthSection}
+            end,
+            FinalAuthSize = byte_size(FinalAuth),
             TotalBodyLen = BodySize,
             Header = #slurm_header{
                 version = flurm_protocol_header:protocol_version(),
-                flags = 0,
+                flags = Flags,
                 msg_index = 0,
                 msg_type = MsgType,
-                body_length = TotalBodyLen  %% hash + body
+                body_length = TotalBodyLen
             },
             case flurm_protocol_header:encode_header(Header) of
                 {ok, HeaderBin} ->
-                    %% Debug: show each section in detail
-                    HeaderHex = binary_to_hex(HeaderBin),
-                    AuthHex = binary_to_hex(AuthSection),
-                    FullBodyHex = binary_to_hex(BodyBin),
-                    lager:info("DEBUG header(~p): ~s", [byte_size(HeaderBin), HeaderHex]),
-                    lager:info("DEBUG auth(~p): ~s", [AuthSize, AuthHex]),
-                    lager:info("DEBUG body(~p): ~s", [BodySize, FullBodyHex]),
-                    %% Wire format: outer_length, header, auth_section, body
-                    %% Hash is embedded in MUNGE credential, no separate hash section
-                    TotalPayload = <<HeaderBin/binary, AuthSection/binary, BodyBin/binary>>,
+                    lager:info("encode_response: flags=0x~4.16.0B auth=~p body=~p (msg_type=~p)",
+                               [Flags, FinalAuthSize, BodySize, MsgType]),
+                    TotalPayload = <<HeaderBin/binary, FinalAuth/binary, BodyBin/binary>>,
                     OuterLength = byte_size(TotalPayload),
-                    FullMessage = <<OuterLength:32/big, TotalPayload/binary>>,
-                    lager:info("FULL MESSAGE (~p bytes): ~s",
-                               [byte_size(FullMessage), binary_to_hex(FullMessage)]),
-                    {ok, FullMessage};
+                    {ok, <<OuterLength:32/big, TotalPayload/binary>>};
                 {error, _} = HeaderError ->
                     HeaderError
             end;
