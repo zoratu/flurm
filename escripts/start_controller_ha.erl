@@ -95,7 +95,7 @@ main(_Args) ->
     %% Start applications
     io:format("~nStarting applications...~n"),
     application:ensure_all_started(lager),
-    lager:set_loglevel(lager_console_backend, info),
+    catch lager:set_loglevel(lager_console_backend, info),
 
     case application:ensure_all_started(flurm_controller) of
         {ok, Started} ->

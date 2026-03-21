@@ -54,7 +54,7 @@ main(_) ->
     end,
 
     application:ensure_all_started(lager),
-    lager:set_loglevel(lager_console_backend, info),
+    catch lager:set_loglevel(lager_console_backend, info),
     {ok, _} = application:ensure_all_started(flurm_controller),
     io:format("FLURM controller listening on port 6817~n"),
 
