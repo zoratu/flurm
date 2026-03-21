@@ -293,9 +293,11 @@ handle_message(MessageBin, #{socket := Socket, transport := Transport,
                                  maps:get(hostname, ExtraInfo2, <<"unknown">>),
                                  AuthResult]),
                     %% Route to handler with timeout protection
+            %% Use client's protocol version for response encoding
+            ClientVersion = Header#slurm_header.version,
             case call_handler_with_timeout(Header, Body) of
                 {ok, ResponseType, ResponseBody} ->
-                    send_response(Socket, Transport, ResponseType, ResponseBody),
+                    send_response(Socket, Transport, ResponseType, ResponseBody, ClientVersion),
                     {ok, State#{request_count => Count + 1}};
                 {ok, ResponseType, ResponseBody, CallbackInfo} ->
                     %% Handler returned callback info for srun allocation
@@ -304,7 +306,7 @@ handle_message(MessageBin, #{socket := Socket, transport := Transport,
                     lager:info("srun allocation for job ~p, callback port ~p", [JobId, Port]),
 
                     %% Send the allocation response FIRST before callback
-                    send_response(Socket, Transport, ResponseType, ResponseBody),
+                    send_response(Socket, Transport, ResponseType, ResponseBody, ClientVersion),
 
                     %% Establish callback connection to srun and send SRUN_PING
                     %% This notifies srun that controller is ready for notifications
@@ -329,7 +331,7 @@ handle_message(MessageBin, #{socket := Socket, transport := Transport,
                 {error, Reason} ->
                     %% Send error response
                     ErrorResponse = #slurm_rc_response{return_code = -1},
-                    send_response(Socket, Transport, ?RESPONSE_SLURM_RC, ErrorResponse),
+                    send_response(Socket, Transport, ?RESPONSE_SLURM_RC, ErrorResponse, ClientVersion),
                     lager:warning("Handler error: ~p", [Reason]),
                     {ok, State#{request_count => Count + 1}}
             end;
@@ -337,7 +339,7 @@ handle_message(MessageBin, #{socket := Socket, transport := Transport,
                     %% MUNGE credential verification failed
                     lager:warning("MUNGE authentication failed: ~p", [AuthReason]),
                     ErrorResponse = #slurm_rc_response{return_code = -1},
-                    send_response(Socket, Transport, ?RESPONSE_SLURM_RC, ErrorResponse),
+                    send_response(Socket, Transport, ?RESPONSE_SLURM_RC, ErrorResponse, Header#slurm_header.version),
                     {error, {auth_failed, AuthReason}}
             end;
         {error, {incomplete_message, _, _}} ->
@@ -391,7 +393,14 @@ drain_late_handler_result(Ref) ->
 %% All responses include MUNGE auth section (required by SLURM clients).
 -spec send_response(inet:socket(), module(), non_neg_integer(), term()) -> ok | {error, term()}.
 send_response(Socket, Transport, MsgType, Body) ->
-    EncodeResult = flurm_protocol_codec:encode_response(MsgType, Body),
+    send_response(Socket, Transport, MsgType, Body, flurm_protocol_header:protocol_version()).
+
+-spec send_response(inet:socket(), module(), non_neg_integer(), term(), non_neg_integer()) -> ok | {error, term()}.
+send_response(Socket, Transport, MsgType, Body, ClientVersion) ->
+    %% Use min(client_version, our_version) for backward compatibility
+    %% This matches SLURM's own version negotiation behavior
+    ResponseVersion = min(ClientVersion, flurm_protocol_header:protocol_version()),
+    EncodeResult = flurm_protocol_codec:encode_response(MsgType, Body, ResponseVersion),
     case EncodeResult of
         {ok, ResponseBin} ->
             case Transport:send(Socket, ResponseBin) of

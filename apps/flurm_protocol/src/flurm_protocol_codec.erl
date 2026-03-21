@@ -32,6 +32,7 @@
 
     %% Response encoding/decoding (with auth section)
     encode_response/2,
+    encode_response/3,
     encode_response_no_auth/2,
     encode_response_proper_auth/2,
     decode_response/1,
@@ -258,6 +259,12 @@ encode_with_extra(MsgType, Body, Hostname) ->
 %%
 -spec encode_response(non_neg_integer(), term()) -> {ok, binary()} | {error, term()}.
 encode_response(MsgType, Body) ->
+    encode_response(MsgType, Body, flurm_protocol_header:protocol_version()).
+
+%% @doc Encode a response with a specific protocol version.
+%% Use the client's version so the response uses the correct unpack format.
+-spec encode_response(non_neg_integer(), term(), non_neg_integer()) -> {ok, binary()} | {error, term()}.
+encode_response(MsgType, Body, Version) ->
     case encode_body(MsgType, Body) of
         {ok, BodyBin} ->
             BodySize = byte_size(BodyBin),
@@ -293,7 +300,7 @@ encode_response(MsgType, Body) ->
             FinalAuthSize = byte_size(FinalAuth),
             TotalBodyLen = BodySize,
             Header = #slurm_header{
-                version = flurm_protocol_header:protocol_version(),
+                version = Version,
                 flags = Flags,
                 msg_index = 0,
                 msg_type = MsgType,
