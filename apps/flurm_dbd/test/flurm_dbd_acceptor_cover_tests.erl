@@ -32,7 +32,7 @@
 %% Protocol constants from flurm_protocol.hrl
 -define(REQUEST_PERSIST_INIT, 6500).
 -define(PERSIST_RC, 1433).
--define(SLURM_PROTOCOL_VERSION, 16#2600).
+-define(SLURM_PROTOCOL_VERSION, 16#2800).
 
 %%====================================================================
 %% Helper: create a mock transport that captures send calls

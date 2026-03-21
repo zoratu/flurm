@@ -243,8 +243,8 @@ test_wire_format() ->
     ?assertEqual(?REQUEST_PING, MsgType).
 
 test_header_version() ->
-    %% SLURM 22.05 uses version 0x2600
-    ?assertEqual(16#2600, ?SLURM_PROTOCOL_VERSION).
+    %% SLURM 23.11 uses version 0x2800
+    ?assertEqual(16#2800, ?SLURM_PROTOCOL_VERSION).
 
 test_message_length() ->
     %% Test that encoded message length matches prefix
