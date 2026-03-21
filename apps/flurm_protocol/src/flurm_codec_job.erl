@@ -616,14 +616,15 @@ encode_batch_job_response(_) ->
 %% Encode RESPONSE_JOB_INFO (2004)
 encode_job_info_response(#job_info_response{last_update = LastUpdate, job_count = JobCount, jobs = Jobs}) ->
     JobsBin = [encode_single_job_info(J) || J <- Jobs],
+    %% SLURM unpacks: record_count:32 FIRST, then last_update:time64
     Parts = [
-        flurm_protocol_pack:pack_time(LastUpdate),
         <<JobCount:32/big>>,
+        flurm_protocol_pack:pack_time(LastUpdate),
         JobsBin
     ],
     {ok, iolist_to_binary(Parts)};
 encode_job_info_response(_) ->
-    {ok, <<0:64, 0:32>>}.
+    {ok, <<0:32, 0:64>>}.
 
 %% Encode a single job_info record (simplified)
 encode_single_job_info(#job_info{} = J) ->
