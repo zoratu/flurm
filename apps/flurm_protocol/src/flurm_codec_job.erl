@@ -614,33 +614,207 @@ encode_batch_job_response(_) ->
     {ok, <<0:32, 0:32, 0:32, 0:32>>}.
 
 %% Encode RESPONSE_JOB_INFO (2004)
-encode_job_info_response(#job_info_response{last_update = LastUpdate, job_count = JobCount, jobs = Jobs}) ->
+%% Header: record_count:32, last_update:time64, last_backfill:time64
+encode_job_info_response(#job_info_response{last_update = LastUpdate,
+                                            last_backfill = LastBackfill,
+                                            job_count = JobCount,
+                                            jobs = Jobs}) ->
     JobsBin = [encode_single_job_info(J) || J <- Jobs],
-    %% SLURM unpacks: record_count:32 FIRST, then last_update:time64
     Parts = [
         <<JobCount:32/big>>,
         flurm_protocol_pack:pack_time(LastUpdate),
+        flurm_protocol_pack:pack_time(LastBackfill),
         JobsBin
     ],
     {ok, iolist_to_binary(Parts)};
 encode_job_info_response(_) ->
-    {ok, <<0:32, 0:64>>}.
+    {ok, <<0:32, 0:64, 0:64>>}.
 
-%% Encode a single job_info record (simplified)
+%% Encode a single job_info record matching SLURM 23.11 _pack_job_info_members
 encode_single_job_info(#job_info{} = J) ->
+    PS = fun flurm_protocol_pack:pack_string/1,
+    PT = fun flurm_protocol_pack:pack_time/1,
+    PD = fun flurm_protocol_pack:pack_double/1,
+    EB = fun ensure_binary/1,
+    %% Helper: safe field access with default for fields not in the record
+    F = fun(V) -> EB(V) end,
+    %% NO_VAL packstr for pack_bit_str_hex / pack_bit_str_hex_fmt
+    NoValStr = PS(undefined),
     [
+        %% array_job_id:32, array_task_id:32, array_task_str:packstr, array_max_tasks:32
+        <<(J#job_info.array_job_id):32/big>>,
+        <<(J#job_info.array_task_id):32/big>>,
+        PS(F(J#job_info.array_task_str)),
+        <<(J#job_info.array_max_tasks):32/big>>,
+        %% assoc_id:32, container:packstr, container_id:packstr, delay_boot:32
+        <<(J#job_info.assoc_id):32/big>>,
+        PS(F(J#job_info.container)),
+        PS(undefined),  %% container_id - not in record
+        <<(J#job_info.delay_boot):32/big>>,
+        %% failed_node:packstr, job_id:32, user_id:32, group_id:32
+        PS(undefined),  %% failed_node - not in record
         <<(J#job_info.job_id):32/big>>,
-        flurm_protocol_pack:pack_string(J#job_info.name),
         <<(J#job_info.user_id):32/big>>,
         <<(J#job_info.group_id):32/big>>,
+        %% het_job_id:32, het_job_id_set:packstr, het_job_offset:32, profile:32
+        <<(J#job_info.het_job_id):32/big>>,
+        PS(F(J#job_info.het_job_id_set)),
+        <<(J#job_info.het_job_offset):32/big>>,
+        <<(J#job_info.profile):32/big>>,
+        %% job_state:32, batch_flag:16, state_reason:32, power_flags:8, reboot:8
         <<(J#job_info.job_state):32/big>>,
-        flurm_protocol_pack:pack_string(J#job_info.partition),
-        <<(J#job_info.num_nodes):32/big>>,
-        <<(J#job_info.num_cpus):32/big>>,
+        <<(J#job_info.batch_flag):16/big>>,
+        <<(J#job_info.state_reason):32/big>>,
+        <<(J#job_info.power_flags):8>>,
+        <<(J#job_info.reboot):8>>,
+        %% restart_cnt:16, show_flags:16, deadline:time64
+        <<(J#job_info.restart_cnt):16/big>>,
+        <<(J#job_info.show_flags):16/big>>,
+        PT(J#job_info.deadline),
+        %% alloc_sid:32, time_limit:32, time_min:32, nice:32
+        <<(J#job_info.alloc_sid):32/big>>,
         <<(J#job_info.time_limit):32/big>>,
-        flurm_protocol_pack:pack_time(J#job_info.start_time),
-        flurm_protocol_pack:pack_time(J#job_info.end_time),
-        flurm_protocol_pack:pack_string(J#job_info.nodes)
+        <<(J#job_info.time_min):32/big>>,
+        <<(J#job_info.nice):32/big>>,
+        %% submit_time:time64, eligible_time:time64, accrue_time:time64
+        PT(J#job_info.submit_time),
+        PT(J#job_info.eligible_time),
+        PT(J#job_info.accrue_time),
+        %% start_time:time64, end_time:time64, suspend_time:time64
+        PT(J#job_info.start_time),
+        PT(J#job_info.end_time),
+        PT(J#job_info.suspend_time),
+        %% pre_sus_time:time64, resize_time:time64, last_sched_eval:time64
+        PT(J#job_info.pre_sus_time),
+        PT(J#job_info.resize_time),
+        PT(J#job_info.last_sched_eval),
+        %% preempt_time:time64, priority:32, billable_tres:double
+        PT(J#job_info.preempt_time),
+        <<(J#job_info.priority):32/big>>,
+        PD(J#job_info.billable_tres),
+        %% cluster:packstr, nodes:packstr, sched_nodes:packstr
+        PS(F(J#job_info.cluster)),
+        PS(F(J#job_info.nodes)),
+        PS(F(J#job_info.sched_nodes)),
+        %% partition:packstr, account:packstr, admin_comment:packstr
+        PS(F(J#job_info.partition)),
+        PS(F(J#job_info.account)),
+        PS(F(J#job_info.admin_comment)),
+        %% site_factor:32, network:packstr, comment:packstr, extra:packstr
+        <<(J#job_info.site_factor):32/big>>,
+        PS(F(J#job_info.network)),
+        PS(F(J#job_info.comment)),
+        PS(undefined),  %% extra - not in record
+        %% container:packstr, batch_features:packstr, batch_host:packstr
+        PS(F(J#job_info.container)),
+        PS(undefined),  %% batch_features - not in record
+        PS(F(J#job_info.batch_host)),
+        %% burst_buffer:packstr, burst_buffer_state:packstr, system_comment:packstr
+        PS(F(J#job_info.burst_buffer)),
+        PS(F(J#job_info.burst_buffer_state)),
+        PS(F(J#job_info.system_comment)),
+        %% qos:packstr, preemptable_time:time64, licenses:packstr
+        PS(F(J#job_info.qos)),
+        PT(J#job_info.preemptable_time),
+        PS(F(J#job_info.licenses)),
+        %% state_desc:packstr, resv_name:packstr, mcs_label:packstr
+        PS(F(J#job_info.state_desc)),
+        PS(F(J#job_info.resv_name)),
+        PS(F(J#job_info.mcs_label)),
+        %% exit_code:32, derived_ec:32, gres_total:packstr
+        <<(J#job_info.exit_code):32/big>>,
+        <<(J#job_info.derived_ec):32/big>>,
+        PS(undefined),  %% gres_total - not in record
+        %% job_resources:pack_job_resources - pack NULL (no resources = 0)
+        <<0:32/big>>,
+        %% gres_detail_str:packstr_array - empty array (count:32=0)
+        <<0:32/big>>,
+        %% name:packstr, user_name:packstr, wckey:packstr
+        PS(F(J#job_info.name)),
+        PS(F(J#job_info.user_name)),
+        PS(F(J#job_info.wckey)),
+        %% req_switch:32, wait4switch:32, alloc_node:packstr
+        <<(J#job_info.req_switch):32/big>>,
+        <<(J#job_info.wait4switch):32/big>>,
+        PS(F(J#job_info.alloc_node)),
+        %% node_inx:pack_bit_str_hex - empty (NO_VAL packstr)
+        NoValStr,
+        %% features:packstr, prefer:packstr, cluster_features:packstr
+        PS(F(J#job_info.features)),
+        PS(undefined),  %% prefer - not in record
+        PS(F(J#job_info.cluster_features)),
+        %% work_dir:packstr, dependency:packstr, command:packstr
+        PS(F(J#job_info.work_dir)),
+        PS(F(J#job_info.dependency)),
+        PS(F(J#job_info.command)),
+        %% num_cpus:32, max_cpus:32, num_nodes:32, max_nodes:32
+        <<(J#job_info.num_cpus):32/big>>,
+        <<(J#job_info.max_cpus):32/big>>,
+        <<(J#job_info.num_nodes):32/big>>,
+        <<(J#job_info.max_nodes):32/big>>,
+        %% job_size_str:pack_bit_str_hex_fmt - empty packstr
+        NoValStr,
+        %% requeue:16, ntasks_per_node:16, ntasks_per_tres:16
+        <<(J#job_info.requeue):16/big>>,
+        <<(J#job_info.ntasks_per_node):16/big>>,
+        <<(J#job_info.ntasks_per_tres):16/big>>,
+        %% num_tasks:32, shared:16
+        <<(J#job_info.num_tasks):32/big>>,
+        <<(J#job_info.shared):16/big>>,
+        %% cpu_freq_min:32, cpu_freq_max:32, cpu_freq_gov:32
+        <<0:32/big>>,   %% cpu_freq_min - not in record
+        <<0:32/big>>,   %% cpu_freq_max - not in record
+        <<0:32/big>>,   %% cpu_freq_gov - not in record
+        %% cronspec:packstr, contiguous:16, core_spec:16, cpus_per_task:16
+        PS(undefined),  %% cronspec - not in record
+        <<(J#job_info.contiguous):16/big>>,
+        <<(J#job_info.core_spec):16/big>>,
+        <<(J#job_info.cpus_per_task):16/big>>,
+        %% pn_min_cpus:16, pn_min_memory:64, pn_min_tmp_disk:32
+        <<(J#job_info.pn_min_cpus):16/big>>,
+        <<(J#job_info.pn_min_memory):64/big>>,
+        <<(J#job_info.pn_min_tmp_disk):32/big>>,
+        %% req_nodes:packstr, req_node_inx:pack_bit_str_hex
+        PS(F(J#job_info.req_nodes)),
+        NoValStr,  %% req_node_inx
+        %% exc_nodes:packstr, exc_node_inx:pack_bit_str_hex
+        PS(F(J#job_info.exc_nodes)),
+        NoValStr,  %% exc_node_inx
+        %% std_err:packstr, std_in:packstr, std_out:packstr
+        PS(F(J#job_info.std_err)),
+        PS(F(J#job_info.std_in)),
+        PS(F(J#job_info.std_out)),
+        %% multi_core_data:pack_multi_core - flag:8=0 (no data)
+        <<0:8>>,
+        %% bitflags:64
+        <<(J#job_info.bitflags):64/big>>,
+        %% tres_alloc_str:packstr, tres_req_str:packstr, start_protocol_ver:16
+        PS(F(J#job_info.tres_alloc_str)),
+        PS(F(J#job_info.tres_req_str)),
+        <<0:16/big>>,  %% start_protocol_ver - not in record
+        %% fed_origin_str:packstr, fed_siblings_active:64
+        PS(F(J#job_info.fed_origin_str)),
+        <<(J#job_info.fed_siblings_active):64/big>>,
+        %% fed_siblings_active_str:packstr, fed_siblings_viable:64
+        PS(F(J#job_info.fed_siblings_active_str)),
+        <<(J#job_info.fed_siblings_viable):64/big>>,
+        %% fed_siblings_viable_str:packstr
+        PS(F(J#job_info.fed_siblings_viable_str)),
+        %% cpus_per_tres:packstr, mem_per_tres:packstr
+        PS(F(J#job_info.cpus_per_tres)),
+        PS(F(J#job_info.mem_per_tres)),
+        %% tres_bind:packstr, tres_freq:packstr, tres_per_job:packstr
+        PS(F(J#job_info.tres_bind)),
+        PS(F(J#job_info.tres_freq)),
+        PS(F(J#job_info.tres_per_job)),
+        %% tres_per_node:packstr, tres_per_socket:packstr, tres_per_task:packstr
+        PS(F(J#job_info.tres_per_node)),
+        PS(F(J#job_info.tres_per_socket)),
+        PS(F(J#job_info.tres_per_task)),
+        %% mail_type:16, mail_user:packstr, selinux_context:packstr
+        <<(J#job_info.mail_type):16/big>>,
+        PS(F(J#job_info.mail_user)),
+        PS(undefined)   %% selinux_context - not in record
     ];
 encode_single_job_info(_) ->
     [].

@@ -548,6 +548,7 @@
 %% Job info response (RESPONSE_JOB_INFO - 2004)
 -record(job_info_response, {
     last_update = 0 :: non_neg_integer(),
+    last_backfill = 0 :: non_neg_integer(),
     job_count = 0 :: non_neg_integer(),
     jobs = [] :: [#job_info{}]
 }).

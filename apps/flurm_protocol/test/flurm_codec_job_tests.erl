@@ -605,7 +605,7 @@ encode_job_info_response_test() ->
 
 encode_job_info_response_default_test() ->
     {ok, Binary} = flurm_codec_job:encode_body(?RESPONSE_JOB_INFO, #{}),
-    ?assertEqual(<<0:64, 0:32>>, Binary).
+    ?assertEqual(<<0:32, 0:64, 0:64>>, Binary).
 
 encode_job_info_response_with_jobs_test() ->
     Job = #job_info{
@@ -1683,7 +1683,7 @@ job_info_response_extended_test_() ->
       end},
      {"encode non-record", fun() ->
         {ok, Binary} = flurm_codec_job:encode_body(?RESPONSE_JOB_INFO, invalid),
-        ?assertEqual(<<0:64, 0:32>>, Binary)
+        ?assertEqual(<<0:32, 0:64, 0:64>>, Binary)
       end}
     ].
 
