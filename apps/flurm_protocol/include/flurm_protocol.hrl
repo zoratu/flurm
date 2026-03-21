@@ -13,11 +13,11 @@
 %%% Protocol Version Constants
 %%%===================================================================
 
-%% SLURM protocol version - SLURM 22.05.x uses 0x2600
-%% NOTE: This is different from theoretical (major << 8) | minor = 0x1605
-%% Real SLURM 22.05.9 srun uses 0x2600, so we must match it
-%% Despite being >= 0x1702, SLURM 22.05 does NOT include msg_index in header
--define(SLURM_PROTOCOL_VERSION, 16#2600).  % SLURM 22.05.x actual = 0x2600
+%% SLURM protocol version
+%% 0x2600 = SLURM 22.05, 0x2800 = SLURM 23.11
+%% Use 23.11 as default - responses must match the client's expected version
+%% for unpack_msg to find the correct deserializer
+-define(SLURM_PROTOCOL_VERSION, 16#2800).  % SLURM 23.11.x = (40 << 8) | 0
 
 %% Protocol header size (length prefix + header)
 %% NOTE: Empirical testing shows SLURM 22.05 does NOT include msg_index despite source code
