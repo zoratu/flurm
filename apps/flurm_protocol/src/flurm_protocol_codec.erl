@@ -456,22 +456,20 @@ get_munge_credential(MsgType) when is_integer(MsgType) ->
         "printf '\\~3.8.0B\\~3.8.0B\\~3.8.0B' | munge 2>/dev/null",
         [1, MsgTypeHigh, MsgTypeLow])),  %% 1 = HASH_PLUGIN_NONE
     lager:info("Creating MUNGE credential with 3-byte hash (type=NONE=1, msg_type=0x~4.16.0B)", [MsgType]),
-    lager:debug("MUNGE command: ~s", [Cmd]),
-    try os:cmd(Cmd) of
-        [] ->
-            %% MUNGE returned empty - command exists but munge daemon not running
+    %% Check if munge binary exists before trying to call it
+    %% os:cmd crashes with badarg on OTP 28 if the binary isn't found
+    case os:find_executable("munge") of
+        false ->
             {error, munge_not_available};
-        Result ->
-            Cred = string:trim(Result, trailing, "\n"),
-            lager:info("MUNGE credential obtained (hash=NONE), length=~p", [length(Cred)]),
-            {ok, list_to_binary(Cred)}
-    catch
-        error:badarg ->
-            %% os:cmd fails with badarg when munge/printf not found (OTP 28)
-            lager:debug("MUNGE command not available (badarg)"),
-            {error, munge_not_available};
-        _:_ ->
-            {error, munge_not_available}
+        _MungePath ->
+            lager:debug("MUNGE command: ~s", [Cmd]),
+            case os:cmd(Cmd) of
+                [] -> {error, munge_not_available};
+                Result ->
+                    Cred = string:trim(Result, trailing, "\n"),
+                    lager:info("MUNGE credential obtained, length=~p", [length(Cred)]),
+                    {ok, list_to_binary(Cred)}
+            end
     end.
 
 %% @doc Create auth section with proper SLURM format
