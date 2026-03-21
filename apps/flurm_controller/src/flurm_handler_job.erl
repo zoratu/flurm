@@ -832,7 +832,7 @@ build_field_updates(TimeLimit, Name) ->
     end.
 
 %% Clamp a value between min and max, using default if out of range
-clamp(Value, Min, Max, Default) when is_integer(Value), Value >= Min, Value =< Max -> Value;
+clamp(Value, Min, Max, _Default) when is_integer(Value), Value >= Min, Value =< Max -> Value;
 clamp(_Value, _Min, _Max, Default) -> Default.
 
 %% Apply base updates if any exist (used before hold/release operations)
