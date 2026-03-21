@@ -487,26 +487,29 @@ get_munge_credential(MsgType) when is_integer(MsgType) ->
 %% Auth section with MUNGE credential including embedded msg_type hash
 -spec create_proper_auth_section(non_neg_integer() | undefined) -> binary().
 create_proper_auth_section(MsgType) ->
-    PluginId = 101,  %% AUTH_PLUGIN_MUNGE
-    %% Create MUNGE credential WITH 3-byte hash payload
-    %% SLURM's _check_hash() expects: [HASH_PLUGIN_NONE=1, msg_type_hi, msg_type_lo]
-    %%
-    %% SLURM's auth_munge.c uses packstr (length includes null, data ends with null).
-    %% See _pack_cred() which calls packstr(cred->signature, buffer).
+    %% Try MUNGE first; fall back to auth/none if unavailable
     case get_munge_credential(MsgType) of
         {ok, Credential} ->
+            %% MUNGE available - use plugin_id 101 (AUTH_PLUGIN_MUNGE)
+            PluginId = 101,
             CredLen = byte_size(Credential),
-            %% SLURM auth uses packstr format (includes null terminator)
             CredPackstr = flurm_protocol_pack:pack_string(Credential),
             AuthBin = <<PluginId:32/big, CredPackstr/binary>>,
-            lager:info("AUTH: plugin_id=~p cred_len=~p packstr_len=~p total=~p msg_type=~p",
-                       [PluginId, CredLen, byte_size(CredPackstr), byte_size(AuthBin), MsgType]),
+            lager:info("AUTH: plugin_id=~p cred_len=~p total=~p msg_type=~p",
+                       [PluginId, CredLen, byte_size(AuthBin), MsgType]),
             AuthBin;
         {error, _} ->
-            %% No MUNGE - use empty credential (will likely fail verification)
-            EmptyPackstr = flurm_protocol_pack:pack_string(<<>>),
-            AuthBin = <<PluginId:32/big, EmptyPackstr/binary>>,
-            lager:info("AUTH (no munge): plugin_id=~p total=~p", [PluginId, byte_size(AuthBin)]),
+            %% No MUNGE - use plugin_id 100 (AUTH_PLUGIN_NONE)
+            %% This allows auth/none clients to accept our responses
+            PluginId = 100,
+            %% Hash payload: [HASH_PLUGIN_NONE=1, msg_type_hi, msg_type_lo]
+            MsgTypeHi = (MsgType bsr 8) band 16#FF,
+            MsgTypeLo = MsgType band 16#FF,
+            HashPayload = <<1, MsgTypeHi, MsgTypeLo>>,
+            CredPackstr = flurm_protocol_pack:pack_string(HashPayload),
+            AuthBin = <<PluginId:32/big, CredPackstr/binary>>,
+            lager:info("AUTH (none): plugin_id=~p total=~p msg_type=~p",
+                       [PluginId, byte_size(AuthBin), MsgType]),
             AuthBin
     end.
 
