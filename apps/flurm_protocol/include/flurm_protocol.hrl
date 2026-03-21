@@ -39,8 +39,9 @@
 -define(SLURM_INFINITE, 16#FFFFFFFD).   % -3 as unsigned
 -define(SLURM_INFINITE64, 16#FFFFFFFFFFFFFFFD).
 
-%% Header flags
--define(SLURM_NO_AUTH_CRED, 16#0001).   % No auth credential present in message
+%% Header flags (SLURM_BIT(N) = 1 << N)
+-define(SLURM_GLOBAL_AUTH_KEY, 16#0001). % BIT(0)
+-define(SLURM_NO_AUTH_CRED,   16#0040). % BIT(6) - No auth credential in message
 
 %%%===================================================================
 %%% SLURM I/O Protocol Constants
