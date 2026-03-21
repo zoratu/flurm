@@ -457,11 +457,15 @@ get_munge_credential(MsgType) when is_integer(MsgType) ->
         [1, MsgTypeHigh, MsgTypeLow])),  %% 1 = HASH_PLUGIN_NONE
     lager:info("Creating MUNGE credential with 3-byte hash (type=NONE=1, msg_type=0x~4.16.0B)", [MsgType]),
     lager:debug("MUNGE command: ~s", [Cmd]),
-    case os:cmd(Cmd) of
+    case catch os:cmd(Cmd) of
+        {'EXIT', _} ->
+            lager:debug("MUNGE command not available (os:cmd failed)"),
+            {error, munge_not_available};
         [] ->
             lager:warning("MUNGE command returned empty, trying without payload"),
             %% Fallback to no payload
-            case os:cmd("munge -n 2>/dev/null") of
+            case catch os:cmd("munge -n 2>/dev/null") of
+                {'EXIT', _} -> {error, munge_not_available};
                 [] -> {error, munge_not_available};
                 FallbackResult ->
                     Cred = string:trim(FallbackResult, trailing, "\n"),
