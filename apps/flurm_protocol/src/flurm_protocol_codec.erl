@@ -278,9 +278,8 @@ encode_response(MsgType, Body) ->
             lager:info("encode_response: auth=~p, body=~p (msg_type=~p)",
                        [AuthSize, BodySize, MsgType]),
 
-            %% body_length = auth_section + message body
-            %% SLURM 23.11 expects body_length to include the auth credential
-            TotalBodyLen = AuthSize + BodySize,
+            %% body_length = message body only (auth is read separately by SLURM)
+            TotalBodyLen = BodySize,
             Header = #slurm_header{
                 version = flurm_protocol_header:protocol_version(),
                 flags = 0,
@@ -502,14 +501,14 @@ create_proper_auth_section(MsgType) ->
             AuthBin;
         {error, _} ->
             %% No MUNGE - use plugin_id 100 (AUTH_PLUGIN_NONE)
-            %% This allows auth/none clients to accept our responses
+            %% auth/none expects: plugin_id:32, then NO credential data
+            %% SLURM's auth_none.c auth_p_unpack reads nothing after plugin_id
+            %% But the credential is packed as packstr, so we send empty packstr
             PluginId = 100,
-            %% Hash payload: [HASH_PLUGIN_NONE=1, msg_type_hi, msg_type_lo]
-            MsgTypeHi = (MsgType bsr 8) band 16#FF,
-            MsgTypeLo = MsgType band 16#FF,
-            HashPayload = <<1, MsgTypeHi, MsgTypeLo>>,
-            CredPackstr = flurm_protocol_pack:pack_string(HashPayload),
-            AuthBin = <<PluginId:32/big, CredPackstr/binary>>,
+            %% Empty packstr = just the length field with NO_VAL (0xFFFFFFFE)
+            %% This tells SLURM "no credential string"
+            EmptyPackstr = <<16#FFFFFFFE:32/big>>,
+            AuthBin = <<PluginId:32/big, EmptyPackstr/binary>>,
             lager:info("AUTH (none): plugin_id=~p total=~p msg_type=~p",
                        [PluginId, byte_size(AuthBin), MsgType]),
             AuthBin
