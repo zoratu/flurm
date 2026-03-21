@@ -278,9 +278,9 @@ encode_response(MsgType, Body) ->
             lager:info("encode_response: auth=~p, body=~p (msg_type=~p)",
                        [AuthSize, BodySize, MsgType]),
 
-            %% body_length = just the message body
-            %% The hash is embedded in MUNGE credential, no separate hash section needed
-            TotalBodyLen = BodySize,
+            %% body_length = auth_section + message body
+            %% SLURM 23.11 expects body_length to include the auth credential
+            TotalBodyLen = AuthSize + BodySize,
             Header = #slurm_header{
                 version = flurm_protocol_header:protocol_version(),
                 flags = 0,
