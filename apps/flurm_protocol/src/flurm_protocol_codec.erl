@@ -432,11 +432,15 @@ strip_auth_section_from_response(BodyWithAuth, BodyLen) ->
 -spec get_munge_credential(non_neg_integer() | undefined) -> {ok, binary()} | {error, term()}.
 get_munge_credential(undefined) ->
     %% No hash - create credential with no payload
-    case os:cmd("munge -n 2>/dev/null") of
-        [] -> {error, munge_not_available};
-        Result ->
-            Cred = string:trim(Result, trailing, "\n"),
-            {ok, list_to_binary(Cred)}
+    case os:find_executable("munge") of
+        false -> {error, munge_not_available};
+        _ ->
+            case os:cmd("munge -n 2>/dev/null") of
+                [] -> {error, munge_not_available};
+                Result ->
+                    Cred = string:trim(Result, trailing, "\n"),
+                    {ok, list_to_binary(Cred)}
+            end
     end;
 get_munge_credential(MsgType) when is_integer(MsgType) ->
     %% Create MUNGE credential WITH hash payload embedded
