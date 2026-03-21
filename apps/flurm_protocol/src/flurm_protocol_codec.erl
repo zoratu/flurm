@@ -457,25 +457,21 @@ get_munge_credential(MsgType) when is_integer(MsgType) ->
         [1, MsgTypeHigh, MsgTypeLow])),  %% 1 = HASH_PLUGIN_NONE
     lager:info("Creating MUNGE credential with 3-byte hash (type=NONE=1, msg_type=0x~4.16.0B)", [MsgType]),
     lager:debug("MUNGE command: ~s", [Cmd]),
-    case catch os:cmd(Cmd) of
-        {'EXIT', _} ->
-            lager:debug("MUNGE command not available (os:cmd failed)"),
-            {error, munge_not_available};
+    try os:cmd(Cmd) of
         [] ->
-            lager:warning("MUNGE command returned empty, trying without payload"),
-            %% Fallback to no payload
-            case catch os:cmd("munge -n 2>/dev/null") of
-                {'EXIT', _} -> {error, munge_not_available};
-                [] -> {error, munge_not_available};
-                FallbackResult ->
-                    Cred = string:trim(FallbackResult, trailing, "\n"),
-                    lager:info("MUNGE credential obtained (no hash fallback), length=~p", [length(Cred)]),
-                    {ok, list_to_binary(Cred)}
-            end;
+            %% MUNGE returned empty - command exists but munge daemon not running
+            {error, munge_not_available};
         Result ->
             Cred = string:trim(Result, trailing, "\n"),
             lager:info("MUNGE credential obtained (hash=NONE), length=~p", [length(Cred)]),
             {ok, list_to_binary(Cred)}
+    catch
+        error:badarg ->
+            %% os:cmd fails with badarg when munge/printf not found (OTP 28)
+            lager:debug("MUNGE command not available (badarg)"),
+            {error, munge_not_available};
+        _:_ ->
+            {error, munge_not_available}
     end.
 
 %% @doc Create auth section with proper SLURM format
