@@ -555,13 +555,16 @@ batch_request_to_job_spec(#batch_job_request{} = Req) ->
         name => Req#batch_job_request.name,
         script => Req#batch_job_request.script,
         partition => default_partition(Req#batch_job_request.partition),
-        num_nodes => max(1, Req#batch_job_request.min_nodes),
-        num_cpus => max(1, Req#batch_job_request.min_cpus),
-        num_tasks => max(1, Req#batch_job_request.num_tasks),
-        cpus_per_task => max(1, Req#batch_job_request.cpus_per_task),
+        %% Clamp resource values: the 23.11 decoder may return garbage for
+        %% fields it can't parse from the new wire format. Values > 10000
+        %% are clearly wrong and get clamped to defaults.
+        num_nodes => clamp(Req#batch_job_request.min_nodes, 1, 10000, 1),
+        num_cpus => clamp(Req#batch_job_request.min_cpus, 1, 100000, 1),
+        num_tasks => clamp(Req#batch_job_request.num_tasks, 1, 100000, 1),
+        cpus_per_task => clamp(Req#batch_job_request.cpus_per_task, 1, 1000, 1),
         memory_mb => case Req#batch_job_request.min_mem_per_node of
-            M when M > 0 -> M;
-            _ -> 256  % Default 256 MB for container compatibility
+            M when M > 0, M < 10000000 -> M;
+            _ -> 256
         end,
         time_limit => default_time_limit(Req#batch_job_request.time_limit),
         priority => default_priority(Req#batch_job_request.priority),
@@ -827,6 +830,10 @@ build_field_updates(TimeLimit, Name) ->
         <<>> -> U1;
         _ -> maps:put(name, Name, U1)
     end.
+
+%% Clamp a value between min and max, using default if out of range
+clamp(Value, Min, Max, Default) when is_integer(Value), Value >= Min, Value =< Max -> Value;
+clamp(_Value, _Min, _Max, Default) -> Default.
 
 %% Apply base updates if any exist (used before hold/release operations)
 apply_base_updates(_JobId, Updates) when map_size(Updates) =:= 0 -> ok;
