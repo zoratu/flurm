@@ -4,9 +4,21 @@ This guide covers deploying FLURM in production environments.
 
 ## Prerequisites
 
-- Erlang/OTP 26 or later
+- Erlang/OTP 25 or later (OTP 28 recommended)
 - rebar3 build tool
-- Network connectivity between all nodes on ports 6817-6819
+- Network connectivity between all nodes on ports 6817-6820
+
+## SLURM Client Compatibility
+
+FLURM is compatible with SLURM client versions 22.05 through 23.11:
+
+| SLURM Version | Commands Tested | Status |
+|---------------|----------------|--------|
+| 22.05.x (Rocky Linux 9) | sbatch, squeue, sinfo, scontrol, scancel | Fully working |
+| 23.11.x (Ubuntu 24.04) | sbatch, squeue, sinfo, scontrol, scancel | Fully working |
+
+Protocol version negotiation is automatic — no configuration needed.
+A single FLURM controller serves clients of different SLURM versions.
 
 ## Single-Node Deployment
 

@@ -453,21 +453,37 @@ FLURM supports SLURM protocol versions 22.05 through 23.11:
 
 | Protocol Version | SLURM Version | Support Level |
 |-----------------|---------------|---------------|
-| 0x1600 | 22.05.x | Full |
-| 0x1700 | 23.02.x | Full |
-| 0x1711 | 23.11.x | Full (default) |
+| 0x2600 | 22.05.x | Full |
+| 0x2700 | 23.02.x | Full |
+| 0x2800 | 23.11.x | Full (default) |
 
-### Version Detection
+### Version Negotiation
 
-```erlang
-negotiate_version(ClientVersion) when ClientVersion >= 16#1600,
-                                       ClientVersion =< 16#1711 ->
-    {ok, ClientVersion};
-negotiate_version(ClientVersion) when ClientVersion < 16#1600 ->
-    {error, version_too_old};
-negotiate_version(_) ->
-    {error, version_unknown}.
-```
+FLURM automatically negotiates the protocol version with each client.
+The response uses `min(client_version, 0x2800)`, ensuring backward
+compatibility with older SLURM clients while supporting the latest features.
+
+This means a single FLURM controller can serve mixed clusters with
+different SLURM client versions simultaneously.
+
+**Tested configurations:**
+- SLURM 22.05.9 (Rocky Linux 9) → FLURM responds with 0x2600
+- SLURM 23.11.4 (Ubuntu 24.04) → FLURM responds with 0x2800
+
+### Authentication
+
+When MUNGE is available, FLURM uses `auth/munge` (plugin_id 101) with
+credential verification. When MUNGE is not installed, FLURM sets the
+`SLURM_NO_AUTH_CRED` flag (0x0040) in response headers and omits the
+auth section entirely. Clients configured with `AuthType=auth/none`
+accept these responses.
+
+### Cross-Architecture Support
+
+FLURM works across CPU architectures (x86_64, ARM64) because:
+- Erlang's `<<Value:32/big>>` always produces network byte order
+- This matches SLURM's C `htonl()`/`ntohl()` encoding
+- No architecture-dependent code exists in the protocol codec
 
 ## Authentication
 

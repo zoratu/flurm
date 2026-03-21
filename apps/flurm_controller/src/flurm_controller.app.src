@@ -1,6 +1,6 @@
 {application, flurm_controller, [
     {description, "FLURM Controller - flurmctld daemon (central controller)"},
-    {vsn, "0.1.0"},
+    {vsn, "0.2.0"},
     {registered, [flurm_controller_sup]},
     {mod, {flurm_controller_app, []}},
     {applications, [

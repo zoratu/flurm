@@ -1,6 +1,6 @@
 {application, flurm_node_daemon, [
     {description, "FLURM Node Daemon - flurmnd (compute node daemon)"},
-    {vsn, "0.1.0"},
+    {vsn, "0.2.0"},
     {registered, [flurm_node_daemon_sup]},
     {mod, {flurm_node_daemon_app, []}},
     {applications, [

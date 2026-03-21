@@ -1,6 +1,6 @@
 {application, flurm_db, [
     {description, "FLURM Database - Persistence layer using Raft consensus"},
-    {vsn, "0.1.0"},
+    {vsn, "0.2.0"},
     {registered, [flurm_db_sup]},
     {mod, {flurm_db_app, []}},
     {applications, [
