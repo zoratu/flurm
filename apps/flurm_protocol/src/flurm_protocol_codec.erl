@@ -501,14 +501,10 @@ create_proper_auth_section(MsgType) ->
             AuthBin;
         {error, _} ->
             %% No MUNGE - use plugin_id 100 (AUTH_PLUGIN_NONE)
-            %% auth/none expects: plugin_id:32, then NO credential data
-            %% SLURM's auth_none.c auth_p_unpack reads nothing after plugin_id
-            %% But the credential is packed as packstr, so we send empty packstr
+            %% SLURM's auth_none.c auth_p_pack writes NOTHING after plugin_id
+            %% auth_p_unpack reads NOTHING - just plugin_id:32
             PluginId = 100,
-            %% Empty packstr = just the length field with NO_VAL (0xFFFFFFFE)
-            %% This tells SLURM "no credential string"
-            EmptyPackstr = <<16#FFFFFFFE:32/big>>,
-            AuthBin = <<PluginId:32/big, EmptyPackstr/binary>>,
+            AuthBin = <<PluginId:32/big>>,
             lager:info("AUTH (none): plugin_id=~p total=~p msg_type=~p",
                        [PluginId, byte_size(AuthBin), MsgType]),
             AuthBin
