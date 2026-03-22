@@ -248,6 +248,15 @@ init([]) ->
 
     %% Base children - always started
     BaseChildren = [
+        %% Journal - append-only job event log
+        #{
+            id => flurm_journal,
+            start => {flurm_journal, start_link, []},
+            restart => permanent,
+            shutdown => 5000,
+            type => worker,
+            modules => [flurm_journal]
+        },
         %% Plugin System - must start before job_manager so hooks are available
         #{
             id => flurm_plugin,

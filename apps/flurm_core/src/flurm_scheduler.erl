@@ -843,6 +843,7 @@ complete_job_allocation(JobId, JobInfo, Nodes, NumCpus, MemoryMb, Licenses, Stat
                             flurm_limits:enforce_limit(start, JobId, LimitInfo),
                             NewRunning = sets:add_element(JobId, State#scheduler_state.running_jobs),
                             lager:info("Job ~p scheduled on nodes: ~p (licenses: ~p)", [JobId, NodeNames, Licenses]),
+                            catch flurm_journal:job_scheduled(JobId, NodeNames, Licenses),
                             {ok, State#scheduler_state{running_jobs = NewRunning}};
                         {error, DispatchErr} ->
                             lager:warning("Job ~p dispatch failed: ~p, will retry", [JobId, DispatchErr]),

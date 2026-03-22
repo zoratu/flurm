@@ -214,6 +214,7 @@ handle_call({cancel_job, JobId}, _From, #state{jobs = Jobs, persistence_mode = M
 
             %% Record metrics
             catch flurm_metrics:increment(flurm_jobs_cancelled_total),
+            catch flurm_journal:job_cancelled(JobId),
 
             %% Persist the update
             persist_job_update(JobId, #{state => cancelled}),
@@ -279,6 +280,7 @@ handle_call({update_job, JobId, Updates}, _From, #state{jobs = Jobs} = State) ->
             case maps:get(state, Updates, undefined) of
                 completed ->
                     catch flurm_metrics:increment(flurm_jobs_completed_total),
+                    catch flurm_journal:job_completed(JobId, maps:get(exit_code, Updates, 0)),
                     %% Release resources back to nodes
                     release_job_resources(JobId, Job#job.allocated_nodes),
                     %% Notify dependencies module about completion
@@ -287,6 +289,7 @@ handle_call({update_job, JobId, Updates}, _From, #state{jobs = Jobs} = State) ->
                     cleanup_job_dependencies(JobId);
                 failed ->
                     catch flurm_metrics:increment(flurm_jobs_failed_total),
+                    catch flurm_journal:job_failed(JobId, maps:get(exit_code, Updates, -1), failed),
                     %% Release resources back to nodes
                     release_job_resources(JobId, Job#job.allocated_nodes),
                     %% Notify dependencies module about failure
@@ -662,6 +665,7 @@ submit_regular_job(JobSpec, Jobs, Counter, State) ->
 
                             %% Record metrics
                             catch flurm_metrics:increment(flurm_jobs_submitted_total),
+                            catch flurm_journal:job_submitted(JobId, JobSpec),
 
                             %% Persist the job
                             persist_job(Job),

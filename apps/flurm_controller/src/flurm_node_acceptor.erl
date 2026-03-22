@@ -124,7 +124,8 @@ handle_message(Socket, Transport, #{type := node_register, payload := Payload}) 
             },
             case flurm_node_registry:register_node_direct(RegistrySpec) of
                 ok ->
-                    log(info, "Node ~s registered with node_registry", [Hostname]);
+                    log(info, "Node ~s registered with node_registry", [Hostname]),
+                    catch flurm_journal:node_joined(Hostname, NodeSpec);
                 {error, already_registered} ->
                     log(debug, "Node ~s already in registry", [Hostname]);
                 RegistryErr ->
