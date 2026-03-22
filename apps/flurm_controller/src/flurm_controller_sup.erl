@@ -248,6 +248,15 @@ init([]) ->
 
     %% Base children - always started
     BaseChildren = [
+        %% Plugin System - must start before job_manager so hooks are available
+        #{
+            id => flurm_plugin,
+            start => {flurm_plugin, start_link, []},
+            restart => permanent,
+            shutdown => 5000,
+            type => worker,
+            modules => [flurm_plugin]
+        },
         %% Connection Limiter - tracks per-peer connection limits
         %% Must start early as it's used by acceptors
         #{
