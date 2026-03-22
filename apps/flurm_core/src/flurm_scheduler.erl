@@ -286,6 +286,41 @@ code_change(_OldVsn, State, _Extra) ->
 %%====================================================================
 
 %% @private
+%% Trigger cloud auto-scaling when the scheduler can't place jobs.
+%% Uses a process dictionary cooldown to avoid rapid-fire launches.
+-define(AUTOSCALE_COOLDOWN_MS, 120000).  % 2 minutes between scale-up attempts
+
+maybe_auto_scale(insufficient_nodes) ->
+    do_maybe_auto_scale();
+maybe_auto_scale({limit_exceeded, num_nodes, _, _}) ->
+    do_maybe_auto_scale();
+maybe_auto_scale(_Reason) ->
+    %% Other reasons (licenses, memory, etc.) don't need more nodes
+    ok.
+
+do_maybe_auto_scale() ->
+    Now = erlang:monotonic_time(millisecond),
+    LastAttempt = case get(last_autoscale_attempt) of
+        undefined -> 0;
+        T -> T
+    end,
+    case Now - LastAttempt > ?AUTOSCALE_COOLDOWN_MS of
+        true ->
+            put(last_autoscale_attempt, Now),
+            case catch flurm_cloud_scaler:is_enabled() of
+                true ->
+                    lager:info("[autoscale] Triggering scale-up: insufficient nodes for pending jobs"),
+                    spawn(fun() ->
+                        catch flurm_cloud_scaler:scale_up(1)
+                    end);
+                _ ->
+                    ok  % Auto-scaling not enabled
+            end;
+        false ->
+            ok  % Cooldown active
+    end.
+
+%% @private
 %% Schedule the next cycle timer
 schedule_next_cycle() ->
     erlang:send_after(?SCHEDULE_INTERVAL, self(), schedule_cycle).
@@ -420,6 +455,8 @@ schedule_pending_jobs_batch(State, MaxJobs, Scheduled) ->
                     %% Job cannot be scheduled (insufficient resources)
                     %% Try backfill: schedule smaller jobs that can fit
                     lager:debug("Job ~p waiting for scheduling: ~p", [JobId, Reason]),
+                    %% Trigger cloud auto-scaling if insufficient nodes
+                    maybe_auto_scale(Reason),
                     BackfillState = try_backfill_jobs(RestQueue, State),
                     %% Keep original job at front of queue
                     BackfillState;

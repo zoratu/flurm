@@ -159,7 +159,8 @@ job_epilog(_JobId, _Result) ->
 %%   nodes        - Number of nodes (default: 2)
 %%   binary_path  - Path to tlaplusplus binary (default: /opt/tlaplusplus/tlaplusplus)
 %%   workers      - Workers per node (default: auto-detect)
-%%   s3_bucket    - S3 bucket for checkpoints (optional)
+%%   s3_bucket    - S3 bucket for checkpoints and file distribution (optional)
+%%   s3_prefix    - S3 prefix for spec files (default: "specs/<basename>")
 %%   extra_args   - Additional CLI args (optional list of strings)
 %%
 -spec submit_distributed_check(map()) -> {ok, integer()} | {error, term()}.
@@ -172,21 +173,47 @@ submit_distributed_check(Opts) ->
     S3Bucket = maps:get(s3_bucket, Opts, <<>>),
     ExtraArgs = maps:get(extra_args, Opts, []),
 
+    %% When S3 is configured, upload spec/config and use --fetch-module/--fetch-config
+    %% so nodes don't need a shared filesystem.
+    {SpecArg, ConfigArg, S3Args} = case S3Bucket of
+        <<>> ->
+            %% No S3 — assume shared filesystem
+            {["--module ", SpecFile],
+             case ConfigFile of
+                 <<>> -> "";
+                 _ -> [" --config ", ConfigFile]
+             end,
+             ""};
+        Bucket ->
+            BaseName = filename:basename(SpecFile),
+            S3Prefix = maps:get(s3_prefix, Opts,
+                iolist_to_binary(["specs/", filename:basename(SpecFile, ".tla")])),
+            ModuleUri = iolist_to_binary([
+                "s3://", Bucket, "/", S3Prefix, "/", BaseName]),
+            %% Upload spec file to S3
+            upload_to_s3(Bucket, [S3Prefix, "/", BaseName], SpecFile),
+            SpecA = ["--fetch-module ", ModuleUri],
+            CfgA = case ConfigFile of
+                <<>> -> "";
+                _ ->
+                    CfgBase = filename:basename(ConfigFile),
+                    CfgUri = iolist_to_binary([
+                        "s3://", Bucket, "/", S3Prefix, "/", CfgBase]),
+                    upload_to_s3(Bucket, [S3Prefix, "/", CfgBase], ConfigFile),
+                    [" --fetch-config ", CfgUri]
+            end,
+            S3A = [" --s3-bucket ", Bucket, " --checkpoint-interval-secs 60"],
+            {SpecA, CfgA, S3A}
+    end,
+
     %% Build the script command
     Script = iolist_to_binary([
-        Binary, " run-tla --module ", SpecFile,
-        case ConfigFile of
-            <<>> -> "";
-            _ -> [" --config ", ConfigFile]
-        end,
+        Binary, " run-tla ", SpecArg, ConfigArg,
         case Workers of
             auto -> "";
             N when is_integer(N) -> [" --workers ", integer_to_binary(N)]
         end,
-        case S3Bucket of
-            <<>> -> "";
-            Bucket -> [" --s3-bucket ", Bucket, " --checkpoint-interval-secs 60"]
-        end,
+        S3Args,
         lists:map(fun(A) -> [" ", A] end, ExtraArgs)
     ]),
 
@@ -222,6 +249,10 @@ parse_tokens(["--module", File | Rest], SpecArgs, ExtraArgs) ->
     parse_tokens(Rest, ["--module", File | SpecArgs], ExtraArgs);
 parse_tokens(["--config", File | Rest], SpecArgs, ExtraArgs) ->
     parse_tokens(Rest, ["--config", File | SpecArgs], ExtraArgs);
+parse_tokens(["--fetch-module", Uri | Rest], SpecArgs, ExtraArgs) ->
+    parse_tokens(Rest, ["--fetch-module", Uri | SpecArgs], ExtraArgs);
+parse_tokens(["--fetch-config", Uri | Rest], SpecArgs, ExtraArgs) ->
+    parse_tokens(Rest, ["--fetch-config", Uri | SpecArgs], ExtraArgs);
 parse_tokens(["run-tla" | Rest], SpecArgs, ExtraArgs) ->
     parse_tokens(Rest, SpecArgs, ExtraArgs);  % Skip subcommand (we add it)
 parse_tokens([Arg | Rest], SpecArgs, ExtraArgs) ->
@@ -229,4 +260,16 @@ parse_tokens([Arg | Rest], SpecArgs, ExtraArgs) ->
     case lists:prefix("/", Arg) orelse lists:prefix("tlaplusplus", Arg) of
         true -> parse_tokens(Rest, SpecArgs, ExtraArgs);
         false -> parse_tokens(Rest, SpecArgs, [Arg | ExtraArgs])
+    end.
+
+%% Upload a local file to S3.
+%% Uses the AWS CLI since Erlang doesn't have a native S3 client in OTP.
+upload_to_s3(Bucket, Key, LocalPath) ->
+    S3Uri = iolist_to_binary(["s3://", Bucket, "/", Key]),
+    Cmd = io_lib:format("aws s3 cp ~s ~s", [LocalPath, S3Uri]),
+    case os:cmd(lists:flatten(Cmd)) of
+        [] -> ok;
+        Output ->
+            lager:info("[tla_plugin] S3 upload ~s: ~s", [S3Uri, Output]),
+            ok
     end.

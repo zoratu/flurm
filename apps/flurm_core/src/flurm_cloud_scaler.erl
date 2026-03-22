@@ -494,6 +494,7 @@ do_scale_down_async(Count, State) ->
 %% @private Scale up using provider
 do_scale_up(Count, State) ->
     case State#state.provider of
+        spot -> spot_scale_up(Count, State#state.config);
         aws -> aws_scale_up(Count, State#state.config);
         gcp -> gcp_scale_up(Count, State#state.config);
         azure -> azure_scale_up(Count, State#state.config);
@@ -503,6 +504,7 @@ do_scale_up(Count, State) ->
 %% @private Scale down using provider
 do_scale_down(Count, State) ->
     case State#state.provider of
+        spot -> spot_scale_down(Count, State#state.config);
         aws -> aws_scale_down(Count, State#state.config);
         gcp -> gcp_scale_down(Count, State#state.config);
         azure -> azure_scale_down(Count, State#state.config);
@@ -622,6 +624,59 @@ azure_scale_down(Count, Config) ->
             ),
             {ok, IdleNodes}
     end.
+
+%% Spot Instance Manager (spot.py) provider
+%% Launches cheap spot instances that auto-join via Tailscale + cloud-init.
+%% Config keys:
+%%   spot_command  - Path to spot.py (default: "spot")
+%%   profile       - AWS profile (default: "weka-pm")
+%%   price_rank    - Launch the Nth cheapest instance (default: 1)
+spot_scale_up(Count, Config) ->
+    SpotCmd = maps:get(spot_command, Config, "spot"),
+    Profile = maps:get(profile, Config, "weka-pm"),
+    Rank = maps:get(price_rank, Config, 1),
+    RankStr = integer_to_list(Rank),
+
+    lager:info("[spot_scaler] Launching ~p spot instances (profile=~s, rank=~p)",
+               [Count, Profile, Rank]),
+
+    %% Launch instances sequentially (spot.py handles one at a time)
+    Results = lists:map(fun(I) ->
+        Cmd = lists:flatten(io_lib:format(
+            "~s -P ~s l ~s 2>&1", [SpotCmd, Profile, RankStr])),
+        lager:info("[spot_scaler] Instance ~p/~p: ~s", [I, Count, Cmd]),
+        Output = try os:cmd(Cmd) catch _:_ -> "command failed" end,
+        %% Extract instance ID from output (format: "Instance: i-xxxxx")
+        case re:run(Output, "i-[0-9a-f]+", [{capture, first, binary}]) of
+            {match, [InstanceId]} ->
+                lager:info("[spot_scaler] Launched: ~s", [InstanceId]),
+                {ok, InstanceId};
+            nomatch ->
+                lager:warning("[spot_scaler] Launch output: ~s", [Output]),
+                {ok, iolist_to_binary(io_lib:format("spot-~p", [I]))}
+        end
+    end, lists:seq(1, Count)),
+
+    InstanceIds = [Id || {ok, Id} <- Results],
+    lager:info("[spot_scaler] Launched ~p instances: ~p", [length(InstanceIds), InstanceIds]),
+    {ok, InstanceIds}.
+
+spot_scale_down(Count, Config) ->
+    SpotCmd = maps:get(spot_command, Config, "spot"),
+    Profile = maps:get(profile, Config, "weka-pm"),
+
+    %% Find idle nodes to terminate
+    IdleNodes = find_idle_nodes(Count),
+
+    %% Terminate each via spot.py
+    lists:foreach(fun(NodeName) ->
+        %% Node hostname is the instance ID (set by cloud-init)
+        Cmd = lists:flatten(io_lib:format(
+            "~s -P ~s t ~s 2>&1", [SpotCmd, Profile, NodeName])),
+        lager:info("[spot_scaler] Terminating: ~s", [NodeName]),
+        try os:cmd(Cmd) catch _:_ -> ok end
+    end, IdleNodes),
+    {ok, IdleNodes}.
 
 %% @private Find idle nodes that can be safely terminated
 find_idle_nodes(MaxCount) ->
