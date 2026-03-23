@@ -151,9 +151,19 @@ handle_cast(_Msg, State) ->
 
 handle_info(metrics_tick, #{fd := Fd} = State) ->
     Metrics = collect_metrics(),
-    write_event(Fd, metrics, Metrics),
+    %% Only write metrics when something meaningful changed
+    %% (ignore scheduler_cycles which always increments)
+    Comparable = maps:remove(scheduler_cycles, Metrics),
+    LastComparable = maps:remove(scheduler_cycles, maps:get(last_metrics, State, #{})),
+    NewState = case Comparable =:= LastComparable of
+        true ->
+            State;  % Nothing changed, skip
+        false ->
+            write_event(Fd, metrics, Metrics),
+            State#{last_metrics => Metrics}
+    end,
     erlang:send_after(?METRICS_INTERVAL, self(), metrics_tick),
-    {noreply, State};
+    {noreply, NewState};
 
 handle_info(_Info, State) ->
     {noreply, State}.
