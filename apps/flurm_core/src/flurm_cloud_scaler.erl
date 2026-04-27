@@ -629,21 +629,21 @@ azure_scale_down(Count, Config) ->
 %% Launches cheap spot instances that auto-join via Tailscale + cloud-init.
 %% Config keys:
 %%   spot_command  - Path to spot.py (default: "spot")
-%%   profile       - AWS profile (default: "weka-pm")
+%%   profile       - AWS profile name (optional; if unset, spot.py uses its own default)
 %%   price_rank    - Launch the Nth cheapest instance (default: 1)
 spot_scale_up(Count, Config) ->
     SpotCmd = maps:get(spot_command, Config, "spot"),
-    Profile = maps:get(profile, Config, "weka-pm"),
+    ProfileFlag = profile_flag(Config),
     Rank = maps:get(price_rank, Config, 1),
     RankStr = integer_to_list(Rank),
 
-    lager:info("[spot_scaler] Launching ~p spot instances (profile=~s, rank=~p)",
-               [Count, Profile, Rank]),
+    lager:info("[spot_scaler] Launching ~p spot instances (rank=~p)",
+               [Count, Rank]),
 
     %% Launch instances sequentially (spot.py handles one at a time)
     Results = lists:map(fun(I) ->
         Cmd = lists:flatten(io_lib:format(
-            "~s -P ~s l ~s 2>&1", [SpotCmd, Profile, RankStr])),
+            "~s~s l ~s 2>&1", [SpotCmd, ProfileFlag, RankStr])),
         lager:info("[spot_scaler] Instance ~p/~p: ~s", [I, Count, Cmd]),
         Output = try os:cmd(Cmd) catch _:_ -> "command failed" end,
         %% Extract instance ID from output (format: "Instance: i-xxxxx")
@@ -663,7 +663,7 @@ spot_scale_up(Count, Config) ->
 
 spot_scale_down(Count, Config) ->
     SpotCmd = maps:get(spot_command, Config, "spot"),
-    Profile = maps:get(profile, Config, "weka-pm"),
+    ProfileFlag = profile_flag(Config),
 
     %% Find idle nodes to terminate
     IdleNodes = find_idle_nodes(Count),
@@ -672,11 +672,19 @@ spot_scale_down(Count, Config) ->
     lists:foreach(fun(NodeName) ->
         %% Node hostname is the instance ID (set by cloud-init)
         Cmd = lists:flatten(io_lib:format(
-            "~s -P ~s t ~s 2>&1", [SpotCmd, Profile, NodeName])),
+            "~s~s t ~s 2>&1", [SpotCmd, ProfileFlag, NodeName])),
         lager:info("[spot_scaler] Terminating: ~s", [NodeName]),
         try os:cmd(Cmd) catch _:_ -> ok end
     end, IdleNodes),
     {ok, IdleNodes}.
+
+%% @private Build " -P <profile>" flag if profile is configured, else "".
+profile_flag(Config) ->
+    case maps:get(profile, Config, undefined) of
+        undefined -> "";
+        ""        -> "";
+        Profile   -> " -P " ++ Profile
+    end.
 
 %% @private Find idle nodes that can be safely terminated
 find_idle_nodes(MaxCount) ->

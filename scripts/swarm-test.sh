@@ -28,7 +28,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 SWARM_DIR="${PROJECT_DIR}/_build/swarm"
-SPOT_PROFILE="weka-pm"
+SPOT_PROFILE="${SPOT_PROFILE:-}"
 
 # Swarm configuration parameters (from Groce et al.)
 FEATURE_INCLUSION_PROB=0.50  # Coin-toss probability (50% = maximum diversity)
@@ -355,7 +355,7 @@ run_spot() {
     echo "Available instances: ${instance_count}"
 
     if [ "$instance_count" -eq 0 ]; then
-        echo "ERROR: No spot instances available. Launch some with: spot -P weka-pm l <N>"
+        echo "ERROR: No spot instances available. Launch some with: spot l <N>"
         exit 1
     fi
 
